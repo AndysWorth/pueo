@@ -538,7 +538,12 @@ trigger: {{ r.payload.get("trigger", []) | tojson(indent=2) }}
         <button class="btn" style="background:#6c757d;color:#fff;border:none;padding:0.35rem 0.9rem;border-radius:4px;cursor:pointer;font-size:0.875rem;" type="submit">Suppress (Known Issue)</button>
       </form>
       {% endif %}
-      {% if r.payload.get("episode_id") %}
+      {% if r.payload.get("episode_id") and r.payload.get("user_verdict") == "right" %}
+      <p style="font-size:0.78rem;color:#2e7d32;margin:0.35rem 0 0;">✓ You marked Pueo's analysis as right</p>
+      {% elif r.payload.get("episode_id") %}
+      <form method="POST" action="/right/{{ r.notification_id }}" style="display:inline;">
+        <button type="submit" title="Confirm Pueo's analysis was correct; Pueo learns from verified sessions" style="background:none;color:#2e7d32;border:none;padding:0.35rem 0;cursor:pointer;font-size:0.78rem;text-decoration:underline;display:block;margin-top:0.25rem;">Pueo was right</button>
+      </form>
       <button onclick="window.toggleWrongForm('{{ r.notification_id }}')" type="button" style="background:none;color:#999;border:none;padding:0.35rem 0;cursor:pointer;font-size:0.78rem;text-decoration:underline;display:block;margin-top:0.25rem;">Pueo got this wrong</button>
       <div id="wrong-form-{{ r.notification_id }}" style="display:none;margin-top:0.4rem;background:#fff8f8;border:1px solid #fcc;border-radius:4px;padding:0.5rem;">
         <form method="POST" action="/wrong/{{ r.notification_id }}">
@@ -557,6 +562,9 @@ trigger: {{ r.payload.get("trigger", []) | tojson(indent=2) }}
         {% else %}
         <strong style="color:#222;">Acknowledge</strong> — Mark as seen and remove from queue; full details remain in the Timeline
         {% endif %}
+        {% if r.payload.get("episode_id") %}
+        <br><strong style="color:#222;">Pueo was right</strong> — Acknowledge and confirm the analysis; only confirmed sessions teach Pueo
+        {% endif %}
       </p>
       {% if ct == "host_health" and r.payload.get("informational") %}
       <form method="POST" action="/acknowledge/{{ r.notification_id }}">
@@ -568,6 +576,10 @@ trigger: {{ r.payload.get("trigger", []) | tojson(indent=2) }}
       </form>
       {% endif %}
       {% if r.payload.get("episode_id") %}
+      <form method="POST" action="/right/{{ r.notification_id }}" style="display:inline;">
+        <input type="hidden" name="acknowledge" value="1">
+        <button type="submit" title="Acknowledge and confirm Pueo's analysis was correct; Pueo learns from verified sessions" style="background:none;color:#2e7d32;border:none;padding:0.35rem 0;cursor:pointer;font-size:0.78rem;text-decoration:underline;display:block;margin-top:0.25rem;">Pueo was right</button>
+      </form>
       <button onclick="window.toggleWrongForm('{{ r.notification_id }}')" type="button" style="background:none;color:#999;border:none;padding:0.35rem 0;cursor:pointer;font-size:0.78rem;text-decoration:underline;display:block;margin-top:0.25rem;">Pueo got this wrong</button>
       <div id="wrong-form-{{ r.notification_id }}" style="display:none;margin-top:0.4rem;background:#fff8f8;border:1px solid #fcc;border-radius:4px;padding:0.5rem;">
         <form method="POST" action="/wrong/{{ r.notification_id }}">

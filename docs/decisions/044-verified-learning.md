@@ -53,6 +53,7 @@ System verifiers set `verification='success'` or `'failure'`:
 - **Update:** install OK with no new repair/error for 1 h → success; install failed →
   failure.
 - **Host/notification/lovelace:** success via card action only (see below).
+  *Superseded by ADR 046: "Pueo was right" or the card's executor verifies these.*
 
 A 48 h sweep marks unresolved rows `unverified` and clears `distill_payload_json`.
 
@@ -61,6 +62,9 @@ A 48 h sweep marks unresolved rows `unverified` and clears `distill_payload_json
 > Grounded `instance_facts` are written to `agent_memory` even when `no_new_knowledge=true`.
 
 ### 3. Card actions as verification (S3, PR #903)
+
+> **Superseded by [ADR 046](046-explicit-verification.md):** Approve, Acknowledge and Apply fixes no longer verify.
+> "Pueo was right" (`/right/{nid}`) and the card executors do.
 
 `/approve`, `/acknowledge`, `/apply-fixes` → `verification='success'` (by=user).  
 A new **"Pueo got this wrong"** button (`POST /wrong/{nid}`) with an optional

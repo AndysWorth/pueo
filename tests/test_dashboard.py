@@ -2372,6 +2372,67 @@ class TestNotificationsDashboard:
         assert "http_login" in html
         assert "CRITICAL" in html
 
+    def _write_notif_card(self, watch_dir, nid: str, payload: dict) -> None:
+        import json as _json
+
+        (watch_dir / f"notif_{nid}.json").write_text(
+            _json.dumps({"notification_id": f"notif_{nid}", "payload": payload})
+        )
+
+    def test_pending_card_with_episode_shows_verdict_buttons(self, db_path, watch_dir):
+        from starlette.testclient import TestClient
+        import web.dashboard as dashboard
+
+        self._insert_notification(db_path, "http-login")
+        self._write_notif_card(watch_dir, "http-login", {"episode_id": "ep1"})
+        html = TestClient(dashboard.app).get("/notifications").text
+        assert 'action="/right/notif_http-login"' in html
+        assert 'action="/wrong/notif_http-login"' in html
+        assert 'name="return_to" value="/notifications"' in html
+        assert "window.toggleWrongForm" in html
+
+    def test_pending_card_marked_right_shows_verdict(self, db_path, watch_dir):
+        from starlette.testclient import TestClient
+        import web.dashboard as dashboard
+
+        self._insert_notification(db_path, "http-login")
+        self._write_notif_card(
+            watch_dir, "http-login", {"episode_id": "ep1", "user_verdict": "right"}
+        )
+        html = TestClient(dashboard.app).get("/notifications").text
+        assert "marked Pueo's analysis as right" in html
+        assert "/right/notif_http-login" not in html
+
+    def test_pending_card_without_episode_has_no_verdict_buttons(
+        self, db_path, watch_dir
+    ):
+        from starlette.testclient import TestClient
+        import web.dashboard as dashboard
+
+        self._insert_notification(db_path, "http-login")
+        self._write_notif_card(watch_dir, "http-login", {})
+        html = TestClient(dashboard.app).get("/notifications").text
+        assert "/right/" not in html
+
+    def test_verdict_redirects_back_to_notifications(self, db_path, watch_dir):
+        from starlette.testclient import TestClient
+        import web.dashboard as dashboard
+
+        self._write_notif_card(watch_dir, "x", {})
+        client = TestClient(dashboard.app)
+        resp = client.post(
+            "/right/notif_x",
+            data={"return_to": "/notifications"},
+            follow_redirects=False,
+        )
+        assert resp.headers["location"] == "/notifications"
+        resp = client.post(
+            "/wrong/notif_x",
+            data={"return_to": "https://evil.example"},
+            follow_redirects=False,
+        )
+        assert resp.headers["location"] == "/queue"
+
     def test_dismissed_notification_not_in_pending(self, db_path, watch_dir):
         import time
 
@@ -8510,7 +8571,7 @@ class TestPrivateNetworkAccessMiddleware:
 
 
 class TestCardEpisodeIdVerification:
-    """Episode_id on card payloads wires approve/acknowledge/wrong to session_outcomes."""
+    """Episode_id on card payloads wires right/wrong to session_outcomes (ADR 046)."""
 
     SESSION_OUTCOMES_DDL = (
         "CREATE TABLE IF NOT EXISTS session_outcomes ("
@@ -8573,8 +8634,8 @@ class TestCardEpisodeIdVerification:
             )
         )
 
-    def test_approve_marks_session_outcome_success(self, tmp_path, monkeypatch):
-        from pathlib import Path as _Path
+    def test_approve_does_not_verify_session(self, tmp_path, monkeypatch):
+        """ADR 046: approving verifies nothing; the executor does after it runs."""
         from fastapi.testclient import TestClient
         import web.dashboard as dashboard
         import agents.ha_agent_advanced as adv
@@ -8594,9 +8655,10 @@ class TestCardEpisodeIdVerification:
         client = TestClient(dashboard.app, raise_server_exceptions=True)
         resp = client.post("/approve/nid1", follow_redirects=False)
         assert resp.status_code == 303
-        assert self._get_verification(db_path, "ep-approve-1") == "success"
+        assert self._get_verification(db_path, "ep-approve-1") == "pending"
 
-    def test_acknowledge_marks_session_outcome_success(self, tmp_path, monkeypatch):
+    def test_acknowledge_does_not_verify_session(self, tmp_path, monkeypatch):
+        """ADR 046: Acknowledge means "seen", not "correct"."""
         from fastapi.testclient import TestClient
         import web.dashboard as dashboard
         import agents.ha_agent_advanced as adv
@@ -8617,7 +8679,8 @@ class TestCardEpisodeIdVerification:
 
         client = TestClient(dashboard.app, raise_server_exceptions=True)
         client.post("/acknowledge/nid2", follow_redirects=False)
-        assert self._get_verification(db_path, "ep-ack-1") == "success"
+        assert self._get_verification(db_path, "ep-ack-1") == "pending"
+        assert (watch_dir / "nid2.approved").exists()
 
     def test_wrong_marks_session_outcome_failure_with_correction(
         self, tmp_path, monkeypatch
@@ -8700,6 +8763,125 @@ class TestCardEpisodeIdVerification:
         # Row for ep-no-card should remain pending
         assert self._get_verification(db_path, "ep-no-card") == "pending"
 
+    def _client(self, tmp_path, monkeypatch, nid: str, payload: dict):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+        import agents.ha_agent_advanced as adv
+
+        db_path = str(tmp_path / "db.sqlite")
+        self._setup_db(db_path)
+        watch_dir = tmp_path / "watch"
+        watch_dir.mkdir()
+        self._write_card(watch_dir, nid, payload)
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+        monkeypatch.setattr(dashboard, "DB_PATH", db_path)
+        monkeypatch.setattr(adv, "DB_PATH", db_path)
+        return (
+            TestClient(dashboard.app, raise_server_exceptions=True),
+            db_path,
+            watch_dir,
+        )
+
+    def test_right_with_acknowledge_verifies_and_acknowledges(
+        self, tmp_path, monkeypatch
+    ):
+        import sqlite3 as _sq
+        import web.dashboard as dashboard
+
+        acked: list = []
+        monkeypatch.setattr(
+            "utils.hitl.hitl_tracker.mark_card_acknowledged",
+            lambda conn, key, fp="": acked.append((key, fp)),
+        )
+        distilled: list = []
+
+        async def _fake_distill(ep, verification, correction=""):
+            distilled.append((ep, verification))
+
+        monkeypatch.setattr(
+            dashboard, "_trigger_post_verify_distillation", _fake_distill
+        )
+        client, db_path, watch_dir = self._client(
+            tmp_path,
+            monkeypatch,
+            "nidr1",
+            {"episode_id": "ep-right-1", "suppression_key": "k1", "fingerprint": "f"},
+        )
+        self._insert_pending(db_path, "ep-right-1")
+        resp = client.post(
+            "/right/nidr1", data={"acknowledge": "1"}, follow_redirects=False
+        )
+        assert resp.status_code == 303
+        assert self._get_verification(db_path, "ep-right-1") == "success"
+        with _sq.connect(db_path) as conn:
+            by = conn.execute(
+                "SELECT verified_by FROM session_outcomes WHERE episode_id='ep-right-1'"
+            ).fetchone()[0]
+        assert by == "user"
+        assert distilled == [("ep-right-1", "success")]
+        assert acked == [("k1", "f")]
+        assert (watch_dir / "nidr1.approved").exists()
+
+    def test_right_on_actionable_card_keeps_it_pending(self, tmp_path, monkeypatch):
+        import json as _json
+
+        client, db_path, watch_dir = self._client(
+            tmp_path,
+            monkeypatch,
+            "nidr2",
+            {"episode_id": "ep-right-2", "card_type": "update"},
+        )
+        self._insert_pending(db_path, "ep-right-2")
+        client.post("/right/nidr2", data={}, follow_redirects=False)
+        assert self._get_verification(db_path, "ep-right-2") == "success"
+        assert not (watch_dir / "nidr2.approved").exists()
+        saved = _json.loads((watch_dir / "nidr2.json").read_text())
+        assert saved["payload"]["user_verdict"] == "right"
+
+    def test_right_without_episode_id_only_acknowledges(self, tmp_path, monkeypatch):
+        client, db_path, watch_dir = self._client(
+            tmp_path, monkeypatch, "nidr3", {"suppression_key": ""}
+        )
+        self._insert_pending(db_path, "ep-untouched")
+        client.post("/right/nidr3", data={"acknowledge": "1"}, follow_redirects=False)
+        assert self._get_verification(db_path, "ep-untouched") == "pending"
+        assert (watch_dir / "nidr3.approved").exists()
+
+    def test_right_on_resolved_card_is_noop(self, tmp_path, monkeypatch):
+        client, db_path, watch_dir = self._client(
+            tmp_path, monkeypatch, "nidr4", {"episode_id": "ep-right-4"}
+        )
+        self._insert_pending(db_path, "ep-right-4")
+        (watch_dir / "nidr4.rejected").touch()
+        client.post("/right/nidr4", data={"acknowledge": "1"}, follow_redirects=False)
+        assert self._get_verification(db_path, "ep-right-4") == "pending"
+        assert not (watch_dir / "nidr4.approved").exists()
+
+    def test_apply_fixes_does_not_verify_session(self, tmp_path, monkeypatch):
+        import web.dashboard as dashboard
+
+        async def _noop(*a, **kw):
+            return None
+
+        monkeypatch.setattr(dashboard, "_execute_config_fixes", _noop)
+        monkeypatch.setattr(
+            "utils.agent.work_queue.get_work_queue_or_none", lambda: None
+        )
+        client, db_path, _ = self._client(
+            tmp_path,
+            monkeypatch,
+            "nidf1",
+            {
+                "episode_id": "ep-fix-1",
+                "card_type": "update",
+                "proposed_config_fixes": [{"config_fix_yaml": "a: 1"}],
+            },
+        )
+        self._insert_pending(db_path, "ep-fix-1")
+        resp = client.post("/apply-fixes/nidf1", follow_redirects=False)
+        assert resp.status_code == 303
+        assert self._get_verification(db_path, "ep-fix-1") == "pending"
+
     def test_resolve_session_outcome_by_episode_id_no_op_when_already_resolved(
         self, tmp_path
     ):
@@ -8726,6 +8908,274 @@ class TestCardEpisodeIdVerification:
             assert self._get_verification(db_path, "ep-resolved") == "success"
         finally:
             adv.DB_PATH = original  # type: ignore[assignment]
+
+
+class TestVerifyCardExecution:
+    """ADR 046: card executors are the system verifiers for their sessions."""
+
+    def _recorder(self, monkeypatch):
+        import web.dashboard as dashboard
+
+        calls: list = []
+
+        async def _rec(payload, verification="success"):
+            calls.append((payload.get("episode_id"), verification))
+
+        monkeypatch.setattr(dashboard, "_verify_card_execution", _rec)
+        return calls
+
+    def test_no_episode_id_is_noop(self, monkeypatch):
+        import web.dashboard as dashboard
+
+        called: list = []
+        monkeypatch.setattr(
+            dashboard, "_resolve_card_outcome", lambda *a: called.append(a)
+        )
+        asyncio.run(dashboard._verify_card_execution({}))
+        assert called == []
+
+    def test_resolves_by_system_and_distills(self, monkeypatch):
+        import web.dashboard as dashboard
+
+        resolved: list = []
+        distilled: list = []
+        monkeypatch.setattr(
+            dashboard, "_resolve_card_outcome", lambda *a: resolved.append(a)
+        )
+
+        async def _fake_distill(ep, verification, correction=""):
+            distilled.append((ep, verification))
+
+        monkeypatch.setattr(
+            dashboard, "_trigger_post_verify_distillation", _fake_distill
+        )
+        asyncio.run(dashboard._verify_card_execution({"episode_id": "ep1"}, "failure"))
+        assert resolved == [("ep1", "failure", "", "system")]
+        assert distilled == [("ep1", "failure")]
+
+    def test_errors_are_swallowed(self, monkeypatch):
+        import web.dashboard as dashboard
+
+        def _boom(*a):
+            raise RuntimeError("db locked")
+
+        monkeypatch.setattr(dashboard, "_resolve_card_outcome", _boom)
+        asyncio.run(dashboard._verify_card_execution({"episode_id": "ep1"}))
+
+    def test_resolve_card_outcome_passes_by(self, monkeypatch):
+        import web.dashboard as dashboard
+        import agents.ha_agent_advanced as adv
+
+        seen: list = []
+        monkeypatch.setattr(
+            adv,
+            "resolve_session_outcome_by_episode_id",
+            lambda ep, v, by, corr, store: seen.append((ep, v, by, corr)),
+        )
+        monkeypatch.setattr(dashboard, "_get_strategy_store", lambda: None)
+        dashboard._resolve_card_outcome("ep1", "success", "", "system")
+        assert seen == [("ep1", "success", "system", None)]
+
+    def test_ha_command_success_verifies(self, tmp_path, monkeypatch):
+        calls = self._recorder(monkeypatch)
+        TestExecuteHaCommand()._run(tmp_path, monkeypatch)
+        assert calls == [(None, "success")]
+
+    def test_ha_command_failure_does_not_verify(self, tmp_path, monkeypatch):
+        calls = self._recorder(monkeypatch)
+        TestExecuteHaCommand()._run(tmp_path, monkeypatch, ssh_exit_code=1)
+        assert calls == []
+
+    def test_automation_create_success_verifies(self, tmp_path, monkeypatch):
+        calls = self._recorder(monkeypatch)
+        TestExecuteAutomationCreate()._run(tmp_path, monkeypatch)
+        assert calls == [(None, "success")]
+
+    def _run_rest_executor(self, tmp_path, monkeypatch, fn_name, payload, token="tok"):
+        import json as _json
+        import web.dashboard as dashboard
+        import config as _config_mod
+        import utils.ha.ha_rest_client as rest_mod
+        from utils.ha.ha_rest_client import FakeHARestClient
+
+        monkeypatch.setattr(
+            rest_mod, "HARestClient", lambda *a, **kw: FakeHARestClient()
+        )
+        monkeypatch.setattr(_config_mod, "HA_API_TOKEN", token)
+        monkeypatch.setattr(
+            "utils.core.timeline.write_timeline_event", lambda *a, **kw: None
+        )
+        nid = "rest-1"
+        json_path = tmp_path / f"{nid}.json"
+        data = {"payload": dict(payload, episode_id="ep-rest")}
+        json_path.write_text(_json.dumps(data))
+        asyncio.run(getattr(dashboard, fn_name)(nid, data, json_path, tmp_path))
+        return nid
+
+    def test_service_call_success_verifies(self, tmp_path, monkeypatch):
+        calls = self._recorder(monkeypatch)
+        nid = self._run_rest_executor(
+            tmp_path,
+            monkeypatch,
+            "_execute_service_call",
+            {"domain": "light", "service": "turn_on"},
+        )
+        assert (tmp_path / f"{nid}.approved").exists()
+        assert calls == [("ep-rest", "success")]
+
+    def test_service_call_without_token_does_not_verify(self, tmp_path, monkeypatch):
+        calls = self._recorder(monkeypatch)
+        nid = self._run_rest_executor(
+            tmp_path,
+            monkeypatch,
+            "_execute_service_call",
+            {"domain": "light", "service": "turn_on"},
+            token="",
+        )
+        assert (tmp_path / f"{nid}.rejected").exists()
+        assert calls == []
+
+    def test_config_entry_reload_success_verifies(self, tmp_path, monkeypatch):
+        calls = self._recorder(monkeypatch)
+        nid = self._run_rest_executor(
+            tmp_path,
+            monkeypatch,
+            "_execute_config_entry_reload",
+            {"entry_id": "abc"},
+        )
+        assert (tmp_path / f"{nid}.approved").exists()
+        assert calls == [("ep-rest", "success")]
+
+    def test_queued_fix_success_verifies(self, tmp_path, monkeypatch):
+        import json as _json
+        import web.dashboard as dashboard
+        from agents import ha_agent_sandbox_engine, ha_agent_advanced
+        import utils.ha.ssh_client as ssh_mod
+        from utils.ha.ssh_client import FakeSSHClient
+
+        calls = self._recorder(monkeypatch)
+        for mod, name, val in (
+            (ha_agent_sandbox_engine, "execute_remote_backup", "slug1"),
+            (ha_agent_advanced, "offload_backup_to_local", None),
+            (ha_agent_advanced, "enforce_ha_retention", None),
+            (ha_agent_sandbox_engine, "deploy_and_test_in_sandbox", True),
+            (ha_agent_sandbox_engine, "commit_atomic_swap", None),
+        ):
+            monkeypatch.setattr(mod, name, _make_async_return(val))
+        monkeypatch.setattr(
+            ha_agent_sandbox_engine, "record_backup_slug", lambda *a: None
+        )
+        monkeypatch.setattr(ha_agent_advanced, "purge_local_backups", lambda: None)
+        monkeypatch.setattr(ssh_mod, "AsyncSSHClient", lambda: FakeSSHClient())
+        json_path = tmp_path / "fix-v.json"
+        data: dict = {"payload": {"episode_id": "ep-fix"}}
+        json_path.write_text(_json.dumps(data))
+        asyncio.run(
+            dashboard._execute_queued_fix(
+                "fix-v", "a: 1\n", "d", data, json_path, tmp_path
+            )
+        )
+        assert calls == [("ep-fix", "success")]
+
+    def _run_update(self, tmp_path, monkeypatch, ok: bool) -> list:
+        import json as _json
+        import web.dashboard as dashboard
+        from agents import ha_update_manager
+        import utils.ha.ssh_client as ssh_mod
+        import utils.agent.autonomy as autonomy_mod
+        import utils.hitl.notify as notify_mod
+        from utils.ha.ssh_client import FakeSSHClient
+
+        calls = self._recorder(monkeypatch)
+        monkeypatch.setattr(ssh_mod, "AsyncSSHClient", lambda: FakeSSHClient())
+        monkeypatch.setattr(
+            autonomy_mod, "AutonomyGate", lambda level: autonomy_mod.FakeAutonomyGate()
+        )
+        monkeypatch.setattr(
+            notify_mod, "get_notifier", lambda *a, **kw: notify_mod.FakeNotifier()
+        )
+        monkeypatch.setattr(ha_update_manager, "execute_update", _make_async_return(ok))
+        monkeypatch.setattr(
+            "utils.core.timeline.write_timeline_event", lambda *a, **kw: None
+        )
+        json_path = TestExecuteQueuedUpdate()._write_update_card(tmp_path, "upd-v")
+        data = _json.loads(json_path.read_text())
+        data["payload"]["episode_id"] = "ep-upd"
+        asyncio.run(
+            dashboard._execute_queued_update("upd-v", data, json_path, tmp_path)
+        )
+        return calls
+
+    def test_manual_update_success_verifies_success(self, tmp_path, monkeypatch):
+        assert self._run_update(tmp_path, monkeypatch, True) == [("ep-upd", "success")]
+
+    def test_manual_update_failure_verifies_failure(self, tmp_path, monkeypatch):
+        assert self._run_update(tmp_path, monkeypatch, False) == [("ep-upd", "failure")]
+
+
+class TestPueoWasRightButton:
+    """The queue page renders "Pueo was right" only for cards with an episode_id."""
+
+    def _render(self, tmp_path, monkeypatch, payload: dict) -> str:
+        import json as _json
+        import time as _time
+
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        (tmp_path / "card-r.json").write_text(
+            _json.dumps(
+                {
+                    "notification_id": "card-r",
+                    "subject": "Card",
+                    "body": "body",
+                    "payload": payload,
+                    "sent_at": int(_time.time()) - 10,
+                }
+            )
+        )
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        return client.get("/queue").text
+
+    def test_informational_card_has_right_button_with_acknowledge(
+        self, tmp_path, monkeypatch
+    ):
+        html = self._render(tmp_path, monkeypatch, {"episode_id": "ep1"})
+        assert 'action="/right/card-r"' in html
+        assert 'name="acknowledge" value="1"' in html
+        assert "Pueo got this wrong" in html
+
+    def test_actionable_card_has_right_button_without_acknowledge(
+        self, tmp_path, monkeypatch
+    ):
+        html = self._render(
+            tmp_path,
+            monkeypatch,
+            {
+                "episode_id": "ep1",
+                "card_type": "ha_command",
+                "command": "ha core restart",
+            },
+        )
+        assert 'action="/right/card-r"' in html
+        assert 'name="acknowledge"' not in html
+
+    def test_actionable_card_shows_verdict_once_marked(self, tmp_path, monkeypatch):
+        html = self._render(
+            tmp_path,
+            monkeypatch,
+            {"episode_id": "ep1", "card_type": "ha_command", "user_verdict": "right"},
+        )
+        assert "marked Pueo's analysis as right" in html
+        assert 'action="/right/card-r"' not in html
+        assert "Pueo got this wrong" not in html
+
+    def test_card_without_episode_id_has_no_verdict_buttons(
+        self, tmp_path, monkeypatch
+    ):
+        html = self._render(tmp_path, monkeypatch, {"severity": "LOW"})
+        assert "/right/" not in html
 
 
 # ── TestBuildCompanionStatus ──────────────────────────────────────────────────

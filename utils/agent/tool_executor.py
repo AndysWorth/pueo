@@ -363,7 +363,8 @@ class ToolExecutor:
         self._episode_id: str = ""
         # Session signature (set via set_signature before each run; stamped on memory rows)
         self._session_signature: str = ""
-        # Set to True when a terminal tool sends an actionable HITL card (not informational).
+        # Set to True when the session sends a HITL card carrying its episode_id; the
+        # user's verdict on that card (or its executor) verifies the session (ADR 046).
         # AgentLoop._enqueue_distillation checks this to decide whether to auto-verify.
         self._hitl_card_queued: bool = False
         # nid of the last HITL card sent this session (actionable or informational).
@@ -384,6 +385,11 @@ class ToolExecutor:
         self._hitl_card_queued = False
         self._hitl_card_id = None
         # _dynamic_tools intentionally not reset — registered tools persist across loops
+
+    def _mark_card_queued(self, nid: str) -> None:
+        """Record that this session's verification waits on HITL card *nid* (ADR 046)."""
+        self._hitl_card_queued = True
+        self._hitl_card_id = nid
 
     def register_dynamic_tool(self, name: str, fn: "Callable[..., Any]") -> None:
         """Register a user-approved dynamic tool callable by name."""
@@ -923,6 +929,7 @@ class ToolExecutor:
                 ),
                 payload={
                     "notification_id": nid,
+                    "episode_id": self._episode_id,
                     "card_type": CARD_TYPE_HA_COMMAND,
                     "command": normalized,
                     "risk": risk_name,
@@ -932,6 +939,7 @@ class ToolExecutor:
                 risk=risk,
             )
             if not approved:
+                self._mark_card_queued(nid)
                 log.info("run_ha_command_queued_for_hitl", nid=nid, command=normalized)
                 return ToolResult(
                     tool_name="run_ha_command",
@@ -1933,6 +1941,7 @@ class ToolExecutor:
             ),
             payload={
                 "notification_id": nid,
+                "episode_id": self._episode_id,
                 "card_type": CARD_TYPE_CONFIG_ENTRY_RELOAD,
                 "entry_id": entry_id,
                 "domain_or_entry_id": domain_or_entry_id,
@@ -1942,6 +1951,7 @@ class ToolExecutor:
             risk=RiskLevel.MEDIUM,
         )
         if not approved:
+            self._mark_card_queued(nid)
             log.info("reload_integration_queued_for_hitl", nid=nid)
             return ToolResult(
                 tool_name="reload_integration",
@@ -2022,6 +2032,7 @@ class ToolExecutor:
             ),
             payload={
                 "notification_id": nid,
+                "episode_id": self._episode_id,
                 "card_type": CARD_TYPE_SERVICE_CALL,
                 "domain": domain,
                 "service": service,
@@ -2034,6 +2045,7 @@ class ToolExecutor:
             risk=risk,
         )
         if not approved:
+            self._mark_card_queued(nid)
             log.info(
                 "call_service_queued_for_hitl", nid=nid, domain=domain, service=service
             )
@@ -2146,6 +2158,7 @@ class ToolExecutor:
             ),
             payload={
                 "notification_id": nid,
+                "episode_id": self._episode_id,
                 "card_type": CARD_TYPE_AUTOMATION_CREATE,
                 "unique_id": unique_id,
                 "alias": alias,
@@ -2160,6 +2173,7 @@ class ToolExecutor:
             risk=RiskLevel.MEDIUM,
         )
         if not approved:
+            self._mark_card_queued(nid)
             log.info("propose_automation_queued_for_hitl", nid=nid, alias=alias)
             return ToolResult(
                 tool_name="propose_automation",
@@ -2961,6 +2975,7 @@ class ToolExecutor:
             body=body,
             payload={
                 "notification_id": nid,
+                "episode_id": self._episode_id,
                 "card_type": CARD_TYPE_REPAIR,
                 "severity": "HIGH",
                 "description": description,
@@ -2973,6 +2988,7 @@ class ToolExecutor:
             risk=RiskLevel.HIGH,
         )
         if not approved:
+            self._mark_card_queued(nid)
             # Fix is queued for human review; the agent loop exits so the
             # dashboard can execute the fix when the human approves.
             self._apply_fix_used = True
@@ -4474,7 +4490,7 @@ class ToolExecutor:
             with sqlite3.connect(self._db_path) as conn:
                 mark_card_sent(conn, card_key, CARD_TYPE_HA_CONFIG_ISSUE, description)
             await self._notifier.send(subject=title, body=body, payload=payload)
-            self._hitl_card_id = payload["notification_id"]
+            self._mark_card_queued(payload["notification_id"])
             log.info(
                 "lovelace_config_issue_card_sent",
                 entity_ids=entity_ids,
@@ -4665,7 +4681,7 @@ class ToolExecutor:
         }
         mark_repair_hitl_sent(issue.issue_key)
         await self._notifier.send(subject=title, body=body, payload=payload)
-        self._hitl_card_id = payload["notification_id"]
+        self._mark_card_queued(payload["notification_id"])
         log.info(
             "repair_hitl_card_sent",
             issue_key=issue.issue_key,
@@ -4755,8 +4771,7 @@ class ToolExecutor:
             "episode_id": self._episode_id,
         }
         await self._notifier.send(subject=subject, body=body, payload=payload)
-        self._hitl_card_queued = True
-        self._hitl_card_id = card_id
+        self._mark_card_queued(card_id)
         from agents.ha_notification_manager import mark_notification_hitl_sent
 
         mark_notification_hitl_sent(ha_nid, db_path)
@@ -5122,6 +5137,9 @@ class ToolExecutor:
                         ),
                     )
                 self._pending_auto_apply = True
+                # The install result verifies this session, not the end of the
+                # analysis (ADR 046); defer like a queued card.
+                self._hitl_card_queued = True
                 try:
                     from utils.core.timeline import write_timeline_event
 
@@ -5434,9 +5452,7 @@ class ToolExecutor:
             body=summary,
             payload=_payload,
         )
-        self._hitl_card_id = _payload["notification_id"]
-        if not _payload.get("informational"):
-            self._hitl_card_queued = True
+        self._mark_card_queued(_payload["notification_id"])
         try:
             from utils.core.timeline import write_timeline_event
 
