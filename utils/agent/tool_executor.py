@@ -4951,6 +4951,28 @@ class ToolExecutor:
         **_extra: Any,
     ) -> ToolResult:
         """Create a HITL approval card for the pending HA update."""
+        # Server-side enforcement: core/OS/Supervisor always require a card at levels 0–3.
+        # Level 4 + high confidence + safe_to_update is the only allowed bypass (ADR 035).
+        if (
+            not create_hitl_card
+            and self._pending_update_status is not None
+            and self._pending_update_status.component.lower()
+            in {"homeassistant", "core", "os", "supervisor"}
+        ):
+            from utils.agent.autonomy import AutonomyGate as _AG, AutonomyLevel
+
+            _l4 = (
+                self._gate is not None
+                and isinstance(self._gate, _AG)
+                and self._gate.level == AutonomyLevel.FULL_AUTONOMOUS
+            )
+            _hc = (
+                confidence is not None
+                and confidence >= __import__("config").AUTO_APPLY_CONFIDENCE_THRESHOLD
+            )
+            if not (_l4 and _hc and safe_to_update):
+                create_hitl_card = True
+
         # No-notes override: when a pending update exists and no real release notes were
         # obtained, force approval-card creation and cap confidence at 0.5.  The model
         # must never auto-apply based on an unverified "no breaking changes" claim.

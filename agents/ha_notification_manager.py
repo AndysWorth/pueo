@@ -33,6 +33,16 @@ if TYPE_CHECKING:
 log = get_logger("ha_notification_manager")
 
 _IP_PATTERN = re.compile(r"from (\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})")
+_RFC1918 = re.compile(r"^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)")
+_IOS_HA_UA = "io.robbie.HomeAssistant"
+
+
+def _is_ios_ha_companion(message: str) -> bool:
+    """Return True when the message is from the iOS HA companion app on a local IP."""
+    if _IOS_HA_UA not in message:
+        return False
+    m = _IP_PATTERN.search(message)
+    return bool(m and _RFC1918.match(m.group(1)))
 
 
 class NotificationAnalysis(BaseModel):
@@ -54,9 +64,20 @@ _CLASSIFICATION_MAP: dict[str, tuple[str, str]] = {
 }
 
 
-def classify_notification(notification_id: str) -> tuple[str, str]:
-    """Return (category, severity) for a notification_id using rule-based lookup."""
-    return _CLASSIFICATION_MAP.get(notification_id, ("other", "MEDIUM"))
+def classify_notification(notification_id: str, message: str = "") -> tuple[str, str]:
+    """Return (category, severity) for a notification_id using rule-based lookup.
+
+    For http-login, lowers severity to MEDIUM when the message identifies the iOS
+    HA companion app (io.robbie.HomeAssistant) on a local RFC-1918 IP.
+    """
+    category, severity = _CLASSIFICATION_MAP.get(notification_id, ("other", "MEDIUM"))
+    if (
+        notification_id == "http-login"
+        and severity == "HIGH"
+        and _is_ios_ha_companion(message)
+    ):
+        severity = "MEDIUM"
+    return category, severity
 
 
 def notification_knowledge_query(notification_id: str, title: Optional[str]) -> str:
@@ -296,7 +317,7 @@ async def _run_notification_investigation(
     from utils.llm.llm_factory import make_llm_client
     from utils.core.prompts import load_prompt
 
-    category, severity = classify_notification(notification_id)
+    category, severity = classify_notification(notification_id, message)
     llm = llm_client or make_llm_client()  # pragma: no cover
     gate = gate or AutonomyGate(_config.AUTONOMY_LEVEL)
     if ssh_client is None:

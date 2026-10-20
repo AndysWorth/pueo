@@ -849,6 +849,7 @@ def resolve_session_outcome_by_episode_id(
     verification: str,
     by: str,
     correction: "Optional[str]" = None,
+    knowledge_store: "Optional[object]" = None,
 ) -> None:
     """Mark a single pending session_outcomes row by episode_id and update runbook_usage.
 
@@ -894,19 +895,23 @@ def resolve_session_outcome_by_episode_id(
                 (episode_id,),
             ).fetchall()
             for (sid,) in strategy_rows:
-                _auto_validate_if_eligible_standalone(conn, sid, min_successes)
+                _auto_validate_if_eligible_standalone(
+                    conn, sid, min_successes, knowledge_store
+                )
     except Exception:  # nosec B110
         pass
 
 
 def _auto_validate_if_eligible_standalone(
-    conn: sqlite3.Connection, strategy_id: str, min_successes: int
+    conn: sqlite3.Connection,
+    strategy_id: str,
+    min_successes: int,
+    knowledge_store: "Optional[object]" = None,
 ) -> None:
     """Promote candidate→validated when success threshold is met with no failures.
 
-    Standalone version (no Chroma sync) used from resolve_session_outcome where we
-    don't have a knowledge_store reference.  Chroma sync is deferred to the next
-    RAG refresh.
+    When knowledge_store is provided the Chroma entry is synced immediately;
+    otherwise sync is deferred to the next RAG refresh.
     """
     import structlog as _sl
 
@@ -949,6 +954,13 @@ def _auto_validate_if_eligible_standalone(
             strategy_id=strategy_id,
             successes=success_count,
         )
+        if knowledge_store is not None:
+            try:
+                from utils.knowledge.strategy_seeder import sync_strategy_to_chroma
+
+                sync_strategy_to_chroma(strategy_id, DB_PATH, knowledge_store)  # type: ignore[arg-type]
+            except Exception:  # nosec B110
+                pass
 
 
 def get_pending_distillation_recoveries() -> list:

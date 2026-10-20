@@ -4724,6 +4724,86 @@ class TestRunbookUsageTracking:
             ).fetchone()[0]
         assert state == "seed"  # not promoted; auto-validate is candidate-only
 
+    def test_auto_validate_standalone_syncs_chroma_when_store_provided(
+        self, tmp_path, monkeypatch
+    ):
+        """_auto_validate_if_eligible_standalone syncs Chroma when knowledge_store is passed."""
+        import sqlite3
+        import sys
+        from unittest.mock import MagicMock
+
+        monkeypatch.setitem(sys.modules, "structlog", MagicMock())
+
+        import agents.ha_agent_advanced as adv
+
+        db_path = str(tmp_path / "db.sqlite")
+        monkeypatch.setattr(adv, "DB_PATH", db_path)
+        adv.init_local_database()
+
+        from agents.ha_agent_advanced import _auto_validate_if_eligible_standalone
+
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO agent_strategies"
+                " (id, title, trigger_pattern, approach, runbook_state, created_at)"
+                " VALUES ('s-chroma', 'T', 'pat', 'approach text', 'candidate', datetime('now'))"
+            )
+            for ep in ("e1", "e2", "e3"):
+                conn.execute(
+                    "INSERT INTO runbook_usage (strategy_id, episode_id, outcome, verification)"
+                    " VALUES ('s-chroma', ?, 'success', 'success')",
+                    (ep,),
+                )
+            conn.commit()
+
+        store = MagicMock()
+        with sqlite3.connect(db_path) as conn:
+            _auto_validate_if_eligible_standalone(conn, "s-chroma", 3, store)
+
+        store.upsert.assert_called_once()
+        call_args = store.upsert.call_args
+        collection = call_args[0][0] if call_args[0] else call_args[1].get("collection")
+        assert collection == "strategies"
+
+    def test_auto_validate_standalone_no_sync_without_store(
+        self, tmp_path, monkeypatch
+    ):
+        """Without knowledge_store, validation still happens but no Chroma call."""
+        import sqlite3
+        import sys
+        from unittest.mock import MagicMock
+
+        monkeypatch.setitem(sys.modules, "structlog", MagicMock())
+
+        import agents.ha_agent_advanced as adv
+
+        db_path = str(tmp_path / "db2.sqlite")
+        monkeypatch.setattr(adv, "DB_PATH", db_path)
+        adv.init_local_database()
+
+        from agents.ha_agent_advanced import _auto_validate_if_eligible_standalone
+
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO agent_strategies"
+                " (id, title, trigger_pattern, approach, runbook_state, created_at)"
+                " VALUES ('s-ns', 'T', 'pat', 'approach text', 'candidate', datetime('now'))"
+            )
+            for ep in ("e1", "e2", "e3"):
+                conn.execute(
+                    "INSERT INTO runbook_usage (strategy_id, episode_id, outcome, verification)"
+                    " VALUES ('s-ns', ?, 'success', 'success')",
+                    (ep,),
+                )
+            conn.commit()
+
+        with sqlite3.connect(db_path) as conn:
+            _auto_validate_if_eligible_standalone(conn, "s-ns", 3)
+            state = conn.execute(
+                "SELECT runbook_state FROM agent_strategies WHERE id='s-ns'"
+            ).fetchone()[0]
+        assert state == "validated"
+
     def test_injected_strategy_ids_reset_on_reset(self, tmp_path):
         executor, _, _ = self._make_executor(tmp_path)
         executor._injected_strategy_ids.add("s1")

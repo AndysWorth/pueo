@@ -11,6 +11,14 @@ signature: notification:http_login
 - **Explanation**: "Login attempt from [device name/hostname] — this is a known device
   on your network (likely your phone or another authorized client)."
 
+## iOS HA companion app
+- **Signal**: Message contains `io.robbie.HomeAssistant` and source IP is RFC-1918.
+- **Assessment**: MEDIUM — the official iOS companion triggering a login notification
+  is normal (e.g. after an app update, token expiry, or re-authentication).
+- **Action**: `requires_hitl=false, dismiss_now=true`
+- **Explanation**: "Login attempt from the iOS Home Assistant companion app on your
+  local network — this is expected behaviour (token refresh or re-login)."
+
 ## Unknown device (MAC randomized or no match)
 - **Signal**: `get_device_info` returns no name, MAC is randomized, `is_known_device=false`.
 - **Assessment**: CRITICAL — potential unauthorized access attempt.

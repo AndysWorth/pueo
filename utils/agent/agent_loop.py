@@ -1125,6 +1125,7 @@ class AgentLoop:
                             "success",
                             "system",
                             None,
+                            _store,
                         )
                         submitted = await enqueue_distillation_after_verification(
                             episode_id=_ep,

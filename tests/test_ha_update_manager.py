@@ -678,6 +678,105 @@ class TestFullAutonomousBypass:
 
 
 # ---------------------------------------------------------------------------
+# Server-side card enforcement for core/OS/Supervisor
+# ---------------------------------------------------------------------------
+
+
+class TestCoreOsCardEnforcement:
+    """Core/OS/Supervisor updates always produce a HITL card at levels 0–3."""
+
+    def _make_executor(self, gate):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from utils.agent.tool_executor import ToolExecutor
+
+        notifier = MagicMock()
+        notifier.send = AsyncMock()
+        executor = ToolExecutor(
+            ha_ssh_client=MagicMock(),
+            gate=gate,
+            notifier=notifier,
+            db_path=":memory:",
+        )
+        return executor, notifier
+
+    def _make_update(self, component):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            entity_id=f"update.{component}",
+            component=component,
+            installed_version="2026.10.0",
+            latest_version="2026.10.1",
+            release_url=None,
+            release_summary=None,
+        )
+
+    @pytest.mark.parametrize("component", ["core", "homeassistant", "os", "supervisor"])
+    def test_level3_autonomous_forces_card_for_critical_components(
+        self, pueo_dirs, component
+    ):
+        """Level 3 (AUTONOMOUS): LLM returning create_hitl_card=False is overridden."""
+        import asyncio
+
+        from utils.agent.autonomy import AutonomyGate
+
+        gate = AutonomyGate(level=3)
+        executor, notifier = self._make_executor(gate)
+        executor.set_update_status(self._make_update(component))
+        executor._release_notes_obtained = True
+
+        result = asyncio.run(
+            executor._finish_update_analysis(
+                safe_to_update=True,
+                breaking_changes=[],
+                affected_config_keys=[],
+                pueo_command_risks=[],
+                recommendation="Safe update.",
+                instance_impact="none",
+                proposed_config_fixes=[],
+                create_hitl_card=False,  # LLM says no card — server must override
+                confidence=0.95,
+            )
+        )
+
+        assert result.success
+        assert (
+            notifier.send.called
+        ), f"{component}: server must force HITL card at level 3"
+        assert not executor._pending_auto_apply
+
+    def test_level4_high_confidence_bypass_still_works(self, pueo_dirs):
+        """Level 4 + high confidence + safe_to_update preserves the bypass."""
+        import asyncio
+
+        from utils.agent.autonomy import AutonomyGate
+
+        gate = AutonomyGate(level=4)
+        executor, notifier = self._make_executor(gate)
+        executor.set_update_status(self._make_update("core"))
+        executor._release_notes_obtained = True
+
+        result = asyncio.run(
+            executor._finish_update_analysis(
+                safe_to_update=True,
+                breaking_changes=[],
+                affected_config_keys=[],
+                pueo_command_risks=[],
+                recommendation="Safe.",
+                instance_impact="none",
+                proposed_config_fixes=[],
+                create_hitl_card=False,
+                confidence=0.95,
+            )
+        )
+
+        assert result.success
+        assert executor._pending_auto_apply, "level 4 bypass must still work"
+        assert not notifier.send.called
+
+
+# ---------------------------------------------------------------------------
 # Auto-apply block for core/OS components
 # ---------------------------------------------------------------------------
 
