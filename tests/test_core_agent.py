@@ -2725,6 +2725,7 @@ class TestSupervisorMain:
         from agents import ha_log_monitor
         import uvicorn
         import utils.disk.resource as rm
+        import utils.ha.device_availability as da_mod
         import utils.ha.ssh_client as sc
         import utils.ha.ha_ws_client as ha_ws_mod
         import utils.ha.ha_rest_client as ha_rest_mod
@@ -2758,6 +2759,7 @@ class TestSupervisorMain:
             ha_log_monitor, "poll_for_notifications", lambda **kw: _noop()
         )
         monkeypatch.setattr(nax, "tail_netalertx_log_stream", lambda **kw: _noop())
+        monkeypatch.setattr(da_mod, "poll_device_availability", lambda **kw: _noop())
 
         class _FakePoller:
             def __init__(self, *a, **kw):
@@ -3148,6 +3150,28 @@ class TestSupervisorMain:
 
         assert len(received_store) == 1
         assert received_store[0] is not None
+
+    def test_device_availability_poll_disabled_without_token(
+        self, monkeypatch, tmp_path
+    ):
+        """device_availability_poll doesn't start when api_token is empty."""
+        config_path = self._make_config(tmp_path, api_token="")
+        started = self._patch_all(monkeypatch, config_path)
+
+        import main as m
+
+        asyncio.run(m.supervisor_main(config_path))
+        assert "device_availability_poll" not in started
+
+    def test_device_availability_poll_starts_with_token(self, monkeypatch, tmp_path):
+        """device_availability_poll starts when api_token is set and feature is enabled."""
+        config_path = self._make_config(tmp_path, api_token="test-tok")
+        started = self._patch_all(monkeypatch, config_path)
+
+        import main as m
+
+        asyncio.run(m.supervisor_main(config_path))
+        assert "device_availability_poll" in started
 
 
 # ── check_ha_version ─────────────────────────────────────────────────────────────

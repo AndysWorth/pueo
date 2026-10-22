@@ -441,3 +441,403 @@ class TestConfigKeys:
         import config
 
         assert config.DEVICE_AVAILABILITY_GRACE_MINUTES == 5
+
+
+# ---------------------------------------------------------------------------
+# TestPollDeviceAvailability
+# ---------------------------------------------------------------------------
+
+import asyncio
+
+from unittest import mock
+
+
+def _make_poll_db(tmp_path: Path) -> str:
+    """Create a minimal DB with all tables the poll loop needs."""
+    db = str(tmp_path / "poll_state.db")
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "CREATE TABLE user_prefs (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "CREATE TABLE hitl_suppression"
+            " (card_key TEXT PRIMARY KEY, card_type TEXT NOT NULL DEFAULT '',"
+            " description TEXT NOT NULL DEFAULT '',"
+            " first_sent_at REAL NOT NULL DEFAULT 0,"
+            " last_sent_at REAL NOT NULL DEFAULT 0,"
+            " send_count INTEGER NOT NULL DEFAULT 1,"
+            " last_action TEXT, last_action_at REAL,"
+            " rejection_count INTEGER NOT NULL DEFAULT 0,"
+            " next_allowed_at REAL, known_issue INTEGER NOT NULL DEFAULT 0,"
+            " known_issue_note TEXT, resolved_at REAL)"
+        )
+    return db
+
+
+def _make_offline_ws():
+    """WS client where device-A is offline (all entities unavailable)."""
+    from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+    now_iso = "2023-11-16T02:13:20Z"  # matches _NOW
+    return FakeHAWebSocketClient(
+        devices=[_device("dev-A", "Heat Pump", ["entry-econet"])],
+        entity_registry=[_entity("water_heater.hp", "dev-A")],
+        config_entries=[_entry("entry-econet", "econet")],
+        states=[_state("water_heater.hp", "unavailable", now_iso)],
+    )
+
+
+def _make_online_ws():
+    """WS client where device-A is online."""
+    from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+    return FakeHAWebSocketClient(
+        devices=[_device("dev-A", "Heat Pump", ["entry-econet"])],
+        entity_registry=[_entity("water_heater.hp", "dev-A")],
+        config_entries=[_entry("entry-econet", "econet")],
+        states=[_state("water_heater.hp", "on")],
+    )
+
+
+async def _run_one_iteration(coro_fn, *, timeout=0.5):
+    """Run one iteration of the poll loop then cancel."""
+    task = asyncio.create_task(coro_fn())
+    await asyncio.sleep(timeout)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
+class TestPollDeviceAvailability:
+    def test_no_workitem_when_card_suppressed(self, tmp_path, monkeypatch):
+        """should_send_card returns False → no WorkItem submitted."""
+        import utils.ha.device_availability as da_mod
+        import utils.agent.work_queue as wq_mod
+
+        db = _make_poll_db(tmp_path)
+        # Mark card as already sent (suppressed).
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO hitl_suppression (card_key, card_type, description,"
+                " first_sent_at, last_sent_at) VALUES (?,?,?,?,?)",
+                ("device_offline:entry-econet", "device_offline", "test", _NOW, _NOW),
+            )
+
+        # Arm device in snapshot.
+        prior = {"dev-A": {"last_online_ts": _NOW - 3600.0, "alerted": False}}
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO user_prefs (key, value) VALUES (?,?)",
+                ("device_availability:state", json.dumps(prior)),
+            )
+
+        ws = _make_offline_ws()
+        submitted: list = []
+
+        monkeypatch.setattr(wq_mod, "get_work_queue_or_none", lambda: None)
+        monkeypatch.setattr(
+            da_mod, "_run_device_availability_investigation", mock.AsyncMock()
+        )
+
+        # Patch time so grace period is exceeded.
+        with mock.patch("utils.ha.device_availability.time") as mock_time:
+            mock_time.time.return_value = _NOW + 3600.0
+
+            async def _run():
+                await asyncio.sleep(0)  # allow event loop to breathe
+                # Run one iteration manually.
+                import utils.ha.device_availability as da
+
+                with mock.patch(
+                    "utils.ha.device_availability.supervised_sleep"
+                    if False
+                    else "utils.agent.supervisor.supervised_sleep"
+                ):
+                    pass
+                # Direct call to the loop body logic via short-circuit.
+
+            # Call poll_device_availability with patched WS; cancel after one loop.
+            asyncio.run(
+                _run_one_iteration(
+                    lambda: da_mod.poll_device_availability(ws_client=ws, db_path=db)
+                )
+            )
+
+        assert da_mod._run_device_availability_investigation.call_count == 0
+
+    def test_workitem_submitted_for_new_offline_finding(self, tmp_path, monkeypatch):
+        """One investigation is triggered per config entry when a device goes offline."""
+        import utils.ha.device_availability as da_mod
+        import utils.agent.work_queue as wq_mod
+
+        db = _make_poll_db(tmp_path)
+        # Arm device: seen online before.
+        prior = {"dev-A": {"last_online_ts": _NOW - 3600.0, "alerted": False}}
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO user_prefs (key, value) VALUES (?,?)",
+                ("device_availability:state", json.dumps(prior)),
+            )
+
+        ws = _make_offline_ws()
+        investigation_calls: list = []
+
+        async def _fake_investigation(finding, **kw):
+            investigation_calls.append(finding.config_entry_id)
+
+        monkeypatch.setattr(wq_mod, "get_work_queue_or_none", lambda: None)
+        monkeypatch.setattr(
+            da_mod, "_run_device_availability_investigation", _fake_investigation
+        )
+
+        with mock.patch("utils.ha.device_availability.time") as mock_time:
+            mock_time.time.return_value = _NOW + 3600.0
+            asyncio.run(
+                _run_one_iteration(
+                    lambda: da_mod.poll_device_availability(ws_client=ws, db_path=db),
+                    timeout=0.3,
+                )
+            )
+
+        assert "entry-econet" in investigation_calls
+
+    def test_no_workitem_when_backoff_active(self, tmp_path, monkeypatch):
+        """should_send_card returns False for backoff key → investigation skipped."""
+        import utils.ha.device_availability as da_mod
+        import utils.agent.work_queue as wq_mod
+
+        db = _make_poll_db(tmp_path)
+        prior = {"dev-A": {"last_online_ts": _NOW - 3600.0, "alerted": False}}
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO user_prefs (key, value) VALUES (?,?)",
+                ("device_availability:state", json.dumps(prior)),
+            )
+            # Insert backoff row (next_allowed_at = far future).
+            conn.execute(
+                "INSERT INTO hitl_suppression (card_key, card_type, description,"
+                " first_sent_at, last_sent_at, next_allowed_at) VALUES (?,?,?,?,?,?)",
+                (
+                    "device_offline_backoff:entry-econet",
+                    "device_offline",
+                    "backoff",
+                    _NOW,
+                    _NOW,
+                    _NOW + 86400.0,
+                ),
+            )
+
+        ws = _make_offline_ws()
+        investigation_calls: list = []
+
+        async def _fake_investigation(finding, **kw):
+            investigation_calls.append(finding.config_entry_id)
+
+        monkeypatch.setattr(wq_mod, "get_work_queue_or_none", lambda: None)
+        monkeypatch.setattr(
+            da_mod, "_run_device_availability_investigation", _fake_investigation
+        )
+
+        with mock.patch("utils.ha.device_availability.time") as mock_time:
+            mock_time.time.return_value = _NOW + 3600.0
+            asyncio.run(
+                _run_one_iteration(
+                    lambda: da_mod.poll_device_availability(ws_client=ws, db_path=db),
+                    timeout=0.3,
+                )
+            )
+
+        assert investigation_calls == []
+
+    def test_timeline_warn_written_for_offline_device(self, tmp_path, monkeypatch):
+        """A WARNING timeline event is written when a device goes offline."""
+        import utils.ha.device_availability as da_mod
+        import utils.agent.work_queue as wq_mod
+        import utils.core.timeline as tl_mod
+
+        db = _make_poll_db(tmp_path)
+        prior = {"dev-A": {"last_online_ts": _NOW - 3600.0, "alerted": False}}
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO user_prefs (key, value) VALUES (?,?)",
+                ("device_availability:state", json.dumps(prior)),
+            )
+
+        ws = _make_offline_ws()
+        written: list[dict] = []
+
+        real_write = tl_mod.write_timeline_event
+
+        def _capture(level, source, message, detail=None):
+            written.append({"level": level, "source": source, "message": message})
+            try:
+                real_write(level, source, message, detail)
+            except Exception:  # nosec B110
+                pass
+
+        monkeypatch.setattr(wq_mod, "get_work_queue_or_none", lambda: None)
+        monkeypatch.setattr(
+            da_mod, "_run_device_availability_investigation", mock.AsyncMock()
+        )
+        monkeypatch.setattr(tl_mod, "write_timeline_event", _capture)
+
+        with mock.patch("utils.ha.device_availability.time") as mock_time:
+            mock_time.time.return_value = _NOW + 3600.0
+            asyncio.run(
+                _run_one_iteration(
+                    lambda: da_mod.poll_device_availability(ws_client=ws, db_path=db),
+                    timeout=0.3,
+                )
+            )
+
+        warn_events = [
+            e for e in written if e["level"] == "WARNING" and "offline" in e["message"]
+        ]
+        assert warn_events, f"No WARNING timeline event; got: {written}"
+        assert "econet" in warn_events[0]["message"]
+
+    def test_timeline_info_written_and_card_resolved_on_recovery(
+        self, tmp_path, monkeypatch
+    ):
+        """Recovery: timeline INFO written and card resolved."""
+        import utils.ha.device_availability as da_mod
+        import utils.agent.work_queue as wq_mod
+        import utils.core.timeline as tl_mod
+        from utils.hitl.hitl_tracker import mark_card_sent
+
+        db = _make_poll_db(tmp_path)
+
+        # Device was alerted (card open), offline_since = _NOW - 2400s (40 min).
+        prior = {
+            "dev-A": {
+                "last_online_ts": _NOW - 3600.0,
+                "alerted": True,
+                "offline_since": _NOW - 2400.0,
+            }
+        }
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO user_prefs (key, value) VALUES (?,?)",
+                ("device_availability:state", json.dumps(prior)),
+            )
+            mark_card_sent(
+                conn,
+                "device_offline:entry-econet",
+                "device_offline",
+                "Heat Pump offline",
+            )
+
+        ws = _make_online_ws()  # device is back online now
+        written: list[dict] = []
+        real_write = tl_mod.write_timeline_event
+
+        def _capture(level, source, message, detail=None):
+            written.append({"level": level, "source": source, "message": message})
+            try:
+                real_write(level, source, message, detail)
+            except Exception:  # nosec B110
+                pass
+
+        monkeypatch.setattr(wq_mod, "get_work_queue_or_none", lambda: None)
+        monkeypatch.setattr(tl_mod, "write_timeline_event", _capture)
+
+        with mock.patch("utils.ha.device_availability.time") as mock_time:
+            mock_time.time.return_value = _NOW + 100.0
+            asyncio.run(
+                _run_one_iteration(
+                    lambda: da_mod.poll_device_availability(ws_client=ws, db_path=db),
+                    timeout=0.3,
+                )
+            )
+
+        info_events = [
+            e for e in written if e["level"] == "INFO" and "back online" in e["message"]
+        ]
+        assert info_events, f"No INFO recovery event; got: {written}"
+
+        with sqlite3.connect(db) as conn:
+            row = conn.execute(
+                "SELECT resolved_at FROM hitl_suppression WHERE card_key = ?",
+                ("device_offline:entry-econet",),
+            ).fetchone()
+        assert row is not None
+        assert row[0] is not None, "Card should be resolved after recovery"
+
+    def test_unarmed_device_never_triggers_investigation(self, tmp_path, monkeypatch):
+        """Devices never seen online (unarmed) do not trigger investigations."""
+        import utils.ha.device_availability as da_mod
+        import utils.agent.work_queue as wq_mod
+
+        db = _make_poll_db(tmp_path)
+        # Empty prior: device never seen online.
+
+        ws = _make_offline_ws()
+        investigation_calls: list = []
+
+        async def _fake_investigation(finding, **kw):
+            investigation_calls.append(finding.config_entry_id)
+
+        monkeypatch.setattr(wq_mod, "get_work_queue_or_none", lambda: None)
+        monkeypatch.setattr(
+            da_mod, "_run_device_availability_investigation", _fake_investigation
+        )
+
+        with mock.patch("utils.ha.device_availability.time") as mock_time:
+            mock_time.time.return_value = _NOW + 3600.0
+            asyncio.run(
+                _run_one_iteration(
+                    lambda: da_mod.poll_device_availability(ws_client=ws, db_path=db),
+                    timeout=0.3,
+                )
+            )
+
+        assert investigation_calls == []
+
+    def test_grace_period_not_exceeded_no_investigation(self, tmp_path, monkeypatch):
+        """Devices offline for less than grace period do not trigger investigation."""
+        import utils.ha.device_availability as da_mod
+        import utils.agent.work_queue as wq_mod
+
+        db = _make_poll_db(tmp_path)
+        prior = {"dev-A": {"last_online_ts": _NOW - 3600.0, "alerted": False}}
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO user_prefs (key, value) VALUES (?,?)",
+                ("device_availability:state", json.dumps(prior)),
+            )
+
+        ws = _make_offline_ws()
+        investigation_calls: list = []
+
+        async def _fake_investigation(finding, **kw):
+            investigation_calls.append(finding.config_entry_id)
+
+        monkeypatch.setattr(wq_mod, "get_work_queue_or_none", lambda: None)
+        monkeypatch.setattr(
+            da_mod, "_run_device_availability_investigation", _fake_investigation
+        )
+        import config as _cfg_mod
+
+        # time.time() returns _NOW + 300s → less than grace of 600s
+        with mock.patch("utils.ha.device_availability.time") as mock_time:
+            mock_time.time.return_value = _NOW + 300.0
+            with mock.patch.object(_cfg_mod, "DEVICE_AVAILABILITY_GRACE_MINUTES", 10):
+                asyncio.run(
+                    _run_one_iteration(
+                        lambda: da_mod.poll_device_availability(
+                            ws_client=ws, db_path=db
+                        ),
+                        timeout=0.3,
+                    )
+                )
+
+        assert investigation_calls == []
+
+
+class TestCardTypeDeviceOffline:
+    def test_card_type_constant(self):
+        from utils.hitl.card_types import CARD_TYPE_DEVICE_OFFLINE
+
+        assert CARD_TYPE_DEVICE_OFFLINE == "device_offline"

@@ -308,3 +308,271 @@ def save_snapshot(conn: sqlite3.Connection, snapshot: dict) -> None:
         conn.commit()
     except Exception as e:  # nosec B110
         log.warning("device_availability_snapshot_save_failed", error=str(e))
+
+
+# ------------------------------------------------------------------
+# Investigation stub (replaced by the real implementation in S3)
+# ------------------------------------------------------------------
+
+
+async def _run_device_availability_investigation(
+    finding: OfflineFinding,
+    db_path: str,
+    notifier: object,
+    llm_client: object,
+    knowledge_store: object,
+) -> None:
+    """Stub — replaced by utils/ha/device_availability_investigation.py in S3."""
+    log.info(
+        "device_availability_investigation_stub",
+        config_entry_id=finding.config_entry_id,
+        domain=finding.domain,
+        device_count=len(finding.devices),
+    )
+
+
+# ------------------------------------------------------------------
+# Poll loop
+# ------------------------------------------------------------------
+
+_POLL_INTERVAL_SECONDS = 60
+_REGISTRY_CACHE_SECONDS = _REGISTRY_TTL_SECONDS  # 1800 s
+
+
+async def poll_device_availability(
+    ws_client=None,  # Optional[HAWebSocketClientProtocol]
+    db_path: Optional[str] = None,
+    notifier=None,  # Optional[NotifierProtocol]
+    llm_client=None,  # Optional[LLMClientProtocol]
+    knowledge_store=None,
+) -> None:
+    """Periodically evaluate device availability and investigate armed devices going offline."""
+    import asyncio
+
+    import config as _cfg
+
+    from utils.agent.work_queue import (
+        PRIORITY_NORMAL,
+        WorkItem,
+        get_work_queue_or_none,
+    )
+    from utils.core.timeline import write_timeline_event
+    from utils.ha.ha_ws_client import HAWebSocketClient
+    from utils.hitl.card_types import CARD_TYPE_DEVICE_OFFLINE
+    from utils.hitl.hitl_tracker import (
+        mark_card_resolved,
+        should_send_card,
+    )
+    from utils.hitl.notify import get_notifier
+
+    _db: str = db_path or _cfg.DB_PATH
+    _ws = ws_client or HAWebSocketClient(  # pragma: no cover
+        _cfg.HA_HOST, _cfg.HA_API_PORT, _cfg.HA_API_TOKEN
+    )
+    _notifier = notifier or get_notifier(  # pragma: no cover
+        _cfg.NOTIFIER, _cfg.NOTIFY_URL, _cfg.NOTIFY_WATCH_DIR
+    )
+
+    _registry_cache: Optional[dict] = None
+    _registry_cache_ts: float = 0.0
+
+    while True:
+        try:
+            now = time.time()
+
+            # Refresh registries every 30 min; fetch states every poll.
+            if (
+                _registry_cache is None
+                or (now - _registry_cache_ts) > _REGISTRY_CACHE_SECONDS
+            ):
+                entity_registry = await _ws.get_entity_registry()
+                device_registry = await _ws.get_device_registry()
+                config_entries = await _ws.get_all_config_entries()
+                _registry_cache = {
+                    "entity_registry": entity_registry,
+                    "device_registry": device_registry,
+                    "config_entries": config_entries,
+                }
+                _registry_cache_ts = now
+            else:
+                entity_registry = _registry_cache["entity_registry"]
+                device_registry = _registry_cache["device_registry"]
+                config_entries = _registry_cache["config_entries"]
+
+            states = await _ws.get_states()
+
+            with sqlite3.connect(_db) as conn:
+                prior = load_snapshot(conn)
+
+            grace_s = _cfg.DEVICE_AVAILABILITY_GRACE_MINUTES * 60
+            result = evaluate_device_availability(
+                states=states,
+                entity_registry=entity_registry,
+                device_registry=device_registry,
+                config_entries=config_entries,
+                prior=prior,
+                now=now,
+                grace_s=grace_s,
+            )
+
+            with sqlite3.connect(_db) as conn:
+                save_snapshot(conn, result.snapshot)
+
+            # Process newly offline devices.
+            for finding in result.new_offline:
+                card_key = f"device_offline:{finding.config_entry_id}"
+                backoff_key = f"device_offline_backoff:{finding.config_entry_id}"
+
+                with sqlite3.connect(_db) as conn:
+                    if not should_send_card(conn, card_key):
+                        log.info(
+                            "device_offline_suppressed",
+                            config_entry_id=finding.config_entry_id,
+                        )
+                        continue
+                    if not should_send_card(conn, backoff_key):
+                        log.info(
+                            "device_offline_backoff",
+                            config_entry_id=finding.config_entry_id,
+                        )
+                        continue
+
+                # Build a human-readable summary for the timeline.
+                names = [d["name"] for d in finding.devices]
+                if len(names) == 1:
+                    label = names[0]
+                else:
+                    label = f"{names[0]} (+{len(names) - 1} more)"
+
+                oldest_offline_since = min(
+                    d.get("offline_since") or now for d in finding.devices
+                )
+                offline_minutes = int((now - oldest_offline_since) / 60)
+                tl_msg = (
+                    f"Device offline {offline_minutes}m: {label} ({finding.domain})"
+                )
+
+                await asyncio.to_thread(
+                    write_timeline_event,
+                    "WARNING",
+                    "device_availability_poll",
+                    tl_msg,
+                    {
+                        "config_entry_id": finding.config_entry_id,
+                        "domain": finding.domain,
+                        "devices": finding.devices,
+                    },
+                )
+
+                log.warning(
+                    "device_offline_detected",
+                    config_entry_id=finding.config_entry_id,
+                    domain=finding.domain,
+                    devices=[d["name"] for d in finding.devices],
+                    offline_minutes=offline_minutes,
+                )
+
+                _finding = finding
+                _db_ref = _db
+                _notifier_ref = _notifier
+                _llm_ref = llm_client
+                _ks_ref = knowledge_store
+
+                async def _investigate_coro(
+                    _f: OfflineFinding = _finding,
+                    _d: str = _db_ref,
+                    _n: object = _notifier_ref,
+                    _l: object = _llm_ref,
+                    _k: object = _ks_ref,
+                ) -> None:
+                    await _run_device_availability_investigation(
+                        finding=_f,
+                        db_path=_d,
+                        notifier=_n,
+                        llm_client=_l,
+                        knowledge_store=_k,
+                    )
+
+                _wq = get_work_queue_or_none()
+                if _wq is not None:
+                    await _wq.submit(
+                        WorkItem(
+                            priority=PRIORITY_NORMAL,
+                            activity_type="device_availability",
+                            description=f"Device offline investigation: {finding.domain}",
+                            dedup_key=f"device_offline:{finding.config_entry_id}",
+                            suppress_while_running=frozenset(),
+                            coro_factory=_investigate_coro,
+                        )
+                    )
+                else:
+                    await _investigate_coro()
+
+            # Process recoveries.
+            for finding in result.recovered:
+                card_key = f"device_offline:{finding.config_entry_id}"
+
+                names = [d["name"] for d in finding.devices]
+                if len(names) == 1:
+                    label = names[0]
+                else:
+                    label = f"{names[0]} (+{len(names) - 1} more)"
+
+                # Use oldest offline_since to compute total outage duration.
+                oldest_offline_since = (
+                    min(
+                        (d.get("offline_since") or now)
+                        for d in finding.devices
+                        if d.get("offline_since") is not None
+                    )
+                    if any(d.get("offline_since") for d in finding.devices)
+                    else now
+                )
+                duration_minutes = int((now - oldest_offline_since) / 60)
+
+                tl_msg = f"Device back online after {duration_minutes}m: {label} ({finding.domain})"
+
+                await asyncio.to_thread(
+                    write_timeline_event,
+                    "INFO",
+                    "device_availability_poll",
+                    tl_msg,
+                    {
+                        "config_entry_id": finding.config_entry_id,
+                        "domain": finding.domain,
+                        "devices": finding.devices,
+                        "duration_minutes": duration_minutes,
+                    },
+                )
+
+                with sqlite3.connect(_db) as conn:
+                    mark_card_resolved(conn, card_key)
+
+                log.info(
+                    "device_recovered",
+                    config_entry_id=finding.config_entry_id,
+                    domain=finding.domain,
+                    devices=[d["name"] for d in finding.devices],
+                    duration_minutes=duration_minutes,
+                )
+
+        except Exception as exc:
+            log.warning("device_availability_poll_failed", error=str(exc))
+
+        _outcome = (
+            f"{len(result.new_offline)} offline, {len(result.recovered)} recovered"
+            if "result" in dir()
+            else "poll_error"
+        )
+        try:
+            from utils.agent.supervisor import get_supervisor_instance as _get_sv
+
+            _sv = _get_sv()
+            if _sv is not None:
+                _sv.touch("device_availability_poll", outcome=_outcome)
+        except Exception:  # nosec B110
+            pass
+
+        from utils.agent.supervisor import supervised_sleep as _sup_sleep_da
+
+        await _sup_sleep_da("device_availability_poll", _POLL_INTERVAL_SECONDS)
