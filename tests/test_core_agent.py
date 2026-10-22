@@ -671,6 +671,76 @@ class TestLogMonitor:
             "ERROR Something benign happened with no known trigger keyword"
         )
 
+    def test_pattern_matches_uncaught_thread_exception(self):
+        from agents.ha_log_monitor import CRITICAL_LOG_PATTERN
+
+        assert CRITICAL_LOG_PATTERN.search("[root] Uncaught thread exception")
+
+    def test_pattern_matches_uncaught_thread_exception_no_prefix_required(self):
+        from agents.ha_log_monitor import CRITICAL_LOG_PATTERN
+
+        # Must match without ERROR/CRITICAL prefix (it appears on its own line in real logs)
+        assert not CRITICAL_LOG_PATTERN.search(
+            "ERROR Something benign happened with no known trigger keyword"
+        )
+        assert CRITICAL_LOG_PATTERN.search("Uncaught thread exception")
+
+    # ── _is_critical_line ─────────────────────────────────────────────────────
+
+    def test_is_critical_line_matches_standard_pattern(self):
+        from agents.ha_log_monitor import _is_critical_line
+
+        assert _is_critical_line("ERROR Component error: light.hue", "")
+
+    def test_is_critical_line_traceback_after_error(self):
+        from agents.ha_log_monitor import _is_critical_line
+
+        prev = "ERROR (MainThread) [pyeconet.api] EcoNet MQTT unexpected disconnect"
+        assert _is_critical_line("Traceback (most recent call last):", prev)
+
+    def test_is_critical_line_traceback_after_critical(self):
+        from agents.ha_log_monitor import _is_critical_line
+
+        assert _is_critical_line(
+            "Traceback (most recent call last):",
+            "CRITICAL (MainThread) something failed",
+        )
+
+    def test_is_critical_line_traceback_after_info_is_not_critical(self):
+        from agents.ha_log_monitor import _is_critical_line
+
+        assert not _is_critical_line(
+            "Traceback (most recent call last):",
+            "INFO (MainThread) [homeassistant.core] Starting",
+        )
+
+    def test_is_critical_line_traceback_after_empty_is_not_critical(self):
+        from agents.ha_log_monitor import _is_critical_line
+
+        assert not _is_critical_line("Traceback (most recent call last):", "")
+
+    def test_is_critical_line_traceback_mid_line_not_matched(self):
+        from agents.ha_log_monitor import _is_critical_line
+
+        # Traceback appearing mid-line (with ERROR prefix) already matched by CRITICAL_LOG_PATTERN
+        assert _is_critical_line(
+            "ERROR Traceback (most recent call last):", "INFO something"
+        )
+
+    # ── _TRANSIENT_LOG_PATTERNS additions ─────────────────────────────────────
+
+    def test_transient_pattern_matches_timeout_error(self):
+        from agents.ha_log_monitor import _TRANSIENT_LOG_PATTERNS
+
+        assert _TRANSIENT_LOG_PATTERNS.search(
+            "TimeoutError: [Errno 60] Operation timed out"
+        )
+
+    def test_transient_pattern_matches_timed_out(self):
+        from agents.ha_log_monitor import _TRANSIENT_LOG_PATTERNS
+
+        assert _TRANSIENT_LOG_PATTERNS.search("Connection timed out after 30s")
+
     def test_log_evaluation_schema(self):
         from agents.ha_log_monitor import LogEvaluation
 
