@@ -40,6 +40,9 @@ class DeviceState:
     domain: str  # integration domain (from config entry, e.g. "econet")
     last_online_ts: Optional[float]  # None = never seen online (unarmed)
     alerted: bool  # True while an offline card is open
+    offline_since: Optional[float] = (
+        None  # persisted while alerted; drives recovery duration
+    )
 
 
 @dataclass
@@ -163,6 +166,7 @@ def evaluate_device_availability(
             domain=domain,
             last_online_ts=last_online_ts,
             alerted=alerted,
+            offline_since=prior_entry.get("offline_since") if alerted else None,
         )
 
     # Detect new offline and recovered states
@@ -199,6 +203,7 @@ def evaluate_device_availability(
                     }
                 )
                 ds.alerted = True
+                ds.offline_since = offline_since
 
         elif prior_alerted and not is_offline:
             # Was alerted, now online — recovery
@@ -235,6 +240,7 @@ def evaluate_device_availability(
         device_id: {
             "last_online_ts": ds.last_online_ts,
             "alerted": ds.alerted,
+            "offline_since": ds.offline_since,
         }
         for device_id, ds in current.items()
     }
