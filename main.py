@@ -1629,6 +1629,26 @@ async def supervisor_main(config_path: Path) -> None:
             lambda: tail_netalertx_log_stream(notifier=notifier),
         )
 
+    # NetAlertX REST event poll (only when enabled + API token is set)
+    if cfg.NETALERTX_ENABLED and _nax_api is not None and _nax_api.has_token:
+        from netalertx.event_poll import run_event_poll
+        from netalertx.event_router import NetAlertXEventRouter
+
+        _nax_router = NetAlertXEventRouter(
+            notifier=notifier, gate=AutonomyGate(cfg.AUTONOMY_LEVEL)
+        )
+        _nax_api_cap = _nax_api
+        _nax_poll_interval = cfg.NETALERTX_EVENT_POLL_INTERVAL_MINUTES
+        supervisor.start(
+            "netalertx_event_poll",
+            lambda: run_event_poll(
+                _nax_api_cap,
+                _nax_router,
+                cfg.DB_PATH,
+                _nax_poll_interval,
+            ),
+        )
+
     # NetAlertX deferred setup: if the user requested setup and it isn't done yet,
     # run the installer as a supervised one-shot loop so approval cards reach the dashboard.
     # Route to the docker installer when deploy_target="docker"; HA installer otherwise.

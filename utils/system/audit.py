@@ -246,8 +246,7 @@ async def check_netalertx(
             api_client=client,
             max_scan_age_minutes=config.NETALERTX_MAX_SCAN_AGE_MINUTES,
         )
-        empty_q: asyncio.Queue = asyncio.Queue()
-        report = await monitor.poll_once(event_queue=empty_q)
+        report = await monitor.poll_once()
     except Exception as exc:
         return AuditResult(
             "netalertx",
@@ -259,12 +258,10 @@ async def check_netalertx(
     total = report.device_counts.get("total", 0)
     online = report.device_counts.get("online", 0)
     scan_age = report.last_scan_age_minutes
-    mqtt_status = "MQTT active" if report.mqtt_active else "MQTT inactive"
 
     parts = [
         f"scan age {scan_age}m",
         f"{total} devices ({online} online)",
-        mqtt_status,
     ]
 
     if scan_age > config.NETALERTX_MAX_SCAN_AGE_MINUTES:
@@ -273,13 +270,6 @@ async def check_netalertx(
             "CRITICAL",
             "; ".join(parts),
             f"Trigger a NetAlertX scan; max age is {config.NETALERTX_MAX_SCAN_AGE_MINUTES}m",
-        )
-    if not report.mqtt_active:
-        return AuditResult(
-            "netalertx",
-            "WARN",
-            "; ".join(parts),
-            "Check MQTT bridge configuration in NetAlertX",
         )
     return AuditResult("netalertx", "OK", "; ".join(parts))
 

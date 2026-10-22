@@ -66,11 +66,20 @@ The ws_client is passed from `poll_device_availability` → `_run_device_availab
 
 ### Event feed (S3)
 
-A separate `netalertx_event_poll` supervisor loop will poll the `/events` endpoint for
-new-device appearances (informational cards) using a high-water mark in `user_prefs`.
-Device-down/up events from the event feed are recorded as context only; they do not
-trigger device-offline investigations (that remains ADR 047's role, so there is no
-double-trigger).
+`netalertx/event_poll.py` implements a `netalertx_event_poll` supervisor loop that
+polls `/events` on a configurable interval (`NETALERTX_EVENT_POLL_INTERVAL_MINUTES`,
+default 5) using a high-water mark (`netalertx:event_hwm` in `user_prefs`) to avoid
+re-routing seen events.  New-device appearances (`eveEventType == "New Device"`) are
+routed through `NetAlertXEventRouter.route_rest_event()` → `_handle_new_device()` →
+HITL notification card (`CARD_TYPE_NETALERTX_NEW_DEVICE`), with deduplication within
+a 60-second window.  Device-down/up events from the event feed are logged as context
+only; device-offline alerting remains ADR 047's role to avoid double-triggering.
+
+The event poll loop replaces the former MQTT/webhook integration (`aiomqtt` dependency,
+Mosquitto listener config, HA automation for webhook callback).  The MQTT credential
+config keys (`netalertx.mqtt_subscribe`, `mqtt_user`, `mqtt_password`) have been
+removed.  Existing Docker installs no longer require Mosquitto routing (the Docker
+installer `_step8_route_mqtt` / `_step9_create_webhook` steps are gone).
 
 ---
 

@@ -239,41 +239,6 @@ def validate_scan_subnets(conf_text: str) -> list[ConfigIssue]:
     return issues
 
 
-def validate_event_output(conf_text: str) -> list[ConfigIssue]:
-    """Flag MQTT_RUN and WEBHOOK_RUN when both are disabled.
-
-    When both are disabled, NetAlertX pushes no events to HA/Pueo.  This is
-    expected when Pueo polls the REST API instead, but flagged as INFO so
-    operators know the push path is intentionally off.
-    """
-    present: dict[str, str] = {}
-    for line in conf_text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("#") or "=" not in stripped:
-            continue
-        key, _, value = stripped.partition("=")
-        present[key.strip()] = value.strip().strip("'\"")
-
-    mqtt_run = present.get("MQTT_RUN", "").lower()
-    webhook_run = present.get("WEBHOOK_RUN", "").lower()
-
-    issues: list[ConfigIssue] = []
-    if mqtt_run == "disabled" and webhook_run == "disabled":
-        issues.append(
-            ConfigIssue(
-                field="MQTT_RUN/WEBHOOK_RUN",
-                message=(
-                    "Both MQTT_RUN and WEBHOOK_RUN are disabled — "
-                    "NetAlertX is not pushing events to HA. "
-                    "Pueo uses REST polling instead; this is expected if you have "
-                    "not configured MQTT push."
-                ),
-                severity="LOW",
-            )
-        )
-    return issues
-
-
 def validate_db_row_counts(
     metrics: dict[str, float],
     max_rows: int,

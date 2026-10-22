@@ -31,8 +31,6 @@ from config import (
     NETALERTX_DOCKER_MIN_DISK_GB,
     NETALERTX_DOCKER_SSH_KEY_PATH,
     NETALERTX_DOCKER_SSH_USER,
-    NETALERTX_MQTT_PASSWORD,
-    NETALERTX_MQTT_USER,
 )
 from netalertx.disk_check import DiskSpaceTooLowError, check_target_disk_space
 from utils.agent.autonomy import RiskLevel
@@ -63,9 +61,6 @@ DOCKER_INSTALL_STATES: list[str] = [
 ]
 
 _STATE_RANK: dict[str, int] = {s: i for i, s in enumerate(DOCKER_INSTALL_STATES)}
-
-# Mosquitto custom config written to HA to enable external listener
-_MOSQUITTO_CUSTOM_CONF = "listener 1883 0.0.0.0\n"
 
 # Docker container name for NetAlertX
 _CONTAINER_NAME = "netalertx"
@@ -389,10 +384,6 @@ async def _step5_write_app_conf(
         "TIMEZONE": "'UTC'",
         "LOADED_PLUGINS": merged_plugins,
     }
-    if NETALERTX_MQTT_USER:
-        updates["MQTT_USER"] = f"'{NETALERTX_MQTT_USER}'"
-        updates["MQTT_PASSWORD"] = f"'{NETALERTX_MQTT_PASSWORD}'"
-
     merged_conf, diff = _merge_app_conf(original_conf, updates)
     await docker_ssh.write_file(conf_path, merged_conf)
     log.info("step5_app_conf_written", diff=diff, path=conf_path, correlation_id=cid)
@@ -511,106 +502,6 @@ async def _step7_wait_healthy(
         risk=RiskLevel.HIGH,
     )
     return False
-
-
-async def _step8_route_mqtt(
-    ha_ssh: "SSHClientProtocol",
-    gate: "AutonomyGate",
-    notifier: "NotifierProtocol",
-    details: dict,
-    cid: str,
-    db_path: str,
-    docker_host: str,
-) -> bool:
-    """Configure HA Mosquitto to accept external connections from the Docker host.
-
-    Writes /ssl/mosquitto_custom.conf, enables customize mode via Supervisor API,
-    then restarts Mosquitto.  All three actions are wrapped in a single approval card
-    (HIGH risk) because restarting Mosquitto briefly interrupts all HA MQTT traffic.
-    """
-    log.info("step8_start", step="route_mqtt", correlation_id=cid)
-
-    approved = await gate.require_approval(
-        subject="NetAlertX Docker installer: configure Mosquitto for external access",
-        body=(
-            f"To allow NetAlertX on {docker_host!r} to reach the HA MQTT broker, "
-            "Pueo will:\n\n"
-            "  1. Write /ssl/mosquitto_custom.conf with 'listener 1883 0.0.0.0'\n"
-            "  2. Enable Mosquitto customize mode (Supervisor API)\n"
-            "  3. Restart the Mosquitto add-on\n\n"
-            "Mosquitto will be unavailable for ~10 seconds during restart. "
-            "All HA MQTT integrations (device trackers, sensors) will reconnect automatically."
-        ),
-        payload={
-            "notification_id": f"{cid}_step8_mqtt_approval",
-            "step": 8,
-        },
-        notifier=notifier,
-        risk=RiskLevel.HIGH,
-    )
-    if not approved:
-        log.info("step8_mqtt_routing_skipped", correlation_id=cid)
-        # Non-fatal: user may configure Mosquitto manually; proceed to next step
-        _write_install_state(db_path, "DOCKER_MQTT_ROUTED", details, cid)
-        return True
-
-    # Write custom Mosquitto listener config
-    await ha_ssh.write_file("/ssl/mosquitto_custom.conf", _MOSQUITTO_CUSTOM_CONF)
-    log.info("step8_mosquitto_conf_written", correlation_id=cid)
-
-    # Enable customize mode via Supervisor API
-    customize_cmd = (
-        "curl -sf -X POST http://supervisor/addons/core_mosquitto/options "
-        '-H "Authorization: Bearer $SUPERVISOR_TOKEN" '
-        '-H "Content-Type: application/json" '
-        '-d \'{"customize": {"active": true, "folder": "ssl"}}\''
-    )
-    ec, _, stderr = await ha_ssh.run(customize_cmd)
-    if ec != 0:
-        log.warning(
-            "step8_mosquitto_options_failed",
-            error=stderr,
-            action="proceeding — Mosquitto may already be configured for external access",
-            correlation_id=cid,
-        )
-
-    # Restart Mosquitto
-    ec, _, stderr = await ha_ssh.run("ha apps restart core_mosquitto")
-    if ec != 0:
-        log.warning(
-            "step8_mosquitto_restart_failed",
-            error=stderr,
-            action="proceeding — check Mosquitto status manually",
-            correlation_id=cid,
-        )
-
-    details["mqtt_routed"] = True
-    _write_install_state(db_path, "DOCKER_MQTT_ROUTED", details, cid)
-    log.info("step8_complete", correlation_id=cid)
-    return True
-
-
-async def _step9_create_webhook(
-    ha_ssh: "SSHClientProtocol",
-    gate: "AutonomyGate",
-    notifier: "NotifierProtocol",
-    details: dict,
-    cid: str,
-    db_path: str,
-) -> bool:
-    """Create the NetAlertX webhook automation in HA (reuses installer logic)."""
-    log.info("step9_start", step="create_webhook", correlation_id=cid)
-    from netalertx.installer import _step8_create_webhook_automation
-
-    ok = await _step8_create_webhook_automation(
-        ha_ssh, gate, notifier, details, cid, db_path
-    )
-    if ok:
-        details["platform"] = "docker"
-        _write_install_state(db_path, "DOCKER_WEBHOOK_CREATED", details, cid)
-        _write_install_state(db_path, "FULLY_OPERATIONAL", details, cid)
-        log.info("step9_complete", correlation_id=cid)
-    return ok
 
 
 # ── public entry point ────────────────────────────────────────────────────────
@@ -743,18 +634,9 @@ async def run_docker_installer(
             return state
         state = "DOCKER_HEALTHY"
 
-    if rank < _STATE_RANK["DOCKER_MQTT_ROUTED"]:
-        ok = await _step8_route_mqtt(
-            ha_ssh, gate, notifier, details, cid, db_path, docker_host
-        )
-        if not ok:
-            return state
-        state = "DOCKER_MQTT_ROUTED"
-
-    if rank < _STATE_RANK["DOCKER_WEBHOOK_CREATED"]:
-        ok = await _step9_create_webhook(ha_ssh, gate, notifier, details, cid, db_path)
-        if not ok:
-            return state
+    if rank < _STATE_RANK["FULLY_OPERATIONAL"]:
+        details["platform"] = "docker"
+        _write_install_state(db_path, "FULLY_OPERATIONAL", details, cid)
         state = "FULLY_OPERATIONAL"
 
     log.info("docker_installer_complete", state=state, correlation_id=cid)

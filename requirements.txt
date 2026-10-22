@@ -1,4 +1,3 @@
-aiomqtt
 anthropic
 asyncssh
 chromadb

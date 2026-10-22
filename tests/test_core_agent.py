@@ -2997,6 +2997,44 @@ class TestSupervisorMain:
         asyncio.run(m.supervisor_main(config_path))
         assert "netalertx" in started
 
+    def test_netalertx_event_poll_loop_starts_when_enabled_with_token(
+        self, monkeypatch, tmp_path
+    ):
+        """netalertx_event_poll loop starts when enabled + host + token are all set."""
+        cfg_data = {
+            "home_assistant": {"host": "ha.local"},
+            "netalertx": {
+                "host": "netalertx.local",
+                "enabled": True,
+                "api_token": "tok-test",
+            },
+            "agent": {"notify_watch_dir": str(tmp_path / "hitl")},
+        }
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.dump(cfg_data))
+        (tmp_path / "hitl").mkdir(exist_ok=True)
+        started = self._patch_all(monkeypatch, config_path)
+
+        import netalertx.api_client as _nax_api_mod
+        import netalertx.event_poll as _ep_mod
+
+        class _FakeAPIClient:
+            has_token = True
+
+        monkeypatch.setattr(
+            _nax_api_mod, "NetAlertXAPIClient", lambda *a, **kw: _FakeAPIClient()
+        )
+
+        async def _noop_poll(**kw):
+            pass
+
+        monkeypatch.setattr(_ep_mod, "run_event_poll", lambda *a, **kw: _noop_poll())
+
+        import main as m
+
+        asyncio.run(m.supervisor_main(config_path))
+        assert "netalertx_event_poll" in started
+
     def test_netalertx_setup_loop_registered_when_desired_and_not_operational(
         self, monkeypatch, tmp_path
     ):

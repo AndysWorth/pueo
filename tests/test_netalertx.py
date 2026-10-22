@@ -1336,18 +1336,6 @@ class TestInstallerHelpers5to8:
         info = "name: NetAlertX\ndata: /custom/path\nstate: running\n"
         assert _parse_data_path(info, "db21ed7f_netalertx_fa") == "/custom/path"
 
-    def test_check_automation_exists_true(self):
-        from netalertx.installer import _check_automation_exists
-
-        content = "- id: netalertx_event_handler\n  trigger:\n    - platform: webhook\n"
-        assert _check_automation_exists(content) is True
-
-    def test_check_automation_exists_false(self):
-        from netalertx.installer import _check_automation_exists
-
-        content = "- id: other_automation\n  trigger:\n    - platform: state\n"
-        assert _check_automation_exists(content) is False
-
     def test_merge_plugins_non_list_literal_resets(self):
         from netalertx.installer import _merge_plugins
 
@@ -2253,40 +2241,6 @@ class TestNetAlertXInstallerSteps5to8:
         assert state == "FULLY_OPERATIONAL"
         assert gate.require_approval_calls  # HITL notification was sent
 
-    def test_step7_hitl_body_includes_credentials_when_configured(
-        self, tmp_path, monkeypatch
-    ):
-        import asyncio
-
-        from netalertx.installer import run_steps_5_to_8
-
-        async def poll_true(*a, **k):
-            return True
-
-        monkeypatch.setattr("netalertx.installer._poll_addon_state", poll_true)
-        monkeypatch.setattr("netalertx.installer.NETALERTX_MQTT_USER", "mqttuser")
-
-        ssh = self._make_full_ssh_no_mqtt()
-        db = _make_installer_db_at_state(
-            tmp_path,
-            monkeypatch,
-            "NETALERTX_CONFIGURED",
-            {"addon_slug": _SLUG, "scan_interface": "eth0"},
-        )
-        gate = self._gate_ask(approval=True)
-        asyncio.run(
-            run_steps_5_to_8(
-                ssh,
-                gate,
-                self._notifier(approve=True),
-                db_path=db,
-                http_client=self._http_no_mqtt(),
-            )
-        )
-        body = gate.require_approval_calls[-1]["body"]
-        assert "mqttuser" in body
-        assert "anonymous" not in body
-
     def test_step7_mqtt_not_found_rejection_aborts(self, tmp_path, monkeypatch):
         import asyncio
 
@@ -2343,42 +2297,7 @@ class TestNetAlertXInstallerSteps5to8:
         assert state == "FULLY_OPERATIONAL"
         assert not gate.require_approval_calls  # step 7 was skipped
 
-    # ── step 8: create webhook automation ────────────────────────────────────
-
-    def test_step8_creates_automation_and_reaches_fully_operational(
-        self, tmp_path, monkeypatch
-    ):
-        import asyncio
-
-        from netalertx.installer import run_steps_5_to_8
-
-        async def poll_true(*a, **k):
-            return True
-
-        monkeypatch.setattr("netalertx.installer._poll_addon_state", poll_true)
-
-        ssh = self._make_full_ssh(automations="")  # empty automations file
-        db = _make_installer_db_at_state(
-            tmp_path,
-            monkeypatch,
-            "HA_MQTT_INTEGRATION_VERIFIED",
-            {"addon_slug": _SLUG, "scan_interface": "eth0"},
-        )
-
-        state = asyncio.run(
-            run_steps_5_to_8(
-                ssh,
-                self._gate_auto(),
-                self._notifier(),
-                db_path=db,
-                http_client=self._http_with_mqtt(),
-            )
-        )
-        assert state == "FULLY_OPERATIONAL"
-        written = ssh.written_files.get(_AUTOMATIONS_PATH, "")
-        assert "netalertx_event_handler" in written
-        assert "platform: webhook" in written
-        assert "eveMac" in written  # camelCase field
+    # ── step 8: finalize token ────────────────────────────────────────────────
 
     def test_step8_automation_exists_skips_write(self, tmp_path, monkeypatch):
         import asyncio
@@ -2408,48 +2327,6 @@ class TestNetAlertXInstallerSteps5to8:
         )
         assert state == "FULLY_OPERATIONAL"
         assert _AUTOMATIONS_PATH not in ssh.written_files  # no write — already present
-
-    def test_step8_ha_check_fails_restores_original(self, tmp_path, monkeypatch):
-        import asyncio
-
-        from netalertx.installer import run_steps_5_to_8
-
-        original_automations = "- id: existing_automation\n  trigger: []\n"
-
-        from utils.ha.ssh_client import FakeSSHClient
-
-        ssh = FakeSSHClient(
-            file_contents={
-                _AUTOMATIONS_PATH: original_automations,
-                "/config/configuration.yaml": _HA_CONF,
-                _CONF_PATH: _ORIG_APP_CONF,
-            },
-            command_results={
-                "ha backup new": (0, "Slug: step8-slug\n", ""),
-                "ha core check": (1, "", "automation error"),  # check fails
-            },
-        )
-        db = _make_installer_db_at_state(
-            tmp_path,
-            monkeypatch,
-            "HA_MQTT_INTEGRATION_VERIFIED",
-            {"addon_slug": _SLUG, "scan_interface": "eth0"},
-        )
-
-        gate = self._gate_ask(approval=False)
-        state = asyncio.run(
-            run_steps_5_to_8(
-                ssh,
-                gate,
-                self._notifier(),
-                db_path=db,
-                http_client=self._http_with_mqtt(),
-            )
-        )
-        assert state == "HA_MQTT_INTEGRATION_VERIFIED"
-        # Original was restored
-        assert ssh.written_files.get(_AUTOMATIONS_PATH) == original_automations
-        assert any(c.get("risk").name == "HIGH" for c in gate.require_approval_calls)
 
     def test_step8_idempotent_from_fully_operational(self, tmp_path, monkeypatch):
         import asyncio
@@ -2890,72 +2767,6 @@ class TestNetAlertXInstallerSteps5to8:
         )
         assert state == "FULLY_OPERATIONAL"
 
-    def test_step6_writes_mqtt_credentials_when_configured(self, tmp_path, monkeypatch):
-        import asyncio
-
-        from netalertx.installer import run_steps_5_to_8
-
-        async def poll_true(*a, **k):
-            return True
-
-        monkeypatch.setattr("netalertx.installer._poll_addon_state", poll_true)
-        monkeypatch.setattr("netalertx.installer.NETALERTX_ADDON_SLUG", "")
-        monkeypatch.setattr("netalertx.installer.NETALERTX_MQTT_USER", "mqttuser")
-        monkeypatch.setattr("netalertx.installer.NETALERTX_MQTT_PASSWORD", "s3cr3t")
-
-        ssh = self._make_full_ssh()
-        db = _make_installer_db_at_state(
-            tmp_path,
-            monkeypatch,
-            "ADDON_RUNNING",
-            {"addon_slug": _SLUG, "scan_interface": "eth0"},
-        )
-        asyncio.run(
-            run_steps_5_to_8(
-                ssh,
-                self._gate_auto(),
-                self._notifier(),
-                db_path=db,
-                http_client=self._http_with_mqtt(),
-            )
-        )
-        written = ssh.written_files.get(_CONF_PATH, "")
-        assert "MQTT_USER = 'mqttuser'" in written
-        assert "MQTT_PASSWORD = 's3cr3t'" in written
-
-    def test_step6_omits_mqtt_credentials_when_empty(self, tmp_path, monkeypatch):
-        import asyncio
-
-        from netalertx.installer import run_steps_5_to_8
-
-        async def poll_true(*a, **k):
-            return True
-
-        monkeypatch.setattr("netalertx.installer._poll_addon_state", poll_true)
-        monkeypatch.setattr("netalertx.installer.NETALERTX_ADDON_SLUG", "")
-        monkeypatch.setattr("netalertx.installer.NETALERTX_MQTT_USER", "")
-        monkeypatch.setattr("netalertx.installer.NETALERTX_MQTT_PASSWORD", "")
-
-        ssh = self._make_full_ssh()
-        db = _make_installer_db_at_state(
-            tmp_path,
-            monkeypatch,
-            "ADDON_RUNNING",
-            {"addon_slug": _SLUG, "scan_interface": "eth0"},
-        )
-        asyncio.run(
-            run_steps_5_to_8(
-                ssh,
-                self._gate_auto(),
-                self._notifier(),
-                db_path=db,
-                http_client=self._http_with_mqtt(),
-            )
-        )
-        written = ssh.written_files.get(_CONF_PATH, "")
-        assert "MQTT_USER" not in written
-        assert "MQTT_PASSWORD" not in written
-
     # ── step 7: _mqtt_configured edge paths ──────────────────────────────────
 
     def test_step7_mqtt_check_non_200_triggers_hitl(self, tmp_path, monkeypatch):
@@ -3090,171 +2901,7 @@ class TestNetAlertXInstallerSteps5to8:
         assert state == "FULLY_OPERATIONAL"
         assert call_count[0] == 2
 
-    # ── step 8: error paths ───────────────────────────────────────────────────
-
-    def test_step8_backup_fails_aborts(self, tmp_path, monkeypatch):
-        import asyncio
-
-        from netalertx.installer import run_steps_5_to_8
-        from utils.ha.ssh_client import FakeSSHClient
-
-        async def poll_true(*a, **k):
-            return True
-
-        monkeypatch.setattr("netalertx.installer._poll_addon_state", poll_true)
-
-        ssh = FakeSSHClient(
-            file_contents={_AUTOMATIONS_PATH: ""},
-            command_results={
-                "ha backup new": (1, "", "backup error"),
-            },
-        )
-        db = _make_installer_db_at_state(
-            tmp_path,
-            monkeypatch,
-            "HA_MQTT_INTEGRATION_VERIFIED",
-            {"addon_slug": _SLUG},
-        )
-        gate = self._gate_ask(approval=False)
-        state = asyncio.run(
-            run_steps_5_to_8(
-                ssh,
-                gate,
-                self._notifier(approve=False),
-                db_path=db,
-                http_client=self._http_with_mqtt(),
-            )
-        )
-        assert state == "HA_MQTT_INTEGRATION_VERIFIED"
-        assert any(
-            "backup" in c["subject"].lower() for c in gate.require_approval_calls
-        )
-
-    def test_step8_automation_reload_fails_still_reaches_fully_operational(
-        self, tmp_path, monkeypatch
-    ):
-        """Reload failure is logged as a warning but installation still completes."""
-        import asyncio
-
-        from netalertx.installer import run_steps_5_to_8
-        from utils.ha.ssh_client import FakeSSHClient
-
-        async def poll_true(*a, **k):
-            return True
-
-        monkeypatch.setattr("netalertx.installer._poll_addon_state", poll_true)
-
-        ssh = FakeSSHClient(
-            file_contents={
-                _CONF_PATH: _ORIG_APP_CONF,
-                "/config/configuration.yaml": _HA_CONF,
-                _AUTOMATIONS_PATH: "",
-            },
-            command_results={
-                f"ha apps info {_SLUG}": (
-                    0,
-                    f"state: running\ndata: {_DATA_PATH}\n",
-                    "",
-                ),
-                "ha backup new": (0, "Slug: test-backup-slug\n", ""),
-                "ha core check": (0, "", ""),
-                "automation/reload": (1, "", "curl: connection refused"),
-            },
-        )
-        db = _make_installer_db_at_state(
-            tmp_path,
-            monkeypatch,
-            "HA_MQTT_INTEGRATION_VERIFIED",
-            {"addon_slug": _SLUG, "scan_interface": "eth0"},
-        )
-        state = asyncio.run(
-            run_steps_5_to_8(
-                ssh,
-                self._gate_auto(),
-                self._notifier(),
-                db_path=db,
-                http_client=self._http_with_mqtt(),
-            )
-        )
-        assert state == "FULLY_OPERATIONAL"
-        assert any("automation/reload" in cmd for cmd in ssh.commands_run)
-
-    def test_step8_fallback_to_directory_automation_path(self, tmp_path, monkeypatch):
-        import asyncio
-
-        from netalertx.installer import run_steps_5_to_8
-        from utils.ha.ssh_client import FakeSSHClient
-
-        async def poll_true(*a, **k):
-            return True
-
-        monkeypatch.setattr("netalertx.installer._poll_addon_state", poll_true)
-
-        _fallback_path = "/config/automations/netalertx_webhook.yaml"
-        ssh = FakeSSHClient(
-            file_contents={_fallback_path: ""},
-            command_results={
-                "ha backup new": (0, "Slug: bk-fallback\n", ""),
-                "ha core check": (0, "", ""),
-                "automation/reload": (0, "", ""),
-            },
-        )
-        db = _make_installer_db_at_state(
-            tmp_path,
-            monkeypatch,
-            "HA_MQTT_INTEGRATION_VERIFIED",
-            {"addon_slug": _SLUG},
-        )
-        state = asyncio.run(
-            run_steps_5_to_8(
-                ssh,
-                self._gate_auto(),
-                self._notifier(),
-                db_path=db,
-                http_client=self._http_with_mqtt(),
-            )
-        )
-        assert state == "FULLY_OPERATIONAL"
-        assert _fallback_path in ssh.written_files
-
-    def test_step8_both_automation_paths_missing_creates_new_file(
-        self, tmp_path, monkeypatch
-    ):
-        import asyncio
-
-        from netalertx.installer import run_steps_5_to_8
-        from utils.ha.ssh_client import FakeSSHClient
-
-        async def poll_true(*a, **k):
-            return True
-
-        monkeypatch.setattr("netalertx.installer._poll_addon_state", poll_true)
-
-        ssh = FakeSSHClient(
-            file_contents={},
-            command_results={
-                "ha backup new": (0, "Slug: bk-new\n", ""),
-                "ha core check": (0, "", ""),
-                "automation/reload": (0, "", ""),
-            },
-        )
-        db = _make_installer_db_at_state(
-            tmp_path,
-            monkeypatch,
-            "HA_MQTT_INTEGRATION_VERIFIED",
-            {"addon_slug": _SLUG},
-        )
-        state = asyncio.run(
-            run_steps_5_to_8(
-                ssh,
-                self._gate_auto(),
-                self._notifier(),
-                db_path=db,
-                http_client=self._http_with_mqtt(),
-            )
-        )
-        assert state == "FULLY_OPERATIONAL"
-        assert "/config/automations/netalertx_webhook.yaml" in ssh.written_files
+    # ── step 8: finalize token ─────────────────────────────────────────────────
 
     # ── _step8_finalize_token ─────────────────────────────────────────────────
 
@@ -4985,27 +4632,6 @@ class TestNetAlertXLogMonitor:
 
 
 class TestNetAlertXHealthMonitor:
-    # ── DevicePresenceEvent schema ────────────────────────────────────────────
-
-    def test_device_presence_event_valid(self):
-        from netalertx.mqtt_subscriber import DevicePresenceEvent
-
-        ev = DevicePresenceEvent(
-            topic="system-sensors/binary_sensor/AA:BB:CC/state",
-            payload="home",
-        )
-        assert ev.topic == "system-sensors/binary_sensor/AA:BB:CC/state"
-        assert ev.payload == "home"
-
-    def test_device_presence_event_json_round_trip(self):
-        from netalertx.mqtt_subscriber import DevicePresenceEvent
-
-        ev = DevicePresenceEvent(
-            topic="system-sensors/sensor/11:22:33/state",
-            payload='{"state": true}',
-        )
-        assert DevicePresenceEvent.model_validate_json(ev.model_dump_json()) == ev
-
     # ── HealthReport schema ───────────────────────────────────────────────────
 
     def test_health_report_valid_construction(self):
@@ -5014,12 +4640,11 @@ class TestNetAlertXHealthMonitor:
         r = HealthReport(
             last_scan_age_minutes=5,
             device_counts={"total": 10, "online": 8},
-            mqtt_active=True,
             anomalies=[],
             netalertx_version="v26.7.1",
         )
         assert r.last_scan_age_minutes == 5
-        assert r.mqtt_active is True
+        assert r.device_counts["total"] == 10
 
     def test_health_report_missing_field_raises(self):
         from pydantic import ValidationError
@@ -5030,7 +4655,6 @@ class TestNetAlertXHealthMonitor:
             HealthReport(  # type: ignore[call-arg]
                 last_scan_age_minutes=5,
                 device_counts={"total": 1},
-                mqtt_active=False,
                 # missing anomalies and netalertx_version
             )
 
@@ -5040,7 +4664,6 @@ class TestNetAlertXHealthMonitor:
         r = HealthReport(
             last_scan_age_minutes=12,
             device_counts={"total": 3, "online": 1},
-            mqtt_active=False,
             anomalies=["Last scan is 25 minutes old"],
             netalertx_version="v26.7.1",
         )
@@ -5088,34 +4711,6 @@ class TestNetAlertXHealthMonitor:
             {"devLastConnection": "2026-07-20 11:55:00"},  # 5 min ago
         ]
         assert _compute_scan_age(devices, now=now) == 5
-
-    # ── FakeMQTTSubscriber ────────────────────────────────────────────────────
-
-    def test_fake_mqtt_puts_events_in_queue(self):
-        import asyncio
-
-        from netalertx.mqtt_subscriber import DevicePresenceEvent, FakeMQTTSubscriber
-
-        events = [
-            DevicePresenceEvent(topic="t/1/state", payload="home"),
-            DevicePresenceEvent(topic="t/2/state", payload="not_home"),
-        ]
-        sub = FakeMQTTSubscriber(events=events)
-        queue: asyncio.Queue[DevicePresenceEvent] = asyncio.Queue()
-
-        asyncio.run(sub.subscribe(queue))
-
-        assert queue.qsize() == 2
-        assert sub.subscribe_calls == 1
-
-    def test_fake_mqtt_raises_error(self):
-        import asyncio
-
-        from netalertx.mqtt_subscriber import FakeMQTTSubscriber
-
-        sub = FakeMQTTSubscriber(error=RuntimeError("broker down"))
-        with pytest.raises(RuntimeError, match="broker down"):
-            asyncio.run(sub.subscribe(asyncio.Queue()))
 
     # ── poll_once ─────────────────────────────────────────────────────────────
 
@@ -5169,8 +4764,7 @@ class TestNetAlertXHealthMonitor:
         from netalertx.health import NetAlertXHealthMonitor
 
         monitor = NetAlertXHealthMonitor(api_client=api, max_scan_age_minutes=20)
-        queue: asyncio.Queue = asyncio.Queue()
-        report = asyncio.run(monitor.poll_once(queue))
+        report = asyncio.run(monitor.poll_once())
 
         assert report.netalertx_version == "v26.7.1"
         assert report.device_counts["total"] == 1
@@ -5203,41 +4797,10 @@ class TestNetAlertXHealthMonitor:
         from netalertx.health import NetAlertXHealthMonitor
 
         monitor = NetAlertXHealthMonitor(api_client=api, max_scan_age_minutes=20)
-        queue: asyncio.Queue = asyncio.Queue()
-        report = asyncio.run(monitor.poll_once(queue))
+        report = asyncio.run(monitor.poll_once())
 
         assert len(report.anomalies) == 1
         assert "minutes old" in report.anomalies[0]
-
-    def test_poll_mqtt_active_when_events_in_queue(self):
-        import asyncio
-
-        devices: list[dict] = []
-        api = self._make_api_client(devices)
-        from netalertx.health import NetAlertXHealthMonitor
-        from netalertx.mqtt_subscriber import DevicePresenceEvent
-
-        monitor = NetAlertXHealthMonitor(api_client=api, max_scan_age_minutes=20)
-        queue: asyncio.Queue = asyncio.Queue()
-        queue.put_nowait(DevicePresenceEvent(topic="t/1/state", payload="home"))
-
-        report = asyncio.run(monitor.poll_once(queue))
-
-        assert report.mqtt_active is True
-        assert queue.empty()
-
-    def test_poll_no_events_mqtt_inactive(self):
-        import asyncio
-
-        devices: list[dict] = []
-        api = self._make_api_client(devices)
-        from netalertx.health import NetAlertXHealthMonitor
-
-        monitor = NetAlertXHealthMonitor(api_client=api, max_scan_age_minutes=20)
-        queue: asyncio.Queue = asyncio.Queue()
-        report = asyncio.run(monitor.poll_once(queue))
-
-        assert report.mqtt_active is False
 
     def test_poll_new_device_triggers_sync(self):
         import asyncio
@@ -5268,7 +4831,7 @@ class TestNetAlertXHealthMonitor:
             ha_name_sync=fake_sync,
             max_scan_age_minutes=20,
         )
-        asyncio.run(monitor.poll_once(asyncio.Queue()))
+        asyncio.run(monitor.poll_once())
         assert "AA:BB:CC:DD:EE:11" in fake_sync.synced_macs
 
     def test_poll_blank_name_triggers_sync(self):
@@ -5300,7 +4863,7 @@ class TestNetAlertXHealthMonitor:
             ha_name_sync=fake_sync,
             max_scan_age_minutes=20,
         )
-        asyncio.run(monitor.poll_once(asyncio.Queue()))
+        asyncio.run(monitor.poll_once())
         assert "AA:BB:CC:DD:EE:22" in fake_sync.synced_macs
 
     def test_poll_named_existing_device_no_sync(self):
@@ -5332,7 +4895,7 @@ class TestNetAlertXHealthMonitor:
             ha_name_sync=fake_sync,
             max_scan_age_minutes=20,
         )
-        asyncio.run(monitor.poll_once(asyncio.Queue()))
+        asyncio.run(monitor.poll_once())
         assert fake_sync.synced_macs == []
 
     def test_poll_about_failure_returns_unknown_version(self):
@@ -5358,7 +4921,7 @@ class TestNetAlertXHealthMonitor:
             http_client=httpx.AsyncClient(transport=_PartialTransport()),
         )
         monitor = NetAlertXHealthMonitor(api_client=api, max_scan_age_minutes=20)
-        report = asyncio.run(monitor.poll_once(asyncio.Queue()))
+        report = asyncio.run(monitor.poll_once())
         assert report.netalertx_version == "unknown"
 
 
@@ -5584,34 +5147,6 @@ class TestNetAlertXConfigValidator:
 
         assert validate_scan_subnets("MQTT_BROKER=localhost\n") == []
 
-    # ── validate_event_output ──────────────────────────────────────────────────
-
-    def test_event_output_both_disabled_flagged(self):
-        from netalertx.config_validator import validate_event_output
-
-        conf = "MQTT_RUN='disabled'\nWEBHOOK_RUN='disabled'\n"
-        issues = validate_event_output(conf)
-        assert len(issues) == 1
-        assert issues[0].field == "MQTT_RUN/WEBHOOK_RUN"
-        assert issues[0].severity == "LOW"
-
-    def test_event_output_mqtt_enabled_no_issue(self):
-        from netalertx.config_validator import validate_event_output
-
-        conf = "MQTT_RUN='enabled'\nWEBHOOK_RUN='disabled'\n"
-        assert validate_event_output(conf) == []
-
-    def test_event_output_webhook_enabled_no_issue(self):
-        from netalertx.config_validator import validate_event_output
-
-        conf = "MQTT_RUN='disabled'\nWEBHOOK_RUN='enabled'\n"
-        assert validate_event_output(conf) == []
-
-    def test_event_output_missing_keys_no_issue(self):
-        from netalertx.config_validator import validate_event_output
-
-        assert validate_event_output("MQTT_BROKER=localhost\n") == []
-
 
 class TestNetAlertXDiagnostic:
     # ── NetAlertXDiagnostic schema ────────────────────────────────────────────
@@ -5656,7 +5191,6 @@ class TestNetAlertXDiagnostic:
         return HealthReport(
             last_scan_age_minutes=25,
             device_counts={"total": 0, "online": 0},
-            mqtt_active=False,
             anomalies=[
                 "Last scan is 25 minutes old (threshold: 20)",
                 "No devices discovered",
@@ -7126,16 +6660,6 @@ class TestNetAlertXOneShotDiagnose:
         async def heal_with_loop(self, diagnostic, llm_client=None):
             self.heal_calls.append(diagnostic)
 
-    @staticmethod
-    async def _true_probe(_: str) -> bool:
-        """Fake mqtt_probe_fn that simulates an active broker."""
-        return True
-
-    @staticmethod
-    async def _false_probe(_: str) -> bool:
-        """Fake mqtt_probe_fn that simulates no MQTT traffic."""
-        return False
-
     def _valid_app_conf(self) -> str:
         return (
             "MQTT_BROKER='localhost'\n"
@@ -7176,7 +6700,7 @@ class TestNetAlertXOneShotDiagnose:
             healer.heal_calls == []
         ), "Healer should not be called when API is unreachable"
 
-    def _ha_ssh_client(self, app_conf=None, log_output="", mosquitto_state="started"):
+    def _ha_ssh_client(self, app_conf=None, log_output=""):
         """Build a FakeSSHClient covering all ha_ssh interactions in run_diagnose.
 
         app_conf=None → valid app.conf; app_conf=<str> → that content;
@@ -7192,7 +6716,6 @@ class TestNetAlertXOneShotDiagnose:
             },
             command_results={
                 "[ -d /app_configs ]": (0, "app_configs", ""),
-                "ha apps info core_mosquitto": (0, f"state: {mosquitto_state}\n", ""),
                 "ha apps logs": (0, log_output, ""),
             },
         )
@@ -7216,7 +6739,6 @@ class TestNetAlertXOneShotDiagnose:
                 llm_client=llm,
                 healer=healer,
                 addon_slug="test_slug",
-                mqtt_probe_fn=self._true_probe,
             )
         )
 
@@ -7359,63 +6881,10 @@ class TestNetAlertXOneShotDiagnose:
                 llm_client=llm,
                 healer=healer,
                 addon_slug="test_slug",
-                mqtt_probe_fn=self._true_probe,
             )
         )
 
         assert len(llm.calls) == 1, "LLM should be called to triage critical log line"
-
-    def test_mosquitto_not_running_triggers_diagnosis(self):
-        import asyncio
-
-        from utils.llm.ollama_client import FakeToolCallingLLMClient
-        from utils.ha.ssh_client import FakeSSHClient
-
-        from netalertx.diagnosis import NetAlertXDiagnostic
-        from netalertx.one_shot_diagnose import run_diagnose
-
-        diag = NetAlertXDiagnostic(
-            issue="Mosquitto not running",
-            severity="HIGH",
-            category="mqtt",
-            recommended_fix="Run 'ha apps start core_mosquitto'.",
-            affected_netalertx_version="unknown",
-        )
-        llm = FakeToolCallingLLMClient(
-            [
-                {
-                    "tool_calls": [
-                        {
-                            "function": {
-                                "name": "finish_health_diagnosis",
-                                "arguments": {
-                                    **diag.model_dump(),
-                                    "summary": diag.issue,
-                                },
-                            }
-                        }
-                    ]
-                }
-            ]
-        )
-        healer = self._FakeHealer()
-
-        asyncio.run(
-            run_diagnose(
-                ssh_client=FakeSSHClient(),
-                ha_ssh_client=self._ha_ssh_client(mosquitto_state="stopped"),
-                api_client=self._FakeAPIClient(devices=[]),
-                llm_client=llm,
-                healer=healer,
-                addon_slug="test_slug",
-            )
-        )
-
-        assert len(llm.calls) == 1, "LLM should be called when Mosquitto is not running"
-        call_prompt = llm.calls[0]["messages"][1]["content"]
-        assert (
-            "core_mosquitto" in call_prompt
-        ), "Mosquitto issue should appear in prompt"
 
     def test_app_conf_missing_triggers_diagnosis(self):
         import asyncio
@@ -7456,7 +6925,6 @@ class TestNetAlertXOneShotDiagnose:
         ha_ssh = FakeSSHClient(
             command_results={
                 "[ -d /app_configs ]": (0, "app_configs", ""),
-                "ha apps info core_mosquitto": (0, "state: started\n", ""),
                 "ha apps logs": (0, "", ""),
             }
         )
@@ -7475,43 +6943,6 @@ class TestNetAlertXOneShotDiagnose:
         assert len(llm.calls) == 1, "LLM should be called when app.conf is missing"
         call_prompt = llm.calls[0]["messages"][1]["content"]
         assert "app.conf" in call_prompt, "Missing app.conf should appear in LLM prompt"
-
-    def test_check_mosquitto_running_started(self):
-        import asyncio
-
-        from utils.ha.ssh_client import FakeSSHClient
-
-        from netalertx.one_shot_diagnose import _check_mosquitto_running
-
-        ha_ssh = FakeSSHClient(
-            command_results={"ha apps info core_mosquitto": (0, "state: started\n", "")}
-        )
-        result = asyncio.run(_check_mosquitto_running(ha_ssh))
-        assert result is True
-
-    def test_check_mosquitto_running_stopped(self):
-        import asyncio
-
-        from utils.ha.ssh_client import FakeSSHClient
-
-        from netalertx.one_shot_diagnose import _check_mosquitto_running
-
-        ha_ssh = FakeSSHClient(
-            command_results={"ha apps info core_mosquitto": (0, "state: stopped\n", "")}
-        )
-        result = asyncio.run(_check_mosquitto_running(ha_ssh))
-        assert result is False
-
-    def test_check_mosquitto_running_no_output(self):
-        import asyncio
-
-        from utils.ha.ssh_client import FakeSSHClient
-
-        from netalertx.one_shot_diagnose import _check_mosquitto_running
-
-        ha_ssh = FakeSSHClient()  # no command results → empty stdout
-        result = asyncio.run(_check_mosquitto_running(ha_ssh))
-        assert result is False
 
     def test_fetch_log_snapshot_empty_slug_returns_empty(self):
         import asyncio
@@ -7754,182 +7185,6 @@ class TestNetAlertXOneShotDiagnose:
             len(fake_healer.heal_calls) == 1
         ), "Healer should be constructed and called even when gate requires HITL approval"
 
-    def test_mqtt_probe_fn_called_and_true_sets_mqtt_active(self):
-        """mqtt_probe_fn returning True → mqtt_active=True in LLM diagnosis prompt."""
-        import asyncio
-
-        from utils.llm.ollama_client import FakeToolCallingLLMClient
-        from utils.ha.ssh_client import FakeSSHClient
-
-        from netalertx.diagnosis import NetAlertXDiagnostic
-        from netalertx.one_shot_diagnose import run_diagnose
-
-        diag = NetAlertXDiagnostic(
-            issue="Scan is stale",
-            severity="HIGH",
-            category="networking",
-            recommended_fix="Restart scan.",
-            affected_netalertx_version="v26.7.1",
-        )
-        llm = FakeToolCallingLLMClient(
-            [
-                {
-                    "tool_calls": [
-                        {
-                            "function": {
-                                "name": "finish_health_diagnosis",
-                                "arguments": {
-                                    **diag.model_dump(),
-                                    "summary": diag.issue,
-                                },
-                            }
-                        }
-                    ]
-                }
-            ]
-        )
-        stale_devices = [
-            {"devLastConnection": "2020-01-01 00:00:00", "devMac": "AA:BB:CC:DD:EE:FF"}
-        ]
-        probe_calls: list[str] = []
-
-        async def fake_probe(host: str) -> bool:
-            probe_calls.append(host)
-            return True
-
-        asyncio.run(
-            run_diagnose(
-                ssh_client=FakeSSHClient(),
-                ha_ssh_client=self._ha_ssh_client(),
-                api_client=self._FakeAPIClient(devices=stale_devices),
-                llm_client=llm,
-                healer=self._FakeHealer(),
-                addon_slug="test_slug",
-                mqtt_probe_fn=fake_probe,
-            )
-        )
-
-        assert len(probe_calls) == 1, "mqtt_probe_fn must be called exactly once"
-        prompt = llm.calls[0]["messages"][1]["content"]
-        assert "MQTT active: True" in prompt, "Probe True must propagate to LLM prompt"
-
-    def test_mqtt_probe_fn_false_sets_mqtt_inactive(self):
-        """mqtt_probe_fn returning False → mqtt_active=False in LLM diagnosis prompt."""
-        import asyncio
-
-        from utils.llm.ollama_client import FakeToolCallingLLMClient
-        from utils.ha.ssh_client import FakeSSHClient
-
-        from netalertx.diagnosis import NetAlertXDiagnostic
-        from netalertx.one_shot_diagnose import run_diagnose
-
-        diag = NetAlertXDiagnostic(
-            issue="Scan is stale",
-            severity="HIGH",
-            category="networking",
-            recommended_fix="Restart scan.",
-            affected_netalertx_version="v26.7.1",
-        )
-        llm = FakeToolCallingLLMClient(
-            [
-                {
-                    "tool_calls": [
-                        {
-                            "function": {
-                                "name": "finish_health_diagnosis",
-                                "arguments": {
-                                    **diag.model_dump(),
-                                    "summary": diag.issue,
-                                },
-                            }
-                        }
-                    ]
-                }
-            ]
-        )
-        stale_devices = [
-            {"devLastConnection": "2020-01-01 00:00:00", "devMac": "AA:BB:CC:DD:EE:FF"}
-        ]
-
-        async def false_probe(_: str) -> bool:
-            return False
-
-        asyncio.run(
-            run_diagnose(
-                ssh_client=FakeSSHClient(),
-                ha_ssh_client=self._ha_ssh_client(),
-                api_client=self._FakeAPIClient(devices=stale_devices),
-                llm_client=llm,
-                healer=self._FakeHealer(),
-                addon_slug="test_slug",
-                mqtt_probe_fn=false_probe,
-            )
-        )
-
-        prompt = llm.calls[0]["messages"][1]["content"]
-        assert (
-            "MQTT active: False" in prompt
-        ), "Probe False must propagate to LLM prompt"
-
-    def test_mqtt_inactive_with_mosquitto_running_triggers_config_issue(self):
-        """mqtt_active=False + mosquitto running → ConfigIssue added → LLM called."""
-        import asyncio
-
-        from utils.llm.ollama_client import FakeToolCallingLLMClient
-        from utils.ha.ssh_client import FakeSSHClient
-
-        from netalertx.diagnosis import NetAlertXDiagnostic
-        from netalertx.one_shot_diagnose import run_diagnose
-
-        diag = NetAlertXDiagnostic(
-            issue="No MQTT traffic detected",
-            severity="MEDIUM",
-            category="mqtt",
-            recommended_fix="Check MQTT_BROKER in app.conf.",
-            affected_netalertx_version="unknown",
-        )
-        llm = FakeToolCallingLLMClient(
-            [
-                {
-                    "tool_calls": [
-                        {
-                            "function": {
-                                "name": "finish_health_diagnosis",
-                                "arguments": {
-                                    **diag.model_dump(),
-                                    "summary": diag.issue,
-                                },
-                            }
-                        }
-                    ]
-                }
-            ]
-        )
-
-        async def false_probe(_: str) -> bool:
-            return False
-
-        # Healthy devices (no stale scan) — LLM call must come from mqtt_traffic issue alone
-        asyncio.run(
-            run_diagnose(
-                ssh_client=FakeSSHClient(),
-                ha_ssh_client=self._ha_ssh_client(mosquitto_state="started"),
-                api_client=self._FakeAPIClient(devices=[]),
-                llm_client=llm,
-                healer=self._FakeHealer(),
-                addon_slug="test_slug",
-                mqtt_probe_fn=false_probe,
-            )
-        )
-
-        assert (
-            len(llm.calls) == 1
-        ), "LLM should be called when MQTT is silent but broker is up"
-        prompt = llm.calls[0]["messages"][1]["content"]
-        assert (
-            "mqtt_traffic" in prompt
-        ), "mqtt_traffic ConfigIssue must appear in LLM prompt"
-
     def test_hitl_required_delegates_to_healer(self):
         """When HITL is required, one-shot mode delegates to healer.heal() — not fire-and-forget."""
         import asyncio
@@ -7980,7 +7235,6 @@ class TestNetAlertXOneShotDiagnose:
                 gate=gate,
                 healer=healer,
                 addon_slug="test_slug",
-                mqtt_probe_fn=self._true_probe,
             )
         )
 
@@ -8206,10 +7460,6 @@ class TestOneShotDiagnoseSlugAutoRecovery:
         async def heal_with_loop(self, diag, llm_client=None):
             self.heal_calls.append(diag)
 
-    @staticmethod
-    async def _false_probe(host, **_):
-        return False
-
     def test_slug_discovered_via_ha_store_addons(self, monkeypatch):
         """When addon_slug is empty, ha store addons output is parsed and slug is used."""
         import asyncio
@@ -8235,7 +7485,6 @@ class TestOneShotDiagnoseSlugAutoRecovery:
             },
             command_results={
                 "[ -d /app_configs ]": (0, "app_configs", ""),
-                "ha apps info core_mosquitto": (0, "state: started\n", ""),
                 "ha store addons": (0, store_output, ""),
             },
         )
@@ -8260,7 +7509,6 @@ class TestOneShotDiagnoseSlugAutoRecovery:
                 llm_client=llm,
                 healer=self._FakeHealer(),
                 addon_slug="",
-                mqtt_probe_fn=self._false_probe,
             )
         )
 
@@ -8307,7 +7555,6 @@ class TestOneShotDiagnoseSlugAutoRecovery:
 
         ha_ssh = FakeSSHClient(
             command_results={
-                "ha apps info core_mosquitto": (0, "state: started\n", ""),
                 "ha store addons": (0, "", ""),
             }
         )
@@ -8320,7 +7567,6 @@ class TestOneShotDiagnoseSlugAutoRecovery:
                 llm_client=llm,
                 healer=self._FakeHealer(),
                 addon_slug="",
-                mqtt_probe_fn=self._false_probe,
             )
         )
 
@@ -8836,8 +8082,6 @@ class TestDockerInstallerStateMachine:
         )
         monkeypatch.setattr("netalertx.docker_installer.HA_HOST", "homeassistant.local")
         monkeypatch.setattr("netalertx.docker_installer.HA_API_TOKEN", "fake_token")
-        monkeypatch.setattr("netalertx.docker_installer.NETALERTX_MQTT_USER", "")
-
         db = _make_docker_installer_db(tmp_path, monkeypatch)
 
         # 73400320 KB = 70 GB
@@ -8873,25 +8117,7 @@ class TestDockerInstallerStateMachine:
             file_contents={},
         )
 
-        ha_ssh = FakeSSHClient(
-            command_results={
-                "ha apps restart core_mosquitto": (0, "", ""),
-                "ha core check": (0, "", ""),
-                "curl -sf -X POST http://supervisor/core/api/services/automation/reload"
-                ' -H "Authorization: Bearer $SUPERVISOR_TOKEN"'
-                ' -H "Content-Type: application/json"': (0, "", ""),
-            },
-            file_contents={"/config/automations.yaml": ""},
-        )
-
-        # Patch execute_remote_backup in installer (used by _step8_create_webhook_automation)
-        async def _fake_backup(**_kw):
-            return "backup-slug-abc"
-
-        monkeypatch.setattr(
-            "agents.ha_agent_sandbox_engine.execute_remote_backup",
-            _fake_backup,
-        )
+        ha_ssh = FakeSSHClient()
 
         state = asyncio.run(
             run_docker_installer(
@@ -8920,8 +8146,6 @@ class TestDockerInstallerStateMachine:
         )
         monkeypatch.setattr("netalertx.docker_installer.HA_HOST", "homeassistant.local")
         monkeypatch.setattr("netalertx.docker_installer.HA_API_TOKEN", "fake_token")
-        monkeypatch.setattr("netalertx.docker_installer.NETALERTX_MQTT_USER", "")
-
         db = _make_docker_installer_db(tmp_path, monkeypatch, state="DOCKER_RUNNING")
 
         docker_ssh = FakeSSHClient(
@@ -8946,24 +8170,7 @@ class TestDockerInstallerStateMachine:
             file_contents={},
         )
 
-        ha_ssh = FakeSSHClient(
-            command_results={
-                "ha apps restart core_mosquitto": (0, "", ""),
-                "ha core check": (0, "", ""),
-                "curl -sf -X POST http://supervisor/core/api/services/automation/reload"
-                ' -H "Authorization: Bearer $SUPERVISOR_TOKEN"'
-                ' -H "Content-Type: application/json"': (0, "", ""),
-            },
-            file_contents={"/config/automations.yaml": ""},
-        )
-
-        async def _fake_backup(**_kw):
-            return "backup-slug-abc"
-
-        monkeypatch.setattr(
-            "agents.ha_agent_sandbox_engine.execute_remote_backup",
-            _fake_backup,
-        )
+        ha_ssh = FakeSSHClient()
 
         state = asyncio.run(
             run_docker_installer(
@@ -8980,33 +8187,6 @@ class TestDockerInstallerStateMachine:
         assert state == "FULLY_OPERATIONAL"
         # Verify container was re-launched (stop+rm+run all called)
         assert any("docker run" in cmd for cmd in docker_ssh.commands_run)
-
-    def test_mqtt_routing_skipped_on_rejection(self, tmp_path, monkeypatch):
-        """When HITL is rejected at step 8, installer still advances to DOCKER_MQTT_ROUTED."""
-        from utils.ha.ssh_client import FakeSSHClient
-        from netalertx.docker_installer import _step8_route_mqtt
-
-        db = _make_docker_installer_db(tmp_path, monkeypatch, state="DOCKER_HEALTHY")
-        gate = self._make_gate(approve=False)
-        notifier = self._notifier(approve=False)
-
-        result = asyncio.run(
-            _step8_route_mqtt(
-                ha_ssh=FakeSSHClient(),
-                gate=gate,
-                notifier=notifier,
-                details={},
-                cid="test-cid",
-                db_path=db,
-                docker_host="192.168.1.50",
-            )
-        )
-        # Non-fatal: returns True (proceed to next step) even when rejected
-        assert result is True
-        from netalertx.docker_installer import _read_install_state
-
-        s, _ = _read_install_state(db)
-        assert s == "DOCKER_MQTT_ROUTED"
 
 
 class TestDetectDeploymentDockerTarget:
@@ -9415,127 +8595,6 @@ class TestNetalertxMigrateCard:
 # ── netalertx/event_router.py ────────────────────────────────────────────────
 
 
-class TestNewDeviceAlertEvent:
-    def test_valid_construction(self):
-        from netalertx.event_router import NewDeviceAlertEvent
-
-        ev = NewDeviceAlertEvent(
-            mac="AA:BB:CC:DD:EE:FF",
-            ip="192.168.1.100",
-            vendor="Apple Inc.",
-            name="iPhone",
-            topic="NetAlertX/alert/new_device",
-        )
-        assert ev.mac == "AA:BB:CC:DD:EE:FF"
-        assert ev.ip == "192.168.1.100"
-        assert ev.vendor == "Apple Inc."
-
-    def test_optional_fields_default_empty(self):
-        from netalertx.event_router import NewDeviceAlertEvent
-
-        ev = NewDeviceAlertEvent(mac="AA:BB:CC:DD:EE:FF")
-        assert ev.ip == ""
-        assert ev.vendor == ""
-        assert ev.name == ""
-
-    def test_json_roundtrip(self):
-        from netalertx.event_router import NewDeviceAlertEvent
-
-        ev = NewDeviceAlertEvent(mac="AA:BB:CC:DD:EE:FF", ip="10.0.0.1")
-        restored = NewDeviceAlertEvent.model_validate_json(ev.model_dump_json())
-        assert restored.mac == ev.mac
-        assert restored.ip == ev.ip
-
-
-class TestDeviceStateEvent:
-    def test_valid_construction(self):
-        from netalertx.event_router import DeviceStateEvent
-
-        ev = DeviceStateEvent(mac="AA:BB:CC:DD:EE:FF", state="online")
-        assert ev.mac == "AA:BB:CC:DD:EE:FF"
-        assert ev.state == "online"
-
-    def test_json_roundtrip(self):
-        from netalertx.event_router import DeviceStateEvent
-
-        ev = DeviceStateEvent(
-            mac="AA:BB:CC:DD:EE:FF",
-            state="offline",
-            topic="NetAlertX/device/AA:BB:CC:DD:EE:FF/state",
-        )
-        restored = DeviceStateEvent.model_validate_json(ev.model_dump_json())
-        assert restored.mac == ev.mac
-        assert restored.state == ev.state
-
-
-class TestScanCompleteEvent:
-    def test_valid_construction(self):
-        from netalertx.event_router import ScanCompleteEvent
-
-        ev = ScanCompleteEvent()
-        assert ev.topic == "NetAlertX/scan/complete"
-
-    def test_json_roundtrip(self):
-        from netalertx.event_router import ScanCompleteEvent
-
-        ev = ScanCompleteEvent(payload="done")
-        restored = ScanCompleteEvent.model_validate_json(ev.model_dump_json())
-        assert restored.payload == "done"
-
-
-class TestParseMQTTEvent:
-    def test_alert_topic_with_json_payload(self):
-        from netalertx.event_router import NewDeviceAlertEvent, parse_mqtt_event
-
-        result = parse_mqtt_event(
-            "NetAlertX/alert/new_device",
-            '{"mac":"AA:BB:CC:DD:EE:FF","ip":"192.168.1.1","vendor":"Apple"}',
-        )
-        assert isinstance(result, NewDeviceAlertEvent)
-        assert result.mac == "AA:BB:CC:DD:EE:FF"
-        assert result.ip == "192.168.1.1"
-        assert result.vendor == "Apple"
-
-    def test_alert_topic_with_webhook_field_names(self):
-        from netalertx.event_router import NewDeviceAlertEvent, parse_mqtt_event
-
-        result = parse_mqtt_event(
-            "NetAlertX/alert/new_device",
-            '{"eveMac":"CC:DD:EE:FF:00:11","eveIp":"10.0.0.5","devVendor":"TP-Link"}',
-        )
-        assert isinstance(result, NewDeviceAlertEvent)
-        assert result.mac == "CC:DD:EE:FF:00:11"
-        assert result.ip == "10.0.0.5"
-        assert result.vendor == "TP-Link"
-
-    def test_alert_topic_with_non_json_payload(self):
-        from netalertx.event_router import NewDeviceAlertEvent, parse_mqtt_event
-
-        result = parse_mqtt_event("NetAlertX/alert/new_device", "not-json")
-        assert isinstance(result, NewDeviceAlertEvent)
-        assert result.mac == ""
-
-    def test_device_state_topic(self):
-        from netalertx.event_router import DeviceStateEvent, parse_mqtt_event
-
-        result = parse_mqtt_event("NetAlertX/device/AA:BB:CC:DD:EE:FF/state", "online")
-        assert isinstance(result, DeviceStateEvent)
-        assert result.mac == "AA:BB:CC:DD:EE:FF"
-        assert result.state == "online"
-
-    def test_scan_complete_topic(self):
-        from netalertx.event_router import ScanCompleteEvent, parse_mqtt_event
-
-        result = parse_mqtt_event("NetAlertX/scan/complete", "")
-        assert isinstance(result, ScanCompleteEvent)
-
-    def test_unrecognised_topic_returns_none(self):
-        from netalertx.event_router import parse_mqtt_event
-
-        assert parse_mqtt_event("system-sensors/binary_sensor/pi/state", "ON") is None
-        assert parse_mqtt_event("homeassistant/status", "online") is None
-
-
 class TestNetAlertXEventRouter:
     def _make_router(self, auto_execute: bool = False):
         from unittest.mock import AsyncMock
@@ -9613,14 +8672,19 @@ class TestNetAlertXEventRouter:
         )
         assert notifier.send.call_count == 2
 
-    def test_route_alert_topic_calls_handle_new_device(self):
+    def test_route_rest_event_new_device_sends_card(self):
         from utils.hitl.card_types import CARD_TYPE_NETALERTX_NEW_DEVICE
 
         router, notifier, _ = self._make_router(auto_execute=False)
         asyncio.run(
-            router.route(
-                "NetAlertX/alert/new_device",
-                '{"mac":"AA:BB:CC:DD:EE:FF","ip":"10.0.0.1"}',
+            router.route_rest_event(
+                {
+                    "eveEventType": "New Device",
+                    "eveMac": "AA:BB:CC:DD:EE:FF",
+                    "eveIp": "10.0.0.1",
+                    "devVendor": "Apple",
+                    "devName": "iPhone",
+                }
             )
         )
         notifier.send.assert_called_once()
@@ -9629,28 +8693,17 @@ class TestNetAlertXEventRouter:
             == CARD_TYPE_NETALERTX_NEW_DEVICE
         )
 
-    def test_route_device_state_does_not_create_card(self):
+    def test_route_rest_event_other_type_skipped(self):
         router, notifier, _ = self._make_router(auto_execute=False)
-        asyncio.run(router.route("NetAlertX/device/AA:BB:CC:DD:EE:FF/state", "offline"))
-        notifier.send.assert_not_called()
-
-    def test_route_scan_complete_does_not_create_card(self):
-        router, notifier, _ = self._make_router(auto_execute=False)
-        asyncio.run(router.route("NetAlertX/scan/complete", ""))
-        notifier.send.assert_not_called()
-
-    def test_route_webhook_deduplicates_against_mqtt(self):
-        router, notifier, _ = self._make_router(auto_execute=False)
-        # MQTT event arrives first
         asyncio.run(
-            router.route(
-                "NetAlertX/alert/new_device",
-                '{"mac":"AA:BB:CC:DD:EE:FF"}',
+            router.route_rest_event(
+                {
+                    "eveEventType": "Device Down",
+                    "eveMac": "AA:BB:CC:DD:EE:FF",
+                }
             )
         )
-        # Webhook event for the same MAC arrives shortly after
-        asyncio.run(router.route_webhook(mac="AA:BB:CC:DD:EE:FF"))
-        assert notifier.send.call_count == 1  # deduplicated
+        notifier.send.assert_not_called()
 
     def test_dedup_window_expired_allows_resend(self):
         router, notifier, _ = self._make_router(auto_execute=False)
@@ -9668,59 +8721,182 @@ class TestNetAlertXEventRouter:
         assert notifier.send.call_count == 2
 
 
-class TestMQTTSubscriberNAXTopics:
-    def test_fake_subscriber_routes_alert_events_to_alert_queue(self):
-        from netalertx.mqtt_subscriber import (
-            DevicePresenceEvent,
-            FakeMQTTSubscriber,
-        )
-
-        presence_queue: asyncio.Queue[DevicePresenceEvent] = asyncio.Queue()
-        alert_queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
-
-        sub = FakeMQTTSubscriber(
-            events=[
-                DevicePresenceEvent(
-                    topic="system-sensors/binary_sensor/pi/state", payload="ON"
-                )
-            ],
-            alert_events=[
-                ("NetAlertX/alert/new_device", '{"mac":"AA:BB:CC:DD:EE:FF"}')
-            ],
-        )
-        asyncio.run(sub.subscribe(presence_queue, alert_queue))
-
-        assert presence_queue.qsize() == 1
-        assert alert_queue.qsize() == 1
-        topic, payload = alert_queue.get_nowait()
-        assert topic == "NetAlertX/alert/new_device"
-
-    def test_fake_subscriber_no_alert_queue_ignores_alert_events(self):
-        from netalertx.mqtt_subscriber import (
-            DevicePresenceEvent,
-            FakeMQTTSubscriber,
-        )
-
-        presence_queue: asyncio.Queue[DevicePresenceEvent] = asyncio.Queue()
-        sub = FakeMQTTSubscriber(
-            alert_events=[
-                ("NetAlertX/alert/new_device", '{"mac":"AA:BB:CC:DD:EE:FF"}')
-            ],
-        )
-        asyncio.run(sub.subscribe(presence_queue))  # no alert_queue passed
-        assert presence_queue.qsize() == 0  # nothing added to presence queue either
-
-    def test_nax_topics_constant_contains_expected_topics(self):
-        from netalertx.mqtt_subscriber import _NAX_TOPICS
-
-        assert any("NetAlertX/alert" in t for t in _NAX_TOPICS)
-        assert any("NetAlertX/device" in t for t in _NAX_TOPICS)
-        assert any("NetAlertX/scan/complete" in t for t in _NAX_TOPICS)
-
+class TestNetAlertXEventRouterCardType:
     def test_new_device_card_type_registered(self):
         from utils.hitl.card_types import CARD_TYPE_NETALERTX_NEW_DEVICE
 
         assert CARD_TYPE_NETALERTX_NEW_DEVICE == "netalertx_new_device"
+
+
+# ── event poll ────────────────────────────────────────────────────────────────
+
+
+class TestNetAlertXEventPoll:
+    """Tests for netalertx/event_poll.py — REST event polling."""
+
+    def _make_router(self, auto_execute: bool = False):
+        from unittest.mock import AsyncMock, MagicMock
+        from utils.agent.autonomy import FakeAutonomyGate
+        from netalertx.event_router import NetAlertXEventRouter
+
+        gate = FakeAutonomyGate(auto_execute_result=auto_execute)
+        notifier = MagicMock()
+        notifier.send = AsyncMock()
+        return NetAlertXEventRouter(notifier, gate), notifier
+
+    def _make_api_client(self, events: list):
+        from unittest.mock import AsyncMock, MagicMock
+
+        client = MagicMock()
+        client.get_events = AsyncMock(return_value=events)
+        return client
+
+    # ------------------------------------------------------------------
+    # _parse_event_ts
+    # ------------------------------------------------------------------
+
+    def test_parse_event_ts_standard_format(self):
+        from netalertx.event_poll import _parse_event_ts
+
+        ts = _parse_event_ts({"eveDateTime": "2026-01-15 10:30:00"})
+        assert ts > 0
+
+    def test_parse_event_ts_iso_format(self):
+        from netalertx.event_poll import _parse_event_ts
+
+        ts = _parse_event_ts({"eveDateTime": "2026-01-15T10:30:00"})
+        assert ts > 0
+
+    def test_parse_event_ts_missing_returns_zero(self):
+        from netalertx.event_poll import _parse_event_ts
+
+        assert _parse_event_ts({}) == 0.0
+
+    def test_parse_event_ts_bad_format_returns_zero(self):
+        from netalertx.event_poll import _parse_event_ts
+
+        assert _parse_event_ts({"eveDateTime": "not-a-date"}) == 0.0
+
+    # ------------------------------------------------------------------
+    # _read_hwm / _write_hwm
+    # ------------------------------------------------------------------
+
+    def test_read_hwm_returns_zero_when_no_table(self, tmp_path):
+        from netalertx.event_poll import _read_hwm
+
+        db = str(tmp_path / "test.db")
+        assert _read_hwm(db) == 0.0
+
+    def test_write_then_read_hwm(self, tmp_path):
+        import sqlite3
+        from netalertx.event_poll import _read_hwm, _write_hwm
+
+        db = str(tmp_path / "test.db")
+        with sqlite3.connect(db) as conn:
+            conn.execute("CREATE TABLE user_prefs (key TEXT PRIMARY KEY, value TEXT)")
+
+        _write_hwm(db, 1234567890.5)
+        assert _read_hwm(db) == pytest.approx(1234567890.5)
+
+    def test_write_hwm_overwrites_existing(self, tmp_path):
+        import sqlite3
+        from netalertx.event_poll import _read_hwm, _write_hwm
+
+        db = str(tmp_path / "test.db")
+        with sqlite3.connect(db) as conn:
+            conn.execute("CREATE TABLE user_prefs (key TEXT PRIMARY KEY, value TEXT)")
+
+        _write_hwm(db, 100.0)
+        _write_hwm(db, 200.0)
+        assert _read_hwm(db) == pytest.approx(200.0)
+
+    # ------------------------------------------------------------------
+    # poll_once
+    # ------------------------------------------------------------------
+
+    def test_poll_once_routes_new_device_above_hwm(self, tmp_path):
+        import sqlite3
+        from netalertx.event_poll import poll_once
+
+        db = str(tmp_path / "test.db")
+        with sqlite3.connect(db) as conn:
+            conn.execute("CREATE TABLE user_prefs (key TEXT PRIMARY KEY, value TEXT)")
+
+        router, notifier = self._make_router(auto_execute=False)
+        events = [
+            {
+                "eveEventType": "New Device",
+                "eveMac": "AA:BB:CC:DD:EE:FF",
+                "eveIp": "10.0.0.1",
+                "devVendor": "Apple",
+                "devName": "iPhone",
+                "eveDateTime": "2026-01-15 10:30:00",
+            }
+        ]
+        api = self._make_api_client(events)
+        routed = asyncio.run(poll_once(api, router, db))
+        assert routed == 1
+        notifier.send.assert_called_once()
+
+    def test_poll_once_skips_events_at_or_below_hwm(self, tmp_path):
+        import sqlite3
+        from netalertx.event_poll import _write_hwm, poll_once
+
+        db = str(tmp_path / "test.db")
+        with sqlite3.connect(db) as conn:
+            conn.execute("CREATE TABLE user_prefs (key TEXT PRIMARY KEY, value TEXT)")
+
+        # Set HWM to a time after the event
+        from datetime import datetime, timezone
+
+        hwm_ts = datetime(2026, 1, 15, 10, 30, 0, tzinfo=timezone.utc).timestamp()
+        _write_hwm(db, hwm_ts)
+
+        router, notifier = self._make_router(auto_execute=False)
+        events = [
+            {
+                "eveEventType": "New Device",
+                "eveMac": "AA:BB:CC:DD:EE:FF",
+                "eveDateTime": "2026-01-15 10:29:59",
+            }
+        ]
+        api = self._make_api_client(events)
+        routed = asyncio.run(poll_once(api, router, db))
+        assert routed == 0
+        notifier.send.assert_not_called()
+
+    def test_poll_once_updates_hwm_after_routing(self, tmp_path):
+        import sqlite3
+        from netalertx.event_poll import _read_hwm, poll_once
+
+        db = str(tmp_path / "test.db")
+        with sqlite3.connect(db) as conn:
+            conn.execute("CREATE TABLE user_prefs (key TEXT PRIMARY KEY, value TEXT)")
+
+        router, _ = self._make_router(auto_execute=True)
+        events = [
+            {
+                "eveEventType": "New Device",
+                "eveMac": "AA:BB:CC:DD:EE:FF",
+                "eveDateTime": "2026-06-01 12:00:00",
+            }
+        ]
+        api = self._make_api_client(events)
+        asyncio.run(poll_once(api, router, db))
+        assert _read_hwm(db) > 0.0
+
+    def test_poll_once_returns_zero_when_no_events(self, tmp_path):
+        import sqlite3
+        from netalertx.event_poll import poll_once
+
+        db = str(tmp_path / "test.db")
+        with sqlite3.connect(db) as conn:
+            conn.execute("CREATE TABLE user_prefs (key TEXT PRIMARY KEY, value TEXT)")
+
+        router, notifier = self._make_router()
+        api = self._make_api_client([])
+        routed = asyncio.run(poll_once(api, router, db))
+        assert routed == 0
 
 
 # ── platform tracking ──────────────────────────────────────────────────────────

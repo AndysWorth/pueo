@@ -527,24 +527,6 @@ class TestNetAlertXConfigKeys:
 
         assert config.NETALERTX_MAX_SCAN_AGE_MINUTES == 20
 
-    def test_netalertx_mqtt_subscribe_default(self, isolated_config):
-        importlib.reload(sys.modules["config"])
-        import config
-
-        assert config.NETALERTX_MQTT_SUBSCRIBE is True
-
-    def test_netalertx_mqtt_user_default(self, isolated_config):
-        importlib.reload(sys.modules["config"])
-        import config
-
-        assert config.NETALERTX_MQTT_USER == ""
-
-    def test_netalertx_mqtt_password_default(self, isolated_config):
-        importlib.reload(sys.modules["config"])
-        import config
-
-        assert config.NETALERTX_MQTT_PASSWORD == ""
-
     def test_netalertx_log_container_name_default(self, isolated_config):
         importlib.reload(sys.modules["config"])
         import config
@@ -557,6 +539,12 @@ class TestNetAlertXConfigKeys:
 
         assert config.NETALERTX_MAX_DB_HISTORY_ROWS == 100000
 
+    def test_netalertx_event_poll_interval_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.NETALERTX_EVENT_POLL_INTERVAL_MINUTES == 5
+
     def test_netalertx_config_overrides(self, isolated_config):
         isolated_config.write_text(
             yaml.dump(
@@ -565,7 +553,7 @@ class TestNetAlertXConfigKeys:
                         "api_port": 9999,
                         "api_token": "tok123",
                         "max_scan_age_minutes": 5,
-                        "mqtt_subscribe": False,
+                        "event_poll_interval_minutes": 10,
                         "max_db_history_rows": 50000,
                     }
                 }
@@ -577,7 +565,7 @@ class TestNetAlertXConfigKeys:
         assert config.NETALERTX_API_PORT == 9999
         assert config.NETALERTX_API_TOKEN == "tok123"
         assert config.NETALERTX_MAX_SCAN_AGE_MINUTES == 5
-        assert config.NETALERTX_MQTT_SUBSCRIBE is False
+        assert config.NETALERTX_EVENT_POLL_INTERVAL_MINUTES == 10
         assert config.NETALERTX_MAX_DB_HISTORY_ROWS == 50000
 
     def test_netalertx_severity_confidence_threshold_default(self, isolated_config):
