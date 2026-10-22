@@ -459,6 +459,21 @@ class TestNetAlertXConfigKeys:
 
         assert config.NETALERTX_API_TOKEN == ""
 
+    def test_netalertx_sidebar_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.NETALERTX_SIDEBAR is True
+
+    def test_netalertx_sidebar_from_yaml(self, isolated_config):
+        import yaml
+
+        isolated_config.write_text(yaml.dump({"netalertx": {"sidebar": False}}))
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.NETALERTX_SIDEBAR is False
+
     def test_netalertx_ssh_defaults_match_ha(self, isolated_config):
         isolated_config.write_text(
             yaml.dump(

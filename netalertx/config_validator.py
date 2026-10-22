@@ -200,6 +200,80 @@ def validate_mqtt_entity_coverage(
     return issues
 
 
+def validate_scan_subnets(conf_text: str) -> list[ConfigIssue]:
+    """Flag SCAN_SUBNETS entries that include internal Docker/Supervisor ranges.
+
+    The Supervisor-internal subnet 172.16.0.0/12 (commonly 172.30.32.0/23)
+    is added by some NetAlertX default configs and produces noise devices
+    (HA containers) in the inventory.
+    """
+    import ipaddress
+
+    issues: list[ConfigIssue] = []
+    for line in conf_text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, _, value = stripped.partition("=")
+        if key.strip() != "SCAN_SUBNETS":
+            continue
+        # Extract all CIDR-looking strings from the value
+        for cidr_str in re.findall(r"(\d{1,3}(?:\.\d{1,3}){3}/\d{1,2})", value):
+            try:
+                net = ipaddress.ip_network(cidr_str, strict=False)
+                if net.overlaps(ipaddress.ip_network("172.16.0.0/12")):
+                    issues.append(
+                        ConfigIssue(
+                            field="SCAN_SUBNETS",
+                            message=(
+                                f"SCAN_SUBNETS contains {cidr_str} which overlaps the "
+                                "RFC-1918 172.16.0.0/12 range used by Docker/Supervisor "
+                                "internal bridges — remove it to avoid phantom devices "
+                                "in the NetAlertX inventory."
+                            ),
+                            severity="MEDIUM",
+                        )
+                    )
+            except ValueError:
+                pass
+    return issues
+
+
+def validate_event_output(conf_text: str) -> list[ConfigIssue]:
+    """Flag MQTT_RUN and WEBHOOK_RUN when both are disabled.
+
+    When both are disabled, NetAlertX pushes no events to HA/Pueo.  This is
+    expected when Pueo polls the REST API instead, but flagged as INFO so
+    operators know the push path is intentionally off.
+    """
+    present: dict[str, str] = {}
+    for line in conf_text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, _, value = stripped.partition("=")
+        present[key.strip()] = value.strip().strip("'\"")
+
+    mqtt_run = present.get("MQTT_RUN", "").lower()
+    webhook_run = present.get("WEBHOOK_RUN", "").lower()
+
+    issues: list[ConfigIssue] = []
+    if mqtt_run == "disabled" and webhook_run == "disabled":
+        issues.append(
+            ConfigIssue(
+                field="MQTT_RUN/WEBHOOK_RUN",
+                message=(
+                    "Both MQTT_RUN and WEBHOOK_RUN are disabled — "
+                    "NetAlertX is not pushing events to HA. "
+                    "Pueo uses REST polling instead; this is expected if you have "
+                    "not configured MQTT push."
+                ),
+                severity="LOW",
+            )
+        )
+    return issues
+
+
 def validate_db_row_counts(
     metrics: dict[str, float],
     max_rows: int,

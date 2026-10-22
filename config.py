@@ -316,6 +316,7 @@ NETALERTX_MQTT_USER: str = _nax.get("mqtt_user", "")
 NETALERTX_MQTT_PASSWORD: str = _nax.get("mqtt_password", "")
 NETALERTX_LOG_CONTAINER_NAME: str = _nax.get("log_container_name", "netalertx")
 NETALERTX_MAX_DB_HISTORY_ROWS: int = int(_nax.get("max_db_history_rows", 100000))
+NETALERTX_SIDEBAR: bool = bool(_nax.get("sidebar", True))
 
 # Docker / separate-machine install target
 NETALERTX_DEPLOY_TARGET: str = _nax.get("deploy_target", "ha")

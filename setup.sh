@@ -576,6 +576,7 @@ OPENAI_COMPAT_MODEL_VAL="${OPENAI_COMPAT_MODEL_VAL:-qwen2.5-coder:7b}"
 # Initialize unbound variables before the NAX prompts to avoid set -u failures
 NAX_DOCKER_CONFIG_PATH=""
 NAX_API_TOKEN=""
+NAX_SIDEBAR=true
 HA_KNOWN_VERSION=""
 MCP_ENABLED=false
 MCP_PORT=8765
@@ -781,6 +782,11 @@ if $WRITE_CONFIG; then
         echo "  Then re-run setup.sh or edit config.yaml directly."
         echo
         ask_secret "NetAlertX API token, blank = set after first install (hidden)" NAX_API_TOKEN
+
+        echo
+        read -rp "  Add NetAlertX to the HA sidebar? [Y/n]: " nax_sidebar_ans
+        NAX_SIDEBAR=true
+        [[ "${nax_sidebar_ans:-Y}" =~ ^[Nn] ]] && NAX_SIDEBAR=false
     fi
 
     # ── Mosquitto MQTT broker ─────────────────────────────────────────────────
@@ -949,6 +955,7 @@ netalertx:
   enabled: ${NAX_SETUP_DESIRED}
   setup_desired: ${NAX_SETUP_DESIRED}
   api_token: "${NAX_API_TOKEN}"
+  sidebar: ${NAX_SIDEBAR}
   deploy_target: "${NAX_DEPLOY_TARGET}"
   docker_host: "${NAX_DOCKER_HOST}"
   docker_ssh_user: "${NAX_DOCKER_SSH_USER}"

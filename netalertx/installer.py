@@ -45,6 +45,7 @@ from config import (
     NETALERTX_MQTT_PASSWORD,
     NETALERTX_MQTT_USER,
     NETALERTX_SCAN_INTERFACE,
+    NETALERTX_SIDEBAR,
 )
 from netalertx.disk_check import DiskSpaceTooLowError, check_target_disk_space
 from utils.agent.autonomy import RiskLevel
@@ -73,6 +74,10 @@ INSTALL_STATES: list[str] = [
     "NETALERTX_CONFIGURED",
     "HA_MQTT_INTEGRATION_VERIFIED",
     "HA_AUTOMATION_CREATED",
+    # OPERATIONAL_NO_API: automation created but API token could not be read.
+    # main.py treats this as done — the user must set the token manually (or
+    # re-run netalertx-setup after NetAlertX has generated a token).
+    "OPERATIONAL_NO_API",
     "FULLY_OPERATIONAL",
 ]
 
@@ -154,6 +159,41 @@ def _write_addon_slug_to_config(slug: str) -> bool:
         return False
 
     config_path.write_text(new_text)
+    return True
+
+
+# ── sidebar helper ────────────────────────────────────────────────────────────
+
+
+async def _apply_sidebar(
+    ssh_client: "SSHClientProtocol",
+    slug: str,
+    cid: str,
+    enable: bool = True,
+) -> bool:
+    """Apply ingress_panel setting for a HA add-on via the Supervisor REST API.
+
+    Returns True on success (or if already at the desired state), False on
+    failure (non-fatal — the add-on is still operational).
+    """
+    value = "true" if enable else "false"
+    cmd = (
+        f"curl -sf -X POST http://supervisor/addons/{slug}/options "
+        ' -H "Authorization: Bearer $SUPERVISOR_TOKEN"'
+        ' -H "Content-Type: application/json"'
+        f" -d '{{\"ingress_panel\": {value}}}'"
+    )
+    ec, _, stderr = await ssh_client.run(cmd)
+    if ec != 0:
+        log.warning(
+            "sidebar_apply_failed",
+            slug=slug,
+            enable=enable,
+            error=stderr,
+            correlation_id=cid,
+        )
+        return False
+    log.info("sidebar_applied", slug=slug, ingress_panel=enable, correlation_id=cid)
     return True
 
 
@@ -1041,6 +1081,13 @@ async def _step6_configure_app_conf(
             "step6_api_check_failed", error=str(e), url=verify_url, correlation_id=cid
         )
 
+    # Apply sidebar setting now that the add-on is confirmed running.
+    # Non-fatal: sidebar failure does not block the install.
+    import config as _cfg_dyn
+
+    if getattr(_cfg_dyn, "NETALERTX_SIDEBAR", NETALERTX_SIDEBAR):
+        await _apply_sidebar(ssh_client, slug, cid, enable=True)
+
     _write_install_state(db_path, "NETALERTX_CONFIGURED", details, cid)
     log.info("step6_complete", correlation_id=cid)
     return True
@@ -1143,6 +1190,79 @@ async def _step7_verify_mqtt_integration(
     return True
 
 
+# ── step 8 helpers ───────────────────────────────────────────────────────────
+
+
+async def _step8_finalize_token(
+    ssh_client: "SSHClientProtocol",
+    slug: str,
+    details: dict,
+    cid: str,
+    db_path: str,
+    notifier: "NotifierProtocol",
+) -> bool:
+    """Auto-read the API token from app.db and write final install state.
+
+    Writes FULLY_OPERATIONAL when the token is found (or already set in
+    config), OPERATIONAL_NO_API otherwise.  Always returns True — token
+    absence is not a fatal installer error.
+    """
+    import config as _cfg_dyn
+
+    final_state = "FULLY_OPERATIONAL"
+    if not getattr(_cfg_dyn, "NETALERTX_API_TOKEN", ""):
+        from netalertx.token import persist_api_token, read_api_token
+        from utils.ha.app_configs import resolve_app_config_root
+
+        _app_config_root = await resolve_app_config_root(ssh_client)
+        _token = ""  # nosec B105
+        if slug:
+            _token = await read_api_token(ssh_client, slug, _app_config_root)
+        if _token:
+            if persist_api_token(_token):
+                log.info("step8_api_token_persisted", correlation_id=cid)
+            else:
+                log.warning(
+                    "step8_api_token_persist_failed",
+                    reason="config.yaml key not found; set netalertx.api_token manually",
+                    correlation_id=cid,
+                )
+        else:
+            final_state = "OPERATIONAL_NO_API"
+            log.warning(
+                "step8_api_token_missing",
+                reason=(
+                    "API token not found in app.db; NetAlertX may not have generated one yet. "
+                    "Generate it at: NetAlertX UI → Settings → Main Settings → API Key, "
+                    "then set netalertx.api_token in config.yaml and re-run netalertx-setup."
+                ),
+                correlation_id=cid,
+            )
+            await notifier.send(
+                subject="NetAlertX installed — action required: set API token",
+                body=(
+                    f"NetAlertX is installed and running.\n\n"
+                    "Pueo could not read the API token from the add-on database — "
+                    "it may not have been generated yet.\n\n"
+                    "To enable REST API features (device name sync, health monitoring):\n"
+                    "  1. Open the NetAlertX web UI\n"
+                    "  2. Go to: Settings → Main Settings → API Key\n"
+                    "  3. Click 'Generate' (or copy the existing key)\n"
+                    "  4. Set netalertx.api_token in config.yaml\n"
+                    "  5. Run: python main.py --mode netalertx-setup\n\n"
+                    "Pueo will retry auto-reading the token on the next run."
+                ),
+                payload={
+                    "card_type": "netalertx_setup",
+                    "notification_id": "netalertx_api_token_required",
+                },
+            )
+
+    _write_install_state(db_path, final_state, details, cid)
+    log.info("step8_complete", final_state=final_state, correlation_id=cid)
+    return True
+
+
 # ── step 8: create HA webhook automation ─────────────────────────────────────
 
 
@@ -1182,11 +1302,12 @@ async def _step8_create_webhook_automation(
         log.info("step8_automation_exists", path=automations_path, correlation_id=cid)
         details["platform"] = "ha"
         _write_install_state(db_path, "HA_AUTOMATION_CREATED", details, cid)
-        _write_install_state(db_path, "FULLY_OPERATIONAL", details, cid)
         slug = NETALERTX_ADDON_SLUG or details.get("addon_slug", "")
         if slug and _write_addon_slug_to_config(slug):
             log.info("step8_slug_written_to_config", slug=slug, correlation_id=cid)
-        return True
+        return await _step8_finalize_token(
+            ssh_client, slug, details, cid, db_path, notifier
+        )
 
     # Backup before write
     from agents.ha_agent_sandbox_engine import execute_remote_backup
@@ -1265,12 +1386,12 @@ async def _step8_create_webhook_automation(
 
     details["platform"] = "ha"
     _write_install_state(db_path, "HA_AUTOMATION_CREATED", details, cid)
-    _write_install_state(db_path, "FULLY_OPERATIONAL", details, cid)
     slug = NETALERTX_ADDON_SLUG or details.get("addon_slug", "")
     if slug and _write_addon_slug_to_config(slug):
         log.info("step8_slug_written_to_config", slug=slug, correlation_id=cid)
-    log.info("step8_complete", correlation_id=cid)
-    return True
+    return await _step8_finalize_token(
+        ssh_client, slug, details, cid, db_path, notifier
+    )
 
 
 # ── public entry point ────────────────────────────────────────────────────────

@@ -1495,6 +1495,28 @@ _CONF_PATH = f"{_DATA_PATH}/config/app.conf"
 _ORIG_APP_CONF = "MQTT_BROKER = 'localhost'\nLOADED_PLUGINS = ['ARPSCAN']\n"
 _HA_CONF = "homeassistant:\n  time_zone: America/New_York\n"
 _AUTOMATIONS_PATH = "/config/automations.yaml"
+# Path that _step8_finalize_token downloads app.db from (effective_root defaults
+# to /app_configs when resolve_app_config_root returns "").
+_APP_DB_REMOTE = f"/app_configs/{_SLUG}/db/app.db"
+
+
+def _make_app_db_bytes(token: str = "test-token-abc") -> bytes:
+    """Create a minimal NetAlertX app.db SQLite file with the given API token."""
+    import os
+    import sqlite3
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    try:
+        with sqlite3.connect(path) as conn:
+            conn.execute("CREATE TABLE Settings (setKey TEXT, setValue TEXT)")
+            conn.execute("INSERT INTO Settings VALUES ('API_TOKEN', ?)", (token,))
+            conn.commit()
+        with open(path, "rb") as fh:
+            return fh.read()
+    finally:
+        os.unlink(path)
 
 
 def _make_mock_http(routes):
@@ -1527,6 +1549,98 @@ def _make_mock_http(routes):
             )
 
     return httpx.AsyncClient(transport=_T(routes))
+
+
+class TestNetAlertXToken:
+    """Tests for netalertx/token.py — read_api_token and persist_api_token."""
+
+    # ── read_api_token ─────────────────────────────────────────────────────────
+
+    def test_read_api_token_happy_path(self, tmp_path):
+        """Downloads app.db, queries API_TOKEN, and returns the token."""
+        import asyncio
+        from utils.ha.ssh_client import FakeSSHClient
+        from netalertx.token import read_api_token
+
+        slug = "netalertx_fa"
+        remote_path = f"/app_configs/{slug}/db/app.db"
+        ssh = FakeSSHClient(
+            download_contents={remote_path: _make_app_db_bytes("tok-abc")}
+        )
+        result = asyncio.run(read_api_token(ssh, slug))
+        assert result == "tok-abc"
+
+    def test_read_api_token_download_failure_returns_empty(self):
+        """Returns '' when the SFTP download raises."""
+        import asyncio
+        from utils.ha.ssh_client import FakeSSHClient
+        from netalertx.token import read_api_token
+
+        ssh = FakeSSHClient()  # no download_contents → download raises
+        result = asyncio.run(read_api_token(ssh, "netalertx_fa"))
+        assert result == ""
+
+    def test_read_api_token_empty_db_returns_empty(self, tmp_path):
+        """Returns '' when the Settings table has no API_TOKEN row."""
+        import asyncio
+        import os
+        import sqlite3
+        from utils.ha.ssh_client import FakeSSHClient
+        from netalertx.token import read_api_token
+
+        slug = "netalertx_fa"
+        remote_path = f"/app_configs/{slug}/db/app.db"
+
+        # Create an app.db with no API_TOKEN row
+        db_path = tmp_path / "app.db"
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.execute("CREATE TABLE Settings (setKey TEXT, setValue TEXT)")
+        db_bytes = db_path.read_bytes()
+
+        ssh = FakeSSHClient(download_contents={remote_path: db_bytes})
+        result = asyncio.run(read_api_token(ssh, slug))
+        assert result == ""
+
+    # ── persist_api_token ──────────────────────────────────────────────────────
+
+    def test_persist_api_token_writes_token(self, tmp_path, monkeypatch):
+        """Replaces api_token under netalertx: in config.yaml and returns True."""
+        from netalertx.token import persist_api_token
+
+        config_yaml = tmp_path / "config.yaml"
+        config_yaml.write_text(
+            "ha_host: homeassistant.local\n"
+            "netalertx:\n"
+            '  api_token: ""\n'
+            "  addon_slug: netalertx_fa\n"
+            "other_section:\n"
+            "  key: value\n"
+        )
+        monkeypatch.setenv("PUEO_CONFIG", str(config_yaml))
+
+        result = persist_api_token("new-secret-token")
+
+        assert result is True
+        text = config_yaml.read_text()
+        assert '"new-secret-token"' in text
+        assert "other_section" in text  # rest of file untouched
+
+    def test_persist_api_token_missing_file_returns_false(self, tmp_path, monkeypatch):
+        """Returns False when config.yaml does not exist."""
+        from netalertx.token import persist_api_token
+
+        monkeypatch.setenv("PUEO_CONFIG", str(tmp_path / "nonexistent.yaml"))
+        assert persist_api_token("tok") is False
+
+    def test_persist_api_token_missing_key_returns_false(self, tmp_path, monkeypatch):
+        """Returns False when api_token key is absent from netalertx: section."""
+        from netalertx.token import persist_api_token
+
+        config_yaml = tmp_path / "config.yaml"
+        config_yaml.write_text("netalertx:\n  addon_slug: netalertx_fa\n")
+        monkeypatch.setenv("PUEO_CONFIG", str(config_yaml))
+
+        assert persist_api_token("tok") is False
 
 
 class TestAppConfigsResolver:
@@ -1571,6 +1685,18 @@ class TestAppConfigsResolver:
 
 class TestNetAlertXInstallerSteps5to8:
     # ── helpers ──────────────────────────────────────────────────────────────
+
+    @pytest.fixture(autouse=True)
+    def _preset_api_token(self, monkeypatch):
+        """Pre-set NETALERTX_API_TOKEN so existing tests bypass token-read.
+
+        Tests that specifically test the OPERATIONAL_NO_API / token-read
+        behaviour must override this by patching config.NETALERTX_API_TOKEN
+        back to "" in their own body.
+        """
+        import config as _cfg
+
+        monkeypatch.setattr(_cfg, "NETALERTX_API_TOKEN", "preset-test-token")
 
     def _notifier(self, approve: bool = True):
         from utils.hitl.notify import FakeNotifier
@@ -1623,6 +1749,9 @@ class TestNetAlertXInstallerSteps5to8:
                 ),
                 self._MQTT_GREP_CMD: (0, "1" if mqtt_present else "0", ""),
             },
+            # Provide a valid app.db so _step8_finalize_token can read the token
+            # and advance to FULLY_OPERATIONAL (rather than OPERATIONAL_NO_API).
+            download_contents={_APP_DB_REMOTE: _make_app_db_bytes()},
         )
 
     def _make_full_ssh_no_mqtt(self, **kwargs):
@@ -3127,11 +3256,207 @@ class TestNetAlertXInstallerSteps5to8:
         assert state == "FULLY_OPERATIONAL"
         assert "/config/automations/netalertx_webhook.yaml" in ssh.written_files
 
+    # ── _step8_finalize_token ─────────────────────────────────────────────────
+
+    def test_finalize_token_no_token_writes_operational_no_api(
+        self, tmp_path, monkeypatch
+    ):
+        """When app.db has no token and config has none, state becomes OPERATIONAL_NO_API."""
+        import asyncio
+        import config as _cfg
+        from netalertx.installer import _step8_finalize_token
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+
+        monkeypatch.setattr(_cfg, "NETALERTX_API_TOKEN", "")
+        db = _make_installer_db_at_state(tmp_path, monkeypatch, "HA_AUTOMATION_CREATED")
+        notifier = FakeNotifier(approve=True)
+        ssh = FakeSSHClient()  # no download_contents → token read fails
+
+        asyncio.run(
+            _step8_finalize_token(
+                ssh,
+                _SLUG,
+                {},
+                "cid",
+                db,
+                notifier,
+            )
+        )
+
+        import netalertx.installer as _inst
+
+        assert _inst.get_install_state(db) == "OPERATIONAL_NO_API"
+        assert len(notifier.sent) == 1
+        assert "API token" in notifier.sent[0]["subject"]
+
+    def test_finalize_token_token_in_app_db_writes_fully_operational(
+        self, tmp_path, monkeypatch
+    ):
+        """When app.db has a token, it is persisted and state becomes FULLY_OPERATIONAL."""
+        import asyncio
+        import config as _cfg
+        from netalertx.installer import _step8_finalize_token
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+
+        monkeypatch.setattr(_cfg, "NETALERTX_API_TOKEN", "")
+
+        # Create config.yaml in tmp_path so persist_api_token can write to it
+        cfg_path = tmp_path / "config.yaml"
+        cfg_path.write_text(
+            "netalertx:\n" '  api_token: ""\n' "  addon_slug: netalertx_fa\n"
+        )
+        monkeypatch.setenv("PUEO_CONFIG", str(cfg_path))
+
+        db = _make_installer_db_at_state(tmp_path, monkeypatch, "HA_AUTOMATION_CREATED")
+        notifier = FakeNotifier(approve=True)
+        remote_db = f"/app_configs/{_SLUG}/db/app.db"
+        ssh = FakeSSHClient(
+            download_contents={remote_db: _make_app_db_bytes("tok-xyz")}
+        )
+
+        asyncio.run(
+            _step8_finalize_token(
+                ssh,
+                _SLUG,
+                {},
+                "cid",
+                db,
+                notifier,
+            )
+        )
+
+        import netalertx.installer as _inst
+
+        assert _inst.get_install_state(db) == "FULLY_OPERATIONAL"
+        assert '"tok-xyz"' in cfg_path.read_text()
+
+    # ── _apply_sidebar ────────────────────────────────────────────────────────
+
+    def test_apply_sidebar_success(self, tmp_path, monkeypatch):
+        """Runs curl over SSH with ingress_panel=true and returns True."""
+        import asyncio
+        from netalertx.installer import _apply_sidebar
+        from utils.ha.ssh_client import FakeSSHClient
+
+        # FakeSSHClient matches by substring — use the stable prefix
+        curl_prefix = f"curl -sf -X POST http://supervisor/addons/{_SLUG}/options"
+
+        ssh = FakeSSHClient(command_results={curl_prefix: (0, "", "")})
+        result = asyncio.run(_apply_sidebar(ssh, _SLUG, "cid", enable=True))
+        assert result is True
+
+    def test_apply_sidebar_ssh_failure_returns_false(self, monkeypatch):
+        """SSH non-zero exit in _apply_sidebar returns False (non-fatal)."""
+        import asyncio
+        from netalertx.installer import _apply_sidebar
+        from utils.ha.ssh_client import FakeSSHClient
+
+        curl_prefix = f"curl -sf -X POST http://supervisor/addons/{_SLUG}/options"
+        ssh = FakeSSHClient(
+            command_results={curl_prefix: (1, "", "curl: (7) connect refused")}
+        )
+        result = asyncio.run(_apply_sidebar(ssh, _SLUG, "cid", enable=False))
+        assert result is False
+
+    # ── _check_sidebar_status (diagnose) ─────────────────────────────────────
+
+    def test_check_sidebar_status_disabled_appends_issue(self):
+        """Appends a LOW issue when ingress_panel=false."""
+        import asyncio
+        from netalertx.one_shot_diagnose import _check_sidebar_status
+        from netalertx.config_validator import ConfigIssue
+        from utils.ha.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(
+            command_results={
+                f"ha apps info {_SLUG}": (
+                    0,
+                    "state: running\ningress_panel: false\n",
+                    "",
+                )
+            }
+        )
+        issues: list[ConfigIssue] = []
+        asyncio.run(_check_sidebar_status(ssh, _SLUG, issues))
+        assert len(issues) == 1
+        assert issues[0].field == "ingress_panel"
+        assert issues[0].severity == "LOW"
+
+    def test_check_sidebar_status_enabled_no_issue(self):
+        """Appends no issue when ingress_panel=true."""
+        import asyncio
+        from netalertx.one_shot_diagnose import _check_sidebar_status
+        from netalertx.config_validator import ConfigIssue
+        from utils.ha.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(
+            command_results={f"ha apps info {_SLUG}": (0, "ingress_panel: true\n", "")}
+        )
+        issues: list[ConfigIssue] = []
+        asyncio.run(_check_sidebar_status(ssh, _SLUG, issues))
+        assert issues == []
+
+    # ── _check_and_refresh_token (diagnose) ───────────────────────────────────
+
+    def test_check_and_refresh_token_persists_when_found(self, tmp_path, monkeypatch):
+        """When token is empty and app.db has one, it is persisted."""
+        import asyncio
+        import config as _cfg
+        from netalertx.one_shot_diagnose import _check_and_refresh_token
+        from netalertx.config_validator import ConfigIssue
+        from utils.ha.ssh_client import FakeSSHClient
+
+        monkeypatch.setattr(_cfg, "NETALERTX_API_TOKEN", "")
+
+        cfg_path = tmp_path / "config.yaml"
+        cfg_path.write_text(
+            "netalertx:\n" '  api_token: ""\n' "  addon_slug: netalertx_fa\n"
+        )
+        monkeypatch.setenv("PUEO_CONFIG", str(cfg_path))
+
+        remote_db = f"/app_configs/{_SLUG}/db/app.db"
+        ssh = FakeSSHClient(
+            download_contents={remote_db: _make_app_db_bytes("diag-tok")}
+        )
+
+        issues: list[ConfigIssue] = []
+        asyncio.run(_check_and_refresh_token(ssh, _SLUG, "/app_configs", issues))
+
+        assert issues == []
+        assert '"diag-tok"' in cfg_path.read_text()
+
+    def test_check_and_refresh_token_appends_issue_when_missing(self, monkeypatch):
+        """Appends MEDIUM issue when token cannot be read from app.db."""
+        import asyncio
+        import config as _cfg
+        from netalertx.one_shot_diagnose import _check_and_refresh_token
+        from netalertx.config_validator import ConfigIssue
+        from utils.ha.ssh_client import FakeSSHClient
+
+        monkeypatch.setattr(_cfg, "NETALERTX_API_TOKEN", "")
+        ssh = FakeSSHClient()  # no download_contents → read fails
+
+        issues: list[ConfigIssue] = []
+        asyncio.run(_check_and_refresh_token(ssh, _SLUG, "", issues))
+
+        assert len(issues) == 1
+        assert issues[0].severity == "MEDIUM"
+        assert "api_token" in issues[0].field
+
 
 # ── run_installer ─────────────────────────────────────────────────────────────
 
 
 class TestRunInstaller:
+    @pytest.fixture(autouse=True)
+    def _preset_api_token(self, monkeypatch):
+        """Pre-set NETALERTX_API_TOKEN so run_installer reaches FULLY_OPERATIONAL."""
+        import config as _cfg
+
+        monkeypatch.setattr(_cfg, "NETALERTX_API_TOKEN", "preset-test-token")
+
     def _gate_auto(self):
         from utils.agent.autonomy import FakeAutonomyGate
 
@@ -5236,6 +5561,57 @@ class TestNetAlertXConfigValidator:
         assert "eve_ip" in fields
         assert "dev_vendor" in fields
 
+    # ── validate_scan_subnets ──────────────────────────────────────────────────
+
+    def test_scan_subnets_172_range_flagged(self):
+        from netalertx.config_validator import validate_scan_subnets
+
+        conf = "SCAN_SUBNETS=['172.30.32.0/23   hassio']\n"
+        issues = validate_scan_subnets(conf)
+        assert len(issues) == 1
+        assert issues[0].field == "SCAN_SUBNETS"
+        assert issues[0].severity == "MEDIUM"
+        assert "172.30.32.0/23" in issues[0].message
+
+    def test_scan_subnets_clean_no_issue(self):
+        from netalertx.config_validator import validate_scan_subnets
+
+        conf = "SCAN_SUBNETS=['192.168.1.0/24   eth0']\n"
+        assert validate_scan_subnets(conf) == []
+
+    def test_scan_subnets_no_key_no_issue(self):
+        from netalertx.config_validator import validate_scan_subnets
+
+        assert validate_scan_subnets("MQTT_BROKER=localhost\n") == []
+
+    # ── validate_event_output ──────────────────────────────────────────────────
+
+    def test_event_output_both_disabled_flagged(self):
+        from netalertx.config_validator import validate_event_output
+
+        conf = "MQTT_RUN='disabled'\nWEBHOOK_RUN='disabled'\n"
+        issues = validate_event_output(conf)
+        assert len(issues) == 1
+        assert issues[0].field == "MQTT_RUN/WEBHOOK_RUN"
+        assert issues[0].severity == "LOW"
+
+    def test_event_output_mqtt_enabled_no_issue(self):
+        from netalertx.config_validator import validate_event_output
+
+        conf = "MQTT_RUN='enabled'\nWEBHOOK_RUN='disabled'\n"
+        assert validate_event_output(conf) == []
+
+    def test_event_output_webhook_enabled_no_issue(self):
+        from netalertx.config_validator import validate_event_output
+
+        conf = "MQTT_RUN='disabled'\nWEBHOOK_RUN='enabled'\n"
+        assert validate_event_output(conf) == []
+
+    def test_event_output_missing_keys_no_issue(self):
+        from netalertx.config_validator import validate_event_output
+
+        assert validate_event_output("MQTT_BROKER=localhost\n") == []
+
 
 class TestNetAlertXDiagnostic:
     # ── NetAlertXDiagnostic schema ────────────────────────────────────────────
@@ -6712,6 +7088,13 @@ class TestNetAlertXVersionGuard:
 
 class TestNetAlertXOneShotDiagnose:
     """Tests for netalertx/one_shot_diagnose.py (item 27)."""
+
+    @pytest.fixture(autouse=True)
+    def _preset_api_token(self, monkeypatch):
+        """Pre-set NETALERTX_API_TOKEN so healthy-system tests skip token-read checks."""
+        import config as _cfg
+
+        monkeypatch.setattr(_cfg, "NETALERTX_API_TOKEN", "preset-test-token")
 
     # ── shared helpers ────────────────────────────────────────────────────────
 

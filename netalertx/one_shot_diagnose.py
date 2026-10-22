@@ -29,7 +29,12 @@ from config import (
     NOTIFY_WATCH_DIR,
     SSH_KEY_PATH,
 )
-from netalertx.config_validator import ConfigIssue, validate_app_conf
+from netalertx.config_validator import (
+    ConfigIssue,
+    validate_app_conf,
+    validate_event_output,
+    validate_scan_subnets,
+)
 from netalertx.diagnosis import diagnose_health_report
 from netalertx.health import NetAlertXHealthMonitor
 from netalertx.installer import _parse_slug_from_store, _write_addon_slug_to_config
@@ -102,6 +107,88 @@ async def _fetch_app_conf(
         return await ha_ssh_client.read_file(conf_path)
     except (FileNotFoundError, OSError):
         return None
+
+
+async def _check_sidebar_status(
+    ha_ssh_client: "SSHClientProtocol",
+    slug: str,
+    config_issues: list[ConfigIssue],
+) -> None:
+    """Append a ConfigIssue when ingress_panel is disabled for the add-on."""
+    if not slug:
+        return
+    _, stdout, _ = await ha_ssh_client.run(f"ha apps info {slug}")
+    m = re.search(r"ingress_panel:\s*(\S+)", stdout, re.IGNORECASE)
+    if m and m.group(1).lower() in ("false", "no", "0"):
+        config_issues.append(
+            ConfigIssue(
+                field="ingress_panel",
+                message=(
+                    f"NetAlertX add-on ({slug}) is not shown in the HA sidebar "
+                    "(ingress_panel=false). Re-run netalertx-setup or set "
+                    "netalertx.sidebar: true in config.yaml and re-run."
+                ),
+                severity="LOW",
+            )
+        )
+
+
+async def _check_and_refresh_token(
+    ha_ssh_client: "SSHClientProtocol",
+    slug: str,
+    app_config_root: str,
+    config_issues: list[ConfigIssue],
+) -> None:
+    """Try to auto-read the API token from app.db when it is not set in config.
+
+    Persists the token to config.yaml on success.  Appends a MEDIUM ConfigIssue
+    when the token is still missing after the attempt.
+    """
+    import config as _cfg_dyn
+
+    if getattr(_cfg_dyn, "NETALERTX_API_TOKEN", ""):
+        return  # already configured
+
+    if not slug:
+        config_issues.append(
+            ConfigIssue(
+                field="netalertx.api_token",
+                message=(
+                    "netalertx.api_token is not set and addon_slug is unknown — "
+                    "cannot auto-read token. Set both in config.yaml."
+                ),
+                severity="MEDIUM",
+            )
+        )
+        return
+
+    from netalertx.token import persist_api_token, read_api_token
+
+    token = await read_api_token(ha_ssh_client, slug, app_config_root)
+    if token:
+        if persist_api_token(token):
+            log.info(
+                "netalertx_diagnose_token_auto_persisted",
+                note="token read from app.db and written to config.yaml",
+            )
+        else:
+            log.warning(
+                "netalertx_diagnose_token_persist_failed",
+                note="token found but config.yaml update failed; set netalertx.api_token manually",
+            )
+    else:
+        config_issues.append(
+            ConfigIssue(
+                field="netalertx.api_token",
+                message=(
+                    "netalertx.api_token is not set and could not be auto-read from "
+                    "app.db. Generate a token at: "
+                    "NetAlertX UI → Settings → Main Settings → API Key, "
+                    "then set netalertx.api_token in config.yaml."
+                ),
+                severity="MEDIUM",
+            )
+        )
 
 
 def _print_summary(
@@ -276,6 +363,8 @@ async def run_diagnose(
             ]
         else:
             config_issues = validate_app_conf(conf_text)
+            config_issues.extend(validate_scan_subnets(conf_text))
+            config_issues.extend(validate_event_output(conf_text))
 
     if not mosquitto_running:
         config_issues.append(
@@ -302,6 +391,12 @@ async def run_diagnose(
                 severity="MEDIUM",
             )
         )
+
+    # 4b. Sidebar status
+    await _check_sidebar_status(_ha_ssh, _slug, config_issues)
+
+    # 4c. API token — try auto-read from app.db if token is empty
+    await _check_and_refresh_token(_ha_ssh, _slug, _app_config_root, config_issues)
 
     # 5. AI synthesis — pass _ha_ssh to enable adaptive AgentLoop evidence gathering
     diagnostic, _llm_trace = await diagnose_health_report(
