@@ -87,6 +87,11 @@ def sig_host_health(kind: str, issue_type: str) -> str:
     return f"host:{_part(kind)}:{_part(issue_type)}"
 
 
+def sig_device_availability(domain: str) -> str:
+    """device:offline:<domain>"""
+    return f"device:offline:{_part(domain)}"
+
+
 # Signatures written before ``_part`` mapped "-" to "_" (#945).  Rewritten in place
 # at startup by strategy_seeder.normalize_legacy_signatures().
 LEGACY_SIGNATURE_RENAMES: dict[str, str] = {

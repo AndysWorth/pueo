@@ -841,3 +841,230 @@ class TestCardTypeDeviceOffline:
         from utils.hitl.card_types import CARD_TYPE_DEVICE_OFFLINE
 
         assert CARD_TYPE_DEVICE_OFFLINE == "device_offline"
+
+
+# ---------------------------------------------------------------------------
+# run_device_availability_investigation
+# ---------------------------------------------------------------------------
+
+
+class TestRunDeviceAvailabilityInvestigation:
+    def _make_db(self, tmp_path):
+        return _make_poll_db(tmp_path)
+
+    def _patch_supervisor(self, monkeypatch):
+        import utils.agent.supervisor as _sup_mod
+
+        monkeypatch.setattr(_sup_mod, "increment_active_agent", lambda: None)
+        monkeypatch.setattr(_sup_mod, "decrement_active_agent", lambda: None)
+        monkeypatch.setattr(_sup_mod, "publish_activity_done", lambda *a, **kw: None)
+        monkeypatch.setattr(
+            _sup_mod, "make_activity_timeline_callback", lambda *a, **kw: None
+        )
+
+    def _finding(self):
+        return OfflineFinding(
+            config_entry_id="entry-econet",
+            domain="econet",
+            devices=[
+                {
+                    "name": "Heat Pump",
+                    "device_id": "dev-A",
+                    "offline_since": 1700000000.0,
+                }
+            ],
+        )
+
+    def test_finish_called_no_backoff_written(self, tmp_path, monkeypatch):
+        """When finish_device_availability is called with success, no backoff row written."""
+        import asyncio
+        import sqlite3 as _sqlite3
+
+        import utils.ha.ha_environment as _env_mod
+        from utils.ha.device_availability_investigation import (
+            run_device_availability_investigation,
+        )
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        self._patch_supervisor(monkeypatch)
+        monkeypatch.setattr(_env_mod, "load_environment_profile", lambda db: None)
+
+        db = self._make_db(tmp_path)
+        finding = self._finding()
+
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_device_availability",
+                                "arguments": {
+                                    "summary": "MQTT thread died; reloaded integration.",
+                                    "root_cause": "Cloud push thread death after MQTT disconnect.",
+                                    "outcome": "resolved",
+                                    "recommended_actions": [],
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
+
+        asyncio.run(
+            run_device_availability_investigation(
+                finding=finding,
+                notifier=FakeNotifier(),
+                db_path=db,
+                llm_client=llm,
+                ssh_client=FakeSSHClient(),
+            )
+        )
+
+        with _sqlite3.connect(db) as conn:
+            row = conn.execute(
+                "SELECT next_allowed_at FROM hitl_suppression"
+                " WHERE card_key = 'device_offline_backoff:entry-econet'"
+            ).fetchone()
+        assert row is None
+
+    def test_non_success_writes_backoff(self, tmp_path, monkeypatch):
+        """When AgentLoop returns a non-success outcome, backoff row is written."""
+        import asyncio
+        import sqlite3 as _sqlite3
+
+        import utils.agent.agent_loop as _al_mod
+        import utils.ha.ha_environment as _env_mod
+        from utils.agent.tool_registry import AgentLoopResult
+        from utils.ha.device_availability_investigation import (
+            run_device_availability_investigation,
+        )
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        self._patch_supervisor(monkeypatch)
+        monkeypatch.setattr(_env_mod, "load_environment_profile", lambda db: None)
+
+        _original_loop = _al_mod.AgentLoop
+
+        class _ExhaustedLoop(_original_loop):
+            async def run(self, *args, **kwargs):
+                return AgentLoopResult(outcome="exhausted")
+
+        monkeypatch.setattr(_al_mod, "AgentLoop", _ExhaustedLoop)
+
+        db = self._make_db(tmp_path)
+        finding = self._finding()
+
+        asyncio.run(
+            run_device_availability_investigation(
+                finding=finding,
+                notifier=FakeNotifier(),
+                db_path=db,
+                llm_client=FakeToolCallingLLMClient([]),
+                ssh_client=FakeSSHClient(),
+            )
+        )
+
+        with _sqlite3.connect(db) as conn:
+            row = conn.execute(
+                "SELECT next_allowed_at FROM hitl_suppression"
+                " WHERE card_key = 'device_offline_backoff:entry-econet'"
+            ).fetchone()
+        assert row is not None
+
+    def test_gate_built_with_autonomy_level(self, tmp_path, monkeypatch):
+        """AutonomyGate is constructed with config.AUTONOMY_LEVEL."""
+        import asyncio
+
+        import config as cfg_mod
+        import utils.agent.agent_loop as _al_mod
+        import utils.agent.autonomy as _autonomy_mod
+        import utils.ha.ha_environment as _env_mod
+        from utils.agent.tool_registry import AgentLoopResult
+        from utils.ha.device_availability_investigation import (
+            run_device_availability_investigation,
+        )
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        self._patch_supervisor(monkeypatch)
+        monkeypatch.setattr(_env_mod, "load_environment_profile", lambda db: None)
+        monkeypatch.setattr(cfg_mod, "AUTONOMY_LEVEL", 2)
+
+        _original_loop = _al_mod.AgentLoop
+
+        class _NoopLoop(_original_loop):
+            async def run(self, *args, **kwargs):
+                return AgentLoopResult(outcome="success")
+
+        monkeypatch.setattr(_al_mod, "AgentLoop", _NoopLoop)
+
+        captured_levels: list = []
+        _original_gate = _autonomy_mod.AutonomyGate
+
+        class _CapturingGate(_original_gate):
+            def __init__(self, level, **kwargs):
+                captured_levels.append(level)
+                super().__init__(level, **kwargs)
+
+        monkeypatch.setattr(_autonomy_mod, "AutonomyGate", _CapturingGate)
+
+        db = self._make_db(tmp_path)
+        finding = self._finding()
+
+        asyncio.run(
+            run_device_availability_investigation(
+                finding=finding,
+                notifier=FakeNotifier(),
+                db_path=db,
+                llm_client=FakeToolCallingLLMClient([]),
+                ssh_client=FakeSSHClient(),
+            )
+        )
+
+        assert 2 in captured_levels
+
+
+# ---------------------------------------------------------------------------
+# sig_device_availability
+# ---------------------------------------------------------------------------
+
+
+class TestSigDeviceAvailability:
+    def test_basic(self):
+        from utils.knowledge.runbook_signature import sig_device_availability
+
+        assert sig_device_availability("econet") == "device:offline:econet"
+
+    def test_normalises_case_and_hyphens(self):
+        from utils.knowledge.runbook_signature import sig_device_availability
+
+        assert sig_device_availability("EcoNet-Cloud") == "device:offline:econet_cloud"
+
+    def test_empty_domain(self):
+        from utils.knowledge.runbook_signature import sig_device_availability
+
+        assert sig_device_availability("") == "device:offline:unknown"
+
+
+# ---------------------------------------------------------------------------
+# build_device_availability_tool_registry
+# ---------------------------------------------------------------------------
+
+
+class TestDeviceAvailabilityToolRegistry:
+    def test_contains_required_tools(self):
+        from utils.agent.tool_registry import build_device_availability_tool_registry
+
+        reg = build_device_availability_tool_registry()
+        names = set(reg.names())
+        assert "finish_device_availability" in names
+        assert "reload_integration" in names
+        assert "query_knowledge" in names
+        assert "request_escalation" in names

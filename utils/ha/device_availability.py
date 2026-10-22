@@ -270,7 +270,7 @@ def _compute_offline_since(
                 .replace(tzinfo=datetime.timezone.utc)
                 .timestamp()
             )
-        except Exception:  # nosec B110
+        except Exception:  # nosec B112
             continue
         if latest is None or ts > latest:
             latest = ts
@@ -322,12 +322,17 @@ async def _run_device_availability_investigation(
     llm_client: object,
     knowledge_store: object,
 ) -> None:
-    """Stub — replaced by utils/ha/device_availability_investigation.py in S3."""
-    log.info(
-        "device_availability_investigation_stub",
-        config_entry_id=finding.config_entry_id,
-        domain=finding.domain,
-        device_count=len(finding.devices),
+    """Delegate to the investigation module."""
+    from utils.ha.device_availability_investigation import (
+        run_device_availability_investigation,
+    )
+
+    await run_device_availability_investigation(
+        finding=finding,
+        notifier=notifier,
+        db_path=db_path,
+        llm_client=llm_client,
+        knowledge_store=knowledge_store,
     )
 
 

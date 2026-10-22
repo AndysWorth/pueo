@@ -7427,6 +7427,7 @@ class TestSeedRegistry:
         from agents.ha_update_manager import classify_update_type
         from utils.ha.ha_environment import HAEnvironmentProfile
         from utils.knowledge.runbook_signature import (
+            sig_device_availability,
             sig_host_health,
             sig_notification,
             sig_repair,
@@ -7449,6 +7450,7 @@ class TestSeedRegistry:
             sig_update(hacs_type, "noaa_it_all"),
             sig_host_health("resolution_issue", "rpi_firmware_update_blocked"),
             sig_host_health("resolution_issue", "no_current_backup"),
+            sig_device_availability("econet"),
         ]
 
     def test_every_seed_file_registered_or_retired(self):
