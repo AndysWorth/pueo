@@ -10670,3 +10670,35 @@ class TestInstallerConnectionError:
         assert any(
             "connection error" in (m.get("subject") or "") for m in notifier.sent
         ), f"expected a 'connection error' card; got: {notifier.sent}"
+
+
+# ---------------------------------------------------------------------------
+# TestGetNetworkPresenceRegistrations — S2a: registry and MCP membership
+# ---------------------------------------------------------------------------
+
+
+class TestGetNetworkPresenceRegistrations:
+    """Verify get_network_presence appears in all required registries."""
+
+    def test_in_ha_tool_registry(self):
+        from utils.agent.tool_registry import build_ha_tool_registry
+
+        reg = build_ha_tool_registry()
+        assert "get_network_presence" in reg._tools
+
+    def test_in_chat_tool_registry(self):
+        from utils.agent.tool_registry import build_chat_tool_registry
+
+        reg = build_chat_tool_registry()
+        assert "get_network_presence" in reg._tools
+
+    def test_in_device_availability_tool_registry(self):
+        from utils.agent.tool_registry import build_device_availability_tool_registry
+
+        reg = build_device_availability_tool_registry()
+        assert "get_network_presence" in reg._tools
+
+    def test_in_mcp_tool_names(self):
+        from utils.mcp.pueo_mcp_server import _MCP_TOOL_NAMES
+
+        assert "get_network_presence" in _MCP_TOOL_NAMES

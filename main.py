@@ -1513,6 +1513,7 @@ async def supervisor_main(config_path: Path) -> None:
             lambda: poll_device_availability(
                 notifier=notifier,
                 knowledge_store=knowledge_store,
+                netalertx_api_client=_nax_api,
             ),
             interval_seconds=60,
         )

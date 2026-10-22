@@ -485,6 +485,8 @@ class ToolExecutor:
                 return await self._read_file(args.get("path", ""))
             if name == "query_netalertx":
                 return await self._query_netalertx(args.get("query_type", "health"))
+            if name == "get_network_presence":
+                return await self._get_network_presence(args.get("identifier", ""))
             if name == "apply_fix":
                 return await self._apply_fix(
                     args.get("yaml_content", ""),
@@ -3133,6 +3135,133 @@ class ToolExecutor:
             return ToolResult(
                 tool_name="query_netalertx", success=False, output="", error=str(exc)
             )
+
+    async def _get_network_presence(self, identifier: str) -> ToolResult:
+        """Look up a device's network presence in NetAlertX.
+
+        Accepts MAC, IPv4, HA device ID, or HA entity ID.
+        Resolves HA IDs → MAC/IP via the device registry when ws_client is available.
+        """
+        import re
+
+        _MAC_RE = re.compile(r"^([0-9a-f]{2}:){5}[0-9a-f]{2}$", re.IGNORECASE)
+        _IP_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
+
+        result: dict = {
+            "identifier": identifier,
+            "present": None,
+            "last_seen": None,
+            "ip": None,
+            "mac": None,
+            "name": None,
+            "vendor": None,
+            "ip_changed": None,
+            "netalertx_status": "not_configured",
+        }
+
+        if self._api is None:
+            return ToolResult(
+                tool_name="get_network_presence",
+                success=True,
+                output=json.dumps(result),
+            )
+
+        if not self._api.has_token:
+            result["netalertx_status"] = "no_token"
+            return ToolResult(
+                tool_name="get_network_presence",
+                success=True,
+                output=json.dumps(result),
+            )
+
+        # Resolve HA device/entity ID → MAC/IP via device registry
+        lookup_mac: str | None = None
+        lookup_ip: str | None = None
+
+        if _MAC_RE.match(identifier):
+            lookup_mac = identifier.lower()
+        elif _IP_RE.match(identifier):
+            lookup_ip = identifier
+        elif self._ws_client is not None:
+            try:
+                dev_reg = await self._ws_client.get_device_registry()
+                ent_reg: list[dict] = []
+                # Resolve entity ID → device_id first
+                target_device_id = identifier
+                if "." in identifier:
+                    try:
+                        ent_reg = await self._ws_client.get_entity_registry()
+                    except Exception:  # nosec B110
+                        pass
+                    for ent in ent_reg:
+                        if ent.get("entity_id") == identifier:
+                            target_device_id = ent.get("device_id", identifier)
+                            break
+
+                for dev in dev_reg:
+                    if dev.get("id") != target_device_id:
+                        continue
+                    for conn_type, conn_val in dev.get("connections", []):
+                        if conn_type == "mac":
+                            lookup_mac = conn_val.lower()
+                            break
+                        if conn_type == "ip":
+                            lookup_ip = conn_val
+                    if lookup_mac is None and lookup_ip is None:
+                        # Try config-entry data for host/ip keys
+                        for ce_id in dev.get("config_entries", []):
+                            pass  # config-entry host lookup not available here
+                    break
+            except Exception:  # nosec B110
+                pass
+
+        try:
+            devices = await self._api.get_devices()
+            result["netalertx_status"] = "ok"
+            match: dict | None = None
+            for dev in devices:
+                dev_mac = (dev.get("devMac") or "").lower()
+                dev_ip = dev.get("devLastIP") or ""
+                if lookup_mac and dev_mac == lookup_mac:
+                    match = dev
+                    break
+                if lookup_ip and dev_ip == lookup_ip:
+                    match = dev
+                    break
+
+            if match is not None:
+                result["present"] = bool(match.get("devPresentLastScan"))
+                result["last_seen"] = match.get("devLastSeen") or match.get(
+                    "devLastConnection"
+                )
+                result["ip"] = match.get("devLastIP")
+                result["mac"] = (match.get("devMac") or "").lower() or None
+                result["name"] = match.get("devName") or match.get("devAlias")
+                result["vendor"] = match.get("devVendor")
+                prev_ip = match.get("devScanIPv4") or match.get("devFirstIP")
+                result["ip_changed"] = (
+                    bool(prev_ip and prev_ip != result["ip"]) if prev_ip else None
+                )
+            else:
+                result["present"] = False
+
+        except Exception as exc:  # nosec B110
+            result["netalertx_status"] = "error"
+            log.warning(
+                "get_network_presence_failed", identifier=identifier, error=str(exc)
+            )
+            return ToolResult(
+                tool_name="get_network_presence",
+                success=False,
+                output="",
+                error=str(exc),
+            )
+
+        return ToolResult(
+            tool_name="get_network_presence",
+            success=True,
+            output=json.dumps(result, default=str),
+        )
 
     async def _investigate_device(self, ip: str) -> ToolResult:
         """Enrich an IP address with MAC, vendor, hostname, and NetAlertX context."""

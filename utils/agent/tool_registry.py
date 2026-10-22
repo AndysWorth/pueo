@@ -1169,6 +1169,33 @@ INVESTIGATE_DEVICE = ToolDefinition(
     },
 )
 
+GET_NETWORK_PRESENCE = ToolDefinition(
+    name="get_network_presence",
+    description=(
+        "Look up a device's current network presence in NetAlertX. "
+        "Returns whether the device was seen on the last scan, its last-seen time, "
+        "current IP, MAC, vendor, and whether its IP changed. "
+        "Accepts a MAC address (aa:bb:cc:dd:ee:ff), IPv4 address, "
+        "HA device ID (e.g. 'abc123'), or HA entity ID (e.g. 'sensor.foo'). "
+        "Use this early in any device-offline investigation to determine whether "
+        "the device is physically on the LAN (integration/cloud fault) or truly offline "
+        "(power or Wi-Fi fault)."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "identifier": {
+                "type": "string",
+                "description": (
+                    "MAC address, IPv4 address, HA device ID, or HA entity ID "
+                    "for the device to look up"
+                ),
+            },
+        },
+        "required": ["identifier"],
+    },
+)
+
 # NetAlertX-specific tools used by the NetAlertX healer loop
 RESTART_NETALERTX = ToolDefinition(
     name="restart_netalertx",
@@ -2299,6 +2326,7 @@ def build_ha_tool_registry() -> ToolRegistry:
         FETCH_URL,
         SEARCH_HA_DOCS,
         INVESTIGATE_DEVICE,
+        GET_NETWORK_PRESENCE,
         READ_PUEO_LOG,
         SEARCH_LOG,
         SUMMARIZE_LOG_WINDOW,
@@ -2406,6 +2434,7 @@ def build_chat_tool_registry() -> ToolRegistry:
         FETCH_URL,
         SEARCH_HA_DOCS,
         INVESTIGATE_DEVICE,
+        GET_NETWORK_PRESENCE,
         RESTART_NETALERTX,
         REWRITE_NETALERTX_CONF,
         READ_PUEO_LOG,
@@ -2595,6 +2624,7 @@ def build_device_availability_tool_registry() -> ToolRegistry:
         FETCH_URL,
         FETCH_HA_DOCS,
         RELOAD_INTEGRATION,
+        GET_NETWORK_PRESENCE,
         RECALL,
         REMEMBER,
         REQUEST_ESCALATION,
