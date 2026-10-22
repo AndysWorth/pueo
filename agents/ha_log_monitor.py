@@ -397,11 +397,33 @@ def get_ha_log_sparkline_data(bucket_size: str = "1m", time_range: str = "1h") -
     )
 
 
-# High-priority regex to capture structural components collapsing or syntax crashes
+# High-priority regex to capture structural components collapsing or syntax crashes.
+# "Uncaught thread exception" is severe enough to match without an ERROR/CRITICAL prefix.
 CRITICAL_LOG_PATTERN = re.compile(
-    r"(ERROR|CRITICAL).*?(Component error|Failed to initialize|Traceback|Invalid config|Error doing job)",
+    r"((ERROR|CRITICAL).*?(Component error|Failed to initialize|Traceback|Invalid config|Error doing job)"
+    r"|Uncaught thread exception)",
     re.IGNORECASE,
 )
+
+# "Traceback (most recent call last):" appears on its own line in multi-line Python
+# exceptions.  It is critical only when the preceding log line was ERROR or CRITICAL.
+_ERROR_CRITICAL_PREFIX = re.compile(r"\b(ERROR|CRITICAL)\b", re.IGNORECASE)
+_TRACEBACK_HEADER = re.compile(r"^Traceback \(most recent call last\)", re.IGNORECASE)
+
+
+def _is_critical_line(line: str, prev_line: str) -> bool:
+    """Return True if `line` should trigger triage.
+
+    Extends CRITICAL_LOG_PATTERN with one additional case: a bare
+    "Traceback (most recent call last):" header is critical when the
+    immediately preceding buffered line contained ERROR or CRITICAL.
+    """
+    if CRITICAL_LOG_PATTERN.search(line):
+        return True
+    return bool(
+        _TRACEBACK_HEADER.match(line) and _ERROR_CRITICAL_PREFIX.search(prev_line)
+    )
+
 
 # OSError errno values that indicate a normal SSH session tear-down by the remote host.
 # These are expected during long-running log streams and warrant WARNING, not ERROR.
@@ -414,6 +436,7 @@ _TRANSIENT_LOG_PATTERNS = re.compile(
     r"(NameResolutionError|Failed to resolve"
     r"|MaxRetryError|Max retries exceeded"
     r"|ConnectionError|ConnectionRefusedError"
+    r"|TimeoutError|timed out"
     r"|Status Code: 50[2-4]|Gateway Timeout"
     r"|urllib3\.exceptions)",
     re.IGNORECASE,
@@ -814,9 +837,10 @@ async def tail_remote_log_stream(
     try:
         async for line in client.stream_lines(tail_command):
             clean_line = line.strip()
+            _prev_line = _log_buffer[-1] if _log_buffer else ""
             _log_buffer.append(clean_line)
 
-            _matched = bool(CRITICAL_LOG_PATTERN.search(clean_line))
+            _matched = _is_critical_line(clean_line, _prev_line)
             await asyncio.to_thread(_record_sparkline_line, state, _matched)
 
             if _matched:
