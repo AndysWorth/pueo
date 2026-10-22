@@ -14,6 +14,71 @@ def device_availability_knowledge_query(finding: OfflineFinding) -> str:
     return f"device offline {finding.domain} unavailable".strip()
 
 
+async def build_presence_context(
+    devices: list,  # list[dict] from OfflineFinding.devices
+    netalertx_api_client: Optional[Any],  # Optional[NetAlertXAPIClient]
+    ws_client: Optional[Any],  # Optional[HAWebSocketClientProtocol]
+) -> str:
+    """Return a NetAlertX presence summary block for pre-injection into initial_context.
+
+    Returns an empty string when NetAlertX is not configured, has no token, or
+    when any fetch fails.  Never raises.
+    """
+    if netalertx_api_client is None or not getattr(
+        netalertx_api_client, "has_token", False
+    ):
+        return ""
+
+    try:
+        mac_by_device_id: dict = {}
+        if ws_client is not None:
+            try:
+                dev_reg = await ws_client.get_device_registry()
+                for dev in dev_reg:
+                    for conn_type, conn_val in dev.get("connections", []):
+                        if conn_type == "mac":
+                            mac_by_device_id[dev["id"]] = conn_val.lower()
+                            break
+            except Exception:  # nosec B110
+                pass
+
+        nax_devices = await netalertx_api_client.get_devices()
+        mac_to_nax: dict = {(d.get("devMac") or "").lower(): d for d in nax_devices}
+
+        lines: list = []
+        for dev in devices:
+            device_id = dev.get("device_id", "")
+            name = dev.get("name", device_id)
+            mac = mac_by_device_id.get(device_id)
+            if mac is None:
+                lines.append(f"  - {name}: not found in NetAlertX (no MAC mapping)")
+                continue
+            nax_dev = mac_to_nax.get(mac)
+            if nax_dev is None:
+                lines.append(f"  - {name}: not found in NetAlertX (MAC {mac})")
+                continue
+            present = bool(nax_dev.get("devPresentLastScan"))
+            last_seen = (
+                nax_dev.get("devLastSeen")
+                or nax_dev.get("devLastConnection")
+                or "unknown"
+            )
+            current_ip = nax_dev.get("devLastIP") or "unknown"
+            lines.append(
+                f"  - {name}: {'present on LAN' if present else 'absent from LAN'}"
+                f" (MAC {mac}, IP {current_ip}, last_seen {last_seen})"
+            )
+
+        if not lines:
+            return ""
+
+        return "\n\nNetAlertX network presence:\n" + "\n".join(lines)
+
+    except Exception as exc:  # nosec B110
+        log.debug("presence_context_fetch_failed", error=str(exc))
+        return ""
+
+
 async def run_device_availability_investigation(
     finding: OfflineFinding,
     notifier: Any,  # NotifierProtocol
@@ -83,6 +148,12 @@ async def run_device_availability_investigation(
         f"Config entry ID: {finding.config_entry_id}\n"
         f"Offline devices ({len(finding.devices)}):\n{device_lines}"
     )
+
+    presence_block = await build_presence_context(
+        finding.devices, netalertx_api_client, ws_client
+    )
+    if presence_block:
+        initial_context += presence_block
 
     from utils.agent.supervisor import (
         decrement_active_agent,
