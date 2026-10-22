@@ -327,6 +327,7 @@ async def _run_device_availability_investigation(
     notifier: object,
     llm_client: object,
     knowledge_store: object,
+    netalertx_api_client: object = None,
 ) -> None:
     """Delegate to the investigation module."""
     from utils.ha.device_availability_investigation import (
@@ -339,6 +340,7 @@ async def _run_device_availability_investigation(
         db_path=db_path,
         llm_client=llm_client,
         knowledge_store=knowledge_store,
+        netalertx_api_client=netalertx_api_client,
     )
 
 
@@ -356,6 +358,7 @@ async def poll_device_availability(
     notifier=None,  # Optional[NotifierProtocol]
     llm_client=None,  # Optional[LLMClientProtocol]
     knowledge_store=None,
+    netalertx_api_client=None,  # Optional[NetAlertXAPIClient]
 ) -> None:
     """Periodically evaluate device availability and investigate armed devices going offline."""
     import asyncio
@@ -488,6 +491,7 @@ async def poll_device_availability(
                 _notifier_ref = _notifier
                 _llm_ref = llm_client
                 _ks_ref = knowledge_store
+                _nax_ref = netalertx_api_client
 
                 async def _investigate_coro(
                     _f: OfflineFinding = _finding,
@@ -495,6 +499,7 @@ async def poll_device_availability(
                     _n: object = _notifier_ref,
                     _l: object = _llm_ref,
                     _k: object = _ks_ref,
+                    _nax: object = _nax_ref,
                 ) -> None:
                     await _run_device_availability_investigation(
                         finding=_f,
@@ -502,6 +507,7 @@ async def poll_device_availability(
                         notifier=_n,
                         llm_client=_l,
                         knowledge_store=_k,
+                        netalertx_api_client=_nax,
                     )
 
                 _wq = get_work_queue_or_none()

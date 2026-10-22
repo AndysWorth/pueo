@@ -23,6 +23,7 @@ async def run_device_availability_investigation(
     ha_rest_client: Optional[Any] = None,
     ssh_client: Optional[Any] = None,  # SSHClientProtocol
     ws_client: Optional[Any] = None,  # HAWebSocketClientProtocol
+    netalertx_api_client: Optional[Any] = None,  # NetAlertXAPIClient
 ) -> None:
     """Run an AgentLoop to investigate an offline device and create a HITL card.
 
@@ -54,6 +55,7 @@ async def run_device_availability_investigation(
         ha_ws_client=ws_client,
         knowledge_store=knowledge_store,
         db_path=db_path,
+        netalertx_api_client=netalertx_api_client,
     )
     executor.set_device_availability_finding(finding)
 

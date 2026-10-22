@@ -1764,3 +1764,442 @@ class TestAdditionalCoverage:
             )
         )
         # The profile was set — no assertion needed beyond "didn't crash"
+
+
+# ---------------------------------------------------------------------------
+# TestGetNetworkPresence — _get_network_presence tool (S2a)
+# ---------------------------------------------------------------------------
+
+
+class TestGetNetworkPresence:
+    """Unit tests for ToolExecutor._get_network_presence."""
+
+    def _make_executor(self, nax_client=None, ws_client=None, tmp_path=None):
+        import asyncio  # noqa: F401
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+        from utils.agent.tool_executor import ToolExecutor
+
+        ex = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(auto_execute_result=True),
+            notifier=FakeNotifier(),
+            netalertx_api_client=nax_client,
+        )
+        if ws_client is not None:
+            ex.set_ws_client(ws_client)
+        return ex
+
+    def _fake_nax(self, devices, has_token=True):
+        class _FakeNAX:
+            def __init__(self, devs, tok):
+                self._devs = devs
+                self.has_token = tok
+
+            async def get_devices(self):
+                return self._devs
+
+        return _FakeNAX(devices, has_token)
+
+    def test_no_api_client_returns_not_configured(self):
+        import asyncio, json
+        from utils.agent.tool_registry import ToolCall
+
+        executor = self._make_executor()
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="get_network_presence",
+                    arguments={"identifier": "aa:bb:cc:dd:ee:ff"},
+                )
+            )
+        )
+        assert result.success
+        data = json.loads(result.output)
+        assert data["netalertx_status"] == "not_configured"
+        assert data["present"] is None
+
+    def test_no_token_returns_no_token(self):
+        import asyncio, json
+        from utils.agent.tool_registry import ToolCall
+
+        nax = self._fake_nax([], has_token=False)
+        executor = self._make_executor(nax_client=nax)
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="get_network_presence",
+                    arguments={"identifier": "aa:bb:cc:dd:ee:ff"},
+                )
+            )
+        )
+        assert result.success
+        data = json.loads(result.output)
+        assert data["netalertx_status"] == "no_token"
+
+    def test_found_by_mac(self):
+        import asyncio, json
+        from utils.agent.tool_registry import ToolCall
+
+        devices = [
+            {
+                "devMac": "AA:BB:CC:DD:EE:FF",
+                "devLastIP": "10.0.0.5",
+                "devPresentLastScan": 1,
+                "devLastSeen": "2026-10-22 07:00:00",
+                "devName": "Heat Pump",
+                "devAlias": None,
+                "devVendor": "Rheem",
+                "devScanIPv4": "10.0.0.5",
+            }
+        ]
+        nax = self._fake_nax(devices)
+        executor = self._make_executor(nax_client=nax)
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="get_network_presence",
+                    arguments={"identifier": "aa:bb:cc:dd:ee:ff"},
+                )
+            )
+        )
+        assert result.success
+        data = json.loads(result.output)
+        assert data["netalertx_status"] == "ok"
+        assert data["present"] is True
+        assert data["ip"] == "10.0.0.5"
+        assert data["mac"] == "aa:bb:cc:dd:ee:ff"
+        assert data["name"] == "Heat Pump"
+        assert data["vendor"] == "Rheem"
+        assert data["ip_changed"] is False
+
+    def test_found_by_ip(self):
+        import asyncio, json
+        from utils.agent.tool_registry import ToolCall
+
+        devices = [
+            {
+                "devMac": "AA:BB:CC:DD:EE:FF",
+                "devLastIP": "10.0.0.5",
+                "devPresentLastScan": 0,
+                "devLastSeen": "2026-10-22 06:00:00",
+                "devName": "EconNet",
+                "devAlias": None,
+                "devVendor": None,
+                "devScanIPv4": None,
+            }
+        ]
+        nax = self._fake_nax(devices)
+        executor = self._make_executor(nax_client=nax)
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="get_network_presence", arguments={"identifier": "10.0.0.5"}
+                )
+            )
+        )
+        assert result.success
+        data = json.loads(result.output)
+        assert data["netalertx_status"] == "ok"
+        assert data["present"] is False
+        assert data["ip_changed"] is None
+
+    def test_not_found_returns_present_false(self):
+        import asyncio, json
+        from utils.agent.tool_registry import ToolCall
+
+        nax = self._fake_nax([])
+        executor = self._make_executor(nax_client=nax)
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="get_network_presence",
+                    arguments={"identifier": "00:11:22:33:44:55"},
+                )
+            )
+        )
+        assert result.success
+        data = json.loads(result.output)
+        assert data["netalertx_status"] == "ok"
+        assert data["present"] is False
+        assert data["ip"] is None
+
+    def test_api_error_returns_failure(self):
+        import asyncio
+        from utils.agent.tool_registry import ToolCall
+
+        class _ErrorNAX:
+            has_token = True
+
+            async def get_devices(self):
+                raise RuntimeError("connection refused")
+
+        executor = self._make_executor(nax_client=_ErrorNAX())
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="get_network_presence",
+                    arguments={"identifier": "aa:bb:cc:dd:ee:ff"},
+                )
+            )
+        )
+        assert not result.success
+        assert "connection refused" in result.error
+
+    def test_resolves_ha_device_id_via_ws_client(self):
+        import asyncio, json
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        devices_nax = [
+            {
+                "devMac": "AA:BB:CC:DD:EE:FF",
+                "devLastIP": "10.0.0.7",
+                "devPresentLastScan": 1,
+                "devLastSeen": "2026-10-22 08:00:00",
+                "devName": "MyDevice",
+                "devAlias": None,
+                "devVendor": "Acme",
+                "devScanIPv4": "10.0.0.7",
+            }
+        ]
+        nax = self._fake_nax(devices_nax)
+
+        ws = FakeHAWebSocketClient(
+            devices=[
+                {
+                    "id": "dev-abc",
+                    "name": "MyDevice",
+                    "connections": [["mac", "AA:BB:CC:DD:EE:FF"]],
+                    "config_entries": [],
+                }
+            ]
+        )
+
+        executor = self._make_executor(nax_client=nax, ws_client=ws)
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="get_network_presence", arguments={"identifier": "dev-abc"}
+                )
+            )
+        )
+        assert result.success
+        data = json.loads(result.output)
+        assert data["netalertx_status"] == "ok"
+        assert data["present"] is True
+        assert data["mac"] == "aa:bb:cc:dd:ee:ff"
+
+    def test_resolves_ha_entity_id_via_ws_client(self):
+        import asyncio, json
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        devices_nax = [
+            {
+                "devMac": "11:22:33:44:55:66",
+                "devLastIP": "10.0.0.9",
+                "devPresentLastScan": 1,
+                "devLastSeen": "2026-10-22 09:00:00",
+                "devName": "Thermostat",
+                "devAlias": None,
+                "devVendor": None,
+                "devScanIPv4": None,
+            }
+        ]
+        nax = self._fake_nax(devices_nax)
+
+        ws = FakeHAWebSocketClient(
+            devices=[
+                {
+                    "id": "dev-xyz",
+                    "name": "Thermostat",
+                    "connections": [["mac", "11:22:33:44:55:66"]],
+                    "config_entries": [],
+                }
+            ],
+            entity_registry=[
+                {"entity_id": "climate.thermostat", "device_id": "dev-xyz"}
+            ],
+        )
+
+        executor = self._make_executor(nax_client=nax, ws_client=ws)
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="get_network_presence",
+                    arguments={"identifier": "climate.thermostat"},
+                )
+            )
+        )
+        assert result.success
+        data = json.loads(result.output)
+        assert data["netalertx_status"] == "ok"
+        assert data["present"] is True
+        assert data["mac"] == "11:22:33:44:55:66"
+
+
+# ---------------------------------------------------------------------------
+# TestDeviceAvailabilityNaxThreading — nax client flows to investigation
+# ---------------------------------------------------------------------------
+
+
+class TestDeviceAvailabilityNaxThreading:
+    """Verify netalertx_api_client threads from poll_device_availability
+    through the stub and into run_device_availability_investigation."""
+
+    def test_stub_passes_nax_to_real_investigation(self, monkeypatch):
+        """_run_device_availability_investigation passes nax client through."""
+        import asyncio
+        from utils.ha.device_availability import (
+            OfflineFinding,
+            _run_device_availability_investigation,
+        )
+        import utils.ha.device_availability_investigation as inv_mod
+
+        captured = {}
+
+        async def _fake_real(
+            finding, notifier, db_path, llm_client, knowledge_store, **kw
+        ):
+            captured["nax"] = kw.get("netalertx_api_client")
+
+        monkeypatch.setattr(
+            inv_mod, "run_device_availability_investigation", _fake_real
+        )
+
+        finding = OfflineFinding(
+            config_entry_id="entry-1",
+            domain="test",
+            devices=[{"name": "Dev", "device_id": "d1", "offline_since": 0.0}],
+        )
+
+        class _FakeNAX:
+            pass
+
+        nax = _FakeNAX()
+        asyncio.run(
+            _run_device_availability_investigation(
+                finding=finding,
+                db_path=":memory:",
+                notifier=None,
+                llm_client=None,
+                knowledge_store=None,
+                netalertx_api_client=nax,
+            )
+        )
+        assert captured["nax"] is nax
+
+    def test_investigation_passes_nax_to_executor(self, tmp_path, monkeypatch):
+        """run_device_availability_investigation passes nax to ToolExecutor."""
+        import asyncio
+        from utils.ha.device_availability import OfflineFinding
+        from utils.ha.device_availability_investigation import (
+            run_device_availability_investigation,
+        )
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+        import utils.ha.ha_environment as _env_mod
+        from utils.agent.tool_executor import ToolExecutor
+
+        captured_executor: dict = {}
+
+        _orig_init = ToolExecutor.__init__
+
+        def _patched_init(self, *args, **kwargs):
+            captured_executor["nax"] = kwargs.get("netalertx_api_client")
+            _orig_init(self, *args, **kwargs)
+
+        monkeypatch.setattr(ToolExecutor, "__init__", _patched_init)
+        monkeypatch.setattr(_env_mod, "load_environment_profile", lambda db: None)
+
+        import utils.agent.supervisor as _sup_mod
+
+        monkeypatch.setattr(_sup_mod, "increment_active_agent", lambda: None)
+        monkeypatch.setattr(_sup_mod, "decrement_active_agent", lambda: None)
+        monkeypatch.setattr(
+            _sup_mod,
+            "make_activity_timeline_callback",
+            lambda *a, **kw: None,
+        )
+        monkeypatch.setattr(_sup_mod, "publish_activity_done", lambda *a, **kw: None)
+
+        # Build a minimal DB with the tables the investigation uses
+        import sqlite3
+
+        db = str(tmp_path / "test.db")
+        with sqlite3.connect(db) as conn:
+            for ddl in (
+                "CREATE TABLE hitl_suppression (card_key TEXT PRIMARY KEY,"
+                " next_allowed_at REAL NOT NULL DEFAULT 0,"
+                " resolved_at REAL)",
+                "CREATE TABLE hitl_cards (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                " card_key TEXT NOT NULL, card_type TEXT NOT NULL, subject TEXT,"
+                " payload_json TEXT, created_at REAL NOT NULL DEFAULT 0,"
+                " resolved_at REAL, status TEXT NOT NULL DEFAULT 'pending',"
+                " context_json TEXT)",
+                "CREATE TABLE user_prefs (key TEXT PRIMARY KEY, value TEXT)",
+                "CREATE TABLE session_outcomes"
+                " (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                " session_id TEXT NOT NULL, session_type TEXT NOT NULL,"
+                " outcome TEXT NOT NULL DEFAULT 'unknown',"
+                " card_id TEXT, distill_payload_json TEXT, distilled_at REAL,"
+                " episode_data_json TEXT,"
+                " created_at REAL NOT NULL DEFAULT 0,"
+                " updated_at REAL NOT NULL DEFAULT 0)",
+                "CREATE TABLE hitl_backoff"
+                " (backoff_key TEXT PRIMARY KEY,"
+                " backoff_until REAL NOT NULL DEFAULT 0,"
+                " outcome TEXT NOT NULL DEFAULT '',"
+                " created_at REAL NOT NULL DEFAULT 0)",
+                "CREATE TABLE runbook_usage"
+                " (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                " session_id TEXT NOT NULL, strategy_id TEXT NOT NULL,"
+                " created_at REAL NOT NULL DEFAULT 0)",
+            ):
+                conn.execute(ddl)
+
+        finding = OfflineFinding(
+            config_entry_id="entry-econet",
+            domain="econet",
+            devices=[{"name": "Heat Pump", "device_id": "dev-A", "offline_since": 0.0}],
+        )
+
+        class _FakeNAX:
+            pass
+
+        nax = _FakeNAX()
+
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_device_availability",
+                                "arguments": {
+                                    "summary": "done",
+                                    "root_cause": "test",
+                                    "outcome": "resolved",
+                                    "recommended_actions": [],
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
+
+        asyncio.run(
+            run_device_availability_investigation(
+                finding=finding,
+                notifier=FakeNotifier(),
+                db_path=db,
+                llm_client=llm,
+                ssh_client=FakeSSHClient(),
+                netalertx_api_client=nax,
+            )
+        )
+        assert captured_executor.get("nax") is nax
