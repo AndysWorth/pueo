@@ -33,7 +33,7 @@ NetAlertX code lives in `netalertx/`; the dashboard in `web/`.
 | `core/` | Prompt loader, rate limiter/debouncer, token budget (`context.py`), structured logging, retry, timeline |
 | `debug/` | Debug episode capture and HTML report writer |
 | `disk/` | Hardware detection, disk recovery and usage, archiver, resource monitoring (`resource.py`), host-health fetch + evaluation (`host_health.py`), host-health investigation (`host_health_investigation.py`), Pueo backup storage |
-| `ha/` | `HARestClient`, `HAWebSocketClient`, `HAEventSubscriber`, SSH client, `read_only_ssh.py` (investigation guard, ADR 043), HA environment profile, Lovelace utils, `service_policy.py` |
+| `ha/` | `HARestClient`, `HAWebSocketClient`, `HAEventSubscriber`, SSH client, `read_only_ssh.py` (investigation guard, ADR 043), HA environment profile, Lovelace utils, `service_policy.py`, `device_availability.py` (evaluator + poll loop, ADR 047), `device_availability_investigation.py` (AgentLoop investigation) |
 | `hitl/` | Approval card types and tracker (`hitl_suppression`), notifier, LLM trace |
 | `knowledge/` | ChromaDB store (8 collections), scrapers, strategy seeder, repair-episode embedder, KB ingester/contributor |
 | `llm/` | `OllamaClient`, `ClaudeAPIClient`, `make_llm_client()`, model options, latency stats, Ollama monitor |

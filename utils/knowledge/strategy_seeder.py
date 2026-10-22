@@ -165,6 +165,11 @@ _SEED_PROMPTS: list[tuple[str, str, str]] = [
         "swap pressure, memory low, eMMC disk wear, unexpected reboot, supervisor unhealthy, supervisor unsupported, resolution issue",
     ),
     (
+        "seed_device_offline.md",
+        "Device offline investigation — cloud-push integrations",
+        "device offline, device unavailable, econet unavailable, ecobee offline, MQTT disconnect, cloud push thread death, integration unavailable",
+    ),
+    (
         "seed_host_rpi_firmware.md",
         "rpi_firmware_update_blocked — CM4 EEPROM read-only",
         "rpi_firmware_update_blocked, CM4 EEPROM update blocked, eeprom_update_unavailable",

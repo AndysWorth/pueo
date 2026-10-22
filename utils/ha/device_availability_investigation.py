@@ -1,0 +1,143 @@
+"""LLM-guided investigation for device-availability findings (offline devices)."""
+
+import asyncio
+from typing import Any, Optional
+
+from utils.core.logging import get_logger
+from utils.ha.device_availability import OfflineFinding
+
+log = get_logger("device_availability_investigation")
+
+
+def device_availability_knowledge_query(finding: OfflineFinding) -> str:
+    """Targeted pre-inject query: domain plus 'device offline'."""
+    return f"device offline {finding.domain} unavailable".strip()
+
+
+async def run_device_availability_investigation(
+    finding: OfflineFinding,
+    notifier: Any,  # NotifierProtocol
+    db_path: str,
+    llm_client: Optional[Any] = None,  # LLMClientProtocol
+    knowledge_store: Optional[Any] = None,
+    ha_rest_client: Optional[Any] = None,
+    ssh_client: Optional[Any] = None,  # SSHClientProtocol
+    ws_client: Optional[Any] = None,  # HAWebSocketClientProtocol
+) -> None:
+    """Run an AgentLoop to investigate an offline device and create a HITL card.
+
+    Uses the real AutonomyGate(AUTONOMY_LEVEL) so gated fixes (reload_integration)
+    route through the real gate and produce cards at lower autonomy levels.
+    SSH reads use ReadOnlySSHClient (ADR 043); every SSH write raises.
+    """
+    import config as _cfg
+    from utils.agent.agent_loop import AgentLoop
+    from utils.agent.autonomy import AutonomyGate
+    from utils.agent.tool_executor import ToolExecutor
+    from utils.agent.tool_registry import build_device_availability_tool_registry
+    from utils.core.prompts import load_prompt
+    from utils.ha.read_only_ssh import ReadOnlySSHClient
+    from utils.ha.ssh_client import AsyncSSHClient
+    from utils.llm.llm_factory import make_llm_client
+
+    llm = llm_client or make_llm_client()  # pragma: no cover
+    gate = AutonomyGate(_cfg.AUTONOMY_LEVEL)
+    _ssh_real = ssh_client or AsyncSSHClient(  # pragma: no cover
+        _cfg.HA_HOST, _cfg.HA_USER, _cfg.SSH_KEY_PATH
+    )
+
+    executor = ToolExecutor(
+        ha_ssh_client=ReadOnlySSHClient(_ssh_real),
+        gate=gate,
+        notifier=notifier,
+        ha_rest_client=ha_rest_client,
+        ha_ws_client=ws_client,
+        knowledge_store=knowledge_store,
+        db_path=db_path,
+    )
+    executor.set_device_availability_finding(finding)
+
+    try:
+        from utils.ha.ha_environment import load_environment_profile as _lep
+
+        _prof = await asyncio.to_thread(_lep, db_path)
+        if _prof is not None:
+            executor.set_ha_profile(_prof)
+    except Exception:  # nosec B110
+        pass
+
+    registry = build_device_availability_tool_registry()
+    system_prompt = load_prompt("agent_loop_device_availability").format(
+        terminal_tool="finish_device_availability"
+    )
+
+    device_lines = "\n".join(
+        "  - {name} (offline since {offline_since})".format(**d)
+        for d in finding.devices
+    )
+    initial_context = (
+        f"Device availability issue detected:\n"
+        f"Integration: {finding.domain}\n"
+        f"Config entry ID: {finding.config_entry_id}\n"
+        f"Offline devices ({len(finding.devices)}):\n{device_lines}"
+    )
+
+    from utils.agent.supervisor import (
+        decrement_active_agent,
+        increment_active_agent,
+        make_activity_timeline_callback,
+        publish_activity_done,
+    )
+
+    loop = AgentLoop(
+        llm_client=llm,
+        tool_executor=executor,
+        tool_registry=registry,
+        system_prompt=system_prompt,
+        terminal_tool_name="finish_device_availability",
+        trigger="device_availability_poll",
+        activity_type="device_availability",
+        db_path=db_path,
+        knowledge_store=knowledge_store,
+        timeline_callback=make_activity_timeline_callback(
+            "device_availability",
+            trigger=f"Device offline: {finding.domain}",
+        ),
+        capture_llm=True,
+    )
+    from utils.knowledge.runbook_signature import sig_device_availability
+
+    increment_active_agent()
+    try:
+        result = await loop.run(
+            initial_context=initial_context,
+            knowledge_query=device_availability_knowledge_query(finding),
+            signature=sig_device_availability(finding.domain),
+            subject_key=f"{finding.config_entry_id}:{finding.domain}",
+        )
+        publish_activity_done("device_availability", result.outcome)
+        if result.outcome != "success":
+            import sqlite3 as _sqlite3
+
+            from utils.hitl.hitl_tracker import mark_investigation_backoff
+
+            with _sqlite3.connect(db_path) as _conn:
+                mark_investigation_backoff(
+                    _conn,
+                    f"device_offline_backoff:{finding.config_entry_id}",
+                )
+            log.warning(
+                "device_availability_investigation_backoff",
+                outcome=result.outcome,
+                config_entry_id=finding.config_entry_id,
+                domain=finding.domain,
+            )
+    except Exception as exc:
+        log.error(
+            "device_availability_investigation_failed",
+            config_entry_id=finding.config_entry_id,
+            domain=finding.domain,
+            error=str(exc),
+        )
+    finally:
+        decrement_active_agent()

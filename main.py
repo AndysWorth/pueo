@@ -1504,6 +1504,19 @@ async def supervisor_main(config_path: Path) -> None:
             interval_seconds=cfg.HA_LOVELACE_CHECK_INTERVAL_MINUTES * 60,
         )
 
+    # Device availability poll loop (only if enabled and token is configured)
+    if cfg.DEVICE_AVAILABILITY_ENABLED and cfg.HA_API_TOKEN:
+        from utils.ha.device_availability import poll_device_availability
+
+        supervisor.start(
+            "device_availability_poll",
+            lambda: poll_device_availability(
+                notifier=notifier,
+                knowledge_store=knowledge_store,
+            ),
+            interval_seconds=60,
+        )
+
     # HA event subscriber tasks — run_forever + wake dispatcher
     if _event_sub is not None:
         supervisor.start("ha_event_subscriber", _event_sub.run_forever)

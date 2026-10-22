@@ -349,6 +349,7 @@ class ToolExecutor:
         self._pending_notification = pending_notification
         self._pending_update_status: Optional[Any] = None
         self._host_health_finding: Optional[Any] = None
+        self._device_availability_finding: Optional[Any] = None
         self._pending_auto_apply: bool = False
         self._release_notes_obtained: bool = False
         self._lovelace_suspicious: list[str] = []
@@ -441,6 +442,10 @@ class ToolExecutor:
     def set_host_health_finding(self, finding: Any) -> None:
         """Store the HostHealthFinding so _finish_host_health can build the card."""
         self._host_health_finding = finding
+
+    def set_device_availability_finding(self, finding: Any) -> None:
+        """Store the OfflineFinding so _finish_device_availability can build the card."""
+        self._device_availability_finding = finding
 
     def set_episode_id(self, episode_id: str) -> None:
         """Set the current AgentLoop episode ID so finish_* cards can include it."""
@@ -762,6 +767,14 @@ class ToolExecutor:
             if name == "finish_host_health":
                 self._capture_declared_runbook(args)
                 return await self._finish_host_health(
+                    summary=args.get("summary", ""),
+                    root_cause=args.get("root_cause", ""),
+                    outcome=args.get("outcome", "needs_action"),
+                    recommended_actions=args.get("recommended_actions", []),
+                )
+            if name == "finish_device_availability":
+                self._capture_declared_runbook(args)
+                return await self._finish_device_availability(
                     summary=args.get("summary", ""),
                     root_cause=args.get("root_cause", ""),
                     outcome=args.get("outcome", "needs_action"),
@@ -5483,6 +5496,79 @@ class ToolExecutor:
             pass
         return ToolResult(
             tool_name="finish_host_health",
+            success=True,
+            output=summary,
+        )
+
+    async def _finish_device_availability(
+        self,
+        summary: str,
+        root_cause: str,
+        outcome: str,
+        recommended_actions: list,
+    ) -> ToolResult:
+        """Send a device-availability investigation card and mark it as sent."""
+        import sqlite3 as _sqlite3
+
+        import config as _cfg
+        from utils.hitl.card_types import CARD_TYPE_DEVICE_OFFLINE
+        from utils.hitl.hitl_tracker import mark_card_sent, stable_nid
+
+        finding = self._device_availability_finding
+        if finding is None:
+            return ToolResult(
+                tool_name="finish_device_availability",
+                success=True,
+                output=summary or "Device availability investigation complete.",
+            )
+
+        card_key = f"device_offline:{finding.config_entry_id}"
+        _db = self._db_path
+        with _sqlite3.connect(_db) as _conn:
+            mark_card_sent(
+                _conn,
+                card_key,
+                CARD_TYPE_DEVICE_OFFLINE,
+                f"Device offline: {finding.domain}",
+            )
+
+        device_names = [d["name"] for d in finding.devices]
+        _payload: dict = {
+            "notification_id": stable_nid(card_key),
+            "card_type": CARD_TYPE_DEVICE_OFFLINE,
+            "suppression_key": card_key,
+            "type": "device_offline",
+            "domain": finding.domain,
+            "config_entry_id": finding.config_entry_id,
+            "devices": finding.devices,
+            "root_cause": root_cause,
+            "outcome": outcome,
+            "recommended_actions": recommended_actions,
+            "episode_id": self._episode_id,
+        }
+        subject = f"Pueo: Device offline — {', '.join(device_names[:3])}"
+        if len(device_names) > 3:
+            subject += f" (+{len(device_names) - 3} more)"
+        await self._notifier.send(
+            subject=subject,
+            body=summary,
+            payload=_payload,
+        )
+        self._mark_card_queued(_payload["notification_id"])
+        try:
+            from utils.core.timeline import write_timeline_event
+
+            await asyncio.to_thread(
+                write_timeline_event,
+                "WARN",
+                "device_availability",
+                f"Device offline ({finding.domain}): {summary}",
+                {"domain": finding.domain, "outcome": outcome},
+            )
+        except Exception:  # nosec B110
+            pass
+        return ToolResult(
+            tool_name="finish_device_availability",
             success=True,
             output=summary,
         )

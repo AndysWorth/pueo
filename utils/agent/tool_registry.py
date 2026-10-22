@@ -2178,6 +2178,47 @@ FINISH_HOST_HEALTH = ToolDefinition(
 )
 
 
+FINISH_DEVICE_AVAILABILITY = ToolDefinition(
+    name="finish_device_availability",
+    description=(
+        "Report findings and close the device-availability investigation. "
+        "Call exactly once after completing all evidence gathering. "
+        "The result is sent as a notification card for the user."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "summary": {
+                "type": "string",
+                "description": "Plain-English summary of what was found and what (if anything) was done (2–4 sentences).",
+            },
+            "root_cause": {
+                "type": "string",
+                "description": "One-sentence root cause or explanation of why the device went offline.",
+            },
+            "outcome": {
+                "type": "string",
+                "enum": ["resolved", "monitoring", "needs_action", "escalated"],
+                "description": "resolved: reloaded or self-recovered; monitoring: vendor outage, watch; needs_action: user must act; escalated: sent to human.",
+            },
+            "recommended_actions": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Concrete steps the user should take (empty if resolved or monitoring).",
+            },
+            "runbook_followed": {
+                "type": "string",
+                "description": (
+                    "The strategy_id (shown as [id=…] on retrieved knowledge chunks) "
+                    "of the runbook you actually followed. Pass 'none' if none applied."
+                ),
+            },
+        },
+        "required": ["summary", "root_cause", "outcome", "recommended_actions"],
+    },
+)
+
+
 def build_host_health_tool_registry() -> ToolRegistry:
     """Narrow registry for host-health LLM investigations.
 
@@ -2532,6 +2573,34 @@ def build_notification_investigation_registry() -> ToolRegistry:
         DISMISS_NOTIFICATION,
         REQUEST_ESCALATION,
         FINISH_NOTIFICATION_INVESTIGATION,
+    ):
+        reg.register(tool)
+    return reg
+
+
+def build_device_availability_tool_registry() -> ToolRegistry:
+    """Registry for investigating offline devices.
+
+    Read-only tools + reload_integration (gated by service_policy) +
+    request_escalation.  No write_config or patch tools.
+    """
+    reg = ToolRegistry()
+    for tool in (
+        QUERY_KNOWLEDGE,
+        READ_LOGS,
+        GET_ENTITY_HISTORY,
+        GET_LOGBOOK,
+        SEARCH_INTEGRATIONS,
+        GET_INTEGRATION_DIAGNOSTICS,
+        FETCH_URL,
+        FETCH_HA_DOCS,
+        RELOAD_INTEGRATION,
+        RECALL,
+        REMEMBER,
+        REQUEST_ESCALATION,
+        READ_SOURCE,
+        DISCARD_RESULT,
+        FINISH_DEVICE_AVAILABILITY,
     ):
         reg.register(tool)
     return reg

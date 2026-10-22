@@ -148,7 +148,7 @@
       {% else %}
       {% set ct = r.payload.get("card_type", "") %}
       {% set has_fix = r.payload.get("pending_fix_yaml") %}
-      {% set is_actionable = ct in ("repair", "update", "netalertx_heal", "netalertx_setup", "netalertx_uninstall", "netalertx_migrate", "netalertx_switch", "resource_action", "disk_recovery", "code_proposal", "open_pr", "ha_repair", "cloud_escalation", "dashboard_entity", "unregistered_entity", "config_entry_reload", "ha_command", "service_call", "automation_create", "companion_setup") or (ct == "host_health" and not r.payload.get("informational")) or has_fix %}
+      {% set is_actionable = ct in ("repair", "update", "netalertx_heal", "netalertx_setup", "netalertx_uninstall", "netalertx_migrate", "netalertx_switch", "resource_action", "disk_recovery", "code_proposal", "open_pr", "ha_repair", "cloud_escalation", "dashboard_entity", "unregistered_entity", "config_entry_reload", "ha_command", "service_call", "automation_create", "companion_setup") or (ct == "host_health" and not r.payload.get("informational")) or (ct == "device_offline" and r.payload.get("has_fix")) or has_fix %}
       {% if ct == "repair" and r.payload.get("enrichment") %}
       {% set enr = r.payload.enrichment %}
       <div style="margin:0.75rem 0;">
@@ -477,6 +477,9 @@ trigger: {{ r.payload.get("trigger", []) | tojson(indent=2) }}
         {% elif ct == "host_health" %}
           {% set hint_approve = "Acknowledge this host-health finding and dismiss the card" %}
           {% set hint_reject = "Dismiss; no further action taken" %}
+        {% elif ct == "device_offline" %}
+          {% set hint_approve = "Reload the integration config entry via HA REST API to recover the offline device" %}
+          {% set hint_reject = "Discard; integration stays in its current state" %}
         {% else %}
           {% set hint_approve = "Execute this action" %}
           {% set hint_reject = "Discard; no changes made" %}
