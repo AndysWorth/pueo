@@ -2203,3 +2203,275 @@ class TestDeviceAvailabilityNaxThreading:
             )
         )
         assert captured_executor.get("nax") is nax
+
+
+# ---------------------------------------------------------------------------
+# build_presence_context
+# ---------------------------------------------------------------------------
+
+
+class TestBuildPresenceContext:
+    """build_presence_context returns a formatted presence block or empty string."""
+
+    def _devices(self):
+        return [{"name": "Heat Pump", "device_id": "dev-A", "offline_since": 0.0}]
+
+    def test_returns_empty_when_no_client(self):
+        import asyncio
+        from utils.ha.device_availability_investigation import build_presence_context
+
+        result = asyncio.run(build_presence_context(self._devices(), None, None))
+        assert result == ""
+
+    def test_returns_empty_when_no_token(self):
+        import asyncio
+        from utils.ha.device_availability_investigation import build_presence_context
+
+        class _NoToken:
+            has_token = False
+
+        result = asyncio.run(build_presence_context(self._devices(), _NoToken(), None))
+        assert result == ""
+
+    def test_present_on_lan(self):
+        import asyncio
+        from utils.ha.device_availability_investigation import build_presence_context
+
+        class _FakeNAX:
+            has_token = True
+
+            async def get_devices(self):
+                return [
+                    {
+                        "devMac": "AA:BB:CC:DD:EE:FF",
+                        "devPresentLastScan": 1,
+                        "devLastSeen": "2026-10-22 07:00:00",
+                        "devLastIP": "10.0.0.50",
+                    }
+                ]
+
+        class _FakeWS:
+            async def get_device_registry(self):
+                return [
+                    {
+                        "id": "dev-A",
+                        "connections": [["mac", "aa:bb:cc:dd:ee:ff"]],
+                    }
+                ]
+
+        result = asyncio.run(
+            build_presence_context(self._devices(), _FakeNAX(), _FakeWS())
+        )
+        assert "present on LAN" in result
+        assert "Heat Pump" in result
+        assert "aa:bb:cc:dd:ee:ff" in result
+
+    def test_absent_from_lan(self):
+        import asyncio
+        from utils.ha.device_availability_investigation import build_presence_context
+
+        class _FakeNAX:
+            has_token = True
+
+            async def get_devices(self):
+                return [
+                    {
+                        "devMac": "AA:BB:CC:DD:EE:FF",
+                        "devPresentLastScan": 0,
+                        "devLastSeen": "2026-10-22 06:55:00",
+                        "devLastIP": "10.0.0.50",
+                    }
+                ]
+
+        class _FakeWS:
+            async def get_device_registry(self):
+                return [
+                    {
+                        "id": "dev-A",
+                        "connections": [["mac", "aa:bb:cc:dd:ee:ff"]],
+                    }
+                ]
+
+        result = asyncio.run(
+            build_presence_context(self._devices(), _FakeNAX(), _FakeWS())
+        )
+        assert "absent from LAN" in result
+        assert "Heat Pump" in result
+
+    def test_no_mac_mapping(self):
+        import asyncio
+        from utils.ha.device_availability_investigation import build_presence_context
+
+        class _FakeNAX:
+            has_token = True
+
+            async def get_devices(self):
+                return []
+
+        class _FakeWS:
+            async def get_device_registry(self):
+                # Device has no MAC connection
+                return [{"id": "dev-A", "connections": []}]
+
+        result = asyncio.run(
+            build_presence_context(self._devices(), _FakeNAX(), _FakeWS())
+        )
+        assert "no MAC mapping" in result
+
+    def test_not_found_in_netalertx(self):
+        import asyncio
+        from utils.ha.device_availability_investigation import build_presence_context
+
+        class _FakeNAX:
+            has_token = True
+
+            async def get_devices(self):
+                # Different MAC — device not in inventory
+                return [{"devMac": "11:22:33:44:55:66", "devPresentLastScan": 1}]
+
+        class _FakeWS:
+            async def get_device_registry(self):
+                return [
+                    {
+                        "id": "dev-A",
+                        "connections": [["mac", "aa:bb:cc:dd:ee:ff"]],
+                    }
+                ]
+
+        result = asyncio.run(
+            build_presence_context(self._devices(), _FakeNAX(), _FakeWS())
+        )
+        assert "not found in NetAlertX" in result
+        assert "aa:bb:cc:dd:ee:ff" in result
+
+    def test_api_error_returns_empty(self):
+        import asyncio
+        from utils.ha.device_availability_investigation import build_presence_context
+
+        class _ErrorNAX:
+            has_token = True
+
+            async def get_devices(self):
+                raise RuntimeError("connection refused")
+
+        class _FakeWS:
+            async def get_device_registry(self):
+                return [
+                    {
+                        "id": "dev-A",
+                        "connections": [["mac", "aa:bb:cc:dd:ee:ff"]],
+                    }
+                ]
+
+        result = asyncio.run(
+            build_presence_context(self._devices(), _ErrorNAX(), _FakeWS())
+        )
+        assert result == ""
+
+    def test_ws_error_falls_back_gracefully(self):
+        import asyncio
+        from utils.ha.device_availability_investigation import build_presence_context
+
+        class _FakeNAX:
+            has_token = True
+
+            async def get_devices(self):
+                return []
+
+        class _FailWS:
+            async def get_device_registry(self):
+                raise RuntimeError("ws error")
+
+        # ws error → no MAC mapping → "no MAC mapping" line per device
+        result = asyncio.run(
+            build_presence_context(self._devices(), _FakeNAX(), _FailWS())
+        )
+        assert "no MAC mapping" in result
+
+    def test_no_ws_client_fallback(self):
+        import asyncio
+        from utils.ha.device_availability_investigation import build_presence_context
+
+        class _FakeNAX:
+            has_token = True
+
+            async def get_devices(self):
+                return []
+
+        result = asyncio.run(build_presence_context(self._devices(), _FakeNAX(), None))
+        assert "no MAC mapping" in result
+
+    def test_header_present_in_block(self):
+        import asyncio
+        from utils.ha.device_availability_investigation import build_presence_context
+
+        class _FakeNAX:
+            has_token = True
+
+            async def get_devices(self):
+                return [
+                    {
+                        "devMac": "AA:BB:CC:DD:EE:FF",
+                        "devPresentLastScan": 1,
+                        "devLastSeen": "2026-10-22 07:00:00",
+                        "devLastIP": "10.0.0.50",
+                    }
+                ]
+
+        class _FakeWS:
+            async def get_device_registry(self):
+                return [
+                    {
+                        "id": "dev-A",
+                        "connections": [["mac", "aa:bb:cc:dd:ee:ff"]],
+                    }
+                ]
+
+        result = asyncio.run(
+            build_presence_context(self._devices(), _FakeNAX(), _FakeWS())
+        )
+        assert result.startswith("\n\nNetAlertX network presence:\n")
+
+    def test_stub_passes_ws_client(self):
+        """_run_device_availability_investigation passes ws_client through."""
+        import asyncio
+        from utils.ha.device_availability import (
+            OfflineFinding,
+            _run_device_availability_investigation,
+        )
+        import utils.ha.device_availability_investigation as inv_mod
+
+        captured: dict = {}
+
+        async def _fake_real(
+            finding, notifier, db_path, llm_client, knowledge_store, **kw
+        ):
+            captured["ws"] = kw.get("ws_client")
+
+        inv_mod_attr = "run_device_availability_investigation"
+        original = getattr(inv_mod, inv_mod_attr)
+        setattr(inv_mod, inv_mod_attr, _fake_real)
+        try:
+            finding = OfflineFinding(
+                config_entry_id="entry-1",
+                domain="test",
+                devices=[{"name": "D", "device_id": "d1", "offline_since": 0.0}],
+            )
+
+            class _FakeWS:
+                pass
+
+            ws = _FakeWS()
+            asyncio.run(
+                _run_device_availability_investigation(
+                    finding=finding,
+                    db_path=":memory:",
+                    notifier=None,
+                    llm_client=None,
+                    knowledge_store=None,
+                    ws_client=ws,
+                )
+            )
+        finally:
+            setattr(inv_mod, inv_mod_attr, original)
+        assert captured["ws"] is ws

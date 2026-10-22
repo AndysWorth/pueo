@@ -328,6 +328,7 @@ async def _run_device_availability_investigation(
     llm_client: object,
     knowledge_store: object,
     netalertx_api_client: object = None,
+    ws_client: object = None,
 ) -> None:
     """Delegate to the investigation module."""
     from utils.ha.device_availability_investigation import (
@@ -341,6 +342,7 @@ async def _run_device_availability_investigation(
         llm_client=llm_client,
         knowledge_store=knowledge_store,
         netalertx_api_client=netalertx_api_client,
+        ws_client=ws_client,
     )
 
 
@@ -492,6 +494,7 @@ async def poll_device_availability(
                 _llm_ref = llm_client
                 _ks_ref = knowledge_store
                 _nax_ref = netalertx_api_client
+                _ws_ref = _ws
 
                 async def _investigate_coro(
                     _f: OfflineFinding = _finding,
@@ -500,6 +503,7 @@ async def poll_device_availability(
                     _l: object = _llm_ref,
                     _k: object = _ks_ref,
                     _nax: object = _nax_ref,
+                    _wsc: object = _ws_ref,
                 ) -> None:
                     await _run_device_availability_investigation(
                         finding=_f,
@@ -508,6 +512,7 @@ async def poll_device_availability(
                         llm_client=_l,
                         knowledge_store=_k,
                         netalertx_api_client=_nax,
+                        ws_client=_wsc,
                     )
 
                 _wq = get_work_queue_or_none()

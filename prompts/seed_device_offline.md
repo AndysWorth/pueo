@@ -56,3 +56,25 @@ instance fact and include it in the summary so the user knows this is a pattern.
 If some devices under the same config entry are online and others are offline, the cause is
 local (power, range, firmware). If all devices under the entry are offline, the cause is the
 integration or vendor cloud.
+
+## Network presence (NetAlertX)
+
+When the initial context includes a `NetAlertX network presence:` block, use it as
+the first disambiguating signal before reading logs:
+
+- **`present on LAN`** — the device is physically reachable on the local network.
+  HA saying "unavailable" while the device is on the LAN means the fault is in the
+  integration or vendor cloud, not in the device itself. Proceed with
+  cloud-push thread death or config entry diagnostics steps above.
+
+- **`absent from LAN`** — the device is not visible in any recent ARP scan.
+  The fault is a physical layer issue (power off, Wi-Fi loss, firmware update, out
+  of range). No integration reload will fix this. Set `outcome="needs_action"` and
+  tell the user to check power, Wi-Fi signal, or physical presence.
+
+- **`not found in NetAlertX`** — the device has no MAC or IP mapping in NetAlertX's
+  inventory, which may mean it has never been scanned or uses a MAC that NetAlertX
+  hasn't seen. Fall back to log analysis.
+
+- Presence block absent or `netalertx_status` ≠ `ok` — NetAlertX is not available.
+  Fall back to log analysis and sibling heuristics.
