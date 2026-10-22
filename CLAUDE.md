@@ -78,8 +78,9 @@ For a compact orientation map (file responsibilities, utils directory, interface
 | `ha_lovelace_monitor.py` | Dashboard entity health + benign suppression | `lovelace_poll` | — |
 | `ha_notification_manager.py` | Persistent notification triage and IP enrichment | `notification_poll` (for processing) | `notifications` |
 | `ha_update_manager.py` | Update detection, breaking-change analysis, orchestration | `update_check` | `update-check` |
+| `netalertx/event_poll.py` | REST poll of NetAlertX `/events` for new-device cards (when enabled + token set) | `netalertx_event_poll` | — |
 
-Agent scripts in `agents/` are runnable directly for debugging; under `supervisor` mode, all 7 run as coordinated background tasks managed by `LoopSupervisor`.
+Agent scripts in `agents/` are runnable directly for debugging; under `supervisor` mode, all 7 HA agents run as coordinated background tasks managed by `LoopSupervisor`; `netalertx_event_poll` runs alongside them when NetAlertX is configured.
 
 **Log monitor detail:** runs `ha core logs --follow` over SSH to stream live HA logs from the supervisor journal (modern HA does not reliably write to `/config/home-assistant.log`). Two-layer triage: fast regex pre-filter (`CRITICAL_LOG_PATTERN`) then Ollama `LogEvaluation` with `confidence_score > 0.7` threshold. High-confidence actionable errors trigger the repair pipeline. Reconnects automatically on stream failure.
 

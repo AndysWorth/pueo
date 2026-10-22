@@ -65,7 +65,6 @@ def _build_context(
 
     parts.append(f"Device counts: {report.device_counts}")
     parts.append(f"Scan age (minutes): {report.last_scan_age_minutes}")
-    parts.append(f"MQTT active: {report.mqtt_active}")
     parts.append(f"NetAlertX version: {report.netalertx_version}")
 
     return "\n\n".join(parts)

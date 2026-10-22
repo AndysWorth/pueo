@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from config import (
     AUTONOMY_LEVEL,
@@ -19,8 +19,6 @@ from config import (
     NETALERTX_API_PORT,
     NETALERTX_API_TOKEN,
     NETALERTX_HOST,
-    NETALERTX_MQTT_PASSWORD,
-    NETALERTX_MQTT_USER,
     NETALERTX_SSH_HOST,
     NETALERTX_SSH_KEY_PATH,
     NETALERTX_SSH_USER,
@@ -32,7 +30,6 @@ from config import (
 from netalertx.config_validator import (
     ConfigIssue,
     validate_app_conf,
-    validate_event_output,
     validate_scan_subnets,
 )
 from netalertx.diagnosis import diagnose_health_report
@@ -56,21 +53,6 @@ log = get_logger("netalertx.one_shot_diagnose")
 
 _LOG_SNAPSHOT_LINES = 100
 _ADDON_STATE_RE = re.compile(r"state:\s*(\S+)", re.IGNORECASE)
-
-
-async def _check_mosquitto_running(ha_ssh_client: "SSHClientProtocol") -> bool:
-    """Return True if the core_mosquitto add-on is in running state on HA.
-
-    Uses the same state string normalization as the installer: HA supervisor
-    reports 'started' for a running add-on.
-    """
-    _, stdout, _ = await ha_ssh_client.run("ha apps info core_mosquitto")
-    m = _ADDON_STATE_RE.search(stdout)
-    if not m:
-        return False
-    raw = m.group(1).lower()
-    state = "running" if raw == "started" else raw
-    return state == "running"
 
 
 async def _fetch_log_snapshot(
@@ -202,7 +184,6 @@ def _print_summary(
         "netalertx_diagnose_health",
         scan_age_minutes=report.last_scan_age_minutes,
         device_counts=report.device_counts,
-        mqtt_active=report.mqtt_active,
         netalertx_version=report.netalertx_version,
         anomalies=report.anomalies,
     )
@@ -243,7 +224,6 @@ async def run_diagnose(
     notifier: "NotifierProtocol | None" = None,
     healer: "NetAlertXHealer | None" = None,
     addon_slug: str | None = None,
-    mqtt_probe_fn: "Callable[[str], Awaitable[bool]] | None" = None,
     knowledge_store: "ChromaKnowledgeStore | None" = None,
 ) -> None:
     """One-shot NetAlertX diagnosis and optional healing.
@@ -284,30 +264,9 @@ async def run_diagnose(
         log.error("netalertx_api_unreachable", error=str(exc))
         return
 
-    # 2. Health report — probe MQTT broker briefly so mqtt_active reflects reality.
-    # poll_once() determines mqtt_active by draining a queue; pre-populate it if
-    # the probe receives a message within the timeout window.
-    from netalertx.mqtt_subscriber import DevicePresenceEvent, probe_mqtt_active
-
-    _probe = mqtt_probe_fn or (
-        lambda h: probe_mqtt_active(
-            h, username=NETALERTX_MQTT_USER, password=NETALERTX_MQTT_PASSWORD
-        )
-    )
-    mqtt_live = await _probe(NETALERTX_HOST)
-    log.info("netalertx_diagnose_mqtt_probe", mqtt_live=mqtt_live)
-
-    queue: asyncio.Queue[DevicePresenceEvent] = asyncio.Queue()
-    if mqtt_live:
-        await queue.put(DevicePresenceEvent(topic="probe", payload=""))
-
+    # 2. Health report — REST API poll.
     monitor = NetAlertXHealthMonitor(api_client=_api)
-    report = await monitor.poll_once(queue)
-
-    # 2b. Active MQTT infrastructure check — confirms the broker process is up
-    # independently of whether messages are flowing.
-    mosquitto_running = await _check_mosquitto_running(_ha_ssh)
-    log.info("netalertx_diagnose_mqtt_infra", mosquitto_running=mosquitto_running)
+    report = await monitor.poll_once()
 
     # 3. Log snapshot triage — uses `ha apps logs` via HA SSH; on HA OS, docker
     # is not in PATH for SSH sessions so docker exec cannot be used.
@@ -364,33 +323,6 @@ async def run_diagnose(
         else:
             config_issues = validate_app_conf(conf_text)
             config_issues.extend(validate_scan_subnets(conf_text))
-            config_issues.extend(validate_event_output(conf_text))
-
-    if not mosquitto_running:
-        config_issues.append(
-            ConfigIssue(
-                field="core_mosquitto",
-                message=(
-                    "Mosquitto MQTT broker (core_mosquitto) is not running on HA — "
-                    "MQTT publishing to HA will fail. "
-                    "Run 'ha apps start core_mosquitto' or re-run netalertx-setup."
-                ),
-                severity="HIGH",
-            )
-        )
-    elif not report.mqtt_active:
-        config_issues.append(
-            ConfigIssue(
-                field="mqtt_traffic",
-                message=(
-                    "Mosquitto is running but no MQTT messages were received during "
-                    "the probe window. NetAlertX may not be configured to publish "
-                    "device events via MQTT, or the MQTT broker address in app.conf "
-                    "does not match the running broker."
-                ),
-                severity="MEDIUM",
-            )
-        )
 
     # 4b. Sidebar status
     await _check_sidebar_status(_ha_ssh, _slug, config_issues)

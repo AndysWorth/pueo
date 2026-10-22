@@ -311,9 +311,9 @@ NETALERTX_AUTO_GENERATED_NAME_PATTERNS: list[str] = _nax.get(
     ["^unknown-", "^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$"],
 )
 NETALERTX_MAX_SCAN_AGE_MINUTES: int = int(_nax.get("max_scan_age_minutes", 20))
-NETALERTX_MQTT_SUBSCRIBE: bool = bool(_nax.get("mqtt_subscribe", True))
-NETALERTX_MQTT_USER: str = _nax.get("mqtt_user", "")
-NETALERTX_MQTT_PASSWORD: str = _nax.get("mqtt_password", "")
+NETALERTX_EVENT_POLL_INTERVAL_MINUTES: int = int(
+    _nax.get("event_poll_interval_minutes", 5)
+)
 NETALERTX_LOG_CONTAINER_NAME: str = _nax.get("log_container_name", "netalertx")
 NETALERTX_MAX_DB_HISTORY_ROWS: int = int(_nax.get("max_db_history_rows", 100000))
 NETALERTX_SIDEBAR: bool = bool(_nax.get("sidebar", True))

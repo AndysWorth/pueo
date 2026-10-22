@@ -1,24 +1,14 @@
-"""NetAlertX event router — merges MQTT alert stream with webhook events, deduplicates.
-
-Typed MQTT event models:
-  NewDeviceAlertEvent  — NetAlertX/alert/+
-  DeviceStateEvent     — NetAlertX/device/+/state
-  ScanCompleteEvent    — NetAlertX/scan/complete
+"""NetAlertX event router — routes REST /events to HITL notification cards.
 
 Usage:
   router = NetAlertXEventRouter(notifier, gate)
-  asyncio.create_task(router.run(alert_queue))   # consumes (topic, payload) tuples
-  await router.route_webhook(mac, event_type)    # called from HA notification poller
+  await router.route_rest_event(event_dict)   # called from event_poll.py
 """
 
 from __future__ import annotations
 
-import asyncio
-import json
 import time
-from typing import TYPE_CHECKING, Any, Union
-
-from pydantic import BaseModel
+from typing import TYPE_CHECKING, Any
 
 from utils.agent.autonomy import RiskLevel
 from utils.hitl.card_types import CARD_TYPE_NETALERTX_NEW_DEVICE
@@ -30,73 +20,12 @@ if TYPE_CHECKING:
 log = get_logger("netalertx.event_router")
 
 
-# ---------------------------------------------------------------------------
-# Typed event models
-# ---------------------------------------------------------------------------
-
-
-class NewDeviceAlertEvent(BaseModel):
-    mac: str
-    ip: str = ""
-    name: str = ""
-    vendor: str = ""
-    topic: str = ""
-
-
-class DeviceStateEvent(BaseModel):
-    mac: str
-    state: str
-    topic: str = ""
-
-
-class ScanCompleteEvent(BaseModel):
-    topic: str = "NetAlertX/scan/complete"
-    payload: str = ""
-
-
-NetAlertXMQTTEvent = Union[NewDeviceAlertEvent, DeviceStateEvent, ScanCompleteEvent]
-
-
-# ---------------------------------------------------------------------------
-# MQTT payload parser
-# ---------------------------------------------------------------------------
-
-
-def parse_mqtt_event(topic: str, payload: str) -> NetAlertXMQTTEvent | None:
-    """Parse a raw MQTT topic+payload into a typed event, or None if unrecognised."""
-    if topic.startswith("NetAlertX/alert/"):
-        try:
-            data = json.loads(payload)
-        except (json.JSONDecodeError, ValueError):
-            data = {}
-        return NewDeviceAlertEvent(
-            mac=data.get("mac", data.get("eveMac", "")),
-            ip=data.get("ip", data.get("eveIp", "")),
-            name=data.get("name", data.get("devName", "")),
-            vendor=data.get("vendor", data.get("devVendor", "")),
-            topic=topic,
-        )
-    if topic.startswith("NetAlertX/device/") and topic.endswith("/state"):
-        parts = topic.split("/")
-        mac = parts[2] if len(parts) >= 4 else ""  # NetAlertX/device/<mac>/state
-        return DeviceStateEvent(mac=mac, state=payload, topic=topic)
-    if topic == "NetAlertX/scan/complete":
-        return ScanCompleteEvent(topic=topic, payload=payload)
-    return None
-
-
-# ---------------------------------------------------------------------------
-# Event router
-# ---------------------------------------------------------------------------
-
-
 class NetAlertXEventRouter:
-    """Route and deduplicate MQTT alert and webhook new-device events.
+    """Route and deduplicate REST /events new-device alerts.
 
     Tracks recently-seen MAC addresses within ``dedup_window_seconds``.
-    When a new-device alert arrives (via MQTT or webhook callback), the router
-    deduplicates, checks the autonomy gate, and sends an approval notification card
-    when the gate requires it.
+    When a new-device event arrives the router deduplicates, checks the
+    autonomy gate, and sends an approval notification card when required.
     """
 
     def __init__(
@@ -126,43 +55,33 @@ class NetAlertXEventRouter:
         return False
 
     # ------------------------------------------------------------------
-    # MQTT routing
+    # REST event routing
     # ------------------------------------------------------------------
 
-    async def route(self, topic: str, payload: str) -> None:
-        """Route a raw MQTT message to the appropriate handler."""
-        event = parse_mqtt_event(topic, payload)
-        if isinstance(event, NewDeviceAlertEvent):
-            await self._handle_new_device(
-                mac=event.mac, ip=event.ip, vendor=event.vendor, name=event.name
-            )
-        elif isinstance(event, DeviceStateEvent):
-            log.info("netalertx_device_state", mac=event.mac, state=event.state)
-        elif isinstance(event, ScanCompleteEvent):
-            log.info("netalertx_scan_complete")
+    async def route_rest_event(self, event: dict) -> None:
+        """Route a single event dict from GET /events.
+
+        New-device events (eveEventType == 'New Device') generate a
+        deduplicated notification card.  All other event types are logged
+        as context only — device-offline alerting lives in ADR 047.
+        """
+        event_type = event.get("eveEventType", "")
+        mac = event.get("eveMac", "")
+        ip = event.get("eveIp", "")
+        vendor = event.get("devVendor", "")
+        name = event.get("devName", "")
+
+        if event_type == "New Device":
+            await self._handle_new_device(mac=mac, ip=ip, vendor=vendor, name=name)
         else:
-            log.debug("netalertx_event_unrecognised", topic=topic)
-
-    async def run(self, alert_queue: "asyncio.Queue[tuple[str, str]]") -> None:
-        """Consume (topic, payload) tuples from alert_queue; runs until cancelled."""
-        while True:
-            try:
-                topic, payload = await alert_queue.get()
-                await self.route(topic, payload)
-            except asyncio.CancelledError:
-                log.info("netalertx_event_router_cancelled")
-                return
+            log.debug(
+                "netalertx_event_skipped",
+                event_type=event_type,
+                mac=mac,
+            )
 
     # ------------------------------------------------------------------
-    # Webhook routing (called from HA notification poller)
-    # ------------------------------------------------------------------
-
-    async def route_webhook(self, mac: str, event_type: str = "") -> None:
-        """Route a new-device event that arrived via the HA webhook automation."""
-        await self._handle_new_device(mac=mac, ip="", vendor="", name="")
-
-    # ------------------------------------------------------------------
-    # Shared new-device handler
+    # New-device handler
     # ------------------------------------------------------------------
 
     async def _handle_new_device(

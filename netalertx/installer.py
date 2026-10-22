@@ -42,8 +42,6 @@ from config import (
     NETALERTX_ADDON_SLUG,
     NETALERTX_API_PORT,
     NETALERTX_HOST,
-    NETALERTX_MQTT_PASSWORD,
-    NETALERTX_MQTT_USER,
     NETALERTX_SCAN_INTERFACE,
     NETALERTX_SIDEBAR,
 )
@@ -761,34 +759,6 @@ async def _detect_subnet(ssh_client: "SSHClientProtocol", interface: str) -> str
         return ""
 
 
-def _check_automation_exists(content: str) -> bool:
-    """Return True if a NetAlertX webhook automation is already in the YAML content."""
-    low = content.lower()
-    return "netalertx" in low and "platform: webhook" in low
-
-
-_WEBHOOK_AUTOMATION_YAML = """\
-- id: 'netalertx_event_handler'
-  alias: 'NetAlertX Event Handler'
-  description: 'Handles NetAlertX network events via webhook (created by Pueo)'
-  trigger:
-    - platform: webhook
-      webhook_id: 'netalertx_event'
-      local_only: true
-  condition: []
-  action:
-    - service: persistent_notification.create
-      data:
-        title: "NetAlertX: {{ trigger.json.eveEventType }}"
-        message: >
-          MAC: {{ trigger.json.eveMac }}  IP: {{ trigger.json.eveIp }}
-          Vendor: {{ trigger.json.devVendor }}  Time: {{ trigger.json.eveDateTime }}
-          Notes: {{ trigger.json.devComments }}
-  mode: queued
-  max: 10
-"""
-
-
 # ── step 5: install and start the NetAlertX add-on ───────────────────────────
 
 
@@ -1023,10 +993,6 @@ async def _step6_configure_app_conf(
         "TIMEZONE": f"'{timezone}'",
         "LOADED_PLUGINS": merged_plugins,
     }
-    if NETALERTX_MQTT_USER:
-        updates["MQTT_USER"] = f"'{NETALERTX_MQTT_USER}'"
-        updates["MQTT_PASSWORD"] = f"'{NETALERTX_MQTT_PASSWORD}'"
-
     merged_conf, diff = _merge_app_conf(original_conf, updates)
 
     # Backup before write (safety invariant)
@@ -1152,17 +1118,13 @@ async def _step7_verify_mqtt_integration(
         return True
 
     # Not found — send approval card with manual setup instructions
-    if NETALERTX_MQTT_USER:
-        cred_hint = f"Username: {NETALERTX_MQTT_USER} / Password: (from config.yaml)"
-    else:
-        cred_hint = "no credentials (anonymous)"
     approved = await gate.require_approval(
         subject="NetAlertX installer: configure MQTT integration in HA",
         body=(
             "HA MQTT integration is not yet configured. Set it up manually:\n"
             "  1. Settings → Devices & Services → Add Integration\n"
             "  2. Search for 'MQTT'\n"
-            f"  3. Broker: {HA_HOST}, Port: 1883, {cred_hint}\n"
+            f"  3. Broker: {HA_HOST}, Port: 1883\n"
             "  4. Save, then signal approval to continue.\n\n"
             "Note: do NOT add `mqtt:` to configuration.yaml — "
             "that key disables MQTT auto-discovery on current HA."
@@ -1263,137 +1225,6 @@ async def _step8_finalize_token(
     return True
 
 
-# ── step 8: create HA webhook automation ─────────────────────────────────────
-
-
-async def _step8_create_webhook_automation(
-    ssh_client: "SSHClientProtocol",
-    gate: "AutonomyGate",
-    notifier: "NotifierProtocol",
-    details: dict,
-    cid: str,
-    db_path: str,
-) -> bool:
-    """Write a NetAlertX webhook automation to HA.
-
-    Tries /config/automations.yaml first; falls back to
-    /config/automations/netalertx_webhook.yaml.  Uses backup → write →
-    ha core check → revert-on-failure pattern.
-
-    Advances state to HA_AUTOMATION_CREATED then FULLY_OPERATIONAL.
-    """
-    log.info("step8_start", step="create_webhook_automation", correlation_id=cid)
-
-    # Determine where to write the automation
-    automations_path = "/config/automations.yaml"
-    original_content: str | None = None
-    try:
-        original_content = await ssh_client.read_file(automations_path)
-    except FileNotFoundError:
-        # Fall back to per-file directory style
-        automations_path = "/config/automations/netalertx_webhook.yaml"
-        try:
-            original_content = await ssh_client.read_file(automations_path)
-        except FileNotFoundError:
-            original_content = None
-
-    # Idempotency: skip if automation already present
-    if original_content is not None and _check_automation_exists(original_content):
-        log.info("step8_automation_exists", path=automations_path, correlation_id=cid)
-        details["platform"] = "ha"
-        _write_install_state(db_path, "HA_AUTOMATION_CREATED", details, cid)
-        slug = NETALERTX_ADDON_SLUG or details.get("addon_slug", "")
-        if slug and _write_addon_slug_to_config(slug):
-            log.info("step8_slug_written_to_config", slug=slug, correlation_id=cid)
-        return await _step8_finalize_token(
-            ssh_client, slug, details, cid, db_path, notifier
-        )
-
-    # Backup before write
-    from agents.ha_agent_sandbox_engine import execute_remote_backup
-
-    try:
-        backup_slug = await execute_remote_backup(ssh_client=ssh_client)
-        details["automation_backup_slug"] = backup_slug
-        log.info("step8_backup_created", backup_slug=backup_slug, correlation_id=cid)
-    except Exception as e:
-        log.error("step8_backup_failed", error=str(e), correlation_id=cid)
-        await gate.require_approval(
-            subject="NetAlertX installer: backup failed before automation write",
-            body=f"HA backup failed ({e}). Aborting to protect HA state.",
-            payload={"notification_id": f"{cid}_step8_backup_fail", "step": 8},
-            notifier=notifier,
-            risk=RiskLevel.CRITICAL,
-        )
-        return False
-
-    # Build new content
-    if original_content:
-        new_content = original_content.rstrip("\n") + "\n\n" + _WEBHOOK_AUTOMATION_YAML
-    else:
-        new_content = _WEBHOOK_AUTOMATION_YAML
-
-    await ssh_client.write_file(automations_path, new_content)
-
-    # Validate with ha core check; restore on failure
-    ec, stdout, stderr = await ssh_client.run("ha core check")
-    if ec != 0:
-        log.error(
-            "step8_ha_check_failed",
-            output=stderr or stdout,
-            correlation_id=cid,
-        )
-        restore = original_content if original_content is not None else ""
-        await ssh_client.write_file(automations_path, restore)
-        await gate.require_approval(
-            subject="NetAlertX installer: automation YAML failed HA check",
-            body=(
-                "The generated webhook automation did not pass `ha core check`. "
-                "Original automations file has been restored. "
-                "Add the automation manually and signal approval to continue."
-            ),
-            payload={"notification_id": f"{cid}_step8_check_fail", "step": 8},
-            notifier=notifier,
-            risk=RiskLevel.HIGH,
-        )
-        return False
-
-    # Reload only the automations component — a full core restart is unnecessary
-    # and causes 2-5 minutes of HA downtime.
-    reload_cmd = (
-        "curl -sf -X POST http://supervisor/core/api/services/automation/reload"
-        ' -H "Authorization: Bearer $SUPERVISOR_TOKEN"'
-        ' -H "Content-Type: application/json"'
-    )
-    log.info("running_command", cmd="automation/reload", correlation_id=cid)
-    ec, _, stderr = await ssh_client.run(reload_cmd)
-    if ec != 0:
-        log.warning(
-            "step8_automation_reload_failed",
-            error=stderr,
-            correlation_id=cid,
-        )
-    else:
-        log.info("automations_reloaded", correlation_id=cid)
-
-    webhook_url = f"http://{HA_HOST}:8123/api/webhook/netalertx_event"
-    log.info(
-        "step8_webhook_url",
-        url=webhook_url,
-        note="configure this URL in NetAlertX HA_WEBHOOK_URL",
-        correlation_id=cid,
-    )
-
-    details["platform"] = "ha"
-    _write_install_state(db_path, "HA_AUTOMATION_CREATED", details, cid)
-    slug = NETALERTX_ADDON_SLUG or details.get("addon_slug", "")
-    if slug and _write_addon_slug_to_config(slug):
-        log.info("step8_slug_written_to_config", slug=slug, correlation_id=cid)
-    return await _step8_finalize_token(
-        ssh_client, slug, details, cid, db_path, notifier
-    )
-
-
 # ── public entry point ────────────────────────────────────────────────────────
 
 
@@ -1449,10 +1280,16 @@ async def run_steps_5_to_8(
             return _read_install_state(db_path)[0]
         current_state, details = _read_install_state(db_path)
 
-    # Step 8: HA_MQTT_INTEGRATION_VERIFIED → HA_AUTOMATION_CREATED → FULLY_OPERATIONAL
+    # Step 8: HA_MQTT_INTEGRATION_VERIFIED / HA_AUTOMATION_CREATED → FULLY_OPERATIONAL
+    # (HA_AUTOMATION_CREATED is kept in INSTALL_STATES for backward compat with
+    # existing installs; new installs advance directly from HA_MQTT_INTEGRATION_VERIFIED)
     if _STATE_RANK[current_state] < _STATE_RANK["FULLY_OPERATIONAL"]:
-        ok = await _step8_create_webhook_automation(
-            ssh_client, gate, notifier, details, cid, db_path
+        slug = NETALERTX_ADDON_SLUG or details.get("addon_slug", "")
+        if slug and _write_addon_slug_to_config(slug):
+            log.info("step8_slug_written_to_config", slug=slug, correlation_id=cid)
+        details.setdefault("platform", "ha")
+        ok = await _step8_finalize_token(
+            ssh_client, slug, details, cid, db_path, notifier
         )
         if not ok:
             return _read_install_state(db_path)[0]

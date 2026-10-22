@@ -4908,11 +4908,10 @@ class TestAuditCheckNetalertx:
             def __init__(self, *a, **kw):
                 pass
 
-            async def poll_once(self, event_queue):
+            async def poll_once(self):
                 return HealthReport(
                     last_scan_age_minutes=9999,
                     device_counts={"total": 1, "online": 0},
-                    mqtt_active=False,
                     anomalies=["stale"],
                     netalertx_version="v26.7.1",
                 )
@@ -4931,41 +4930,6 @@ class TestAuditCheckNetalertx:
         assert result.status == "CRITICAL"
         assert "9999m" in result.detail
 
-    def test_mqtt_inactive(self, monkeypatch):
-        import config
-        from netalertx import health as health_mod
-        from netalertx.health import HealthReport
-
-        monkeypatch.setattr(config, "NETALERTX_HOST", "192.168.1.100")
-        monkeypatch.setattr(config, "NETALERTX_MAX_SCAN_AGE_MINUTES", 20)
-
-        class _FakeMonitor:
-            def __init__(self, *a, **kw):
-                pass
-
-            async def poll_once(self, event_queue):
-                return HealthReport(
-                    last_scan_age_minutes=5,
-                    device_counts={"total": 10, "online": 5},
-                    mqtt_active=False,
-                    anomalies=[],
-                    netalertx_version="v26.7.1",
-                )
-
-        monkeypatch.setattr(health_mod, "NetAlertXHealthMonitor", _FakeMonitor)
-
-        from netalertx.api_client import NetAlertXAPIClient
-
-        class _FakeClient(NetAlertXAPIClient):
-            def __init__(self):
-                pass
-
-        from utils.system.audit import check_netalertx
-
-        result = asyncio.run(check_netalertx(api_client=_FakeClient()))
-        assert result.status == "WARN"
-        assert "MQTT inactive" in result.detail
-
     def test_healthy(self, monkeypatch):
         import config
         from netalertx import health as health_mod
@@ -4978,11 +4942,10 @@ class TestAuditCheckNetalertx:
             def __init__(self, *a, **kw):
                 pass
 
-            async def poll_once(self, event_queue):
+            async def poll_once(self):
                 return HealthReport(
                     last_scan_age_minutes=5,
                     device_counts={"total": 10, "online": 5},
-                    mqtt_active=True,
                     anomalies=[],
                     netalertx_version="v26.7.1",
                 )
@@ -5010,7 +4973,7 @@ class TestAuditCheckNetalertx:
             def __init__(self, *a, **kw):
                 pass
 
-            async def poll_once(self, event_queue):
+            async def poll_once(self):
                 raise ConnectionError("refused")
 
         monkeypatch.setattr(health_mod, "NetAlertXHealthMonitor", _BrokenMonitor)
