@@ -132,6 +132,14 @@ HA_LOVELACE_CHECK_INTERVAL_MINUTES: int = int(
     _agent.get("lovelace_check_interval_minutes", 30)
 )
 
+# Device availability monitoring
+DEVICE_AVAILABILITY_ENABLED: bool = bool(
+    _agent.get("device_availability_enabled", True)
+)
+DEVICE_AVAILABILITY_GRACE_MINUTES: int = int(
+    _agent.get("device_availability_grace_minutes", 10)
+)
+
 # HA event subscriber (long-lived WS ring buffer)
 HA_EVENT_SUBSCRIBE: bool = bool(_agent.get("ha_event_subscribe", True))
 HA_EVENT_BUFFER_SIZE: int = int(_agent.get("ha_event_buffer_size", 500))
