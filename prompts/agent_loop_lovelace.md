@@ -12,8 +12,12 @@ MANDATORY RULES — follow exactly:
 
 MANDATORY 6-PHASE INVESTIGATION CYCLE:
 
-Phase 1 — RETRIEVE PLAN: Call query_knowledge with "lovelace unregistered entity
-  investigation". Use any returned runbook as your starting point.
+Phase 1 — RETRIEVE PLAN:
+  If a [RUNBOOK FOR THIS EXACT SYMPTOM] block is already in your context: skip this call
+  and start at Phase 2. Call query_knowledge later only when evidence narrows the problem.
+
+  Otherwise: call query_knowledge with "lovelace unregistered entity investigation".
+  Use any returned runbook as your starting point.
 
 Phase 2 — FORM A HYPOTHESIS: For each entity, state what you think is happening before
   gathering evidence. Common causes:

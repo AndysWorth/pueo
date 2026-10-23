@@ -7411,6 +7411,8 @@ class TestSeedRegistry:
             sig_notification("http-login"),
             sig_notification("ip-ban"),
             sig_update(hacs_type, "noaa_it_all"),
+            sig_update("addon", "mosquitto"),
+            sig_update("core", "homeassistant"),
             sig_host_health("resolution_issue", "rpi_firmware_update_blocked"),
             sig_host_health("resolution_issue", "no_current_backup"),
             sig_device_availability("econet"),
@@ -9658,3 +9660,212 @@ class TestGetInstanceId:
             r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
             result,
         ), f"Not a valid UUID4: {result}"
+
+
+class TestQueryKnowledgeDedup:
+    """_query_knowledge replaces pre-injected chunk ids with '(already in your context: <id>)'."""
+
+    def _make_executor(self, store):
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+
+        ex = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+            knowledge_store=store,
+        )
+        return ex
+
+    def test_pre_injected_chunk_replaced(self, pueo_dirs):
+        import asyncio
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        store.upsert(
+            "strategies",
+            ids=["runbook-1"],
+            documents=["device offline investigation steps"],
+            metadatas=[{"source": "seed_prompt", "strategy_id": "runbook-1"}],
+        )
+        ex = self._make_executor(store)
+        ex._pre_injected_chunk_ids = {"runbook-1"}
+
+        result = asyncio.run(ex._query_knowledge("device offline"))
+        assert result.success
+        assert "(already in your context: runbook-1)" in result.output
+
+    def test_non_injected_chunk_rendered_normally(self, pueo_dirs):
+        import asyncio
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        store.upsert(
+            "strategies",
+            ids=["runbook-2"],
+            documents=["device offline investigation steps"],
+            metadatas=[{"source": "seed_prompt", "strategy_id": "runbook-2"}],
+        )
+        ex = self._make_executor(store)
+        # No pre-injected ids — chunk should appear in full.
+        result = asyncio.run(ex._query_knowledge("device offline"))
+        assert result.success
+        assert "device offline investigation steps" in result.output
+        assert "(already in your context" not in result.output
+
+    def test_mixed_injected_and_new_chunks(self, pueo_dirs):
+        import asyncio
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        store.upsert(
+            "strategies",
+            ids=["injected-id"],
+            documents=["econet offline investigation runbook"],
+            metadatas=[{"source": "seed_prompt", "strategy_id": "injected-id"}],
+        )
+        store.upsert(
+            "ha_release_notes",
+            ids=["new-id"],
+            documents=["econet offline release note extra info"],
+            metadatas=[{"source": "ha_release_notes/2026.9"}],
+        )
+        ex = self._make_executor(store)
+        ex._pre_injected_chunk_ids = {"injected-id"}
+
+        result = asyncio.run(ex._query_knowledge("econet offline"))
+        assert result.success
+        assert "(already in your context: injected-id)" in result.output
+        assert "econet offline release note extra info" in result.output
+
+
+class TestPreInjectSupplementalCap:
+    """_pre_inject_knowledge caps supplemental chunks to 2 domain-relevant ones when
+    an exact-signature runbook is present."""
+
+    def _make_loop(self, store, signature):
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import build_ha_tool_registry
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        ex = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+        )
+        llm = FakeToolCallingLLMClient([])
+        loop = AgentLoop(
+            llm_client=llm,
+            tool_executor=ex,
+            tool_registry=build_ha_tool_registry(),
+            max_tool_calls=1,
+            trigger=signature,
+            knowledge_store=store,
+        )
+        loop._signature = signature
+        return loop, ex
+
+    def test_pre_injected_ids_populated_on_executor(self, pueo_dirs, monkeypatch):
+        """Semantic chunks returned by _pre_inject_knowledge are recorded on the executor."""
+        import asyncio
+        import utils.agent.agent_loop as al_mod
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        monkeypatch.setattr(al_mod, "RAG_MIN_SCORE", 0.0)
+
+        store = FakeKnowledgeStore()
+        store.upsert(
+            "strategies",
+            ids=["seed-abc"],
+            documents=["repair hacs restart required steps"],
+            metadatas=[{"source": "seed_prompt", "strategy_id": "seed-abc"}],
+        )
+        loop, ex = self._make_loop(store, "repair:hacs:restart_required")
+        # No db_path → sig-chunk lookup skipped; semantic query path is exercised.
+        # Use text that closely matches the document so FakeKnowledgeStore returns it.
+        asyncio.run(
+            loop._pre_inject_knowledge(
+                "initial context", "repair hacs restart required steps"
+            )
+        )
+        assert "seed-abc" in ex._pre_injected_chunk_ids
+
+    def test_supplemental_cap_domain_filter(self, pueo_dirs, tmp_path, monkeypatch):
+        """When an exact sig chunk is present, supplemental chunks not mentioning the
+        session domain are dropped; domain-relevant ones are kept (up to 2)."""
+        import asyncio
+        import sqlite3
+        import utils.agent.agent_loop as al_mod
+        from utils.knowledge.knowledge_store import (
+            FakeKnowledgeStore,
+            KnowledgeChunk as KC,
+        )
+
+        monkeypatch.setattr(al_mod, "RAG_MIN_SCORE", 0.0)
+
+        store = FakeKnowledgeStore()
+        store.upsert(
+            "strategies",
+            ids=["econet-seed"],
+            documents=["econet offline cloud push thread death"],
+            metadatas=[{"source": "seed_prompt", "strategy_id": "econet-seed"}],
+        )
+        # Supplement with no "econet" mention and impacted_integration != econet — should be capped out
+        store.upsert(
+            "ha_release_notes",
+            ids=["irrelevant"],
+            documents=["xbox firmware update breaking change"],
+            metadatas=[
+                {"source": "ha_release_notes/2026.1", "impacted_integration": "xbox"}
+            ],
+        )
+
+        db = str(tmp_path / "test.db")
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "CREATE TABLE agent_memory (id INTEGER PRIMARY KEY, signature TEXT, key TEXT, content TEXT)"
+            )
+
+        loop, ex = self._make_loop(store, "device:offline:econet")
+        loop._db_path = db
+
+        exact_chunk = KC(
+            chunk_id="econet-seed",
+            text="econet offline cloud push thread death",
+            source="seed_prompt",
+            collection="strategies",
+            score=1.0,
+            authority_score=0.85,
+            metadata={"source": "seed_prompt", "strategy_id": "econet-seed"},
+        )
+
+        import utils.agent.agent_loop as al_mod
+
+        original = al_mod._fetch_signature_chunks
+        original_mem = al_mod._fetch_memory_chunks
+
+        def _sync_fake(db_path, sig):
+            return [exact_chunk]
+
+        def _sync_no_mem(db_path, sig):
+            return []
+
+        try:
+            al_mod._fetch_signature_chunks = _sync_fake
+            al_mod._fetch_memory_chunks = _sync_no_mem
+            asyncio.run(
+                loop._pre_inject_knowledge("initial context", "econet device offline")
+            )
+        finally:
+            al_mod._fetch_signature_chunks = original
+            al_mod._fetch_memory_chunks = original_mem
+
+        assert "econet-seed" in ex._pre_injected_chunk_ids
+        # "irrelevant" chunk should not be in context (no "econet" in text or metadata)
+        assert "irrelevant" not in ex._pre_injected_chunk_ids

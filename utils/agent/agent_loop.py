@@ -608,6 +608,30 @@ class AgentLoop:
         deduped_semantic = [
             c for c in chunks if getattr(c, "chunk_id", "") not in sig_ids
         ]
+
+        # When an exact-signature runbook is present, cap supplemental chunks to 2
+        # and keep only those whose metadata domain/slug or text mentions the session
+        # domain/slug.  This prevents irrelevant chunks (e.g., Xbox notes appearing in a
+        # LIFX investigation) from padding the context.
+        if sig_chunks and deduped_semantic:
+            _sig_parts = _sig.split(":")
+            _session_domain = _sig_parts[-1].lower() if len(_sig_parts) >= 2 else ""
+            if _session_domain:
+                _relevant = [
+                    c
+                    for c in deduped_semantic
+                    if _session_domain
+                    in (
+                        getattr(c, "metadata", {}).get("impacted_integration", "") or ""
+                    ).lower()
+                    or _session_domain
+                    in (getattr(c, "metadata", {}).get("domain", "") or "").lower()
+                    or _session_domain in getattr(c, "text", "").lower()
+                ]
+                deduped_semantic = _relevant[:2]
+            else:
+                deduped_semantic = deduped_semantic[:2]
+
         chunks = sig_chunks + deduped_semantic
 
         # Fetch matching agent_memory rows as [INSTANCE FACT] chunks (V40).
@@ -624,6 +648,11 @@ class AgentLoop:
         # Signal to the executor so the auto-gap logic knows KB had results.
         if self._executor is not None:
             self._executor._query_knowledge_had_results = True
+            # Record pre-injected chunk ids so _query_knowledge can dedup (S2).
+            for _c in chunks:
+                _cid = getattr(_c, "chunk_id", "")
+                if _cid:
+                    self._executor._pre_injected_chunk_ids.add(_cid)
             # Collect strategy_ids for usage tracking at session end.
             for _c in chunks:
                 if getattr(_c, "collection", "") == "strategies":

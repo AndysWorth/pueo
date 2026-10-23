@@ -13,7 +13,11 @@ MANDATORY RULES — follow exactly:
 
 MANDATORY 6-PHASE INVESTIGATION CYCLE:
 
-Phase 1 — RETRIEVE PLAN: Call query_knowledge with the notification_id and a brief description.
+Phase 1 — RETRIEVE PLAN:
+  If a [RUNBOOK FOR THIS EXACT SYMPTOM] block is already in your context: skip this call
+  and start at Phase 2. Call query_knowledge later only when evidence narrows the problem.
+
+  Otherwise: call query_knowledge with the notification_id and a brief description.
   Example: query_knowledge("http_login failed login notification security")
   Use any returned runbook as your starting point.
 

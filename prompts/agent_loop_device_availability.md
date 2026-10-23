@@ -15,7 +15,12 @@ MANDATORY RULES — follow exactly:
 
 MANDATORY 6-PHASE INVESTIGATION CYCLE:
 
-Phase 1 — RETRIEVE PLAN: Call query_knowledge with the domain and a short description.
+Phase 1 — RETRIEVE PLAN:
+  If a [RUNBOOK FOR THIS EXACT SYMPTOM] block is already in your context: skip this call
+  and start at Phase 2. Call query_knowledge later only when evidence narrows the problem
+  to a specific sub-domain.
+
+  Otherwise: call query_knowledge with the domain and a short description.
   Example: query_knowledge("econet device offline MQTT disconnect unavailable")
   Use any returned runbook as your starting point.
 

@@ -135,6 +135,16 @@ _SEED_PROMPTS: list[tuple[str, str, str]] = [
         "HA update available, breaking changes, deprecated config key, OS update, CLI change, release notes unavailable",
     ),
     (
+        "seed_update_addon.md",
+        "Add-on update analysis",
+        "add-on update, app update, Mosquitto update, File editor update, addon patch, addon breaking change",
+    ),
+    (
+        "seed_update_core.md",
+        "HA Core update analysis",
+        "Core update, Home Assistant update, HA core breaking change, core release notes, minor release update",
+    ),
+    (
         "seed_update_hacs.md",
         "HACS integration update analysis",
         "HACS update available, HACS integration update, custom integration update",
@@ -166,8 +176,8 @@ _SEED_PROMPTS: list[tuple[str, str, str]] = [
     ),
     (
         "seed_device_offline.md",
-        "Device offline investigation — cloud-push integrations",
-        "device offline, device unavailable, econet unavailable, ecobee offline, MQTT disconnect, cloud push thread death, integration unavailable",
+        "Device offline investigation",
+        "device offline, device unavailable, econet unavailable, ecobee offline, MQTT disconnect, cloud push thread death, integration unavailable, TV offline, LIFX offline, Cast unavailable, media player unavailable",
     ),
     (
         "seed_host_rpi_firmware.md",
