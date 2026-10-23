@@ -4422,6 +4422,25 @@ class TestUpdateStatus:
         assert status.component == "os"
         assert status.update_available is True
 
+    @pytest.mark.parametrize(
+        "state,known,available",
+        [
+            ("on", True, True),
+            ("off", True, False),
+            ("unavailable", False, False),
+            ("unknown", False, False),
+        ],
+    )
+    def test_state_known_flag(self, state, known, available):
+        """unavailable/unknown entities carry no update information (#976)."""
+        from utils.ha.ha_rest_client import _entity_to_update_status
+
+        status = _entity_to_update_status(
+            {"entity_id": "update.noaa_update", "state": state, "attributes": {}}
+        )
+        assert status.state_known is known
+        assert status.update_available is available
+
     def test_returns_none_when_entity_id_missing(self, caplog):
         """Missing entity_id logs required_field_missing and returns None."""
         import logging
@@ -8218,6 +8237,89 @@ class TestPollForUpdates:
                 " WHERE card_key='update:update.home_assistant_core_update'"
             ).fetchone()
         assert row is not None and row[0] is not None
+
+    def _run_one_poll(self, monkeypatch, client):
+        import asyncio as asyncio_mod
+        import unittest.mock as mock
+
+        from agents.ha_log_monitor import poll_for_updates
+        from utils.hitl.notify import FakeNotifier
+
+        called: list = []
+
+        async def _capture(update, **kw):
+            called.append(update.latest_version)
+
+        monkeypatch.setattr(asyncio_mod, "sleep", self._one_shot_sleep())
+        monkeypatch.setattr("agents.ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
+        with mock.patch("agents.ha_update_manager._run_update_analysis", _capture):
+            with pytest.raises(asyncio.CancelledError):
+                asyncio.run(
+                    poll_for_updates(ha_rest_client=client, notifier=FakeNotifier())
+                )
+        return called
+
+    def test_active_backoff_skips_analysis(self, monkeypatch):
+        """An unexpired update_analysis_backoff row blocks re-analysis (#976)."""
+        import sqlite3 as _sq3
+
+        from utils.ha.ha_rest_client import FakeHARestClient
+        from utils.hitl.hitl_tracker import mark_investigation_backoff
+
+        eid = "update.home_assistant_core_update"
+        with _sq3.connect("") as conn:
+            mark_investigation_backoff(conn, f"update_analysis_backoff:{eid}")
+
+        client = FakeHARestClient(states=[self._make_update_entity(eid)])
+        assert self._run_one_poll(monkeypatch, client) == []
+
+    def test_expired_backoff_allows_analysis(self, monkeypatch):
+        """Once the backoff window has passed, analysis runs again (#976)."""
+        import time
+        import sqlite3 as _sq3
+
+        from utils.ha.ha_rest_client import FakeHARestClient
+        from utils.hitl.hitl_tracker import mark_investigation_backoff
+
+        eid = "update.home_assistant_core_update"
+        with _sq3.connect("") as conn:
+            mark_investigation_backoff(conn, f"update_analysis_backoff:{eid}")
+            conn.execute(
+                "UPDATE hitl_suppression SET next_allowed_at = ? WHERE card_key = ?",
+                (time.time() - 1, f"update_analysis_backoff:{eid}"),
+            )
+
+        client = FakeHARestClient(states=[self._make_update_entity(eid)])
+        assert "2026.2.0" in self._run_one_poll(monkeypatch, client)
+
+    @pytest.mark.parametrize("state", ["unavailable", "unknown"])
+    def test_unknown_state_does_not_resolve_rows(self, monkeypatch, state):
+        """An entity blipping unavailable must not clear update:/update_analyzed: (#976)."""
+        import sqlite3 as _sq3
+
+        from utils.ha.ha_rest_client import FakeHARestClient
+        from utils.hitl.card_types import CARD_TYPE_UPDATE
+        from utils.hitl.hitl_tracker import mark_card_sent
+
+        eid = "update.noaa_update"
+        keys = (f"update:{eid}", f"update_analyzed:{eid}:2026.2.0")
+        with _sq3.connect("") as conn:
+            for k in keys:
+                mark_card_sent(conn, k, CARD_TYPE_UPDATE, "test")
+
+        entity = self._make_update_entity(eid)
+        entity["state"] = state
+        client = FakeHARestClient(states=[entity])
+        assert self._run_one_poll(monkeypatch, client) == []
+
+        with _sq3.connect("") as conn:
+            rows = conn.execute(
+                "SELECT card_key, resolved_at FROM hitl_suppression"
+                " WHERE card_key IN (?, ?)",
+                keys,
+            ).fetchall()
+        assert len(rows) == 2
+        assert all(r[1] is None for r in rows)
 
 
 # ── ha_log_monitor — poll_for_notifications ──────────────────────────────────────

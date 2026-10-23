@@ -20,6 +20,9 @@ class UpdateStatus:
     release_url: Optional[str]
     release_summary: Optional[str]
     in_progress: bool
+    # False when the entity state is unavailable/unknown (e.g. during an HA restart):
+    # update_available then carries no information (#976).
+    state_known: bool = True
 
 
 _COMPONENT_MAP = {
@@ -44,15 +47,17 @@ def _entity_to_update_status(entity: dict) -> Optional[UpdateStatus]:
     if name.endswith("_update"):
         name = name[: -len("_update")]
     component = _COMPONENT_MAP.get(name, name)
+    state = entity.get("state", "off")
     return UpdateStatus(
         component=component,
         entity_id=entity_id,
         installed_version=attrs.get("installed_version", ""),
         latest_version=attrs.get("latest_version", ""),
-        update_available=(entity.get("state", "off") == "on"),
+        update_available=(state == "on"),
         release_url=attrs.get("release_url"),
         release_summary=attrs.get("release_summary"),
         in_progress=bool(attrs.get("in_progress", False)),
+        state_known=state not in ("unavailable", "unknown"),
     )
 
 

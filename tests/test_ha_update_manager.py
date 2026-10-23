@@ -820,12 +820,15 @@ class TestAutoApplyBlock:
 
         class _CapturingNotifier:
             async def send(self, subject="", body="", payload=None, **kw):
-                notifier_calls.append({"subject": subject, "body": body})
+                notifier_calls.append(
+                    {"subject": subject, "body": body, "payload": payload}
+                )
 
         # Simulate loop returning success + executor has _pending_auto_apply=True
         def _make_mock_loop(executor_ref):
             async def _fake_run(initial_context, **kwargs):
                 executor_ref._pending_auto_apply = True
+                executor_ref._auto_apply_advisory = "Advisory: SAFE — looks fine"
                 return AgentLoopResult(outcome="success")
 
             m = MagicMock()
@@ -884,6 +887,16 @@ class TestAutoApplyBlock:
             c for c in notifier_calls if "blocked" in c.get("body", "").lower()
         ]
         assert block_msgs, "Core update auto-apply must be blocked with a notification"
+        # Stable nid + pending suppression row so the next poll skips (#976).
+        from utils.hitl.hitl_tracker import should_send_card, stable_nid
+
+        key = "update:update.home_assistant_core_update"
+        payload = block_msgs[0]["payload"]
+        assert payload["notification_id"] == stable_nid(key)
+        assert payload["suppression_key"] == key
+        assert "Advisory: SAFE — looks fine" in block_msgs[0]["body"]
+        with sqlite3.connect(db_path) as conn:
+            assert should_send_card(conn, key) is False
 
     def test_addon_auto_apply_success_marks_auto_applied(self, tmp_path, pueo_dirs):
         """Successful add-on auto-apply records 'auto_applied', not a sent card (#843)."""
@@ -2064,6 +2077,7 @@ class TestFinishUpdateAnalysisNoNotes:
 
         # Auto-apply should be signalled (no card sent, pending_auto_apply set)
         assert executor._pending_auto_apply is True
+        assert executor._auto_apply_advisory == "Advisory: SAFE — Safe bug fix."
         assert not notifier.send.called
 
 
@@ -2090,6 +2104,7 @@ class TestPollForUpdatesInProgress:
             latest_version="3.2.1",
             update_available=True,
             in_progress=True,  # ← install running
+            state_known=True,
             release_url=None,
             release_summary=None,
         )
@@ -3428,6 +3443,7 @@ class TestPollForUpdatesTimelineDedup:
             latest_version="5.11.1",
             update_available=True,
             in_progress=False,
+            state_known=True,
             release_url=None,
             release_summary=None,
         )

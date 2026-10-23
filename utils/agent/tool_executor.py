@@ -351,6 +351,8 @@ class ToolExecutor:
         self._host_health_finding: Optional[Any] = None
         self._device_availability_finding: Optional[Any] = None
         self._pending_auto_apply: bool = False
+        # Advisory line for the card sent when auto-apply is blocked (#976).
+        self._auto_apply_advisory: str = ""
         self._release_notes_obtained: bool = False
         self._lovelace_suspicious: list[str] = []
         self._event_subscriber: Optional[Any] = None
@@ -5343,6 +5345,9 @@ class ToolExecutor:
                         ),
                     )
                 self._pending_auto_apply = True
+                # Reaching auto-apply implies release notes were obtained (a
+                # no-notes run forces a card above), so the verdict is SAFE.
+                self._auto_apply_advisory = f"Advisory: SAFE — {recommendation}"
                 # The install result verifies this session, not the end of the
                 # analysis (ADR 046); defer like a queued card.
                 self._hitl_card_queued = True
