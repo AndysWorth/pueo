@@ -717,7 +717,9 @@ class ToolExecutor:
             if name == "finish_lovelace_investigation":
                 self._capture_declared_runbook(args)
                 return await self._finish_lovelace_investigation(
-                    args.get("findings", [])
+                    args.get("findings", []),
+                    verification_question=args.get("verification_question"),
+                    fact_if_yes=args.get("fact_if_yes"),
                 )
             if name == "finish_repair_issue":
                 self._capture_declared_runbook(args)
@@ -726,6 +728,8 @@ class ToolExecutor:
                     recommended_action=args.get("recommended_action", ""),
                     requires_hitl=bool(args.get("requires_hitl", True)),
                     action=args.get("action", "dismiss"),
+                    verification_question=args.get("verification_question"),
+                    fact_if_yes=args.get("fact_if_yes"),
                 )
             if name == "finish_notification_investigation":
                 self._capture_declared_runbook(args)
@@ -735,6 +739,8 @@ class ToolExecutor:
                     requires_hitl=bool(args.get("requires_hitl", True)),
                     severity_override=args.get("severity_override"),
                     dismiss_now=bool(args.get("dismiss_now", False)),
+                    verification_question=args.get("verification_question"),
+                    fact_if_yes=args.get("fact_if_yes"),
                 )
             if name == "get_device_info":
                 return await self._get_device_info(args.get("ip", ""))
@@ -777,6 +783,8 @@ class ToolExecutor:
                     root_cause=args.get("root_cause", ""),
                     outcome=args.get("outcome", "needs_action"),
                     recommended_actions=args.get("recommended_actions", []),
+                    verification_question=args.get("verification_question"),
+                    fact_if_yes=args.get("fact_if_yes"),
                 )
             if name == "finish_device_availability":
                 self._capture_declared_runbook(args)
@@ -785,6 +793,8 @@ class ToolExecutor:
                     root_cause=args.get("root_cause", ""),
                     outcome=args.get("outcome", "needs_action"),
                     recommended_actions=args.get("recommended_actions", []),
+                    verification_question=args.get("verification_question"),
+                    fact_if_yes=args.get("fact_if_yes"),
                 )
             if name == "discard_result":
                 reason = args.get("reason", "")
@@ -4623,7 +4633,12 @@ class ToolExecutor:
             output=output,
         )
 
-    async def _finish_lovelace_investigation(self, findings: list[dict]) -> ToolResult:
+    async def _finish_lovelace_investigation(
+        self,
+        findings: list[dict],
+        verification_question: Optional[str] = None,
+        fact_if_yes: Optional[str] = None,
+    ) -> ToolResult:
         """Create HITL cards for each finding; suppress duplicates."""
         from utils.hitl.card_types import CARD_TYPE_HA_CONFIG_ISSUE
         from utils.hitl.hitl_tracker import mark_card_sent, should_send_card, stable_nid
@@ -4659,6 +4674,11 @@ class ToolExecutor:
                 "initial_chat_message": initial_chat_message,
                 "episode_id": self._episode_id,
             }
+            if verification_question:
+                payload["verification_question"] = verification_question
+                payload["signature"] = self._session_signature
+            if fact_if_yes:
+                payload["fact_if_yes"] = fact_if_yes
             with sqlite3.connect(self._db_path) as conn:
                 mark_card_sent(conn, card_key, CARD_TYPE_HA_CONFIG_ISSUE, description)
             await self._notifier.send(subject=title, body=body, payload=payload)
@@ -4704,6 +4724,8 @@ class ToolExecutor:
         recommended_action: str,
         requires_hitl: bool,
         action: str,
+        verification_question: Optional[str] = None,
+        fact_if_yes: Optional[str] = None,
     ) -> ToolResult:
         """Create a HITL card for the pending repair issue, or auto-execute reboot."""
         if not requires_hitl:
@@ -4851,6 +4873,11 @@ class ToolExecutor:
             "translation_key": getattr(issue, "translation_key", None),
             "episode_id": self._episode_id,
         }
+        if verification_question:
+            payload["verification_question"] = verification_question
+            payload["signature"] = self._session_signature
+        if fact_if_yes:
+            payload["fact_if_yes"] = fact_if_yes
         mark_repair_hitl_sent(issue.issue_key)
         await self._notifier.send(subject=title, body=body, payload=payload)
         self._mark_card_queued(payload["notification_id"])
@@ -4873,6 +4900,8 @@ class ToolExecutor:
         requires_hitl: bool,
         severity_override: Optional[str],
         dismiss_now: bool,
+        verification_question: Optional[str] = None,
+        fact_if_yes: Optional[str] = None,
     ) -> ToolResult:
         """Create a HITL card for the pending notification; optionally dismiss it from HA."""
         notif = self._pending_notification
@@ -4942,6 +4971,11 @@ class ToolExecutor:
             "ha_created_at": ha_created_at,
             "episode_id": self._episode_id,
         }
+        if verification_question:
+            payload["verification_question"] = verification_question
+            payload["signature"] = self._session_signature
+        if fact_if_yes:
+            payload["fact_if_yes"] = fact_if_yes
         await self._notifier.send(subject=subject, body=body, payload=payload)
         self._mark_card_queued(card_id)
         from agents.ha_notification_manager import mark_notification_hitl_sent
@@ -5547,6 +5581,8 @@ class ToolExecutor:
         root_cause: str,
         outcome: str,
         recommended_actions: list,
+        verification_question: Optional[str] = None,
+        fact_if_yes: Optional[str] = None,
     ) -> ToolResult:
         """Send a host-health investigation card and mark it as sent.
 
@@ -5619,6 +5655,11 @@ class ToolExecutor:
             _payload["fingerprint"] = _hashlib.sha256(
                 (finding.kind + json.dumps(finding.evidence, sort_keys=True)).encode()
             ).hexdigest()[:16]
+        if verification_question:
+            _payload["verification_question"] = verification_question
+            _payload["signature"] = self._session_signature
+        if fact_if_yes:
+            _payload["fact_if_yes"] = fact_if_yes
         await self._notifier.send(
             subject=f"Pueo: Host health — {finding.kind}",
             body=summary,
@@ -5649,6 +5690,8 @@ class ToolExecutor:
         root_cause: str,
         outcome: str,
         recommended_actions: list,
+        verification_question: Optional[str] = None,
+        fact_if_yes: Optional[str] = None,
     ) -> ToolResult:
         """Send a device-availability investigation card and mark it as sent."""
         import sqlite3 as _sqlite3
@@ -5689,6 +5732,11 @@ class ToolExecutor:
             "recommended_actions": recommended_actions,
             "episode_id": self._episode_id,
         }
+        if verification_question:
+            _payload["verification_question"] = verification_question
+            _payload["signature"] = self._session_signature
+        if fact_if_yes:
+            _payload["fact_if_yes"] = fact_if_yes
         subject = f"Pueo: Device offline — {', '.join(device_names[:3])}"
         if len(device_names) > 3:
             subject += f" (+{len(device_names) - 3} more)"

@@ -80,5 +80,13 @@ Phase 6 — REPORT: Call {terminal_tool} with:
             "escalated" if request_escalation was called
   recommended_actions: concrete steps for the user (empty if resolved or monitoring)
   runbook_followed: the [id=…] value of the runbook you followed, or "none"
+  verification_question: (optional) one yes/no question whose Yes confirms the root cause,
+            ≤120 chars. Set when you have a clear testable conclusion, e.g.
+            "Did the HA OS update finish and HA come back online?"
+            Omit for informational findings or highly ambiguous situations.
+  fact_if_yes: (optional) instance fact to store when the user answers Yes, ≤200 chars.
+            A host- or integration-specific truth useful in future investigations, e.g.
+            "RPi firmware update blocked: EEPROM 2021-12-02, CM4 board — informational only."
+            Omit when no reusable fact applies.
 
   If you exhaust all reasonable paths, call request_escalation(reason) before {terminal_tool}.

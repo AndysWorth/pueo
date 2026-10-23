@@ -48,3 +48,9 @@ Phase 6 — REPORT: Call {terminal_tool} with:
     null to keep the default severity
   dismiss_now: true to auto-dismiss the notification from HA (use for benign/informational ones)
   runbook_followed: the [id=…] value of the runbook you followed, or "none"
+  verification_question: (optional) one yes/no question whose Yes confirms the root cause,
+    ≤120 chars. Set for actionable notifications with a testable conclusion, e.g.
+    "Was the login at 03:14 from your iPhone?" Omit for auto-dismissed or ambiguous cases.
+  fact_if_yes: (optional) instance fact to store when the user answers Yes, ≤200 chars, e.g.
+    "http-login alerts at 03:xx usually from user's iPhone on the guest VLAN (192.168.x.x)."
+    Omit when no reusable fact applies.

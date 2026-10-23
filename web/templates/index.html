@@ -543,6 +543,23 @@ trigger: {{ r.payload.get("trigger", []) | tojson(indent=2) }}
       {% endif %}
       {% if r.payload.get("episode_id") and r.payload.get("user_verdict") == "right" %}
       <p style="font-size:0.78rem;color:#2e7d32;margin:0.35rem 0 0;">✓ You marked Pueo's analysis as right</p>
+      {% elif r.payload.get("episode_id") and r.payload.get("verification_question") %}
+      <div style="margin-top:0.6rem;padding:0.5rem 0.65rem;background:#f0f7f0;border:1px solid #c3dfc3;border-radius:4px;">
+        <p style="font-size:0.82rem;margin:0 0 0.4rem;color:#1a3a1a;"><strong>{{ r.payload.get("verification_question") }}</strong></p>
+        <form method="POST" action="/right/{{ r.notification_id }}" style="display:inline;">
+          <button type="submit" style="background:#2e7d32;color:#fff;border:none;padding:0.3rem 0.85rem;border-radius:4px;cursor:pointer;font-size:0.82rem;margin-right:0.4rem;">Yes</button>
+        </form>
+        <button onclick="window.toggleWrongForm('{{ r.notification_id }}')" type="button" style="background:#fff;color:#555;border:1px solid #bbb;padding:0.3rem 0.85rem;border-radius:4px;cursor:pointer;font-size:0.82rem;">No</button>
+        <div id="wrong-form-{{ r.notification_id }}" style="display:none;margin-top:0.4rem;">
+          <form method="POST" action="/wrong/{{ r.notification_id }}">
+            <label style="font-size:0.8rem;display:block;margin-bottom:0.25rem;">Optional correction (one line):</label>
+            <input type="text" name="correction" placeholder="What should Pueo have done instead?" style="font-size:0.82rem;padding:0.25rem 0.4rem;border:1px solid #faa;border-radius:4px;width:100%;max-width:28rem;margin-bottom:0.3rem;">
+            <br>
+            <button type="submit" style="background:#dc3545;color:#fff;border:none;padding:0.3rem 0.75rem;border-radius:4px;cursor:pointer;font-size:0.82rem;">Confirm: No, that's wrong</button>
+            <button type="button" onclick="window.toggleWrongForm('{{ r.notification_id }}')" style="background:none;color:#666;border:1px solid #ccc;padding:0.3rem 0.75rem;border-radius:4px;cursor:pointer;font-size:0.82rem;margin-left:0.3rem;">Cancel</button>
+          </form>
+        </div>
+      </div>
       {% elif r.payload.get("episode_id") %}
       <form method="POST" action="/right/{{ r.notification_id }}" style="display:inline;">
         <button type="submit" title="Confirm Pueo's analysis was correct; Pueo learns from verified sessions" style="background:none;color:#2e7d32;border:none;padding:0.35rem 0;cursor:pointer;font-size:0.78rem;text-decoration:underline;display:block;margin-top:0.25rem;">Pueo was right</button>
@@ -565,7 +582,9 @@ trigger: {{ r.payload.get("trigger", []) | tojson(indent=2) }}
         {% else %}
         <strong style="color:#222;">Acknowledge</strong> — Mark as seen and remove from queue; full details remain in the Timeline
         {% endif %}
-        {% if r.payload.get("episode_id") %}
+        {% if r.payload.get("episode_id") and r.payload.get("verification_question") %}
+        <br><strong style="color:#222;">Yes / No</strong> — Confirm or correct Pueo's conclusion; confirmed sessions teach Pueo
+        {% elif r.payload.get("episode_id") %}
         <br><strong style="color:#222;">Pueo was right</strong> — Acknowledge and confirm the analysis; only confirmed sessions teach Pueo
         {% endif %}
       </p>
@@ -578,7 +597,25 @@ trigger: {{ r.payload.get("trigger", []) | tojson(indent=2) }}
         <button class="btn btn-approve" type="submit">Acknowledge</button>
       </form>
       {% endif %}
-      {% if r.payload.get("episode_id") %}
+      {% if r.payload.get("episode_id") and r.payload.get("verification_question") %}
+      <div style="margin-top:0.5rem;padding:0.5rem 0.65rem;background:#f0f7f0;border:1px solid #c3dfc3;border-radius:4px;">
+        <p style="font-size:0.82rem;margin:0 0 0.4rem;color:#1a3a1a;"><strong>{{ r.payload.get("verification_question") }}</strong></p>
+        <form method="POST" action="/right/{{ r.notification_id }}" style="display:inline;">
+          <input type="hidden" name="acknowledge" value="1">
+          <button type="submit" style="background:#2e7d32;color:#fff;border:none;padding:0.3rem 0.85rem;border-radius:4px;cursor:pointer;font-size:0.82rem;margin-right:0.4rem;">Yes</button>
+        </form>
+        <button onclick="window.toggleWrongForm('{{ r.notification_id }}')" type="button" style="background:#fff;color:#555;border:1px solid #bbb;padding:0.3rem 0.85rem;border-radius:4px;cursor:pointer;font-size:0.82rem;">No</button>
+        <div id="wrong-form-{{ r.notification_id }}" style="display:none;margin-top:0.4rem;">
+          <form method="POST" action="/wrong/{{ r.notification_id }}">
+            <label style="font-size:0.8rem;display:block;margin-bottom:0.25rem;">Optional correction (one line):</label>
+            <input type="text" name="correction" placeholder="What should Pueo have done instead?" style="font-size:0.82rem;padding:0.25rem 0.4rem;border:1px solid #faa;border-radius:4px;width:100%;max-width:28rem;margin-bottom:0.3rem;">
+            <br>
+            <button type="submit" style="background:#dc3545;color:#fff;border:none;padding:0.3rem 0.75rem;border-radius:4px;cursor:pointer;font-size:0.82rem;">Confirm: No, that's wrong</button>
+            <button type="button" onclick="window.toggleWrongForm('{{ r.notification_id }}')" style="background:none;color:#666;border:1px solid #ccc;padding:0.3rem 0.75rem;border-radius:4px;cursor:pointer;font-size:0.82rem;margin-left:0.3rem;">Cancel</button>
+          </form>
+        </div>
+      </div>
+      {% elif r.payload.get("episode_id") %}
       <form method="POST" action="/right/{{ r.notification_id }}" style="display:inline;">
         <input type="hidden" name="acknowledge" value="1">
         <button type="submit" title="Acknowledge and confirm Pueo's analysis was correct; Pueo learns from verified sessions" style="background:none;color:#2e7d32;border:none;padding:0.35rem 0;cursor:pointer;font-size:0.78rem;text-decoration:underline;display:block;margin-top:0.25rem;">Pueo was right</button>
