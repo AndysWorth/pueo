@@ -106,6 +106,23 @@ def get_install_state(db_path: str = DB_PATH) -> str:
         return "NOT_INSTALLED"
 
 
+def resolve_addon_slug(db_path: str = DB_PATH) -> str:
+    """Return the NetAlertX add-on slug: config value first, then install details.
+
+    Returns '' when neither source has one (never raises).
+    """
+    import config as _cfg_dyn
+
+    configured = getattr(_cfg_dyn, "NETALERTX_ADDON_SLUG", "")
+    if configured:
+        return str(configured)
+    try:
+        _, details = _read_install_state(db_path)
+    except Exception:
+        return ""
+    return str(details.get("addon_slug", ""))
+
+
 def _write_install_state(db_path: str, state: str, details: dict, cid: str) -> None:
     import datetime
 

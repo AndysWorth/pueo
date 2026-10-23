@@ -35,6 +35,9 @@ async def read_api_token(
     Returns the token string or '' if not found or on any error.
     Never logs the token value.
     """
+    if not slug:
+        log.warning("netalertx_token_read_skipped", reason="no_addon_slug")
+        return ""
     effective_root = app_config_root or "/app_configs"
     db_remote_path = f"{effective_root}/{slug}/db/app.db"
 
@@ -69,7 +72,9 @@ async def read_api_token(
 def _query_token_from_db(local_db_path: str) -> str:
     """Synchronous helper: query Settings.API_TOKEN from a local SQLite file."""
     try:
-        with sqlite3.connect(f"file:{local_db_path}?mode=ro", uri=True) as conn:
+        # immutable=1: NetAlertX's app.db is WAL-mode and we hold only the main
+        # file (no -shm/-wal), which a plain mode=ro open cannot read (#977).
+        with sqlite3.connect(f"file:{local_db_path}?immutable=1", uri=True) as conn:
             row = conn.execute(
                 "SELECT setValue FROM Settings WHERE setKey='API_TOKEN'"
             ).fetchone()
