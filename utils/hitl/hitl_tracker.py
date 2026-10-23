@@ -299,3 +299,18 @@ def touch_reminder_sent(conn: sqlite3.Connection, card_key: str) -> None:
         (time.time(), card_key),
     )
     conn.commit()
+
+
+def was_card_actioned(conn: sqlite3.Connection, card_key: str) -> bool:
+    """Return True if a human approved the card (last_action = 'approved').
+
+    Used to distinguish a self-recovery (device came back without any HA action)
+    from a human-actioned recovery.  Returns False when the row is absent (card
+    was suppressed or never sent) or when the last action was anything other than
+    'approved'.
+    """
+    row = conn.execute(
+        "SELECT last_action FROM hitl_suppression WHERE card_key = ?",
+        (card_key,),
+    ).fetchone()
+    return bool(row and row[0] == "approved")

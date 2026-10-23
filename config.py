@@ -139,6 +139,10 @@ DEVICE_AVAILABILITY_ENABLED: bool = bool(
 DEVICE_AVAILABILITY_GRACE_MINUTES: int = int(
     _agent.get("device_availability_grace_minutes", 10)
 )
+DEVICE_RECURRENCE_COUNT: int = int(_agent.get("device_recurrence_count", 3))
+DEVICE_RECURRENCE_WINDOW_DAYS: int = int(
+    _agent.get("device_recurrence_window_days", 14)
+)
 
 # HA event subscriber (long-lived WS ring buffer)
 HA_EVENT_SUBSCRIBE: bool = bool(_agent.get("ha_event_subscribe", True))
