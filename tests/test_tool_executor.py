@@ -6080,8 +6080,19 @@ class TestAwaitingApprovalWritesNoGap:
 
         loop, gaps, _ = self._loop(tmp_path, monkeypatch, _Queue())
         asyncio.run(loop._enqueue_distillation("awaiting_approval", [], None))
-        assert submitted == []
+        # ADR 049: procedural distillation fires for awaiting_approval.
+        # No gap should be written (awaiting_approval is not a failure).
         assert gaps == []
+        # Only the procedural distillation WorkItem is submitted (not a verdict/gap one).
+        procedure_items = [i for i in submitted if "procedure" in i.description.lower()]
+        verdict_items = [
+            i
+            for i in submitted
+            if i.activity_type == "runbook_distillation"
+            and "procedure" not in i.description.lower()
+        ]
+        assert len(procedure_items) <= 1  # at most one procedural item
+        assert verdict_items == []  # no verdict / gap distillation
 
 
 class TestSessionOutcomeCardId:

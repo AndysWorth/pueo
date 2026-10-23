@@ -182,6 +182,8 @@ def _fetch_signature_chunks(db_path: str, signature: str) -> "list[Any]":
             ):
                 best_learned = (spec, state_order, row)
 
+    from utils.knowledge.runbook_distiller import _split_procedure_notes
+
     chunks: list[Any] = []
     for entry in (best_seed, best_learned):
         if entry is None:
@@ -190,7 +192,10 @@ def _fetch_signature_chunks(db_path: str, signature: str) -> "list[Any]":
         title = row["title"] or signature
         approach = row["approach"] or ""
         state = row["runbook_state"] or "candidate"
-        text = f"# {title}\n\n{approach}".strip()
+
+        # Split procedure notes out so they get their own [PROCEDURE NOTES] label.
+        main_approach, proc_notes = _split_procedure_notes(approach)
+        text = f"# {title}\n\n{main_approach}".strip()
         chunks.append(
             KnowledgeChunk(
                 text=text,
@@ -206,6 +211,21 @@ def _fetch_signature_chunks(db_path: str, signature: str) -> "list[Any]":
                 chunk_id=row["id"],
             )
         )
+        if proc_notes:
+            chunks.append(
+                KnowledgeChunk(
+                    text=proc_notes,
+                    source=f"proc:{row['id']}",
+                    collection="strategies",
+                    score=1.0,
+                    metadata={
+                        "procedure_note": True,
+                        "sig_match": True,
+                    },
+                    authority_score=0.9,
+                    chunk_id=f"proc:{row['id']}",
+                )
+            )
     return chunks
 
 
@@ -1095,6 +1115,30 @@ class AgentLoop:
                 log.warning("session_outcome_write_failed", error=str(exc))
 
         if queue is not None:
+            # Enqueue procedural distillation for any session that reached a conclusion
+            # (ADR 049).  This lane never waits for user verification — it only captures
+            # HOW to gather evidence, not what the verdict was.
+            _PROCEDURAL_OUTCOMES = frozenset(
+                {"success", "needs_action", "monitoring", "awaiting_approval"}
+            )
+            if outcome in _PROCEDURAL_OUTCOMES and _ep and _db and _store:
+                try:
+                    from utils.knowledge.runbook_distiller import (
+                        enqueue_procedural_distillation,
+                    )
+
+                    await enqueue_procedural_distillation(
+                        episode_id=_ep,
+                        db_path=_db,
+                        knowledge_store=_store,
+                        model=_model,
+                        llm_client=_llm,
+                    )
+                except Exception as _pe:  # nosec B110
+                    log.warning(
+                        "procedural_distillation_enqueue_failed", error=str(_pe)
+                    )
+
             # Supervisor mode: only queue gap writing for non-success (no LLM).
             # Success sessions are deferred until S5 wires distillation to verification.
             # awaiting_approval is not a failure: its card's executor verifies it.

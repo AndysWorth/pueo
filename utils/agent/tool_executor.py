@@ -1049,6 +1049,8 @@ class ToolExecutor:
         """
         if metadata.get("instance_fact"):
             return "[INSTANCE FACT]"
+        if metadata.get("procedure_note"):
+            return "[PROCEDURE NOTES]"
         if metadata.get("exact_match"):
             label = "[RUNBOOK FOR THIS EXACT SYMPTOM]"
             if chunk_id:
