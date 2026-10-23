@@ -39,6 +39,56 @@
   <h2 style="font-size:1rem;color:#555;margin:0;">Runbook Review <span style="font-size:0.8rem;font-weight:400;color:#888;">(dev mode)</span></h2>
 </div>
 
+{% set stats = report.signature_stats %}
+<div class="section-header" style="margin-top:0;">Learning health</div>
+{% if not stats %}
+  <p class="empty">No agent sessions recorded yet.</p>
+{% else %}
+  <p class="rb-meta" style="margin:0 0 0.5rem;">
+    {{ stats | length }} signature{{ 's' if stats | length != 1 }}
+    · {{ stats | sum(attribute='sessions_30d') }} sessions (30d)
+    · {{ stats | sum(attribute='verified_success') + stats | sum(attribute='verified_failure') }} verified
+    · {{ report.candidates | length }} candidate{{ 's' if report.candidates | length != 1 }}
+    · {{ report.validated | length }} validated
+    · {{ stats | sum(attribute='instance_facts') }} instance facts
+  </p>
+  <div style="overflow-x:auto;">
+  <table class="rb-health" style="width:100%;border-collapse:collapse;font-size:0.8rem;">
+    <thead>
+      <tr style="text-align:left;color:#555;border-bottom:1px solid #ddd;">
+        <th>Signature</th><th>Sessions 30d</th><th>Verified</th><th>Seed</th>
+        <th>Learned</th><th>Proc. notes</th><th>Facts</th><th>Last session</th><th>Last used</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for s in stats %}
+      {% set verified = s.verified_success + s.verified_failure %}
+      {% set starved = s.sessions_30d > 0 and verified == 0 and not s.learned_state %}
+      <tr{% if starved %} class="rb-usage-bad" title="Sessions but no verification and nothing learned"{% endif %} style="border-bottom:1px solid #eee;">
+        <td style="font-family:monospace;">{{ s.signature }}</td>
+        <td>{{ s.sessions_30d }}</td>
+        <td>✓{{ s.verified_success }} / ✗{{ s.verified_failure }}{% if s.pending %} / {{ s.pending }} pending{% endif %}{% if s.unverified %} / {{ s.unverified }} unverified{% endif %}</td>
+        <td>{{ s.matched_seed or "—" }}</td>
+        <td>{% if s.learned_state %}<span class="badge rb-state-{{ s.learned_state }}">{{ s.learned_state }}</span>{% else %}none{% endif %}</td>
+        <td>{{ s.procedure_notes }}</td>
+        <td>{{ s.instance_facts }}</td>
+        <td>{{ s.last_session_at[:10] if s.last_session_at else "—" }}</td>
+        <td>{{ s.last_used_at[:10] if s.last_used_at else "—" }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+{% endif %}
+{% if report.unmatched_seeds %}
+<details style="margin:0.5rem 0 1rem;">
+  <summary class="rb-meta" style="cursor:pointer;">Seeds never matched ({{ report.unmatched_seeds | length }})</summary>
+  {% for sd in report.unmatched_seeds %}
+  <div class="rb-sig">{{ sd.title }} — {{ sd.signature }}</div>
+  {% endfor %}
+</details>
+{% endif %}
+
 {% set queued_count = report.contribution_ready | length %}
 {% if kb_repo_configured and (queued_count > 0 or report.gaps | length > 0) %}
 <div class="kb-bar">

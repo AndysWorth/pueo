@@ -9517,3 +9517,100 @@ class TestExecuteCompanionSetup:
             dashboard._CARD_DISPATCH[CARD_TYPE_COMPANION_SETUP]
             is dashboard._execute_companion_setup
         )
+
+
+# ── Runbooks tab ─────────────────────────────────────────────────────────────────
+
+
+class TestRunbooksTab:
+    @pytest.fixture
+    def db_path(self, monkeypatch, tmp_path):
+        import web.dashboard as dashboard
+        from agents import ha_agent_advanced
+
+        path = str(tmp_path / "test.db")
+        monkeypatch.setattr(dashboard, "DB_PATH", path)
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
+        monkeypatch.setattr(dashboard, "DEVELOPMENT_MODE", True)
+        ha_agent_advanced.init_local_database()
+        return path
+
+    def _insert_session(self, db_path, **overrides):
+        import sqlite3
+        from datetime import datetime, timezone
+
+        row = dict(
+            episode_id="ep-1",
+            signature="update:addon:mosquitto",
+            session_type="update",
+            created_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            verification="pending",
+        )
+        row.update(overrides)
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO session_outcomes"
+                " (episode_id, signature, session_type, created_at, verification)"
+                " VALUES (:episode_id, :signature, :session_type, :created_at, :verification)",
+                row,
+            )
+
+    def test_renders_learning_health_with_session_row(self, db_path):
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        self._insert_session(db_path)
+        resp = TestClient(dashboard.app).get("/runbooks")
+
+        assert resp.status_code == 200
+        assert "Learning health" in resp.text
+        assert "update:addon:mosquitto" in resp.text
+        # sessions but no verification and nothing learned → flagged
+        assert "rb-usage-bad" in resp.text
+
+    def test_verified_row_is_not_flagged(self, db_path):
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        self._insert_session(db_path, verification="success")
+        resp = TestClient(dashboard.app).get("/runbooks")
+
+        assert resp.status_code == 200
+        assert "✓1 / ✗0" in resp.text
+        assert 'class="rb-usage-bad"' not in resp.text
+
+    def test_empty_state_renders(self, db_path):
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        resp = TestClient(dashboard.app).get("/runbooks")
+
+        assert resp.status_code == 200
+        assert "No agent sessions recorded yet." in resp.text
+
+    def test_dev_mode_off_returns_404(self, db_path, monkeypatch):
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setattr(dashboard, "DEVELOPMENT_MODE", False)
+        resp = TestClient(dashboard.app).get("/runbooks")
+
+        assert resp.status_code == 404
+
+    def test_unmatched_seed_listed(self, db_path):
+        import sqlite3
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO agent_strategies"
+                " (id, title, trigger_pattern, approach, runbook_state, created_at, signature)"
+                " VALUES ('seed:x', 'Orphan seed', 't', 'a', 'seed', '2026-10-01T00:00:00Z',"
+                " 'never:matched:*')"
+            )
+        resp = TestClient(dashboard.app).get("/runbooks")
+
+        assert resp.status_code == 200
+        assert "Seeds never matched (1)" in resp.text
+        assert "never:matched:*" in resp.text
