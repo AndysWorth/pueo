@@ -499,3 +499,249 @@ class TestRepairIssueGateInjection:
 
         executor = MockLoop.call_args.kwargs["tool_executor"]
         assert executor._gate is injected_gate
+
+
+# ---------------------------------------------------------------------------
+# Replay protection (#975)
+# ---------------------------------------------------------------------------
+
+_TS_LINE = (
+    "\x1b[31m2026-10-22 07:22:46.863 ERROR (paho) [root] Uncaught thread exception"
+)
+_TS_LINE_SAME_TS = "\x1b[31m2026-10-22 07:22:46.863 ERROR (Main) [x] Error doing job"
+_TS_LINE_LATER = "\x1b[31m2026-10-22 07:30:00.000 ERROR (Main) [y] Component error"
+
+
+class TestStripAnsi:
+    def test_removes_colour_codes(self, pueo_dirs):
+        from agents.ha_log_monitor import _strip_ansi
+
+        assert _strip_ansi("\x1b[31mhello\x1b[0m") == "hello"
+
+    def test_plain_line_unchanged(self, pueo_dirs):
+        from agents.ha_log_monitor import _strip_ansi
+
+        assert _strip_ansi("plain") == "plain"
+
+
+class TestParseHaLogTs:
+    def test_valid_with_millis(self, pueo_dirs):
+        import datetime
+
+        from agents.ha_log_monitor import _parse_ha_log_ts
+
+        expected = datetime.datetime(2026, 10, 22, 7, 22, 46, 863000).timestamp()
+        assert _parse_ha_log_ts("2026-10-22 07:22:46.863 ERROR x") == expected
+
+    def test_valid_without_millis(self, pueo_dirs):
+        import datetime
+
+        from agents.ha_log_monitor import _parse_ha_log_ts
+
+        expected = datetime.datetime(2026, 10, 22, 7, 22, 46).timestamp()
+        assert _parse_ha_log_ts("2026-10-22 07:22:46 INFO x") == expected
+
+    def test_ansi_wrapped(self, pueo_dirs):
+        from agents.ha_log_monitor import _parse_ha_log_ts
+
+        assert _parse_ha_log_ts(_TS_LINE) == _parse_ha_log_ts(
+            "2026-10-22 07:22:46.863 ERROR"
+        )
+
+    def test_continuation_line_returns_none(self, pueo_dirs):
+        from agents.ha_log_monitor import _parse_ha_log_ts
+
+        assert _parse_ha_log_ts('  File "/usr/lib/x.py", line 3, in run') is None
+        assert _parse_ha_log_ts("Traceback (most recent call last):") is None
+
+    def test_garbage_returns_none(self, pueo_dirs):
+        from agents.ha_log_monitor import _parse_ha_log_ts
+
+        assert _parse_ha_log_ts("") is None
+        assert _parse_ha_log_ts("2026-13-45 99:99:99.000 ERROR") is None
+
+
+class TestReplayGate:
+    def _state(self):
+        from agents.ha_log_monitor import _LogStreamState
+
+        return _LogStreamState(loop_name="t")
+
+    def test_no_timestamp_passes(self, pueo_dirs):
+        from agents.ha_log_monitor import _replay_gate
+
+        state = self._state()
+        assert _replay_gate(state, "fp") is True
+        assert _replay_gate(state, "fp") is True
+        assert state.watermark is None
+
+    def test_first_line_sets_watermark(self, pueo_dirs):
+        from agents.ha_log_monitor import _replay_gate
+
+        state = self._state()
+        state.entry_ts = 100.0
+        assert _replay_gate(state, "a") is True
+        assert state.watermark == 100.0
+        assert state.seen_at_watermark == {"a"}
+
+    def test_older_line_skipped(self, pueo_dirs):
+        from agents.ha_log_monitor import _replay_gate
+
+        state = self._state()
+        state.watermark = 100.0
+        state.entry_ts = 99.0
+        assert _replay_gate(state, "a") is False
+
+    def test_same_ts_seen_skipped_unseen_passes(self, pueo_dirs):
+        from agents.ha_log_monitor import _replay_gate
+
+        state = self._state()
+        state.watermark = 100.0
+        state.seen_at_watermark = {"a"}
+        state.entry_ts = 100.0
+        assert _replay_gate(state, "a") is False
+        assert _replay_gate(state, "b") is True
+        assert state.seen_at_watermark == {"a", "b"}
+
+    def test_newer_line_resets_seen_set(self, pueo_dirs):
+        from agents.ha_log_monitor import _replay_gate
+
+        state = self._state()
+        state.watermark = 100.0
+        state.seen_at_watermark = {"a", "b"}
+        state.entry_ts = 101.0
+        assert _replay_gate(state, "c") is True
+        assert state.watermark == 101.0
+        assert state.seen_at_watermark == {"c"}
+
+
+def _make_prefs_db(tmp_path: Path) -> str:
+    db_path = str(tmp_path / "prefs.db")
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "CREATE TABLE user_prefs (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+        )
+    return db_path
+
+
+class TestWatermarkPersistence:
+    def test_save_then_load_round_trip(self, pueo_dirs, tmp_path, monkeypatch):
+        import config
+        from agents.ha_log_monitor import _load_watermark, _save_watermark
+
+        monkeypatch.setattr(config, "DB_PATH", _make_prefs_db(tmp_path))
+        _save_watermark("core", 123.5, ["a", "b"])
+        _save_watermark("core", 124.0, ["c"])
+        assert _load_watermark("core") == (124.0, {"c"})
+        assert _load_watermark("supervisor") is None
+
+    def test_missing_table_fails_open(self, pueo_dirs, tmp_path, monkeypatch):
+        import config
+        from agents.ha_log_monitor import _load_watermark, _save_watermark
+
+        monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "empty.db"))
+        _save_watermark("core", 1.0, [])
+        assert _load_watermark("core") is None
+
+    def test_restore_adopts_newer_only(self, pueo_dirs, tmp_path, monkeypatch):
+        import config
+        from agents.ha_log_monitor import (
+            _LogStreamState,
+            _restore_watermark,
+            _save_watermark,
+        )
+
+        monkeypatch.setattr(config, "DB_PATH", _make_prefs_db(tmp_path))
+        state = _LogStreamState(loop_name="t")
+        _restore_watermark(state, "core")  # nothing persisted
+        assert state.watermark is None
+
+        _save_watermark("core", 100.0, ["a"])
+        _restore_watermark(state, "core")
+        assert (state.watermark, state.seen_at_watermark) == (100.0, {"a"})
+
+        state.watermark, state.seen_at_watermark = 200.0, {"z"}
+        _restore_watermark(state, "core")
+        assert (state.watermark, state.seen_at_watermark) == (200.0, {"z"})
+
+
+class TestTailStreamReplay:
+    """Reconnects replay the backlog; already-triaged lines must not re-triage."""
+
+    @pytest.fixture
+    def stream_env(self, pueo_dirs, tmp_path, monkeypatch):
+        import config
+        from agents import ha_log_monitor
+        from agents.ha_log_monitor import LogEvaluation, _LogStreamState
+        from utils.llm.ollama_client import FakeLLMClient
+
+        monkeypatch.setattr(config, "DB_PATH", _make_prefs_db(tmp_path))
+        monkeypatch.setattr(
+            ha_log_monitor, "_core_state", _LogStreamState(loop_name="ha_log_monitor")
+        )
+        monkeypatch.setattr(ha_log_monitor, "_init_sparkline_db", lambda s: None)
+        monkeypatch.setattr(ha_log_monitor, "_record_sparkline_line", lambda s, m: None)
+        r = LogEvaluation(
+            is_actionable=False, root_cause_summary="x", confidence_score=0.1
+        )
+        return FakeLLMClient(r.model_dump_json())
+
+    def _run(self, lines, llm):
+        import asyncio
+
+        from agents.ha_log_monitor import tail_remote_log_stream
+        from utils.ha.ssh_client import FakeSSHClient
+
+        asyncio.run(
+            tail_remote_log_stream(
+                ssh_client=FakeSSHClient(stream_data=lines), llm_client=llm
+            )
+        )
+
+    def test_replayed_backlog_triaged_once(self, stream_env):
+        lines = [_TS_LINE, '  File "x.py", line 1', "INFO ok"]
+        self._run(lines, stream_env)
+        self._run(lines, stream_env)
+        assert len(stream_env.calls) == 1
+
+    def test_equal_timestamp_distinct_lines_both_triaged(self, stream_env):
+        lines = [_TS_LINE, _TS_LINE_SAME_TS]
+        self._run(lines, stream_env)
+        self._run(lines, stream_env)
+        assert len(stream_env.calls) == 2
+
+    def test_new_line_after_replay_is_triaged(self, stream_env):
+        self._run([_TS_LINE], stream_env)
+        self._run([_TS_LINE, _TS_LINE_LATER], stream_env)
+        assert len(stream_env.calls) == 2
+
+    def test_traceback_header_inherits_entry_ts(self, stream_env):
+        lines = [
+            "\x1b[31m2026-10-22 07:22:46.863 ERROR (Main) [x] boom",
+            "Traceback (most recent call last):",
+        ]
+        self._run(lines, stream_env)
+        self._run(lines, stream_env)
+        assert len(stream_env.calls) == 1
+
+    def test_watermark_survives_restart(self, stream_env, monkeypatch):
+        from agents import ha_log_monitor
+        from agents.ha_log_monitor import _LogStreamState
+
+        self._run([_TS_LINE], stream_env)
+        # Simulate a Pueo restart: fresh in-memory state, same DB.
+        monkeypatch.setattr(
+            ha_log_monitor, "_core_state", _LogStreamState(loop_name="ha_log_monitor")
+        )
+        self._run([_TS_LINE], stream_env)
+        assert len(stream_env.calls) == 1
+
+    def test_buffer_is_per_source(self, stream_env, monkeypatch):
+        from agents import ha_log_monitor
+        from agents.ha_log_monitor import _LogStreamState
+
+        sup = _LogStreamState(loop_name="ha_log_monitor_supervisor")
+        monkeypatch.setattr(ha_log_monitor, "_supervisor_state", sup)
+        self._run(["INFO core line"], stream_env)
+        assert list(ha_log_monitor._core_state.log_buffer) == ["INFO core line"]
+        assert list(sup.log_buffer) == []
