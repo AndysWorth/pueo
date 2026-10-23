@@ -9,6 +9,12 @@ from typing import TYPE_CHECKING, Optional
 if TYPE_CHECKING:
     from utils.knowledge.knowledge_store import FakeKnowledgeStore
 
+# Re-export for consumers that need it (plan docs reference this module).
+from utils.knowledge.runbook_distiller import (
+    _sig_specificity,
+    _split_procedure_notes,
+)
+
 NEAR_DUPLICATE_THRESHOLD = 0.92
 
 
@@ -47,6 +53,25 @@ class MetaAnalysisReport:
     duplicate_pairs: list[DuplicatePair] = field(default_factory=list)
     contribution_ready: list[RunbookRow] = field(default_factory=list)
     gaps_by_signature: list[tuple[str, list[RunbookRow]]] = field(default_factory=list)
+    signature_stats: list["SignatureStats"] = field(default_factory=list)
+    unmatched_seeds: list["RunbookRow"] = field(default_factory=list)
+
+
+@dataclass
+class SignatureStats:
+    """Per-signature learning-health statistics."""
+
+    signature: str
+    sessions_30d: int = 0
+    verified_success: int = 0
+    verified_failure: int = 0
+    pending: int = 0
+    last_session_at: Optional[str] = None
+    matched_seed: Optional[str] = None
+    learned_state: Optional[str] = None
+    procedure_notes: int = 0
+    instance_facts: int = 0
+    last_used_at: Optional[str] = None
 
 
 def _load_usage_stats(db_path: str) -> dict[str, tuple[int, Optional[float]]]:
@@ -171,6 +196,214 @@ def _group_gaps_by_signature(
     return items
 
 
+def _load_signature_stats(
+    db_path: str,
+) -> tuple[list[SignatureStats], list[RunbookRow]]:
+    """Load per-signature learning-health statistics from the session DB.
+
+    Returns ``(stats, unmatched_seeds)`` where *stats* is sorted by
+    ``sessions_30d`` desc then signature, and *unmatched_seeds* lists seed
+    patterns that never matched any session_outcomes row.
+    """
+    # ── 1. session_outcomes ──────────────────────────────────────────────
+    sig_data: dict[str, dict] = {}  # signature -> accumulators
+    try:
+        with sqlite3.connect(db_path) as conn:
+            rows = conn.execute(
+                "SELECT signature,"
+                " COUNT(*) AS total,"
+                " SUM(CASE WHEN verification='success' THEN 1 ELSE 0 END) AS v_success,"
+                " SUM(CASE WHEN verification='failure' THEN 1 ELSE 0 END) AS v_failure,"
+                " SUM(CASE WHEN verification='pending' THEN 1 ELSE 0 END) AS v_pending,"
+                " MAX(created_at) AS last_session,"
+                " SUM(CASE WHEN created_at >= strftime('%Y-%m-%dT%H:%M:%SZ','now','-30 days')"
+                "         THEN 1 ELSE 0 END) AS sessions_30d"
+                " FROM session_outcomes"
+                " WHERE signature IS NOT NULL"
+                " GROUP BY signature"
+            ).fetchall()
+        for r in rows:
+            sig = r[0]
+            sig_data[sig] = {
+                "sessions_30d": int(r[6]),
+                "verified_success": int(r[2]),
+                "verified_failure": int(r[3]),
+                "pending": int(r[4]),
+                "last_session_at": r[5],
+            }
+    except sqlite3.OperationalError:
+        # Table absent on older schema — fall through with empty stats.
+        pass
+
+    # ── 2. agent_strategies — matched seeds + learned runbooks ───────────
+    # Collect all seed/validated/candidate rows keyed by signature.
+    seeds_by_sig: dict[str, list[tuple[str, str, int]]] = (
+        {}
+    )  # sig -> [(title, stored_sig, specificity)]
+    learned_by_sig: dict[str, tuple[str, str, int]] = (
+        {}
+    )  # sig -> (state, title, specificity)
+    all_seed_patterns: list[tuple[str, str]] = []  # (title, signature)
+
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT id, title, signature, runbook_state, approach"
+                " FROM agent_strategies"
+                " WHERE signature IS NOT NULL AND runbook_state IN ('seed','validated','candidate')"
+            ).fetchall()
+        for r in rows:
+            stored_sig = r["signature"]
+            title = r["title"] or stored_sig
+            is_seed = r["runbook_state"] == "seed"
+            for sig_key in sig_data:
+                matches, spec = _sig_specificity(stored_sig, sig_key)
+                if not matches:
+                    continue
+                if is_seed:
+                    seeds_by_sig.setdefault(sig_key, []).append(
+                        (title, stored_sig, spec)
+                    )
+                else:
+                    # Prefer validated over candidate, then highest specificity.
+                    if sig_key not in learned_by_sig:
+                        learned_by_sig[sig_key] = (r["runbook_state"], title, spec)
+                    else:
+                        old_state, _, old_spec = learned_by_sig[sig_key]
+                        if (
+                            r["runbook_state"] == "validated"
+                            and old_state != "validated"
+                        ) or (r["runbook_state"] == old_state and spec > old_spec):
+                            learned_by_sig[sig_key] = (r["runbook_state"], title, spec)
+            all_seed_patterns.append((title, stored_sig))
+    except sqlite3.OperationalError:
+        pass
+
+    # ── 3. Procedure-note counts from learned runbooks ───────────────────
+    note_counts: dict[str, int] = {}
+    try:
+        with sqlite3.connect(db_path) as conn:
+            rows = conn.execute(
+                "SELECT signature, approach FROM agent_strategies"
+                " WHERE signature IS NOT NULL"
+                "   AND runbook_state IN ('validated','candidate')"
+            ).fetchall()
+        for sig_val, approach in rows:
+            _, notes = _split_procedure_notes(approach or "")
+            bullet_count = sum(
+                1 for line in notes.splitlines() if line.strip().startswith("- ")
+            )
+            if sig_val not in note_counts or bullet_count > note_counts[sig_val]:
+                note_counts[sig_val] = bullet_count
+    except sqlite3.OperationalError:
+        pass
+
+    # ── 4. instance_facts from agent_memory ──────────────────────────────
+    fact_counts: dict[str, int] = {}
+    try:
+        with sqlite3.connect(db_path) as conn:
+            rows = conn.execute(
+                "SELECT signature, COUNT(*) AS cnt"
+                " FROM agent_memory"
+                " WHERE signature IS NOT NULL"
+                " GROUP BY signature"
+            ).fetchall()
+        for r in rows:
+            fact_counts[r[0]] = int(r[1])
+    except sqlite3.OperationalError:
+        pass
+
+    # ── 5. last_used_at from runbook_usage ───────────────────────────────
+    used_at: dict[str, Optional[str]] = {}
+    try:
+        with sqlite3.connect(db_path) as conn:
+            rows = conn.execute(
+                "SELECT signature, MAX(created_at) AS last_used"
+                " FROM runbook_usage"
+                " WHERE signature IS NOT NULL"
+                " GROUP BY signature"
+            ).fetchall()
+        for r in rows:
+            used_at[r[0]] = r[1]
+    except sqlite3.OperationalError:
+        pass
+
+    # ── 6. Build SignatureStats rows ─────────────────────────────────────
+    stats: list[SignatureStats] = []
+    matched_sigs: set[str] = set(sig_data.keys())
+
+    for sig, d in sig_data.items():
+        # Matched seed: highest specificity seed wins.
+        matched_seed: Optional[str] = None
+        if sig in seeds_by_sig and seeds_by_sig[sig]:
+            best = max(seeds_by_sig[sig], key=lambda x: x[2])
+            matched_seed = best[0]  # title
+
+        # Learned state: state + title or None.
+        learned_state: Optional[str] = None
+        if sig in learned_by_sig:
+            state, title, _ = learned_by_sig[sig]
+            learned_state = f"{state}: {title}"
+
+        stats.append(
+            SignatureStats(
+                signature=sig,
+                sessions_30d=d["sessions_30d"],
+                verified_success=d["verified_success"],
+                verified_failure=d["verified_failure"],
+                pending=d["pending"],
+                last_session_at=d["last_session_at"],
+                matched_seed=matched_seed,
+                learned_state=learned_state,
+                procedure_notes=note_counts.get(sig, 0),
+                instance_facts=fact_counts.get(sig, 0),
+                last_used_at=used_at.get(sig),
+            )
+        )
+
+    # Sort: sessions_30d desc, then signature asc.
+    stats.sort(key=lambda s: (-s.sessions_30d, s.signature))
+
+    # ── 7. Unmatched seeds ───────────────────────────────────────────────
+    unmatched: list[RunbookRow] = []
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT id, title, signature FROM agent_strategies"
+                " WHERE signature IS NOT NULL AND runbook_state = 'seed'"
+            ).fetchall()
+        for r in rows:
+            seed_sig = r["signature"]
+            # Check if any session_outcomes signature matches this seed.
+            found = False
+            for sig_key in sig_data:
+                matches, _ = _sig_specificity(seed_sig, sig_key)
+                if matches:
+                    found = True
+                    break
+            if not found:
+                unmatched.append(
+                    RunbookRow(
+                        id=r["id"],
+                        title=r["title"] or seed_sig,
+                        trigger_pattern="",
+                        approach="",
+                        runbook_state="seed",
+                        created_at="",
+                        reviewed_at=None,
+                        promoted_at=None,
+                        contributed_at=None,
+                        signature=seed_sig,
+                    )
+                )
+    except sqlite3.OperationalError:
+        pass
+
+    return stats, unmatched
+
+
 def analyze_local_runbooks(
     db_path: str,
     knowledge_store: Optional["FakeKnowledgeStore"] = None,
@@ -185,6 +418,7 @@ def analyze_local_runbooks(
     # Only validated/seed runbooks are eligible for contribution
     contribution_ready = [r for r in validated if r.contributed_at is None]
     gaps_by_signature = _group_gaps_by_signature(gaps)
+    sig_stats, unmatched_seeds = _load_signature_stats(db_path)
     return MetaAnalysisReport(
         candidates=candidates,
         gaps=gaps,
@@ -192,4 +426,6 @@ def analyze_local_runbooks(
         duplicate_pairs=duplicate_pairs,
         contribution_ready=contribution_ready,
         gaps_by_signature=gaps_by_signature,
+        signature_stats=sig_stats,
+        unmatched_seeds=unmatched_seeds,
     )
