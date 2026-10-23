@@ -1,6 +1,7 @@
 """Tests for utils/knowledge/kb_meta_analyzer.py."""
 
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import pytest
@@ -589,9 +590,12 @@ class TestSignatureStats:
     def test_sessions_30d_window(self, tmp_path):
         """A row older than 30d counts in verified/last_session but not in sessions_30d."""
         db = str(tmp_path / "test.db")
-        now = "2026-10-23T17:00:00Z"
-        thirty_one_days_ago = "2026-09-22T17:00:00Z"
-        ten_days_ago = "2026-10-13T17:00:00Z"
+        # Relative to the real clock: the SQL window uses SQLite's 'now'.
+        fmt = "%Y-%m-%dT%H:%M:%SZ"
+        utc_now = datetime.now(timezone.utc)
+        now = utc_now.strftime(fmt)
+        thirty_one_days_ago = (utc_now - timedelta(days=31)).strftime(fmt)
+        ten_days_ago = (utc_now - timedelta(days=10)).strftime(fmt)
         _seed_session_outcomes(
             db,
             [
@@ -703,6 +707,21 @@ class TestSignatureStats:
                     None,
                     None,
                 ),
+                (
+                    "ep5",
+                    "repair:a:*",
+                    "repair",
+                    "x",
+                    "{}",
+                    "",
+                    "2026-07-01T00:00:00Z",
+                    "unverified",
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                ),
             ],
         )
         report = analyze_local_runbooks(db)
@@ -710,6 +729,7 @@ class TestSignatureStats:
         assert s.verified_success == 2
         assert s.verified_failure == 1
         assert s.pending == 1
+        assert s.unverified == 1
 
     def test_wildcard_seed_matches(self, tmp_path):
         """A seed with wildcard matches a session signature; most specific seed wins."""
@@ -813,7 +833,7 @@ class TestSignatureStats:
             [
                 (
                     "ep1",
-                    "repair:y:*",
+                    "repair:y:startup_failed",
                     "repair",
                     "x",
                     "{}",
@@ -847,6 +867,8 @@ class TestSignatureStats:
         )
         report = analyze_local_runbooks(db)
         s = report.signature_stats[0]
+        assert s.signature == "repair:y:startup_failed"
+        assert s.learned_state == "candidate: Runbook with notes"
         assert s.procedure_notes == 2
 
     def test_procedure_note_count_no_section(self, tmp_path):
@@ -886,6 +908,53 @@ class TestSignatureStats:
         report = analyze_local_runbooks(db)
         s = report.signature_stats[0]
         assert s.procedure_notes == 0
+
+    def test_procedure_notes_follow_most_specific_learned(self, tmp_path):
+        """Notes come from the selected learned runbook, not the broader one."""
+        db = str(tmp_path / "test.db")
+        _seed_session_outcomes(
+            db,
+            [
+                (
+                    "ep1",
+                    "repair:q:startup_failed",
+                    "repair",
+                    "x",
+                    "{}",
+                    "",
+                    "2026-07-01T00:00:00Z",
+                    "success",
+                    "T",
+                    "s",
+                    None,
+                    None,
+                    None,
+                ),
+            ],
+        )
+        _seed_db(
+            db,
+            [
+                {
+                    "id": "broad",
+                    "title": "Broad",
+                    "runbook_state": "candidate",
+                    "signature": "repair:q:*",
+                    "approach": "## Procedure notes\n- a\n- b\n- c\n",
+                },
+                {
+                    "id": "narrow",
+                    "title": "Narrow",
+                    "runbook_state": "candidate",
+                    "signature": "repair:q:startup_failed",
+                    "approach": "## Procedure notes\n- only one\n",
+                },
+            ],
+        )
+        report = analyze_local_runbooks(db)
+        s = report.signature_stats[0]
+        assert s.learned_state == "candidate: Narrow"
+        assert s.procedure_notes == 1
 
     def test_instance_facts_count(self, tmp_path):
         db = str(tmp_path / "test.db")
