@@ -1630,6 +1630,77 @@ class TestNetAlertXToken:
 
         assert persist_api_token("tok") is False
 
+    def test_query_token_reads_wal_mode_db_copied_without_shm(self, tmp_path):
+        """A WAL-mode app.db downloaded without its -shm/-wal is still readable (#977)."""
+        import shutil
+        import sqlite3
+        from netalertx.token import _query_token_from_db
+
+        src = tmp_path / "src.db"
+        live = sqlite3.connect(src)
+        live.execute("PRAGMA journal_mode=WAL")
+        live.execute("CREATE TABLE Settings (setKey TEXT, setValue TEXT)")
+        live.execute("INSERT INTO Settings VALUES ('API_TOKEN', 'wal-token')")
+        live.commit()
+        live.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        copy = tmp_path / "copy.db"
+        shutil.copy(src, copy)  # live connection still open: main file only
+        live.close()
+
+        assert _query_token_from_db(str(copy)) == "wal-token"
+
+    def test_read_api_token_empty_slug_skips_download(self):
+        """An empty slug returns '' without any SFTP call (#977)."""
+        import asyncio
+        from utils.ha.ssh_client import FakeSSHClient
+        from netalertx.token import read_api_token
+
+        ssh = FakeSSHClient()
+        assert asyncio.run(read_api_token(ssh, "")) == ""
+        assert ssh.downloaded_files == []
+
+
+class TestResolveAddonSlug:
+    """resolve_addon_slug: config value, then install details, else ''."""
+
+    def test_config_value_wins(self, tmp_path, monkeypatch):
+        import config as _cfg
+        import netalertx.installer as inst
+
+        db = _make_installer_db_at_state(
+            tmp_path, monkeypatch, "FULLY_OPERATIONAL", {"addon_slug": "from_details"}
+        )
+        monkeypatch.setattr(_cfg, "NETALERTX_ADDON_SLUG", "from_config")
+        assert inst.resolve_addon_slug(str(db)) == "from_config"
+
+    def test_falls_back_to_install_details(self, tmp_path, monkeypatch):
+        import config as _cfg
+        import netalertx.installer as inst
+
+        db = _make_installer_db_at_state(
+            tmp_path,
+            monkeypatch,
+            "FULLY_OPERATIONAL",
+            {"addon_slug": "abc_netalertx_fa"},
+        )
+        monkeypatch.setattr(_cfg, "NETALERTX_ADDON_SLUG", "")
+        assert inst.resolve_addon_slug(str(db)) == "abc_netalertx_fa"
+
+    def test_empty_when_details_lack_slug(self, tmp_path, monkeypatch):
+        import config as _cfg
+        import netalertx.installer as inst
+
+        db = _make_installer_db_at_state(tmp_path, monkeypatch, "FULLY_OPERATIONAL", {})
+        monkeypatch.setattr(_cfg, "NETALERTX_ADDON_SLUG", "")
+        assert inst.resolve_addon_slug(str(db)) == ""
+
+    def test_empty_when_db_unreadable(self, tmp_path, monkeypatch):
+        import config as _cfg
+        import netalertx.installer as inst
+
+        monkeypatch.setattr(_cfg, "NETALERTX_ADDON_SLUG", "")
+        assert inst.resolve_addon_slug(str(tmp_path / "missing" / "x.db")) == ""
+
 
 class TestAppConfigsResolver:
     """Tests for utils.ha.app_configs.resolve_app_config_root."""

@@ -1711,9 +1711,18 @@ async def supervisor_main(config_path: Path) -> None:
                     "OPERATIONAL_NO_API",
                 }:
                     return
-                slug = getattr(_cfg_tok, "NETALERTX_ADDON_SLUG", "")
+                from netalertx.installer import resolve_addon_slug
+                from utils.ha.app_configs import resolve_app_config_root
+
+                slug = resolve_addon_slug(_cfg_tok.DB_PATH)
+                if not slug:
+                    _log_tok.warning(
+                        "netalertx_startup_token_skipped", reason="no_addon_slug"
+                    )
+                    return
                 try:
-                    token = await read_api_token(_tok_ssh, slug)
+                    _root = await resolve_app_config_root(_tok_ssh)
+                    token = await read_api_token(_tok_ssh, slug, _root)
                     if token:
                         if persist_api_token(token):
                             import importlib
