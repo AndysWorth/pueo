@@ -50,6 +50,12 @@ Phase 6 — REPORT: Call {terminal_tool} with:
   requires_hitl: true if immediate user action is needed
   action: "reboot" if a reboot is needed, "restart" if a restart suffices, "dismiss" otherwise
   runbook_followed: the [id=…] value of the runbook you followed, or "none"
+  verification_question: (optional) one yes/no question whose Yes confirms the root cause,
+    ≤120 chars. Set when the conclusion is testable, e.g. "Did the rpi_firmware issue clear
+    after the reboot?" Omit for requires_hitl=false cards.
+  fact_if_yes: (optional) instance fact to store when the user answers Yes, ≤200 chars, e.g.
+    "rpi_firmware EEPROM update issue recurs after every HA OS update; dismiss it."
+    Omit when no reusable fact applies.
 
   If you exhaust all reasonable investigative paths without a clear answer, call
   request_escalation(reason) and then call {terminal_tool} with requires_hitl=true and

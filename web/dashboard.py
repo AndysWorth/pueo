@@ -561,6 +561,43 @@ async def _trigger_post_verify_distillation(
     )
 
 
+def _write_user_verified_fact(
+    nid: str,
+    episode_id: str,
+    fact: str,
+    signature: str,
+    db_path: str = "",
+) -> None:
+    """Write a user-verified fact to agent_memory. Synchronous — call via asyncio.to_thread."""
+    import hashlib as _hashlib
+
+    norm = " ".join(fact.lower().split())
+    key = "fact_" + _hashlib.sha256(f"{signature}|{norm}".encode()).hexdigest()[:12]
+    source = f"user:{nid}"
+    now = time.time()
+    _db = db_path or DB_PATH
+    try:
+        with sqlite3.connect(_db) as conn:
+            conn.execute(
+                "DELETE FROM agent_memory WHERE key = ? AND signature = ?",
+                (key, signature),
+            )
+            conn.execute(
+                "INSERT INTO agent_memory (key, content, source, ts, signature)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (key, fact[:200], source, now, signature),
+            )
+            conn.commit()
+        log.info(
+            "user_verified_fact_written",
+            nid=nid,
+            episode_id=episode_id,
+            key=key,
+        )
+    except Exception as exc:  # nosec B110
+        log.warning("user_verified_fact_write_failed", nid=nid, error=str(exc))
+
+
 async def _verify_card_execution(payload: dict, verification: str = "success") -> None:
     """System verifier: resolve the card's session from the executor's result (ADR 046).
 
@@ -2628,6 +2665,16 @@ async def right(nid: str, request: Request) -> RedirectResponse:
         if _episode_id:
             await asyncio.to_thread(_resolve_card_outcome, _episode_id, "success")
             await _trigger_post_verify_distillation(_episode_id, "success")
+        _fact = str(payload.get("fact_if_yes", "")).strip()
+        _question = str(payload.get("verification_question", "")).strip()
+        if _fact and _question and _episode_id:
+            await asyncio.to_thread(
+                _write_user_verified_fact,
+                nid,
+                _episode_id,
+                _fact,
+                payload.get("signature", "") or _episode_id,
+            )
         if str(form.get("acknowledge", "")) == "1":
             suppression_key = payload.get("suppression_key", "")
             fingerprint = str(payload.get("fingerprint", ""))

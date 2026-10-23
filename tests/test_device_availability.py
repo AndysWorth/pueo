@@ -1054,6 +1054,97 @@ class TestSigDeviceAvailability:
 
 
 # ---------------------------------------------------------------------------
+# _finish_device_availability — verification_question / fact_if_yes
+# ---------------------------------------------------------------------------
+
+
+class TestFinishDeviceAvailabilityFields:
+    def _make_db(self, tmp_path):
+        return _make_poll_db(tmp_path)
+
+    def _make_executor(self, db, notifier=None):
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+
+        return ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=notifier or FakeNotifier(),
+            db_path=db,
+        )
+
+    def test_verification_fields_in_payload(self, tmp_path):
+        import asyncio
+
+        from utils.hitl.notify import FakeNotifier
+
+        notifier = FakeNotifier()
+        db = self._make_db(tmp_path)
+        executor = self._make_executor(db, notifier=notifier)
+        executor.set_device_availability_finding(
+            OfflineFinding(
+                config_entry_id="entry-lifx",
+                domain="lifx",
+                devices=[{"name": "Lamp", "device_id": "dev-L", "offline_since": 0}],
+            )
+        )
+
+        asyncio.run(
+            executor._finish_device_availability(
+                summary="LIFX bulb went offline then recovered.",
+                root_cause="Wi-Fi band-steering transient drop.",
+                outcome="monitoring",
+                recommended_actions=[],
+                verification_question="Did the LIFX bulb come back online on its own?",
+                fact_if_yes="LIFX bulb (lifx) drops during Wi-Fi band-steering; self-recovers.",
+            )
+        )
+
+        assert len(notifier.sent) == 1
+        payload = notifier.sent[0]["payload"]
+        assert (
+            payload["verification_question"]
+            == "Did the LIFX bulb come back online on its own?"
+        )
+        assert (
+            payload["fact_if_yes"]
+            == "LIFX bulb (lifx) drops during Wi-Fi band-steering; self-recovers."
+        )
+        assert "signature" in payload
+
+    def test_no_verification_fields_when_omitted(self, tmp_path):
+        import asyncio
+
+        from utils.hitl.notify import FakeNotifier
+
+        notifier = FakeNotifier()
+        db = self._make_db(tmp_path)
+        executor = self._make_executor(db, notifier=notifier)
+        executor.set_device_availability_finding(
+            OfflineFinding(
+                config_entry_id="entry-lifx",
+                domain="lifx",
+                devices=[{"name": "Lamp", "device_id": "dev-L", "offline_since": 0}],
+            )
+        )
+
+        asyncio.run(
+            executor._finish_device_availability(
+                summary="Offline.",
+                root_cause="Unknown.",
+                outcome="needs_action",
+                recommended_actions=["Check the device."],
+            )
+        )
+
+        payload = notifier.sent[0]["payload"]
+        assert "verification_question" not in payload
+        assert "fact_if_yes" not in payload
+
+
+# ---------------------------------------------------------------------------
 # build_device_availability_tool_registry
 # ---------------------------------------------------------------------------
 

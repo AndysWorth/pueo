@@ -1247,6 +1247,59 @@ class TestFinishHostHealth:
         payload = notifier.sent[0]["payload"]
         assert payload["outcome"] == "resolved"
 
+    def test_verification_question_and_fact_in_payload(self, tmp_path):
+        import asyncio
+
+        from utils.disk.host_health import HostHealthFinding
+        from utils.hitl.notify import FakeNotifier
+
+        notifier = FakeNotifier()
+        db = _make_hitl_db(tmp_path)
+        executor = self._make_executor(db, notifier=notifier)
+        finding = HostHealthFinding(key="disk_wear", kind="disk_wear", severity="WARN")
+        executor.set_host_health_finding(finding)
+
+        asyncio.run(
+            executor._finish_host_health(
+                summary="Disk wear at 85%.",
+                root_cause="eMMC aging.",
+                outcome="monitoring",
+                recommended_actions=[],
+                verification_question="Is disk wear still at 85%?",
+                fact_if_yes="Host eMMC aged to 85% — monitor monthly.",
+            )
+        )
+
+        payload = notifier.sent[0]["payload"]
+        assert payload["verification_question"] == "Is disk wear still at 85%?"
+        assert payload["fact_if_yes"] == "Host eMMC aged to 85% — monitor monthly."
+        assert "signature" in payload
+
+    def test_no_verification_fields_when_omitted(self, tmp_path):
+        import asyncio
+
+        from utils.disk.host_health import HostHealthFinding
+        from utils.hitl.notify import FakeNotifier
+
+        notifier = FakeNotifier()
+        db = _make_hitl_db(tmp_path)
+        executor = self._make_executor(db, notifier=notifier)
+        finding = HostHealthFinding(key="disk_wear", kind="disk_wear", severity="WARN")
+        executor.set_host_health_finding(finding)
+
+        asyncio.run(
+            executor._finish_host_health(
+                summary="Disk wear at 85%.",
+                root_cause="eMMC aging.",
+                outcome="monitoring",
+                recommended_actions=[],
+            )
+        )
+
+        payload = notifier.sent[0]["payload"]
+        assert "verification_question" not in payload
+        assert "fact_if_yes" not in payload
+
 
 # ---------------------------------------------------------------------------
 # run_host_health_investigation

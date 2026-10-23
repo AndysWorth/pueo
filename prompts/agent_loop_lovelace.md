@@ -63,7 +63,12 @@ Phase 6 — REPORT: Call {terminal_tool} with a findings list. Each finding cove
     suggested_actions: list of concrete action strings
     chat_needed: bool — true if root cause is unclear or advice is complex
     initial_chat_message: pre-filled message for chat agent (include card_key for resolution)
-  Also pass runbook_followed: the [id=…] value of the runbook you followed, or "none".
+  Also pass:
+    runbook_followed: the [id=…] value of the runbook you followed, or "none"
+    verification_question: (optional) one yes/no question whose Yes confirms the root cause for
+      the primary finding, ≤120 chars. Omit for empty-findings calls.
+    fact_if_yes: (optional) instance fact to store when the user answers Yes, ≤200 chars.
+      Omit when no reusable fact applies.
 
   Omit benign sub-platform and legacy entities from findings entirely — no card, no noise.
   For YAML-no-unique-id: include in findings with specific YAML advice.

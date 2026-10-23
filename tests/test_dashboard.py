@@ -8915,6 +8915,166 @@ class TestCardEpisodeIdVerification:
             adv.DB_PATH = original  # type: ignore[assignment]
 
 
+class TestRightRouteFactIfYes:
+    """When /right/{nid} is posted with fact_if_yes in the payload, it writes agent_memory."""
+
+    AGENT_MEMORY_DDL = (
+        "CREATE TABLE IF NOT EXISTS agent_memory ("
+        "key TEXT, content TEXT, source TEXT, ts REAL, signature TEXT)"
+    )
+    SESSION_OUTCOMES_DDL = (
+        "CREATE TABLE IF NOT EXISTS session_outcomes ("
+        "episode_id TEXT PRIMARY KEY, signature TEXT, session_type TEXT,"
+        " subject_key TEXT, conclusion_json TEXT, distill_payload_json TEXT,"
+        " created_at TEXT, verification TEXT, verified_at TEXT,"
+        " verified_by TEXT, correction TEXT)"
+    )
+    HITL_SUPPRESSION_DDL = (
+        "CREATE TABLE IF NOT EXISTS hitl_suppression"
+        " (card_key TEXT PRIMARY KEY, card_type TEXT NOT NULL DEFAULT '',"
+        " description TEXT NOT NULL DEFAULT '',"
+        " first_sent_at REAL NOT NULL DEFAULT 0, last_sent_at REAL NOT NULL DEFAULT 0,"
+        " send_count INTEGER NOT NULL DEFAULT 1, last_action TEXT, last_action_at REAL,"
+        " rejection_count INTEGER NOT NULL DEFAULT 0, next_allowed_at REAL,"
+        " known_issue INTEGER NOT NULL DEFAULT 0, known_issue_note TEXT, resolved_at REAL)"
+    )
+
+    def _setup_db(self, db_path: str) -> None:
+        import sqlite3 as _sq
+
+        with _sq.connect(db_path) as conn:
+            conn.execute(self.AGENT_MEMORY_DDL)
+            conn.execute(self.SESSION_OUTCOMES_DDL)
+            conn.execute(self.HITL_SUPPRESSION_DDL)
+            conn.commit()
+
+    def _insert_pending(self, db_path: str, episode_id: str) -> None:
+        import sqlite3 as _sq
+        import time as _time
+
+        now = _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime())
+        with _sq.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO session_outcomes"
+                " (episode_id, signature, session_type, subject_key, created_at, verification)"
+                " VALUES (?, 'device:offline:lifx', 'device_availability', 'lifx/e1', ?, 'pending')",
+                (episode_id, now),
+            )
+            conn.commit()
+
+    def test_fact_if_yes_written_to_agent_memory_on_right(self, tmp_path, monkeypatch):
+        import json as _json
+        import sqlite3 as _sq
+        import time as _time
+        import web.dashboard as dashboard
+        import agents.ha_agent_advanced as adv
+
+        db_path = str(tmp_path / "db.sqlite")
+        self._setup_db(db_path)
+        self._insert_pending(db_path, "ep-fact-1")
+
+        watch_dir = tmp_path / "watch"
+        watch_dir.mkdir()
+        nid = "nid-fact-1"
+        (watch_dir / f"{nid}.json").write_text(
+            _json.dumps(
+                {
+                    "notification_id": nid,
+                    "subject": "Device offline",
+                    "body": "LIFX bulb went offline",
+                    "timestamp": _time.time(),
+                    "payload": {
+                        "episode_id": "ep-fact-1",
+                        "suppression_key": "device_offline:entry-lifx",
+                        "verification_question": "Did the LIFX bulb come back online on its own?",
+                        "fact_if_yes": "LIFX Clip-on drops on Wi-Fi band-steering; self-recovers.",
+                        "signature": "device:offline:lifx",
+                    },
+                }
+            )
+        )
+
+        async def _fake_distill(ep, verification, correction=""):
+            pass
+
+        monkeypatch.setattr(
+            dashboard, "_trigger_post_verify_distillation", _fake_distill
+        )
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+        monkeypatch.setattr(dashboard, "DB_PATH", db_path)
+        monkeypatch.setattr(adv, "DB_PATH", db_path)
+
+        from fastapi.testclient import TestClient
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.post(
+            f"/right/{nid}", data={"acknowledge": "1"}, follow_redirects=False
+        )
+        assert resp.status_code == 303
+
+        with _sq.connect(db_path) as conn:
+            rows = conn.execute(
+                "SELECT key, content, source, signature FROM agent_memory"
+            ).fetchall()
+        assert len(rows) == 1
+        key, content, source, sig = rows[0]
+        assert "fact_" in key
+        assert content == "LIFX Clip-on drops on Wi-Fi band-steering; self-recovers."
+        assert source == f"user:{nid}"
+        assert sig == "device:offline:lifx"
+
+    def test_no_agent_memory_when_fact_if_yes_missing(self, tmp_path, monkeypatch):
+        import json as _json
+        import sqlite3 as _sq
+        import time as _time
+        import web.dashboard as dashboard
+        import agents.ha_agent_advanced as adv
+
+        db_path = str(tmp_path / "db.sqlite")
+        self._setup_db(db_path)
+        self._insert_pending(db_path, "ep-nofact-1")
+
+        watch_dir = tmp_path / "watch"
+        watch_dir.mkdir()
+        nid = "nid-nofact-1"
+        (watch_dir / f"{nid}.json").write_text(
+            _json.dumps(
+                {
+                    "notification_id": nid,
+                    "subject": "Device offline",
+                    "body": "LIFX bulb went offline",
+                    "timestamp": _time.time(),
+                    "payload": {
+                        "episode_id": "ep-nofact-1",
+                        "suppression_key": "device_offline:entry-lifx",
+                    },
+                }
+            )
+        )
+
+        async def _fake_distill(ep, verification, correction=""):
+            pass
+
+        monkeypatch.setattr(
+            dashboard, "_trigger_post_verify_distillation", _fake_distill
+        )
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+        monkeypatch.setattr(dashboard, "DB_PATH", db_path)
+        monkeypatch.setattr(adv, "DB_PATH", db_path)
+
+        from fastapi.testclient import TestClient
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.post(
+            f"/right/{nid}", data={"acknowledge": "1"}, follow_redirects=False
+        )
+        assert resp.status_code == 303
+
+        with _sq.connect(db_path) as conn:
+            rows = conn.execute("SELECT * FROM agent_memory").fetchall()
+        assert rows == []
+
+
 class TestVerifyCardExecution:
     """ADR 046: card executors are the system verifiers for their sessions."""
 

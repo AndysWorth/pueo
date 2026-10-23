@@ -1841,6 +1841,24 @@ FINISH_LOVELACE_INVESTIGATION = ToolDefinition(
                     "of the runbook you actually followed. Pass 'none' if none applied."
                 ),
             },
+            "verification_question": {
+                "type": "string",
+                "description": (
+                    "One yes/no question (≤120 chars) whose Yes confirms the root cause. "
+                    "Ask only when you have a clear, testable conclusion the user can verify. "
+                    "Example: 'Did the device come back online on its own after the Wi-Fi glitch?' "
+                    "Omit for informational, already-resolved, or ambiguous outcomes."
+                ),
+            },
+            "fact_if_yes": {
+                "type": "string",
+                "description": (
+                    "Instance fact to store when the user answers Yes (≤200 chars). "
+                    "A device- or integration-specific truth useful in future investigations. "
+                    "Example: 'LIFX Clip-on goes offline during Wi-Fi band-steering; self-recovers.' "
+                    "Omit if no reusable fact applies."
+                ),
+            },
         },
         "required": ["findings"],
     },
@@ -1882,6 +1900,24 @@ FINISH_REPAIR_ISSUE = ToolDefinition(
                 "description": (
                     "The strategy_id (shown as [id=…] on retrieved knowledge chunks) "
                     "of the runbook you actually followed. Pass 'none' if none applied."
+                ),
+            },
+            "verification_question": {
+                "type": "string",
+                "description": (
+                    "One yes/no question (≤120 chars) whose Yes confirms the root cause. "
+                    "Ask only when you have a clear, testable conclusion the user can verify. "
+                    "Example: 'Did the device come back online on its own after the Wi-Fi glitch?' "
+                    "Omit for informational, already-resolved, or ambiguous outcomes."
+                ),
+            },
+            "fact_if_yes": {
+                "type": "string",
+                "description": (
+                    "Instance fact to store when the user answers Yes (≤200 chars). "
+                    "A device- or integration-specific truth useful in future investigations. "
+                    "Example: 'LIFX Clip-on goes offline during Wi-Fi band-steering; self-recovers.' "
+                    "Omit if no reusable fact applies."
                 ),
             },
         },
@@ -1936,6 +1972,24 @@ FINISH_NOTIFICATION_INVESTIGATION = ToolDefinition(
                 "description": (
                     "The strategy_id (shown as [id=…] on retrieved knowledge chunks) "
                     "of the runbook you actually followed. Pass 'none' if none applied."
+                ),
+            },
+            "verification_question": {
+                "type": "string",
+                "description": (
+                    "One yes/no question (≤120 chars) whose Yes confirms the root cause. "
+                    "Ask only when you have a clear, testable conclusion the user can verify. "
+                    "Example: 'Did the device come back online on its own after the Wi-Fi glitch?' "
+                    "Omit for informational, already-resolved, or ambiguous outcomes."
+                ),
+            },
+            "fact_if_yes": {
+                "type": "string",
+                "description": (
+                    "Instance fact to store when the user answers Yes (≤200 chars). "
+                    "A device- or integration-specific truth useful in future investigations. "
+                    "Example: 'LIFX Clip-on goes offline during Wi-Fi band-steering; self-recovers.' "
+                    "Omit if no reusable fact applies."
                 ),
             },
         },
@@ -2199,6 +2253,24 @@ FINISH_HOST_HEALTH = ToolDefinition(
                     "of the runbook you actually followed. Pass 'none' if none applied."
                 ),
             },
+            "verification_question": {
+                "type": "string",
+                "description": (
+                    "One yes/no question (≤120 chars) whose Yes confirms the root cause. "
+                    "Ask only when you have a clear, testable conclusion the user can verify. "
+                    "Example: 'Did the device come back online on its own after the Wi-Fi glitch?' "
+                    "Omit for informational, already-resolved, or ambiguous outcomes."
+                ),
+            },
+            "fact_if_yes": {
+                "type": "string",
+                "description": (
+                    "Instance fact to store when the user answers Yes (≤200 chars). "
+                    "A device- or integration-specific truth useful in future investigations. "
+                    "Example: 'LIFX Clip-on goes offline during Wi-Fi band-steering; self-recovers.' "
+                    "Omit if no reusable fact applies."
+                ),
+            },
         },
         "required": ["summary", "root_cause", "outcome", "recommended_actions"],
     },
@@ -2238,6 +2310,24 @@ FINISH_DEVICE_AVAILABILITY = ToolDefinition(
                 "description": (
                     "The strategy_id (shown as [id=…] on retrieved knowledge chunks) "
                     "of the runbook you actually followed. Pass 'none' if none applied."
+                ),
+            },
+            "verification_question": {
+                "type": "string",
+                "description": (
+                    "One yes/no question (≤120 chars) whose Yes confirms the root cause. "
+                    "Ask only when you have a clear, testable conclusion the user can verify. "
+                    "Example: 'Did the device come back online on its own after the Wi-Fi glitch?' "
+                    "Omit for informational, already-resolved, or ambiguous outcomes."
+                ),
+            },
+            "fact_if_yes": {
+                "type": "string",
+                "description": (
+                    "Instance fact to store when the user answers Yes (≤200 chars). "
+                    "A device- or integration-specific truth useful in future investigations. "
+                    "Example: 'LIFX Clip-on goes offline during Wi-Fi band-steering; self-recovers.' "
+                    "Omit if no reusable fact applies."
                 ),
             },
         },

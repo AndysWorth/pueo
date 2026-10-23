@@ -67,6 +67,14 @@ Phase 6 — REPORT: Call {terminal_tool} with:
             "escalated" if request_escalation was called
   recommended_actions: concrete steps for the user (empty if resolved or monitoring)
   runbook_followed: the [id=…] value of the runbook you followed, or "none"
+  verification_question: (optional) one yes/no question whose Yes confirms the root cause,
+            ≤120 chars. Set when you have a clear testable conclusion, e.g.
+            "Did the LIFX bulb come back online on its own after the Wi-Fi event?"
+            Omit for already-resolved or highly ambiguous outcomes.
+  fact_if_yes: (optional) instance fact to store when the user answers Yes, ≤200 chars.
+            A device- or integration-specific truth useful in future investigations, e.g.
+            "LIFX Clip-on (light) drops off Wi-Fi during band-steering; self-recovers in <5 min."
+            Omit when no reusable fact applies.
 
   If you exhaust all reasonable paths without a conclusion, call request_escalation before
   {terminal_tool}.
