@@ -1514,6 +1514,7 @@ async def supervisor_main(config_path: Path) -> None:
                 notifier=notifier,
                 knowledge_store=knowledge_store,
                 netalertx_api_client=_nax_api,
+                ha_rest_client=_rest_client_for_poller,
             ),
             interval_seconds=60,
         )
@@ -1677,6 +1678,58 @@ async def supervisor_main(config_path: Path) -> None:
                     "netalertx_setup",
                     lambda: _nax_installer.main(gate=_nax_gate, notifier=notifier),
                 )
+
+    # NetAlertX token refresh on startup: when the install is FULLY_OPERATIONAL or
+    # OPERATIONAL_NO_API but the api_token is empty, auto-read it from app.db once so
+    # all tools that need it (get_network_presence, event_poll) work without a manual step.
+    if (
+        cfg.NETALERTX_ENABLED
+        and cfg.NETALERTX_HOST
+        and not cfg.NETALERTX_API_TOKEN
+        and cfg.HA_HOST
+    ):
+        import netalertx.installer as _nax_installer_tok
+
+        _NETALERTX_TOKEN_STATES = {"FULLY_OPERATIONAL", "OPERATIONAL_NO_API"}
+        if _nax_installer_tok.get_install_state(cfg.DB_PATH) in _NETALERTX_TOKEN_STATES:
+            from utils.ha.ssh_client import AsyncSSHClient as _ASHSSHClient
+
+            _tok_ssh = _ASHSSHClient(cfg.HA_HOST, cfg.HA_USER, cfg.SSH_KEY_PATH)
+
+            async def _netalertx_startup_token_refresh() -> None:
+                from netalertx.installer import get_install_state as _gis
+                from netalertx.token import persist_api_token, read_api_token
+                from utils.core.logging import get_logger as _gl
+                import config as _cfg_tok
+
+                _log_tok = _gl("main")
+
+                if getattr(_cfg_tok, "NETALERTX_API_TOKEN", ""):
+                    return  # already set (e.g. from env)
+                if _gis(_cfg_tok.DB_PATH) not in {
+                    "FULLY_OPERATIONAL",
+                    "OPERATIONAL_NO_API",
+                }:
+                    return
+                slug = getattr(_cfg_tok, "NETALERTX_ADDON_SLUG", "")
+                try:
+                    token = await read_api_token(_tok_ssh, slug)
+                    if token:
+                        if persist_api_token(token):
+                            import importlib
+
+                            importlib.reload(_cfg_tok)
+                            if _nax_api is not None:
+                                _nax_api.set_token(token)
+                            _log_tok.info("netalertx_startup_token_refreshed")
+                        else:
+                            _log_tok.warning("netalertx_startup_token_persist_failed")
+                except Exception as _exc:  # nosec B110
+                    _log_tok.warning(
+                        "netalertx_startup_token_refresh_failed", error=str(_exc)
+                    )
+
+            asyncio.ensure_future(_netalertx_startup_token_refresh())
 
     # Start the serialized work queue (must be called inside the running event loop).
     work_queue.start()

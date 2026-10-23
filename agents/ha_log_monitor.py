@@ -1093,6 +1093,21 @@ def _resolve_externally_applied_update(
     entity cleared within ``_SIBLING_AUTO_APPLY_WINDOW_SECONDS``), the resolution
     is attributed to Pueo rather than to an external action.
     """
+    # Suppress false "external" events while Pueo is actively executing this update.
+    entity_id_from_key = suppression_key.removeprefix("update:")
+    try:
+        from agents.ha_update_manager import is_entity_executing_update
+
+        if is_entity_executing_update(entity_id_from_key):
+            log.debug(
+                "update_resolved_externally_suppressed",
+                entity_id=entity_id_from_key,
+                reason="pueo_executing",
+            )
+            return
+    except Exception:  # nosec B110
+        pass
+
     from utils.hitl.hitl_tracker import (
         mark_card_auto_applied,
         mark_card_resolved,
@@ -1125,7 +1140,7 @@ def _resolve_externally_applied_update(
     _sibling_key = _find_recent_pueo_auto_apply(component)
     _is_pueo_sibling = _sibling_key is not None
 
-    entity_id = suppression_key.removeprefix("update:")
+    entity_id = entity_id_from_key
     with sqlite3.connect(DB_PATH) as _conn:
         if _is_pueo_sibling:
             # Record as Pueo's action: not pending, not external.

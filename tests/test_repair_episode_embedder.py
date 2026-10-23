@@ -77,8 +77,18 @@ def _create_db(path: str) -> None:
         conn.commit()
 
 
-def _insert_episode(db_path: str, episode: RepairEpisode) -> None:
-    """Insert an episode directly without setting embedded_at."""
+def _insert_episode(
+    db_path: str,
+    episode: RepairEpisode,
+    *,
+    verification: str = "success",
+) -> None:
+    """Insert an episode and a matching session_outcomes row.
+
+    A verification='success' row is added by default so the V39 cutover does not
+    block post-V39 episodes in tests that are checking embedding logic, not the
+    verification gate itself.  Pass verification=None to omit the row.
+    """
     with sqlite3.connect(db_path) as conn:
         conn.execute(
             """
@@ -108,6 +118,12 @@ def _insert_episode(db_path: str, episode: RepairEpisode) -> None:
                 episode.duration_seconds,
             ),
         )
+        if verification is not None:
+            conn.execute(
+                "INSERT INTO session_outcomes (episode_id, verification)"
+                " VALUES (?, ?)",
+                (episode.id, verification),
+            )
         conn.commit()
 
 
@@ -243,6 +259,56 @@ class TestEmbedRepairEpisodes:
                 "SELECT embedded_at FROM repair_episodes WHERE id = ?", (ep.id,)
             ).fetchone()
         assert row[0] is None
+
+    def test_post_v39_episode_without_outcome_is_skipped(self, tmp_path):
+        """Episodes after V39 with no session_outcomes row must not be embedded."""
+        db = str(tmp_path / "state.db")
+        _create_db(db)
+        # V39 epoch = 1760572800; post-V39 timestamp = 1760572801
+        ep = _make_episode()
+        _insert_episode(db, ep, verification=None)  # no outcome row
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "UPDATE repair_episodes SET timestamp = 1760572801.0 WHERE id = ?",
+                (ep.id,),
+            )
+        # No session_outcomes row → should be blocked.
+        store = FakeKnowledgeStore()
+        count = embed_repair_episodes(store, db)
+        assert count == 0
+        assert store.collection_count("repair_history") == 0
+
+    def test_pre_v39_episode_without_outcome_passes_through(self, tmp_path):
+        """Legacy episodes before V39 with no session_outcomes row are embedded."""
+        db = str(tmp_path / "state.db")
+        _create_db(db)
+        ep = _make_episode()
+        _insert_episode(db, ep, verification=None)  # no outcome row
+        # Set timestamp to pre-V39: 2026-10-15 = epoch 1760486400
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "UPDATE repair_episodes SET timestamp = 1760486400.0 WHERE id = ?",
+                (ep.id,),
+            )
+        store = FakeKnowledgeStore()
+        count = embed_repair_episodes(store, db)
+        assert count == 1
+
+    def test_post_v39_episode_with_success_outcome_is_embedded(self, tmp_path):
+        """Post-V39 episodes with a verified success outcome are embedded."""
+        db = str(tmp_path / "state.db")
+        _create_db(db)
+        ep = _make_episode()
+        # _insert_episode adds a 'success' row by default; just set a post-V39 timestamp.
+        _insert_episode(db, ep)
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "UPDATE repair_episodes SET timestamp = 1760572801.0 WHERE id = ?",
+                (ep.id,),
+            )
+        store = FakeKnowledgeStore()
+        count = embed_repair_episodes(store, db)
+        assert count == 1
 
 
 class TestMarkEpisodesEmbedded:

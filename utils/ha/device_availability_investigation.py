@@ -138,8 +138,17 @@ async def run_device_availability_investigation(
         terminal_tool="finish_device_availability"
     )
 
+    def _fmt_offline_since(d: dict) -> str:
+        ts = d.get("offline_since")
+        if ts is None:
+            return "unknown"
+        import time as _time
+
+        iso = _time.strftime("%Y-%m-%dT%H:%M:%S", _time.localtime(float(ts)))
+        return f"{iso} local (epoch {int(ts)})"
+
     device_lines = "\n".join(
-        "  - {name} (offline since {offline_since})".format(**d)
+        f"  - {d['name']} (offline since {_fmt_offline_since(d)})"
         for d in finding.devices
     )
     initial_context = (

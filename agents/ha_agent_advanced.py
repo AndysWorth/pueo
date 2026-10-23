@@ -1070,17 +1070,40 @@ def sweep_stale_pending_usage(watch_dir: Optional[str] = None) -> None:
     try:
         with sqlite3.connect(DB_PATH) as conn:
             stale = conn.execute(
-                "SELECT episode_id, card_id, created_at FROM session_outcomes"
+                "SELECT episode_id, card_id, created_at, subject_key FROM session_outcomes"
                 " WHERE (verification IS NULL OR verification = 'pending')"
                 "   AND created_at < ?",
                 (threshold_iso,),
             ).fetchall()
+            # Build held_subjects from ALL pending session_outcomes rows — not just
+            # stale ones — so re-analysis that created a newer (non-stale) episode
+            # with an open card still protects older rows for the same subject_key.
+            all_pending = conn.execute(
+                "SELECT episode_id, card_id, subject_key FROM session_outcomes"
+                " WHERE (verification IS NULL OR verification = 'pending')"
+                "   AND created_at >= ?",
+                (cap_iso,),
+            ).fetchall()
+            held_subjects: set = set()
+            for ep, card_id, subject_key in all_pending:
+                if card_id in open_nids or ep in open_eps:
+                    if subject_key:
+                        held_subjects.add(subject_key)
+            for ep, card_id, created_at, subject_key in stale:
+                if created_at >= cap_iso and (card_id in open_nids or ep in open_eps):
+                    if subject_key:
+                        held_subjects.add(subject_key)
             held = {
                 ep
-                for ep, card_id, created_at in stale
-                if created_at >= cap_iso and (card_id in open_nids or ep in open_eps)
+                for ep, card_id, created_at, subject_key in stale
+                if created_at >= cap_iso
+                and (
+                    card_id in open_nids
+                    or ep in open_eps
+                    or (subject_key and subject_key in held_subjects)
+                )
             }
-            to_sweep = [ep for ep, _, _ in stale if ep not in held]
+            to_sweep = [ep for ep, _, _, _ in stale if ep not in held]
             for ep in to_sweep:
                 conn.execute(
                     "UPDATE session_outcomes"

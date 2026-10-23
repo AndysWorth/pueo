@@ -87,13 +87,19 @@ def _load_unembedded_episodes(db_path: str) -> list:
 
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
+        # V39 (2026-10-16, epoch 1760572800) introduced session_outcomes.
+        # Episodes with no row that predate V39 are legacy and pass through.
+        # Episodes with no row that postdate V39 are awaiting verification and
+        # must not be embedded — they would embed unverified conclusions.
+        _V39_EPOCH = 1760572800.0  # 2026-10-16T00:00:00 UTC
         rows = conn.execute(
             "SELECT r.*, s.correction"
             " FROM repair_episodes r"
             " LEFT JOIN session_outcomes s ON r.id = s.episode_id"
             " WHERE r.embedded_at IS NULL"
-            "   AND (s.episode_id IS NULL"
-            "     OR s.verification IN ('success', 'failure'))"
+            "   AND (s.verification IN ('success', 'failure')"
+            "     OR (s.episode_id IS NULL AND r.timestamp < ?))",
+            (_V39_EPOCH,),
         ).fetchall()
 
     episodes = []
