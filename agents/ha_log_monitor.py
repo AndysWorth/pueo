@@ -101,7 +101,6 @@ def _poll_sleep_seconds(
 
 _debouncer = Debouncer(DEBOUNCE_WINDOW_SECONDS)
 _rate_limiter = RateLimiter(MAX_REPAIRS_PER_HOUR, 3600)
-_log_buffer: collections.deque[str] = collections.deque(maxlen=50)
 
 _LOOP_NAME = "ha_log_monitor"
 _RETENTION_SECONDS = 31 * 24 * 3600  # 31 days
@@ -121,6 +120,14 @@ class _LogStreamState:
     bucket_min_ts: int = 0  # epoch of first log line in current bucket (0 = none yet)
     last_line_at: float = 0.0
     last_match_at: float = 0.0
+    # Replay protection (#975): `ha core logs --follow` replays its backlog on
+    # every reconnect.  Per-source so the core and supervisor streams never mix.
+    log_buffer: collections.deque = dataclasses.field(
+        default_factory=lambda: collections.deque(maxlen=50)
+    )
+    entry_ts: Optional[float] = None  # HA timestamp of the current log entry
+    watermark: Optional[float] = None  # newest entry timestamp already triaged
+    seen_at_watermark: set[str] = dataclasses.field(default_factory=set)
 
 
 _core_state = _LogStreamState(loop_name=_LOOP_NAME)
@@ -409,6 +416,98 @@ CRITICAL_LOG_PATTERN = re.compile(
 # exceptions.  It is critical only when the preceding log line was ERROR or CRITICAL.
 _ERROR_CRITICAL_PREFIX = re.compile(r"\b(ERROR|CRITICAL)\b", re.IGNORECASE)
 _TRACEBACK_HEADER = re.compile(r"^Traceback \(most recent call last\)", re.IGNORECASE)
+
+
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+_HA_LOG_TS = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?)\s")
+
+
+def _strip_ansi(line: str) -> str:
+    """Remove ANSI colour escapes that `ha core logs` wraps around each entry."""
+    return _ANSI_ESCAPE.sub("", line)
+
+
+def _parse_ha_log_ts(line: str) -> Optional[float]:
+    """Return the epoch of a `YYYY-MM-DD HH:MM:SS.fff` HA log prefix, else None.
+
+    HA logs in local time without an offset, so the value is only comparable
+    with other values from the same host.  Continuation lines (traceback
+    frames) have no prefix and return None.
+    """
+    m = _HA_LOG_TS.match(_strip_ansi(line))
+    if not m:
+        return None
+    text = m.group(1)
+    fmt = "%Y-%m-%d %H:%M:%S.%f" if "." in text else "%Y-%m-%d %H:%M:%S"
+    try:
+        return datetime.datetime.strptime(text, fmt).timestamp()
+    except ValueError:
+        return None
+
+
+def _replay_gate(state: _LogStreamState, line_fp: str) -> bool:
+    """Return True if a critical line is new; False if it is a backlog replay.
+
+    Advances `state.watermark` / `state.seen_at_watermark` for new lines.
+    Lines whose entry has no resolvable timestamp always pass (fail open).
+    """
+    ts = state.entry_ts
+    if ts is None:
+        return True
+    if state.watermark is not None:
+        if ts < state.watermark:
+            return False
+        if ts == state.watermark:
+            if line_fp in state.seen_at_watermark:
+                return False
+            state.seen_at_watermark.add(line_fp)
+            return True
+    state.watermark = ts
+    state.seen_at_watermark = {line_fp}
+    return True
+
+
+def _watermark_key(source: str) -> str:
+    return f"log_monitor:watermark:{source}"
+
+
+def _load_watermark(source: str) -> Optional[tuple[float, set[str]]]:
+    """Load the persisted (watermark, seen fingerprints) for `source`, or None."""
+    try:
+        with sqlite3.connect(_config.DB_PATH) as conn:
+            row = conn.execute(
+                "SELECT value FROM user_prefs WHERE key = ?", (_watermark_key(source),)
+            ).fetchone()
+        if row:
+            data = json.loads(row[0])
+            return float(data["ts"]), set(data.get("fps", []))
+    except Exception as e:  # nosec B110
+        log.warning("log_watermark_load_failed", source=source, error=str(e))
+    return None
+
+
+def _save_watermark(source: str, ts: float, fps: list[str]) -> None:
+    """Persist the watermark for `source` in user_prefs (no migration needed)."""
+    try:
+        with sqlite3.connect(_config.DB_PATH) as conn:
+            conn.execute(
+                "INSERT INTO user_prefs (key, value) VALUES (?, ?)"
+                " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (_watermark_key(source), json.dumps({"ts": ts, "fps": fps})),
+            )
+    except Exception as e:  # nosec B110
+        log.warning("log_watermark_save_failed", source=source, error=str(e))
+
+
+def _restore_watermark(state: _LogStreamState, source: str) -> None:
+    """Adopt the persisted watermark when it is newer than the in-memory one."""
+    loaded = _load_watermark(source)
+    if loaded is None:
+        return
+    ts, fps = loaded
+    if state.watermark is None or ts > state.watermark:
+        state.watermark = ts
+        state.seen_at_watermark = fps
 
 
 def _is_critical_line(line: str, prev_line: str) -> bool:
@@ -830,20 +929,38 @@ async def tail_remote_log_stream(
     llm_client = llm_client or make_llm_client()
     state = _get_stream_state(source)
     await asyncio.to_thread(_init_sparkline_db, state)
+    await asyncio.to_thread(_restore_watermark, state, source)
+    state.log_buffer.clear()
+    state.entry_ts = None
     log.info("log_stream_start", host=HA_HOST, source=source)
 
     tail_command = _source_to_command(source)
+    _log_buffer = state.log_buffer
 
     try:
         async for line in client.stream_lines(tail_command):
             clean_line = line.strip()
             _prev_line = _log_buffer[-1] if _log_buffer else ""
             _log_buffer.append(clean_line)
+            _ts = _parse_ha_log_ts(clean_line)
+            if _ts is not None:
+                state.entry_ts = _ts
 
             _matched = _is_critical_line(clean_line, _prev_line)
             await asyncio.to_thread(_record_sparkline_line, state, _matched)
 
             if _matched:
+                _line_fp = hashlib.sha256(clean_line.encode()).hexdigest()[:16]
+                if not _replay_gate(state, _line_fp):
+                    log.info("log_line_replay_skip", source=source, line=clean_line)
+                    continue
+                if state.entry_ts is not None:
+                    await asyncio.to_thread(
+                        _save_watermark,
+                        source,
+                        state.entry_ts,
+                        sorted(state.seen_at_watermark),
+                    )
                 log.warning("log_line_intercepted", line=clean_line)
 
                 context_snapshot = "\n".join(_log_buffer)
@@ -868,7 +985,6 @@ async def tail_remote_log_stream(
                     continue
 
                 # Snapshot mutable values before handing off to the queue consumer.
-                _line_fp = hashlib.sha256(clean_line.encode()).hexdigest()[:16]
                 _buf_snap = list(_log_buffer)
                 _clean_snap = clean_line
                 _loop_name = state.loop_name

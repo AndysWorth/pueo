@@ -82,7 +82,7 @@ For a compact orientation map (file responsibilities, utils directory, interface
 
 Agent scripts in `agents/` are runnable directly for debugging; under `supervisor` mode, all 7 HA agents run as coordinated background tasks managed by `LoopSupervisor`; `netalertx_event_poll` runs alongside them when NetAlertX is configured.
 
-**Log monitor detail:** runs `ha core logs --follow` over SSH to stream live HA logs from the supervisor journal (modern HA does not reliably write to `/config/home-assistant.log`). Two-layer triage: fast regex pre-filter (`CRITICAL_LOG_PATTERN`) then Ollama `LogEvaluation` with `confidence_score > 0.7` threshold. High-confidence actionable errors trigger the repair pipeline. Reconnects automatically on stream failure.
+**Log monitor detail:** runs `ha core logs --follow` over SSH to stream live HA logs from the supervisor journal (modern HA does not reliably write to `/config/home-assistant.log`). Two-layer triage: fast regex pre-filter (`CRITICAL_LOG_PATTERN`) then Ollama `LogEvaluation` with `confidence_score > 0.7` threshold. High-confidence actionable errors trigger the repair pipeline. Reconnects automatically on stream failure. Each reconnect replays HA's backlog, so a per-source timestamp watermark (persisted in `user_prefs` as `log_monitor:watermark:<source>`) skips critical lines already triaged (`log_line_replay_skip`); lines without a parseable timestamp fail open (#975).
 
 **Repair pipeline (`ha_agent_sandbox_engine.py`):** When Ollama returns `is_valid=False` with a `recommended_fix_yaml`:
 1. Run `validate_proposed_fix()` — abort if the proposed YAML removes critical keys or is suspiciously large

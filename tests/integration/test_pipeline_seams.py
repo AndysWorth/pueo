@@ -52,7 +52,6 @@ class TestLogMonitorActionablePath:
         monkeypatch.setattr(ha_log_monitor, "CONFIDENCE_THRESHOLD", 0.7)
         monkeypatch.setattr(ha_log_monitor, "_debouncer", Debouncer(0))
         monkeypatch.setattr(ha_log_monitor, "_rate_limiter", RateLimiter(100, 3600))
-        ha_log_monitor._log_buffer.clear()
 
     def test_critical_line_sends_hitl_card_when_gate_blocks(
         self, monkeypatch, ssh_with_critical_line
@@ -156,7 +155,6 @@ class TestLogMonitorActionablePath:
         monkeypatch.setattr(ha_log_monitor, "CONFIDENCE_THRESHOLD", 0.7)
         monkeypatch.setattr(ha_log_monitor, "_debouncer", Debouncer(0))
         monkeypatch.setattr(ha_log_monitor, "_rate_limiter", RateLimiter(100, 3600))
-        ha_log_monitor._log_buffer.clear()
 
         llm = FakeLLMClient(
             self._make_log_eval_json(is_actionable=True, confidence=0.95)
