@@ -1,9 +1,15 @@
 """Post-session runbook distillation.
 
 Turns a completed AgentLoop session into a structured candidate runbook or gap.
-Enqueued after verification (success confirmed or failure + correction) so the model
-never distills unverified conclusions.  Non-success sessions still write gaps
-immediately after the session ends.
+
+Two distillation lanes:
+- **Procedural**: enqueued after any session that reached a conclusion (success,
+  needs_action, monitoring, awaiting_approval).  Learns tool-use lessons from the
+  trace without requiring user verification.  Lessons are merged into the candidate
+  runbook's ``## Procedure notes`` section.
+- **Verdict**: enqueued after explicit verification (success confirmed or failure +
+  correction).  Learns decision rules and fix summaries.  Non-success sessions still
+  write gaps immediately.
 """
 
 from __future__ import annotations
@@ -149,6 +155,33 @@ class DistilledRunbook(BaseModel):
     )
 
 
+class ProceduralLesson(BaseModel):
+    """One tool-use lesson from a session trace, citing the step that shows it."""
+
+    lesson: str = Field(
+        description=(
+            "What worked, failed, or was redundant — stated using words from the "
+            "cited step's output.  No verdict or root-cause claim."
+        )
+    )
+    evidence_step: int = Field(
+        description="Step number in the tool trace whose args or output shows this lesson"
+    )
+
+
+class ProceduralLessons(BaseModel):
+    """Tool-use lessons distilled from a session trace (no verdicts)."""
+
+    lessons: list[ProceduralLesson] = Field(
+        default_factory=list,
+        description="Up to 4 lessons about which tools worked, failed, or were redundant",
+    )
+
+
+_PROCEDURE_NOTES_HEADER = "## Procedure notes"
+_PROCEDURE_MAX_NOTES = 8
+
+
 def _format_step_trace(steps: list[AgentStep]) -> str:
     per_step = max(_STEP_OUTPUT_MIN_TOKENS, _TRACE_OUTPUT_TOKENS // max(1, len(steps)))
     lines = []
@@ -236,6 +269,115 @@ def _grounded_facts(
                 reason="no_such_step" if evidence is None else "ungrounded",
             )
     return kept
+
+
+def _grounded_lessons(
+    lessons: list[ProceduralLesson], steps: list[AgentStep]
+) -> list[ProceduralLesson]:
+    """Filter lessons to those whose cited step exists and whose text is grounded."""
+    evidence_by_step: dict[int, str] = {}
+    for s in steps:
+        evidence_by_step[s.step_number] = (
+            f"{s.tool_call.name}({json.dumps(s.tool_call.arguments)[:200]})\n"
+            f"{s.tool_result.output or ''}\n{s.tool_result.error or ''}"
+        )
+    kept: list[ProceduralLesson] = []
+    for lesson in lessons:
+        evidence = evidence_by_step.get(lesson.evidence_step)
+        if evidence is not None and _fact_is_grounded(lesson.lesson, evidence):
+            kept.append(lesson)
+        else:
+            log.info(
+                "procedure_lesson_rejected",
+                lesson=lesson.lesson[:200],
+                evidence_step=lesson.evidence_step,
+                reason="no_such_step" if evidence is None else "ungrounded",
+            )
+    return kept
+
+
+def _split_procedure_notes(approach: str) -> tuple[str, str]:
+    """Split approach text into (main_body, procedure_notes).
+
+    ``procedure_notes`` is the content of the ``## Procedure notes`` section (without the
+    header).  ``main_body`` is everything else, with the section removed.  Returns
+    ``(approach, "")`` when the section is absent.
+    """
+    if _PROCEDURE_NOTES_HEADER not in approach:
+        return approach, ""
+    idx = approach.index(_PROCEDURE_NOTES_HEADER)
+    before = approach[:idx].rstrip()
+    rest = approach[idx + len(_PROCEDURE_NOTES_HEADER) :]
+    # Find the next section (## …) in the remainder.
+    next_sec = rest.find("\n## ")
+    if next_sec >= 0:
+        notes = rest[:next_sec].strip()
+        after = rest[next_sec:]
+    else:
+        notes = rest.strip()
+        after = ""
+    main = before + (after if after else "")
+    return main, notes
+
+
+def _merge_notes_text(existing_notes: str, new_lessons: list[ProceduralLesson]) -> str:
+    """Merge new lessons into existing procedure-note lines, dedup, cap at _PROCEDURE_MAX_NOTES.
+
+    Each note is stored as a ``- <lesson>`` bullet.  Deduplication normalises whitespace
+    and lowercases before comparing.  Returns the merged bullet-list string (no header).
+    """
+    existing_bullets: list[str] = []
+    for line in existing_notes.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("- "):
+            existing_bullets.append(stripped[2:])
+        elif stripped:
+            existing_bullets.append(stripped)
+
+    seen: set[str] = {" ".join(b.lower().split()) for b in existing_bullets}
+    merged = list(existing_bullets)
+    for lesson in new_lessons:
+        norm = " ".join(lesson.lesson.lower().split())
+        if norm not in seen:
+            seen.add(norm)
+            merged.append(lesson.lesson)
+    return "\n".join(f"- {b}" for b in merged[:_PROCEDURE_MAX_NOTES])
+
+
+def _build_procedure_prompt(
+    *,
+    signature: str,
+    outcome: str,
+    step_trace: str,
+) -> str:
+    """Build the prompt for procedural-lesson distillation.
+
+    Asks for tool-use lessons only — no root-cause verdict or fix summary.
+    """
+    return "\n".join(
+        [
+            "You are reviewing a Home Assistant diagnostic session for tool-use lessons.",
+            "",
+            f"Session signature: {signature}",
+            f"Outcome: {outcome}",
+            "",
+            "Tool trace (FAILED = tool error, EMPTY = no output returned):",
+            step_trace,
+            "",
+            "List up to 4 lessons about tool mechanics only:",
+            "- Which tool call returned the key evidence (state which step)",
+            "- Which calls failed or returned empty output (cite the FAILED/EMPTY step)",
+            "- Which calls were redundant (called twice with the same arguments)",
+            "- The correct command shape or URL when a call failed with a wrong input",
+            "",
+            "Rules:",
+            "- Do NOT state a root cause, fix, or verdict.",
+            "- Each lesson must cite a step number and reuse words from that step's "
+            "output, args, or error message.",
+            "- Skip lessons that add nothing beyond 'tool X was called' — only note "
+            "failures, redundancies, or surprising successes.",
+        ]
+    )
 
 
 def _write_instance_facts(
@@ -994,5 +1136,291 @@ async def enqueue_distillation_after_verification(
             signature=sig,
             episode_id=_ep,
             verification=_verification,
+        )
+    return bool(submitted)
+
+
+# ---------------------------------------------------------------------------
+# Procedural distillation lane (ADR 049)
+# ---------------------------------------------------------------------------
+
+
+def _persist_procedure_notes(
+    db_path: str,
+    signature: str,
+    lessons: list[ProceduralLesson],
+    knowledge_store: "KnowledgeStoreClientProtocol",
+) -> bool:
+    """Merge lessons into the candidate runbook for *signature*, or create one.
+
+    If no live candidate/validated/seed runbook exists, inserts a procedure-only
+    candidate (``fix_summary`` / ``decision_rule`` empty).  Deduplicates notes and
+    caps at ``_PROCEDURE_MAX_NOTES``.  Returns True on success.
+    Synchronous — call via asyncio.to_thread.
+    """
+    existing = _get_existing_by_signature(db_path, signature)
+    notes_text = _merge_notes_text("", lessons)  # start from scratch; merge below
+
+    if existing:
+        strategy_id, current_version, episode_refs_json, existing_approach = existing
+        main_approach, old_notes = _split_procedure_notes(existing_approach)
+        notes_text = _merge_notes_text(old_notes, lessons)
+        new_approach = (
+            main_approach.rstrip() + f"\n\n{_PROCEDURE_NOTES_HEADER}\n{notes_text}"
+        )
+        new_version = current_version + 1
+        try:
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    "UPDATE agent_strategies SET version=?, approach=? WHERE id=?",
+                    (new_version, new_approach, strategy_id),
+                )
+                conn.commit()
+        except Exception as exc:  # nosec B110
+            log.warning(
+                "procedure_notes_update_failed", signature=signature, error=str(exc)
+            )
+            return False
+        try:
+            row_title = ""
+            with sqlite3.connect(db_path) as conn:
+                t = conn.execute(
+                    "SELECT title FROM agent_strategies WHERE id=?", (strategy_id,)
+                ).fetchone()
+                if t:
+                    row_title = t[0] or signature
+            text = f"# {row_title}\n\nSignature: {signature}\n\n{new_approach}"
+            meta: dict = {
+                "source": "agent_learned",
+                "title": row_title,
+                "trigger_pattern": signature,
+                "strategy_id": strategy_id,
+                "signature": signature,
+                "runbook_type": "candidate",
+            }
+            knowledge_store.upsert("strategies", [strategy_id], [text], [meta])
+        except Exception as exc:  # nosec B110
+            log.warning(
+                "procedure_notes_chroma_failed", signature=signature, error=str(exc)
+            )
+        log.info(
+            "procedure_notes_merged",
+            signature=signature,
+            strategy_id=strategy_id,
+            note_count=notes_text.count("\n- ")
+            + (1 if notes_text.startswith("- ") else 0),
+        )
+    else:
+        # No live runbook: create a procedure-only candidate.
+        strategy_id = str(uuid.uuid4())
+        title = f"Procedure notes: {signature}"
+        approach = (
+            "## When to use\n(Procedure-only: verdict not yet learned)\n\n"
+            f"## Fix summary\n(pending verification)\n\n"
+            f"{_PROCEDURE_NOTES_HEADER}\n{notes_text}"
+        )
+        try:
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    "INSERT OR IGNORE INTO agent_strategies"
+                    " (id, title, trigger_pattern, approach, runbook_state, created_at,"
+                    "  signature, version, episode_refs)"
+                    " VALUES (?, ?, ?, ?, 'candidate', datetime('now'), ?, 1, '[]')",
+                    (strategy_id, title, signature, approach, signature),
+                )
+                conn.commit()
+        except Exception as exc:  # nosec B110
+            log.warning(
+                "procedure_candidate_insert_failed",
+                signature=signature,
+                error=str(exc),
+            )
+            return False
+        try:
+            text = f"# {title}\n\nSignature: {signature}\n\n{approach}"
+            meta = {
+                "source": "agent_learned",
+                "title": title,
+                "trigger_pattern": signature,
+                "strategy_id": strategy_id,
+                "signature": signature,
+                "runbook_type": "candidate",
+            }
+            knowledge_store.upsert("strategies", [strategy_id], [text], [meta])
+        except Exception as exc:  # nosec B110
+            log.warning(
+                "procedure_candidate_chroma_failed", signature=signature, error=str(exc)
+            )
+        log.info(
+            "procedure_candidate_created",
+            signature=signature,
+            strategy_id=strategy_id,
+        )
+    return True
+
+
+async def distill_procedure(
+    signature: str,
+    steps: list[AgentStep],
+    outcome: str,
+    episode_id: str,
+    db_path: str,
+    knowledge_store: "KnowledgeStoreClientProtocol",
+    model: str,
+    llm_client: Optional["LLMClientProtocol"] = None,
+) -> None:
+    """Distil tool-use lessons from the session trace and merge into the runbook.
+
+    Called without waiting for user verification — only captures HOW to gather
+    evidence, never WHAT conclusion to draw.  No ``distilled_at`` stamp (that
+    belongs to verdict distillation so recovery never skips the verdict lane).
+    """
+    if not signature or not steps or not db_path:
+        return
+
+    step_trace = _format_step_trace(steps)
+    prompt = _build_procedure_prompt(
+        signature=signature,
+        outcome=outcome,
+        step_trace=step_trace,
+    )
+
+    timeout_secs = await asyncio.to_thread(
+        _distillation_timeout_seconds, db_path, model
+    )
+
+    from utils.llm.model_options import one_shot_options, one_shot_think
+
+    _options = await asyncio.to_thread(one_shot_options, model)
+    _think = await asyncio.to_thread(one_shot_think, model)
+    _client = llm_client if llm_client is not None else make_llm_client()
+
+    try:
+        response = await asyncio.wait_for(
+            _client.chat(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                options=_options,
+                format=ProceduralLessons.model_json_schema(),
+                think=_think,
+            ),
+            timeout=timeout_secs,
+        )
+        content = response["message"]["content"]
+        result = ProceduralLessons.model_validate_json(content)
+    except Exception as exc:
+        log.warning(
+            "procedure_distillation_llm_failed",
+            signature=signature,
+            error=str(exc),
+            error_type=type(exc).__name__,
+        )
+        return
+
+    lessons = _grounded_lessons(result.lessons, steps)
+    if not lessons:
+        log.info(
+            "procedure_distillation_no_lessons",
+            signature=signature,
+            episode_id=episode_id,
+        )
+        return
+
+    try:
+        ok = await asyncio.to_thread(
+            _persist_procedure_notes, db_path, signature, lessons, knowledge_store
+        )
+        if ok:
+            log.info(
+                "procedure_distillation_done",
+                signature=signature,
+                episode_id=episode_id,
+                lessons=len(lessons),
+            )
+    except Exception as exc:  # nosec B110
+        log.warning(
+            "procedure_distillation_persist_failed",
+            signature=signature,
+            error=str(exc),
+        )
+
+
+async def enqueue_procedural_distillation(
+    episode_id: str,
+    db_path: str,
+    knowledge_store: "KnowledgeStoreClientProtocol",
+    model: str,
+    llm_client: Optional["LLMClientProtocol"] = None,
+) -> bool:
+    """Read the stashed session payload and enqueue a procedural distillation WorkItem.
+
+    Called from AgentLoop._enqueue_distillation for outcomes that reached a conclusion.
+    Returns True when a WorkItem was submitted.  No-op when: no queue, payload missing,
+    or blank signature.
+    """
+    from utils.agent.work_queue import PRIORITY_LOW, WorkItem, get_work_queue_or_none
+
+    queue = get_work_queue_or_none()
+    if queue is None:
+        return False
+
+    payload = await asyncio.to_thread(_read_distillation_payload, db_path, episode_id)
+    if not payload:
+        return False
+
+    sig = payload.get("signature", "")
+    if not sig:
+        return False
+
+    steps_raw = payload.get("steps", [])
+    episode_stub = payload.get("episode_stub")
+    outcome = (
+        (episode_stub or {}).get("outcome", "success") if episode_stub else "success"
+    )
+
+    from utils.agent.tool_registry import AgentStep
+
+    steps: list[AgentStep] = []
+    for s in steps_raw:
+        try:
+            steps.append(AgentStep.model_validate(s))
+        except Exception:  # nosec B110
+            pass
+
+    _sig = sig
+    _ep = episode_id
+    _db = db_path
+    _store = knowledge_store
+    _model = model
+    _llm = llm_client
+    _outcome = outcome
+
+    async def _run_procedure() -> None:
+        await distill_procedure(
+            signature=_sig,
+            steps=steps,
+            outcome=_outcome,
+            episode_id=_ep,
+            db_path=_db,
+            knowledge_store=_store,
+            model=_model,
+            llm_client=_llm,
+        )
+
+    submitted = await queue.submit(
+        WorkItem(
+            priority=PRIORITY_LOW,
+            activity_type="runbook_distillation",
+            description=f"Procedure notes {sig}",
+            dedup_key=f"procedure_{sig}_{episode_id}",
+            suppress_while_running=frozenset(),
+            coro_factory=_run_procedure,
+        )
+    )
+    if submitted:
+        log.info(
+            "procedural_distillation_enqueued",
+            signature=sig,
+            episode_id=episode_id,
         )
     return bool(submitted)

@@ -1254,3 +1254,551 @@ class TestTraceAndPromptVariants:
         assert "delta from the seed" in prompt
         assert "No seed runbook exists" not in prompt
         assert "evidence_step" in prompt
+
+
+# ---------------------------------------------------------------------------
+# ProceduralLesson / ProceduralLessons schema
+# ---------------------------------------------------------------------------
+
+
+class TestProceduralLessonSchema:
+    def test_valid_construction(self):
+        from utils.knowledge.runbook_distiller import (
+            ProceduralLesson,
+            ProceduralLessons,
+        )
+
+        lesson = ProceduralLesson(
+            lesson="get_entity_history failed: REST client not available",
+            evidence_step=3,
+        )
+        assert lesson.evidence_step == 3
+        pl = ProceduralLessons(lessons=[lesson])
+        assert len(pl.lessons) == 1
+
+    def test_missing_evidence_step_rejected(self):
+        from pydantic import ValidationError
+
+        from utils.knowledge.runbook_distiller import ProceduralLesson
+
+        with pytest.raises(ValidationError):
+            ProceduralLesson(lesson="some lesson")  # type: ignore[call-arg]
+
+    def test_json_round_trip(self):
+        from utils.knowledge.runbook_distiller import (
+            ProceduralLesson,
+            ProceduralLessons,
+        )
+
+        pl = ProceduralLessons(
+            lessons=[
+                ProceduralLesson(
+                    lesson="call get_logbook after get_entity_history", evidence_step=2
+                )
+            ]
+        )
+        restored = ProceduralLessons.model_validate_json(pl.model_dump_json())
+        assert restored.lessons[0].lesson == pl.lessons[0].lesson
+        assert restored.lessons[0].evidence_step == 2
+
+    def test_empty_lessons_default(self):
+        from utils.knowledge.runbook_distiller import ProceduralLessons
+
+        pl = ProceduralLessons()
+        assert pl.lessons == []
+
+
+# ---------------------------------------------------------------------------
+# _grounded_lessons
+# ---------------------------------------------------------------------------
+
+
+class TestGroundedLessons:
+    def test_grounded_lesson_kept(self):
+        from utils.knowledge.runbook_distiller import (
+            ProceduralLesson,
+            _grounded_lessons,
+        )
+
+        step = _make_step("get_entity_history", 3, success=False, output="")
+        step.tool_result.error = "REST client not available"
+        lessons = [
+            ProceduralLesson(
+                lesson="get_entity_history failed: REST client not available",
+                evidence_step=3,
+            ),
+        ]
+        kept = _grounded_lessons(lessons, [step])
+        assert len(kept) == 1
+
+    def test_ungrounded_lesson_rejected(self):
+        from utils.knowledge.runbook_distiller import (
+            ProceduralLesson,
+            _grounded_lessons,
+        )
+
+        step = _make_step("get_entity_history", 3, success=True, output="state: on")
+        lessons = [
+            ProceduralLesson(
+                lesson="device was offline because Wi-Fi failed", evidence_step=3
+            ),
+        ]
+        kept = _grounded_lessons(lessons, [step])
+        assert len(kept) == 0
+
+    def test_missing_step_rejected(self):
+        from utils.knowledge.runbook_distiller import (
+            ProceduralLesson,
+            _grounded_lessons,
+        )
+
+        step = _make_step("read_logs", 1, output="some log")
+        lessons = [
+            ProceduralLesson(lesson="some lesson about step 99", evidence_step=99),
+        ]
+        kept = _grounded_lessons(lessons, [step])
+        assert len(kept) == 0
+
+    def test_grounded_against_args(self):
+        from utils.knowledge.runbook_distiller import (
+            ProceduralLesson,
+            _grounded_lessons,
+        )
+
+        step = _make_step("run_ha_command", 2, output="error: command not found")
+        # lesson cites a word that appears in args OR output
+        step.tool_call.arguments = {"cmd": "ha apps restart mosquitto"}
+        lessons = [
+            ProceduralLesson(
+                lesson="run_ha_command failed: command not found", evidence_step=2
+            ),
+        ]
+        kept = _grounded_lessons(lessons, [step])
+        assert len(kept) == 1
+
+
+# ---------------------------------------------------------------------------
+# _split_procedure_notes / _merge_notes_text
+# ---------------------------------------------------------------------------
+
+
+class TestSplitProcedureNotes:
+    def test_no_section_returns_empty_notes(self):
+        from utils.knowledge.runbook_distiller import _split_procedure_notes
+
+        approach = "## When to use\nWhen ZHA crashes"
+        main, notes = _split_procedure_notes(approach)
+        assert notes == ""
+        assert main == approach
+
+    def test_splits_at_header(self):
+        from utils.knowledge.runbook_distiller import _split_procedure_notes
+
+        approach = (
+            "## When to use\nWhen ZHA crashes\n\n## Procedure notes\n- read_logs first"
+        )
+        main, notes = _split_procedure_notes(approach)
+        assert "Procedure notes" not in main
+        assert "read_logs first" in notes
+
+    def test_preserves_section_after_notes(self):
+        from utils.knowledge.runbook_distiller import _split_procedure_notes
+
+        approach = (
+            "## When to use\nWhen X\n\n"
+            "## Procedure notes\n- lesson A\n\n"
+            "## Fix summary\nDid Y"
+        )
+        main, notes = _split_procedure_notes(approach)
+        assert "Fix summary" in main
+        assert "lesson A" in notes
+        assert "Procedure notes" not in main
+
+
+class TestMergeNotesText:
+    def test_adds_new_lessons(self):
+        from utils.knowledge.runbook_distiller import (
+            ProceduralLesson,
+            _merge_notes_text,
+        )
+
+        lessons = [ProceduralLesson(lesson="call A before B", evidence_step=1)]
+        result = _merge_notes_text("", lessons)
+        assert "call A before B" in result
+
+    def test_deduplicates_case_insensitive(self):
+        from utils.knowledge.runbook_distiller import (
+            ProceduralLesson,
+            _merge_notes_text,
+        )
+
+        existing = "- Call A before B"
+        lessons = [ProceduralLesson(lesson="call A before B", evidence_step=2)]
+        result = _merge_notes_text(existing, lessons)
+        assert result.count("call A before B") + result.count("Call A before B") == 1
+
+    def test_caps_at_max(self):
+        from utils.knowledge.runbook_distiller import (
+            ProceduralLesson,
+            _PROCEDURE_MAX_NOTES,
+            _merge_notes_text,
+        )
+
+        existing = "\n".join(f"- note {i}" for i in range(_PROCEDURE_MAX_NOTES))
+        new_lessons = [ProceduralLesson(lesson="overflow note", evidence_step=1)]
+        result = _merge_notes_text(existing, new_lessons)
+        bullet_count = result.count("\n- ") + (1 if result.startswith("- ") else 0)
+        assert bullet_count <= _PROCEDURE_MAX_NOTES
+        assert "overflow note" not in result
+
+
+# ---------------------------------------------------------------------------
+# _build_procedure_prompt
+# ---------------------------------------------------------------------------
+
+
+class TestBuildProcedurePrompt:
+    def test_includes_signature_and_outcome(self):
+        from utils.knowledge.runbook_distiller import _build_procedure_prompt
+
+        prompt = _build_procedure_prompt(
+            signature="device:offline:lifx",
+            outcome="monitoring",
+            step_trace="  1. read_logs() → some output",
+        )
+        assert "device:offline:lifx" in prompt
+        assert "monitoring" in prompt
+
+    def test_no_verdict_language(self):
+        from utils.knowledge.runbook_distiller import _build_procedure_prompt
+
+        prompt = _build_procedure_prompt(
+            signature="sig",
+            outcome="success",
+            step_trace="trace",
+        )
+        assert "Do NOT state a root cause" in prompt
+        assert "verdict" in prompt.lower() or "root cause" in prompt.lower()
+
+    def test_asks_for_tool_mechanics(self):
+        from utils.knowledge.runbook_distiller import _build_procedure_prompt
+
+        prompt = _build_procedure_prompt(
+            signature="sig",
+            outcome="success",
+            step_trace="trace",
+        )
+        assert "failed" in prompt.lower()
+        assert "redundant" in prompt.lower()
+        assert "step" in prompt.lower()
+
+
+# ---------------------------------------------------------------------------
+# _persist_procedure_notes
+# ---------------------------------------------------------------------------
+
+
+class TestPersistProcedureNotes:
+    def test_creates_candidate_when_none_exists(self, tmp_path):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.runbook_distiller import (
+            ProceduralLesson,
+            _persist_procedure_notes,
+        )
+
+        db_path = _make_db(tmp_path)
+        store = FakeKnowledgeStore()
+        lessons = [
+            ProceduralLesson(lesson="REST client missing at step 3", evidence_step=1)
+        ]
+        ok = _persist_procedure_notes(db_path, "device:offline:lifx", lessons, store)
+        assert ok
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT runbook_state, approach FROM agent_strategies"
+            ).fetchone()
+        assert row[0] == "candidate"
+        assert "REST client missing" in row[1]
+        assert "## Procedure notes" in row[1]
+
+    def test_merges_into_existing_candidate(self, tmp_path):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.runbook_distiller import (
+            ProceduralLesson,
+            _persist_procedure_notes,
+        )
+
+        db_path = _make_db(tmp_path)
+        store = FakeKnowledgeStore()
+        # Insert an existing candidate
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO agent_strategies"
+                " (id, title, trigger_pattern, approach, runbook_state, created_at, signature)"
+                " VALUES ('cand1', 'Test', 'trigger', '## When to use\nWhen X', 'candidate', datetime('now'), 'device:offline:lifx')"
+            )
+            conn.commit()
+        lessons = [
+            ProceduralLesson(
+                lesson="get_entity_history works for lifx", evidence_step=2
+            )
+        ]
+        ok = _persist_procedure_notes(db_path, "device:offline:lifx", lessons, store)
+        assert ok
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT id, version, approach FROM agent_strategies WHERE id='cand1'"
+            ).fetchone()
+        assert row[0] == "cand1"
+        assert row[1] == 2  # version bumped
+        assert "get_entity_history works for lifx" in row[2]
+        assert "## Procedure notes" in row[2]
+
+    def test_deduplicates_notes_across_calls(self, tmp_path):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.runbook_distiller import (
+            ProceduralLesson,
+            _persist_procedure_notes,
+        )
+
+        db_path = _make_db(tmp_path)
+        store = FakeKnowledgeStore()
+        lessons = [ProceduralLesson(lesson="call read_logs first", evidence_step=1)]
+        _persist_procedure_notes(db_path, "test:sig:x", lessons, store)
+        _persist_procedure_notes(db_path, "test:sig:x", lessons, store)  # same lesson
+        with sqlite3.connect(db_path) as conn:
+            approach = conn.execute("SELECT approach FROM agent_strategies").fetchone()[
+                0
+            ]
+        assert approach.count("call read_logs first") == 1
+
+
+# ---------------------------------------------------------------------------
+# distill_procedure
+# ---------------------------------------------------------------------------
+
+
+class _FakeLLMWithLessons:
+    def __init__(self, lessons=None):
+        from utils.knowledge.runbook_distiller import (
+            ProceduralLesson,
+            ProceduralLessons,
+        )
+
+        self._result = ProceduralLessons(
+            lessons=lessons
+            or [
+                ProceduralLesson(
+                    lesson="get_entity_history failed: REST client not available",
+                    evidence_step=1,
+                )
+            ]
+        )
+
+    async def chat(self, model, messages, options, format, think=None):  # noqa: A002
+        return {"message": {"content": self._result.model_dump_json()}}
+
+    async def chat_with_tools(self, *a, **kw):  # pragma: no cover
+        raise NotImplementedError
+
+
+class TestDistillProcedure:
+    SIG = "device:offline:lifx"
+
+    def _make_step_rest_fail(self):
+        s = _make_step("get_entity_history", 1, success=False)
+        s.tool_result.error = "REST client not available"
+        return s
+
+    def test_grounded_lessons_written(self, tmp_path, monkeypatch):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.runbook_distiller import distill_procedure
+
+        db_path = _make_db(tmp_path)
+        store = FakeKnowledgeStore()
+        steps = [self._make_step_rest_fail()]
+
+        asyncio.run(
+            distill_procedure(
+                signature=self.SIG,
+                steps=steps,
+                outcome="monitoring",
+                episode_id="ep_proc1",
+                db_path=db_path,
+                knowledge_store=store,
+                model="qwen2.5:7b",
+                llm_client=_FakeLLMWithLessons(),
+            )
+        )
+
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT runbook_state, approach FROM agent_strategies"
+            ).fetchone()
+        assert row is not None
+        assert row[0] == "candidate"
+        assert "REST client not available" in row[1]
+
+    def test_no_distilled_at_stamped(self, tmp_path):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.runbook_distiller import distill_procedure
+
+        db_path = _make_db(tmp_path)
+        _insert_session(db_path, "ep_proc2", self.SIG)
+
+        asyncio.run(
+            distill_procedure(
+                signature=self.SIG,
+                steps=[self._make_step_rest_fail()],
+                outcome="success",
+                episode_id="ep_proc2",
+                db_path=db_path,
+                knowledge_store=FakeKnowledgeStore(),
+                model="qwen2.5:7b",
+                llm_client=_FakeLLMWithLessons(),
+            )
+        )
+
+        # distilled_at must NOT be set — that's the verdict lane's job
+        assert _distilled_at(db_path, "ep_proc2") is None
+
+    def test_llm_failure_does_not_crash(self, tmp_path):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.runbook_distiller import distill_procedure
+
+        db_path = _make_db(tmp_path)
+
+        class _BrokenLLM:
+            async def chat(self, **kw):
+                raise RuntimeError("Ollama down")
+
+        asyncio.run(
+            distill_procedure(
+                signature=self.SIG,
+                steps=[self._make_step_rest_fail()],
+                outcome="success",
+                episode_id="ep_proc3",
+                db_path=db_path,
+                knowledge_store=FakeKnowledgeStore(),
+                model="qwen2.5:7b",
+                llm_client=_BrokenLLM(),
+            )
+        )
+        with sqlite3.connect(db_path) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM agent_strategies").fetchone()[0]
+        assert count == 0  # nothing written, no crash
+
+    def test_ungrounded_lessons_skipped(self, tmp_path):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.runbook_distiller import (
+            ProceduralLesson,
+            distill_procedure,
+        )
+
+        db_path = _make_db(tmp_path)
+        # The LLM returns a lesson that cites an invented step
+        ungrounded_client = _FakeLLMWithLessons(
+            lessons=[
+                ProceduralLesson(lesson="invented ungrounded claim", evidence_step=99)
+            ]
+        )
+        asyncio.run(
+            distill_procedure(
+                signature=self.SIG,
+                steps=[_make_step("read_logs", 1, output="some log")],
+                outcome="success",
+                episode_id="ep_proc4",
+                db_path=db_path,
+                knowledge_store=FakeKnowledgeStore(),
+                model="qwen2.5:7b",
+                llm_client=ungrounded_client,
+            )
+        )
+        with sqlite3.connect(db_path) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM agent_strategies").fetchone()[0]
+        assert count == 0  # no lessons survived grounding
+
+
+# ---------------------------------------------------------------------------
+# enqueue_procedural_distillation
+# ---------------------------------------------------------------------------
+
+
+class TestEnqueueProceduralDistillation:
+    def test_returns_false_when_no_queue(self, tmp_path, monkeypatch):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.runbook_distiller import enqueue_procedural_distillation
+
+        monkeypatch.setattr(
+            "utils.agent.work_queue.get_work_queue_or_none",
+            lambda: None,
+            raising=False,
+        )
+        db_path = _make_db(tmp_path)
+        result = asyncio.run(
+            enqueue_procedural_distillation(
+                episode_id="ep1",
+                db_path=db_path,
+                knowledge_store=FakeKnowledgeStore(),
+                model="qwen2.5:7b",
+            )
+        )
+        assert result is False
+
+    def test_returns_false_for_missing_payload(self, tmp_path, monkeypatch):
+        from utils.agent.work_queue import PueoWorkQueue
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.runbook_distiller import enqueue_procedural_distillation
+
+        q = PueoWorkQueue()
+        monkeypatch.setattr(
+            "utils.agent.work_queue.get_work_queue_or_none",
+            lambda: q,
+            raising=False,
+        )
+        db_path = _make_db(tmp_path)
+        result = asyncio.run(
+            enqueue_procedural_distillation(
+                episode_id="ep_missing",
+                db_path=db_path,
+                knowledge_store=FakeKnowledgeStore(),
+                model="qwen2.5:7b",
+            )
+        )
+        assert result is False
+
+    def test_enqueues_when_payload_present(self, tmp_path, monkeypatch):
+        import json as _json
+
+        from utils.agent.work_queue import PueoWorkQueue
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.runbook_distiller import enqueue_procedural_distillation
+
+        q = PueoWorkQueue()
+        monkeypatch.setattr(
+            "utils.agent.work_queue.get_work_queue_or_none",
+            lambda: q,
+            raising=False,
+        )
+        db_path = _make_db(tmp_path)
+        payload = _json.dumps(
+            {"steps": [], "initial_context": "ctx", "episode_stub": None}
+        )
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO session_outcomes"
+                " (episode_id, signature, distill_payload_json, created_at)"
+                " VALUES (?, ?, ?, datetime('now'))",
+                ("ep_ok", "device:offline:lifx", payload),
+            )
+            conn.commit()
+
+        result = asyncio.run(
+            enqueue_procedural_distillation(
+                episode_id="ep_ok",
+                db_path=db_path,
+                knowledge_store=FakeKnowledgeStore(),
+                model="qwen2.5:7b",
+            )
+        )
+        assert result is True
