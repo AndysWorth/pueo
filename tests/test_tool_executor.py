@@ -5305,6 +5305,66 @@ class TestRunbookUsageTracking:
         finally:
             adv.DB_PATH = original  # type: ignore[assignment]
 
+    def test_sweep_holds_sibling_rows_when_newer_episode_has_open_card(self, tmp_path):
+        """Fix 3b: if any sibling row (same subject_key) has an open card, hold all rows."""
+        import sqlite3
+        import time
+
+        import agents.ha_agent_advanced as adv
+
+        db_path = self._make_adv_db(tmp_path)
+        watch = tmp_path / "hitl"
+        watch.mkdir(parents=True, exist_ok=True)
+
+        stale_iso = time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 50 * 3600)
+        )
+        # Old episode (no open card) — would normally be swept.
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO session_outcomes"
+                " (episode_id, subject_key, created_at, verification,"
+                "  distill_payload_json, card_id)"
+                " VALUES ('ep_old', 'subj:update.mosquitto', ?, 'pending', 'payload', NULL)",
+                (stale_iso,),
+            )
+            conn.commit()
+
+        # Newer episode for the same subject_key has an open card.
+        newer_iso = time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 30 * 3600)
+        )
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO session_outcomes"
+                " (episode_id, subject_key, created_at, verification,"
+                "  distill_payload_json, card_id)"
+                " VALUES ('ep_new', 'subj:update.mosquitto', ?, 'pending', 'payload', 'nid_new')",
+                (newer_iso,),
+            )
+            conn.commit()
+        # Write the open card file.
+        import json
+
+        (watch / "nid_new.json").write_text(
+            json.dumps({"notification_id": "nid_new", "payload": {}})
+        )
+
+        original = adv.DB_PATH
+        adv.DB_PATH = db_path  # type: ignore[assignment]
+        try:
+            adv.sweep_stale_pending_usage(str(watch))
+            with sqlite3.connect(db_path) as conn:
+                old_row = conn.execute(
+                    "SELECT verification, distill_payload_json FROM session_outcomes"
+                    " WHERE episode_id='ep_old'"
+                ).fetchone()
+            # Old row must NOT be swept — its sibling has an open card.
+            assert old_row[0] == "pending"
+            assert old_row[1] == "payload"
+        finally:
+            adv.DB_PATH = original  # type: ignore[assignment]
+
     def test_sweep_defaults_watch_dir_to_config(self, tmp_path, monkeypatch):
         import agents.ha_agent_advanced as adv
 

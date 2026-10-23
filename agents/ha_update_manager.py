@@ -54,11 +54,25 @@ log = get_logger("ha_update_manager")
 _POST_UPDATE_FLAG_TTL_SECONDS = 30 * 60
 _reboot_pending_after_update: Optional[float] = None
 
+# Entities whose update is currently being executed by Pueo.  Used to suppress
+# false "updated outside Pueo" timeline events while execute_update is in flight.
+_entities_executing_update: set = set()
+
+
+def is_entity_executing_update(entity_id: str) -> bool:
+    """Return True while Pueo is actively running execute_update for this entity."""
+    return entity_id in _entities_executing_update
+
 
 async def _enqueue_distillation_for_subject(
     subject_key: str, verification: str
 ) -> None:
-    """Read session_outcomes rows for subject_key and enqueue distillation for each."""
+    """Read session_outcomes rows for subject_key and enqueue distillation for each.
+
+    Only distills rows that still have a payload (not swept) and haven't been
+    distilled yet — rows with distill_payload_json IS NULL or distilled_at set
+    are silently skipped.
+    """
     import sqlite3 as _sql
     import config as _cfg
     from utils.agent.supervisor import get_supervisor_instance
@@ -74,7 +88,8 @@ async def _enqueue_distillation_for_subject(
         with _sql.connect(_cfg.DB_PATH) as _conn:
             _rows = _conn.execute(
                 "SELECT episode_id FROM session_outcomes"
-                " WHERE subject_key = ? AND verification = ?",
+                " WHERE subject_key = ? AND verification = ?"
+                "   AND distill_payload_json IS NOT NULL AND distilled_at IS NULL",
                 (subject_key, verification),
             ).fetchall()
         for (ep_id,) in _rows:
@@ -1074,6 +1089,7 @@ async def _run_update_analysis(
                         component=update.component,
                         version=update.latest_version,
                     )
+                    _entities_executing_update.add(update.entity_id)
                     try:
                         _update_ok = await execute_update(update, _ssh, _notifier, gate)
                         from agents.ha_log_monitor import _update_mark_auto_applied
@@ -1125,6 +1141,8 @@ async def _run_update_analysis(
                             body=f"Error: {_exc}",
                             payload={},
                         )
+                    finally:
+                        _entities_executing_update.discard(update.entity_id)
         finally:
             decrement_active_agent()
             try:

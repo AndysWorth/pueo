@@ -54,6 +54,10 @@ class NetAlertXAPIClient:
         """False when no API token is configured; every request would be rejected."""
         return bool(self._token)
 
+    def set_token(self, token: str) -> None:
+        """Update the API token in-place (used after a startup auto-refresh)."""
+        self._token = token
+
     # ── internal helpers ────────────────────────────────────────────────────────
 
     def _auth(self) -> dict[str, str]:

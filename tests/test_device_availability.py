@@ -2475,3 +2475,47 @@ class TestBuildPresenceContext:
         finally:
             setattr(inv_mod, inv_mod_attr, original)
         assert captured["ws"] is ws
+
+    def test_stub_passes_rest_client(self):
+        """_run_device_availability_investigation passes ha_rest_client through."""
+        import asyncio
+        from utils.ha.device_availability import (
+            OfflineFinding,
+            _run_device_availability_investigation,
+        )
+        import utils.ha.device_availability_investigation as inv_mod
+
+        captured: dict = {}
+
+        async def _fake_real(
+            finding, notifier, db_path, llm_client, knowledge_store, **kw
+        ):
+            captured["rest"] = kw.get("ha_rest_client")
+
+        inv_mod_attr = "run_device_availability_investigation"
+        original = getattr(inv_mod, inv_mod_attr)
+        setattr(inv_mod, inv_mod_attr, _fake_real)
+        try:
+            finding = OfflineFinding(
+                config_entry_id="entry-1",
+                domain="test",
+                devices=[{"name": "D", "device_id": "d1", "offline_since": 0.0}],
+            )
+
+            class _FakeRest:
+                pass
+
+            rest = _FakeRest()
+            asyncio.run(
+                _run_device_availability_investigation(
+                    finding=finding,
+                    db_path=":memory:",
+                    notifier=None,
+                    llm_client=None,
+                    knowledge_store=None,
+                    ha_rest_client=rest,
+                )
+            )
+        finally:
+            setattr(inv_mod, inv_mod_attr, original)
+        assert captured["rest"] is rest

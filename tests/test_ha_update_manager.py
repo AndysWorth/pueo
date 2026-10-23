@@ -3845,3 +3845,46 @@ class TestResolveSiblingEntityAttribution:
             assert (
                 row[0] != "auto_applied"
             ), "Unrelated entity must not be attributed to Pueo"
+
+    def test_suppress_external_while_pueo_executing(
+        self, tmp_path, pueo_dirs, monkeypatch
+    ):
+        """_resolve_externally_applied_update must return early when Pueo is executing."""
+        import sqlite3
+        from unittest.mock import patch
+
+        from agents.ha_log_monitor import _resolve_externally_applied_update
+        import agents.ha_update_manager as mgr
+
+        db_path = self._setup_db(tmp_path)
+        monkeypatch.setattr("agents.ha_log_monitor.DB_PATH", db_path)
+        watch_dir = str(tmp_path / "hitl")
+        (tmp_path / "hitl").mkdir()
+
+        # Simulate Pueo executing an update for this entity.
+        entity_id = "update.mosquitto_update"
+        mgr._entities_executing_update.add(entity_id)
+        try:
+            with patch("utils.core.timeline.write_timeline_event") as mock_tl:
+                _resolve_externally_applied_update(f"update:{entity_id}", watch_dir)
+        finally:
+            mgr._entities_executing_update.discard(entity_id)
+
+        # Nothing should have been written to the DB or timeline.
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT card_key FROM hitl_suppression"
+                f" WHERE card_key = 'update:{entity_id}'",
+            ).fetchone()
+        assert row is None, "No DB row should be written when Pueo is executing"
+        mock_tl.assert_not_called()
+
+    def test_entities_executing_update_finally_removes_on_success(self):
+        """_entities_executing_update must be cleaned up after execute_update."""
+        import agents.ha_update_manager as mgr
+
+        mgr._entities_executing_update.discard("update.test_entity")
+        mgr._entities_executing_update.add("update.test_entity")
+        assert mgr.is_entity_executing_update("update.test_entity")
+        mgr._entities_executing_update.discard("update.test_entity")
+        assert not mgr.is_entity_executing_update("update.test_entity")
