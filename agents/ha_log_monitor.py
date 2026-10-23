@@ -1372,6 +1372,11 @@ async def poll_for_updates(
 
         for u in updates:
             suppression_key = f"update:{u.entity_id}"
+            if not u.state_known:
+                # unavailable/unknown during an HA restart or HACS reload says nothing
+                # about the update; resolving here would force a re-analysis (#976).
+                log.debug("update_poll_skip_unknown_state", entity_id=u.entity_id)
+                continue
             if u.update_available:
                 _update_gone.pop(
                     suppression_key, None
@@ -1392,6 +1397,16 @@ async def poll_for_updates(
                     _update_check_should_send, suppression_key
                 )
                 if not _should_send:
+                    continue
+                if not await asyncio.to_thread(
+                    _update_check_should_send,
+                    f"update_analysis_backoff:{u.entity_id}",
+                ):
+                    log.info(
+                        "update_analysis_backoff_active",
+                        component=u.component,
+                        version=u.latest_version,
+                    )
                     continue
                 # Skip if already analyzed for this specific version with no card needed.
                 analyzed_key = f"update_analyzed:{u.entity_id}:{u.latest_version}"

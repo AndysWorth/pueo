@@ -1065,17 +1065,35 @@ async def _run_update_analysis(
                         component=update.component,
                     )
                     # Create a HITL card even though the LLM said no card needed.
+                    # Stable nid + pending suppression row so the next poll does not
+                    # re-analyze and overwrite this card (#976).
+                    from agents.ha_log_monitor import _update_mark_card_sent
+                    from utils.hitl.card_types import CARD_TYPE_UPDATE
+                    from utils.hitl.hitl_tracker import stable_nid
+
+                    suppression_key = f"update:{update.entity_id}"
+                    _subject = (
+                        f"Update available: {update.component} "
+                        f"{update.installed_version} → {update.latest_version}"
+                    )
+                    _body_parts = [
+                        f"Auto-apply blocked for {update.component} — "
+                        "core/OS updates always require manual approval.",
+                        executor._auto_apply_advisory,
+                    ]
+                    await asyncio.to_thread(
+                        _update_mark_card_sent,
+                        suppression_key,
+                        CARD_TYPE_UPDATE,
+                        _subject,
+                    )
                     await _notifier.send(
-                        subject=(
-                            f"Update available: {update.component} "
-                            f"{update.installed_version} → {update.latest_version}"
-                        ),
-                        body=(
-                            f"Auto-apply blocked for {update.component} — "
-                            "core/OS updates always require manual approval."
-                        ),
+                        subject=_subject,
+                        body="\n".join(p for p in _body_parts if p),
                         payload={
-                            "card_type": "update",
+                            "notification_id": stable_nid(suppression_key),
+                            "card_type": CARD_TYPE_UPDATE,
+                            "suppression_key": suppression_key,
                             "component": update.component,
                             "entity_id": update.entity_id,
                             "installed_version": update.installed_version,
