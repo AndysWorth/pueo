@@ -1,6 +1,7 @@
 """Tests for utils/knowledge/kb_meta_analyzer.py."""
 
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import pytest
@@ -9,6 +10,7 @@ from utils.knowledge.kb_meta_analyzer import (
     NEAR_DUPLICATE_THRESHOLD,
     MetaAnalysisReport,
     RunbookRow,
+    SignatureStats,
     analyze_local_runbooks,
 )
 from utils.knowledge.knowledge_store import FakeKnowledgeStore
@@ -507,3 +509,595 @@ class TestAnalyzeLocalRunbooks:
         # "(no signature)" should be last
         last_sig, _ = report.gaps_by_signature[-1]
         assert last_sig == "(no signature)"
+
+
+# ── helpers for session-outcome-backed tests ────────────────────────────────
+
+
+def _seed_session_outcomes(db_path: str, rows: list[tuple]) -> None:
+    """Create session_outcomes + agent_memory + runbook_usage + agent_strategies tables."""
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS session_outcomes ("
+            "  episode_id TEXT PRIMARY KEY,"
+            "  signature TEXT,"
+            "  session_type TEXT,"
+            "  subject_key TEXT,"
+            "  conclusion_json TEXT,"
+            "  distill_payload_json TEXT,"
+            "  created_at TEXT,"
+            "  verification TEXT,"
+            "  verified_at TEXT,"
+            "  verified_by TEXT,"
+            "  correction TEXT,"
+            "  distilled_at TEXT,"
+            "  card_id TEXT"
+            ")"
+        )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS agent_memory ("
+            " id INTEGER PRIMARY KEY, key TEXT NOT NULL, content TEXT NOT NULL,"
+            " source TEXT NOT NULL, ts REAL NOT NULL, signature TEXT"
+            ")"
+        )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS runbook_usage ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " strategy_id TEXT NOT NULL, episode_id TEXT, signature TEXT,"
+            " outcome TEXT NOT NULL,"
+            " created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))"
+            ")"
+        )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS agent_strategies ("
+            " id TEXT PRIMARY KEY,"
+            " title TEXT NOT NULL,"
+            " trigger_pattern TEXT NOT NULL DEFAULT '',"
+            " approach TEXT NOT NULL DEFAULT '',"
+            " runbook_state TEXT NOT NULL DEFAULT 'candidate',"
+            " created_at TEXT NOT NULL,"
+            " reviewed_at TEXT,"
+            " promoted_at TEXT,"
+            " contributed_at TEXT,"
+            " kb_pr_url TEXT,"
+            " signature TEXT,"
+            " version INTEGER DEFAULT 1"
+            ")"
+        )
+        for row in rows:
+            conn.execute(
+                "INSERT OR REPLACE INTO session_outcomes"
+                " (episode_id, signature, session_type, subject_key,"
+                "  conclusion_json, distill_payload_json, created_at,"
+                "  verification, verified_at, verified_by, correction, distilled_at, card_id)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                row,
+            )
+        conn.commit()
+
+
+# ── SignatureStats dataclass ────────────────────────────────────────────────
+
+
+class TestSignatureStats:
+    def test_empty_db(self, tmp_path):
+        db = str(tmp_path / "test.db")
+        _seed_db(db, [])
+        report = analyze_local_runbooks(db)
+        assert report.signature_stats == []
+        assert report.unmatched_seeds == []
+
+    def test_sessions_30d_window(self, tmp_path):
+        """A row older than 30d counts in verified/last_session but not in sessions_30d."""
+        db = str(tmp_path / "test.db")
+        # Relative to the real clock: the SQL window uses SQLite's 'now'.
+        fmt = "%Y-%m-%dT%H:%M:%SZ"
+        utc_now = datetime.now(timezone.utc)
+        now = utc_now.strftime(fmt)
+        thirty_one_days_ago = (utc_now - timedelta(days=31)).strftime(fmt)
+        ten_days_ago = (utc_now - timedelta(days=10)).strftime(fmt)
+        _seed_session_outcomes(
+            db,
+            [
+                # 31 days ago — outside the 30d window
+                (
+                    "ep-old",
+                    "repair:core:*",
+                    "repair",
+                    "issue-1",
+                    "{}",
+                    "",
+                    thirty_one_days_ago,
+                    "success",
+                    now,
+                    "system",
+                    None,
+                    None,
+                    None,
+                ),
+                # 10 days ago — inside the window
+                (
+                    "ep-recent",
+                    "repair:core:*",
+                    "repair",
+                    "issue-2",
+                    "{}",
+                    "",
+                    ten_days_ago,
+                    "success",
+                    now,
+                    "system",
+                    None,
+                    None,
+                    None,
+                ),
+            ],
+        )
+        report = analyze_local_runbooks(db)
+        stats = report.signature_stats
+        assert len(stats) == 1
+        s = stats[0]
+        assert s.signature == "repair:core:*"
+        assert s.sessions_30d == 1  # only ep-recent
+        assert s.verified_success == 2  # both are verified success
+        assert s.last_session_at == ten_days_ago  # max(created_at)
+
+    def test_verified_counts(self, tmp_path):
+        db = str(tmp_path / "test.db")
+        _seed_session_outcomes(
+            db,
+            [
+                (
+                    "ep1",
+                    "repair:a:*",
+                    "repair",
+                    "x",
+                    "{}",
+                    "",
+                    "2026-07-01T00:00:00Z",
+                    "success",
+                    "T",
+                    "s",
+                    None,
+                    None,
+                    None,
+                ),
+                (
+                    "ep2",
+                    "repair:a:*",
+                    "repair",
+                    "x",
+                    "{}",
+                    "",
+                    "2026-07-01T00:00:00Z",
+                    "success",
+                    "T",
+                    "s",
+                    None,
+                    None,
+                    None,
+                ),
+                (
+                    "ep3",
+                    "repair:a:*",
+                    "repair",
+                    "x",
+                    "{}",
+                    "",
+                    "2026-07-01T00:00:00Z",
+                    "failure",
+                    "T",
+                    "s",
+                    None,
+                    None,
+                    None,
+                ),
+                (
+                    "ep4",
+                    "repair:a:*",
+                    "repair",
+                    "x",
+                    "{}",
+                    "",
+                    "2026-07-01T00:00:00Z",
+                    "pending",
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                ),
+                (
+                    "ep5",
+                    "repair:a:*",
+                    "repair",
+                    "x",
+                    "{}",
+                    "",
+                    "2026-07-01T00:00:00Z",
+                    "unverified",
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                ),
+            ],
+        )
+        report = analyze_local_runbooks(db)
+        s = report.signature_stats[0]
+        assert s.verified_success == 2
+        assert s.verified_failure == 1
+        assert s.pending == 1
+        assert s.unverified == 1
+
+    def test_wildcard_seed_matches(self, tmp_path):
+        """A seed with wildcard matches a session signature; most specific seed wins."""
+        db = str(tmp_path / "test.db")
+        _seed_session_outcomes(
+            db,
+            [
+                (
+                    "ep1",
+                    "update:addon:mosquitto",
+                    "update",
+                    "x",
+                    "{}",
+                    "",
+                    "2026-07-01T00:00:00Z",
+                    "success",
+                    "T",
+                    "s",
+                    None,
+                    None,
+                    None,
+                ),
+            ],
+        )
+        _seed_db(
+            db,
+            [
+                # Less specific: update:addon:*
+                {
+                    "id": "s1",
+                    "title": "Addon update seed",
+                    "runbook_state": "seed",
+                    "signature": "update:addon:*",
+                    "approach": "Check addon docs",
+                },
+                # More specific: update:addon:mosquitto
+                {
+                    "id": "s2",
+                    "title": "Mosquitto update seed",
+                    "runbook_state": "seed",
+                    "signature": "update:addon:mosquitto",
+                    "approach": "Restart mosquitto",
+                },
+            ],
+        )
+        report = analyze_local_runbooks(db)
+        s = report.signature_stats[0]
+        assert s.matched_seed == "Mosquitto update seed"
+
+    def test_validated_preferred_over_candidate(self, tmp_path):
+        db = str(tmp_path / "test.db")
+        _seed_session_outcomes(
+            db,
+            [
+                (
+                    "ep1",
+                    "repair:x:*",
+                    "repair",
+                    "x",
+                    "{}",
+                    "",
+                    "2026-07-01T00:00:00Z",
+                    "success",
+                    "T",
+                    "s",
+                    None,
+                    None,
+                    None,
+                ),
+            ],
+        )
+        _seed_db(
+            db,
+            [
+                {
+                    "id": "c1",
+                    "title": "Candidate runbook",
+                    "runbook_state": "candidate",
+                    "signature": "repair:x:*",
+                    "approach": "Try A",
+                },
+                {
+                    "id": "v1",
+                    "title": "Validated runbook",
+                    "runbook_state": "validated",
+                    "signature": "repair:x:*",
+                    "approach": "Try B",
+                },
+            ],
+        )
+        report = analyze_local_runbooks(db)
+        s = report.signature_stats[0]
+        assert s.learned_state is not None
+        assert s.learned_state.startswith("validated")
+        assert "Validated runbook" in s.learned_state
+
+    def test_procedure_note_count(self, tmp_path):
+        db = str(tmp_path / "test.db")
+        _seed_session_outcomes(
+            db,
+            [
+                (
+                    "ep1",
+                    "repair:y:startup_failed",
+                    "repair",
+                    "x",
+                    "{}",
+                    "",
+                    "2026-07-01T00:00:00Z",
+                    "success",
+                    "T",
+                    "s",
+                    None,
+                    None,
+                    None,
+                ),
+            ],
+        )
+        _seed_db(
+            db,
+            [
+                {
+                    "id": "r1",
+                    "title": "Runbook with notes",
+                    "runbook_state": "candidate",
+                    "signature": "repair:y:*",
+                    "approach": (
+                        "## When to use\nFix Y\n\n"
+                        "## Procedure notes\n"
+                        "- Step 1 worked\n"
+                        "- Step 2 failed\n"
+                    ),
+                },
+            ],
+        )
+        report = analyze_local_runbooks(db)
+        s = report.signature_stats[0]
+        assert s.signature == "repair:y:startup_failed"
+        assert s.learned_state == "candidate: Runbook with notes"
+        assert s.procedure_notes == 2
+
+    def test_procedure_note_count_no_section(self, tmp_path):
+        db = str(tmp_path / "test.db")
+        _seed_session_outcomes(
+            db,
+            [
+                (
+                    "ep1",
+                    "repair:y2:*",
+                    "repair",
+                    "x",
+                    "{}",
+                    "",
+                    "2026-07-01T00:00:00Z",
+                    "success",
+                    "T",
+                    "s",
+                    None,
+                    None,
+                    None,
+                ),
+            ],
+        )
+        _seed_db(
+            db,
+            [
+                {
+                    "id": "r2",
+                    "title": "No notes",
+                    "runbook_state": "candidate",
+                    "signature": "repair:y2:*",
+                    "approach": "## When to use\nFix Y2",
+                },
+            ],
+        )
+        report = analyze_local_runbooks(db)
+        s = report.signature_stats[0]
+        assert s.procedure_notes == 0
+
+    def test_procedure_notes_follow_most_specific_learned(self, tmp_path):
+        """Notes come from the selected learned runbook, not the broader one."""
+        db = str(tmp_path / "test.db")
+        _seed_session_outcomes(
+            db,
+            [
+                (
+                    "ep1",
+                    "repair:q:startup_failed",
+                    "repair",
+                    "x",
+                    "{}",
+                    "",
+                    "2026-07-01T00:00:00Z",
+                    "success",
+                    "T",
+                    "s",
+                    None,
+                    None,
+                    None,
+                ),
+            ],
+        )
+        _seed_db(
+            db,
+            [
+                {
+                    "id": "broad",
+                    "title": "Broad",
+                    "runbook_state": "candidate",
+                    "signature": "repair:q:*",
+                    "approach": "## Procedure notes\n- a\n- b\n- c\n",
+                },
+                {
+                    "id": "narrow",
+                    "title": "Narrow",
+                    "runbook_state": "candidate",
+                    "signature": "repair:q:startup_failed",
+                    "approach": "## Procedure notes\n- only one\n",
+                },
+            ],
+        )
+        report = analyze_local_runbooks(db)
+        s = report.signature_stats[0]
+        assert s.learned_state == "candidate: Narrow"
+        assert s.procedure_notes == 1
+
+    def test_instance_facts_count(self, tmp_path):
+        db = str(tmp_path / "test.db")
+        _seed_session_outcomes(
+            db,
+            [
+                (
+                    "ep1",
+                    "repair:z:*",
+                    "repair",
+                    "x",
+                    "{}",
+                    "",
+                    "2026-07-01T00:00:00Z",
+                    "success",
+                    "T",
+                    "s",
+                    None,
+                    None,
+                    None,
+                ),
+            ],
+        )
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO agent_memory (key, content, source, ts, signature)"
+                " VALUES (?, ?, ?, ?, ?)",
+                ("f1", "fact A", "distill:ep1", 1000.0, "repair:z:*"),
+            )
+            conn.execute(
+                "INSERT INTO agent_memory (key, content, source, ts, signature)"
+                " VALUES (?, ?, ?, ?, ?)",
+                ("f2", "fact B", "distill:ep1", 1000.0, "repair:z:*"),
+            )
+            conn.execute(
+                "INSERT INTO agent_memory (key, content, source, ts, signature)"
+                " VALUES (?, ?, ?, ?, ?)",
+                ("f3", "fact C", "distill:ep2", 2000.0, "repair:other:*"),
+            )
+            conn.commit()
+        report = analyze_local_runbooks(db)
+        s = report.signature_stats[0]
+        assert s.instance_facts == 2
+
+    def test_last_used_at(self, tmp_path):
+        db = str(tmp_path / "test.db")
+        _seed_session_outcomes(
+            db,
+            [
+                (
+                    "ep1",
+                    "repair:w:*",
+                    "repair",
+                    "x",
+                    "{}",
+                    "",
+                    "2026-07-01T00:00:00Z",
+                    "success",
+                    "T",
+                    "s",
+                    None,
+                    None,
+                    None,
+                ),
+            ],
+        )
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO runbook_usage (strategy_id, episode_id, signature, outcome, created_at)"
+                " VALUES (?, ?, ?, ?, ?)",
+                ("s1", "ep1", "repair:w:*", "success", "2026-07-05T12:00:00Z"),
+            )
+            conn.commit()
+        report = analyze_local_runbooks(db)
+        s = report.signature_stats[0]
+        assert s.last_used_at == "2026-07-05T12:00:00Z"
+
+    def test_unmatched_seed_listed(self, tmp_path):
+        db = str(tmp_path / "test.db")
+        _seed_session_outcomes(
+            db,
+            [
+                (
+                    "ep1",
+                    "repair:core:*",
+                    "repair",
+                    "x",
+                    "{}",
+                    "",
+                    "2026-07-01T00:00:00Z",
+                    "success",
+                    "T",
+                    "s",
+                    None,
+                    None,
+                    None,
+                ),
+            ],
+        )
+        _seed_db(
+            db,
+            [
+                {
+                    "id": "s1",
+                    "title": "Matched seed",
+                    "runbook_state": "seed",
+                    "signature": "repair:core:*",
+                    "approach": "Fix core",
+                },
+                {
+                    "id": "s2",
+                    "title": "Unmatched seed",
+                    "runbook_state": "seed",
+                    "signature": "update:hacs:*",
+                    "approach": "Check hacs",
+                },
+            ],
+        )
+        report = analyze_local_runbooks(db)
+        unmatched_ids = {r.id for r in report.unmatched_seeds}
+        assert "s1" not in unmatched_ids
+        assert "s2" in unmatched_ids
+
+    def test_missing_tables_degrade_empty(self, tmp_path):
+        """Older schema DB with no session_outcomes/agent_memory/runbook_usage tables."""
+        db = str(tmp_path / "test.db")
+        # Create ONLY agent_strategies — no session_outcomes, agent_memory, or runbook_usage.
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS agent_strategies ("
+                " id TEXT PRIMARY KEY, title TEXT NOT NULL, trigger_pattern TEXT NOT NULL DEFAULT '',"
+                " approach TEXT NOT NULL DEFAULT '', runbook_state TEXT NOT NULL DEFAULT 'candidate',"
+                " created_at TEXT NOT NULL, reviewed_at TEXT, promoted_at TEXT,"
+                " contributed_at TEXT, kb_pr_url TEXT, signature TEXT, version INTEGER DEFAULT 1"
+                ")"
+            )
+            conn.execute(
+                "INSERT INTO agent_strategies (id, title, trigger_pattern, approach, runbook_state, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                ("r1", "test", "", "", "candidate", "2026-09-01T00:00:00"),
+            )
+            conn.commit()
+        report = analyze_local_runbooks(db)
+        assert report.signature_stats == []
+        assert report.unmatched_seeds == []
+        assert len(report.candidates) == 1
