@@ -1223,6 +1223,34 @@ class TestHAUpdateManagerConfig:
 
         assert config.KNOWN_ISSUE_REMINDER_DAYS == 14
 
+    def test_device_recurrence_count_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.DEVICE_RECURRENCE_COUNT == 3
+
+    def test_device_recurrence_count_from_yaml(self, isolated_config):
+        isolated_config.write_text(yaml.dump({"agent": {"device_recurrence_count": 5}}))
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.DEVICE_RECURRENCE_COUNT == 5
+
+    def test_device_recurrence_window_days_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.DEVICE_RECURRENCE_WINDOW_DAYS == 14
+
+    def test_device_recurrence_window_days_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump({"agent": {"device_recurrence_window_days": 7}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.DEVICE_RECURRENCE_WINDOW_DAYS == 7
+
     def test_disk_usage_poll_interval_default(self, isolated_config):
         importlib.reload(sys.modules["config"])
         import config

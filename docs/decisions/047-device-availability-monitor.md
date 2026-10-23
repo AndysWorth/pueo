@@ -121,18 +121,47 @@ vendor-cloud cause from a local-network cause using `fetch_url` and sibling devi
 - The snapshot uses `user_prefs` JSON; no migration is needed. Rollback is a commit
   revert; disabling via `device_availability_enabled: false` also silences the loop.
 
+### Recurrence tracking (amended 2026-10-23)
+
+Per-device episode history is stored in `user_prefs` under key
+`device_availability:episodes` (a separate JSON blob, no migration needed).  Each
+episode records `{offline_at, recovered_at, self_recovered, investigated}`.  Only
+the last 30 days of episodes are retained.
+
+**Self-recovery detection:** on each recovery, `was_card_actioned()` checks whether
+the offline card was ever approved by a human.  If not, the device recovered on its
+own (`self_recovered=True`).
+
+**Deterministic fact generation:** after each self-recovery, `build_recurrence_fact()`
+produces a human-readable summary (e.g. "GoogVision (dlna_dmr) went offline 3× in
+14 days, around 22:30, recovering on its own (avg 8 min)") and upserts it into
+`agent_memory` (`source='observed'`, signature `device:offline:<domain>`).  No LLM
+is involved.
+
+**Recurrence gate:** before submitting an investigation `WorkItem`, the poll checks
+whether ≥ `DEVICE_RECURRENCE_COUNT` (default 3) self-recovered episodes exist within
+`DEVICE_RECURRENCE_WINDOW_DAYS` (default 14) for any device in the finding.  If so:
+- A `device_recurring` card is sent once (dedup via `should_send_card`).
+- The card offers two buttons: **Expected — stop investigating** (marks the device
+  as a Known Issue via `mark_card_acknowledged`) and **Keep watching** (defers the
+  card for 30 days).
+- Known-issue devices log a timeline note on each future occurrence and nothing else.
+
 ---
 
 ## Files
 
-- `utils/ha/device_availability.py` — pure evaluator + snapshot + poll loop
+- `utils/ha/device_availability.py` — pure evaluator + snapshot + episode tracking + poll loop
 - `utils/ha/device_availability_investigation.py` — `AgentLoop` investigation
 - `utils/agent/tool_registry.py` — `build_device_availability_tool_registry()`
-- `utils/hitl/card_types.py` — `CARD_TYPE_DEVICE_OFFLINE`
+- `utils/hitl/card_types.py` — `CARD_TYPE_DEVICE_OFFLINE`, `CARD_TYPE_DEVICE_RECURRING`
+- `utils/hitl/hitl_tracker.py` — `was_card_actioned()`
 - `utils/knowledge/runbook_signature.py` — `sig_device_availability()`
 - `utils/knowledge/strategy_seeder.py` — seed registration
 - `prompts/agent_loop_device_availability.md`
 - `prompts/seed_device_offline.md`
-- `config.py`, `config.yaml.default`, `setup.sh` — two new config keys
+- `config.py`, `config.yaml.default`, `setup.sh` — `DEVICE_RECURRENCE_COUNT`, `DEVICE_RECURRENCE_WINDOW_DAYS`
 - `main.py` — supervisor wiring
+- `web/dashboard.py` — `/keep-watching/` endpoint, `device_recurring` approve handler
+- `web/templates/index.html` — `device_recurring` card rendering
 - `tests/test_device_availability.py`

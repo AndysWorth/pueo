@@ -53,6 +53,7 @@ from utils.hitl.card_types import (
     CARD_TYPE_SERVICE_CALL,
     CARD_TYPE_AUTOMATION_CREATE,
     CARD_TYPE_UPDATE,
+    CARD_TYPE_DEVICE_RECURRING,
 )
 
 log = get_logger("dashboard")
@@ -2319,6 +2320,22 @@ async def approve(nid: str, request: Request = None) -> RedirectResponse:  # typ
                     f"Executing: {payload.get('component', '')} → {_latest_version}",
                 )
 
+        if card_type == CARD_TYPE_DEVICE_RECURRING:
+            # "Expected — stop investigating": suppress as a Known Issue and dismiss.
+            suppression_key = payload.get("suppression_key", "")
+            device_name = payload.get("device_name", "device")
+            if suppression_key:
+                from utils.hitl.hitl_tracker import mark_card_acknowledged as _mk_ack
+
+                await asyncio.to_thread(
+                    _hitl_write,
+                    _mk_ack,
+                    suppression_key,
+                    f"{device_name} recurring offline — expected, stop investigating",
+                )
+            (watch_dir / f"{nid}.approved").touch()
+            return RedirectResponse(url="/queue", status_code=303)
+
         handler = _CARD_DISPATCH.get(card_type)
         if handler:
             (watch_dir / f"{nid}.in_progress").touch()
@@ -2574,6 +2591,25 @@ async def _execute_config_fixes(
         log.error("apply_fixes_pipeline_failed", nid=nid, error=str(exc))
     finally:
         in_progress.unlink(missing_ok=True)
+
+
+@app.post("/keep-watching/{nid}")
+async def keep_watching(nid: str) -> RedirectResponse:
+    """Device-recurring 'Keep watching' — defer the recurrence card for 30 days."""
+    from utils.hitl.hitl_tracker import mark_card_deferred
+
+    watch_dir = Path(NOTIFY_WATCH_DIR)
+    json_path = watch_dir / f"{nid}.json"
+    if json_path.exists() and _status(nid, watch_dir) == "PENDING":
+        (watch_dir / f"{nid}.deferred").touch()
+        (watch_dir / f"{nid}.rejected").touch()
+        data = json.loads(json_path.read_text())
+        suppression_key = data.get("payload", {}).get("suppression_key", "")
+        if suppression_key:
+            await asyncio.to_thread(
+                _hitl_write, mark_card_deferred, suppression_key, 30 * 24.0
+            )
+    return RedirectResponse(url="/queue", status_code=303)
 
 
 @app.post("/defer/{nid}")

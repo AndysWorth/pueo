@@ -148,7 +148,7 @@
       {% else %}
       {% set ct = r.payload.get("card_type", "") %}
       {% set has_fix = r.payload.get("pending_fix_yaml") %}
-      {% set is_actionable = ct in ("repair", "update", "netalertx_heal", "netalertx_setup", "netalertx_uninstall", "netalertx_migrate", "netalertx_switch", "resource_action", "disk_recovery", "code_proposal", "open_pr", "ha_repair", "cloud_escalation", "dashboard_entity", "unregistered_entity", "config_entry_reload", "ha_command", "service_call", "automation_create", "companion_setup") or (ct == "host_health" and not r.payload.get("informational")) or (ct == "device_offline" and r.payload.get("has_fix")) or has_fix %}
+      {% set is_actionable = ct in ("repair", "update", "netalertx_heal", "netalertx_setup", "netalertx_uninstall", "netalertx_migrate", "netalertx_switch", "resource_action", "disk_recovery", "code_proposal", "open_pr", "ha_repair", "cloud_escalation", "dashboard_entity", "unregistered_entity", "config_entry_reload", "ha_command", "service_call", "automation_create", "companion_setup", "device_recurring") or (ct == "host_health" and not r.payload.get("informational")) or (ct == "device_offline" and r.payload.get("has_fix")) or has_fix %}
       {% if ct == "repair" and r.payload.get("enrichment") %}
       {% set enr = r.payload.enrichment %}
       <div style="margin:0.75rem 0;">
@@ -480,12 +480,27 @@ trigger: {{ r.payload.get("trigger", []) | tojson(indent=2) }}
         {% elif ct == "device_offline" %}
           {% set hint_approve = "Reload the integration config entry via HA REST API to recover the offline device" %}
           {% set hint_reject = "Discard; integration stays in its current state" %}
+        {% elif ct == "device_recurring" %}
+          {% set hint_approve = "Mark as expected — suppress future investigations; Pueo will log each occurrence but not investigate" %}
+          {% set hint_reject = "Keep watching — re-ask after 30 days" %}
         {% else %}
           {% set hint_approve = "Execute this action" %}
           {% set hint_reject = "Discard; no changes made" %}
         {% endif %}
       {% set _sk = r.payload.get("suppression_key", "") %}
       {% set _rc = r.payload.get("_rejection_count", 0) %}
+      {% if ct == "device_recurring" %}
+      <p style="font-size:0.78rem;color:#666;margin-top:0.6rem;">
+        <strong style="color:#222;">Expected — stop investigating</strong> — {{ hint_approve }} &nbsp;·&nbsp;
+        <strong style="color:#222;">Keep watching</strong> — {{ hint_reject }}
+      </p>
+      <form method="POST" action="/approve/{{ r.notification_id }}">
+        <button class="btn btn-approve" type="submit">Expected — stop investigating</button>
+      </form>
+      <form method="POST" action="/keep-watching/{{ r.notification_id }}">
+        <button class="btn btn-defer" type="submit">Keep watching</button>
+      </form>
+      {% else %}
       <p style="font-size:0.78rem;color:#666;margin-top:0.6rem;">
         <strong style="color:#222;">Approve</strong> — {{ hint_approve }} &nbsp;·&nbsp;
         <strong style="color:#222;">Reject</strong> — {{ hint_reject }} &nbsp;·&nbsp;
@@ -541,6 +556,7 @@ trigger: {{ r.payload.get("trigger", []) | tojson(indent=2) }}
         <button class="btn" style="background:#6c757d;color:#fff;border:none;padding:0.35rem 0.9rem;border-radius:4px;cursor:pointer;font-size:0.875rem;" type="submit">Suppress (Known Issue)</button>
       </form>
       {% endif %}
+      {% endif %}{# end device_recurring else block #}
       {% if r.payload.get("episode_id") and r.payload.get("user_verdict") == "right" %}
       <p style="font-size:0.78rem;color:#2e7d32;margin:0.35rem 0 0;">✓ You marked Pueo's analysis as right</p>
       {% elif r.payload.get("episode_id") and r.payload.get("verification_question") %}

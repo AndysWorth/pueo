@@ -9,10 +9,16 @@ Arming rule: a device only alerts if Pueo has previously seen it online
 (``last_online_ts`` present in the snapshot).  Devices that are already offline
 on the first run (seasonal, unplugged, Christmas lights …) never alert until they
 come back at least once.
+
+Recurrence: per-device episode history is stored in the snapshot JSON alongside
+DeviceState fields (no DB migration needed).  After DEVICE_RECURRENCE_COUNT
+self-recoveries within DEVICE_RECURRENCE_WINDOW_DAYS, Pueo sends one
+``device_recurring`` card instead of launching another investigation.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import time
@@ -317,6 +323,160 @@ def save_snapshot(conn: sqlite3.Connection, snapshot: dict) -> None:
 
 
 # ------------------------------------------------------------------
+# Recurrence tracking (pure — no I/O)
+# ------------------------------------------------------------------
+
+_RECURRENCE_KEY = "device_availability:episodes"
+_EPISODE_RETENTION_DAYS = 30
+
+
+def record_episode(
+    episodes: dict,
+    device_id: str,
+    offline_at: float,
+    recovered_at: float,
+    self_recovered: bool,
+    investigated: bool,
+) -> dict:
+    """Return updated episodes dict with the new episode appended.
+
+    Keeps only episodes within _EPISODE_RETENTION_DAYS of recovered_at.
+    episodes maps device_id → list of {offline_at, recovered_at,
+    self_recovered, investigated}.
+    """
+    cutoff = recovered_at - _EPISODE_RETENTION_DAYS * 86400
+    history = [
+        e for e in episodes.get(device_id, []) if e.get("recovered_at", 0) >= cutoff
+    ]
+    history.append(
+        {
+            "offline_at": offline_at,
+            "recovered_at": recovered_at,
+            "self_recovered": self_recovered,
+            "investigated": investigated,
+        }
+    )
+    return {**episodes, device_id: history}
+
+
+def count_self_recovered_in_window(
+    episodes: dict,
+    device_id: str,
+    now: float,
+    window_days: int,
+) -> int:
+    """Count self-recovered episodes for device_id within window_days of now."""
+    cutoff = now - window_days * 86400
+    return sum(
+        1
+        for e in episodes.get(device_id, [])
+        if e.get("self_recovered") and e.get("recovered_at", 0) >= cutoff
+    )
+
+
+def build_recurrence_fact(
+    device_name: str,
+    domain: str,
+    episodes: dict,
+    device_id: str,
+    now: float,
+    window_days: int,
+) -> str:
+    """Return a human-readable fact string for agent_memory."""
+    recent = [
+        e
+        for e in episodes.get(device_id, [])
+        if e.get("self_recovered")
+        and e.get("recovered_at", 0) >= now - window_days * 86400
+    ]
+    count = len(recent)
+    if count == 0:
+        return ""
+    # Build time range description
+    offline_times = [e["offline_at"] for e in recent if e.get("offline_at")]
+    recovered_times = [e["recovered_at"] for e in recent if e.get("recovered_at")]
+    if offline_times and recovered_times:
+        import datetime
+
+        def _hm(ts: float) -> str:
+            return datetime.datetime.fromtimestamp(ts).strftime("%H:%M")
+
+        earliest = min(offline_times)
+        latest = max(offline_times)
+        if len(set(_hm(t) for t in offline_times)) == 1:
+            time_range = f"around {_hm(offline_times[0])}"
+        else:
+            time_range = f"between {_hm(earliest)} and {_hm(latest)}"
+        avg_duration = int(
+            sum(r - o for o, r in zip(sorted(offline_times), sorted(recovered_times)))
+            / count
+            / 60
+        )
+        return (
+            f"{device_name} ({domain}) went offline {count}× in {window_days} days,"
+            f" {time_range}, recovering on its own (avg {avg_duration} min)."
+        )
+    return (
+        f"{device_name} ({domain}) went offline {count}× in {window_days} days,"
+        " self-recovering each time."
+    )
+
+
+def load_episodes(conn: sqlite3.Connection) -> dict:
+    """Load the per-device episode history from user_prefs.  Returns {} if absent."""
+    try:
+        row = conn.execute(
+            "SELECT value FROM user_prefs WHERE key = ?", (_RECURRENCE_KEY,)
+        ).fetchone()
+        if row:
+            return json.loads(row[0])
+    except Exception as e:  # nosec B110
+        log.warning("device_episodes_load_failed", error=str(e))
+    return {}
+
+
+def save_episodes(conn: sqlite3.Connection, episodes: dict) -> None:
+    """Persist per-device episode history to user_prefs."""
+    try:
+        conn.execute(
+            "INSERT INTO user_prefs (key, value) VALUES (?, ?)"
+            " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (_RECURRENCE_KEY, json.dumps(episodes)),
+        )
+        conn.commit()
+    except Exception as e:  # nosec B110
+        log.warning("device_episodes_save_failed", error=str(e))
+
+
+def upsert_recurrence_fact(
+    db_path: str,
+    device_id: str,
+    fact: str,
+    domain: str,
+) -> None:
+    """Write or update one agent_memory fact for a recurring device."""
+    if not fact:
+        return
+    signature = f"device:offline:{domain}"
+    key = "fact_" + hashlib.sha256(f"{device_id}:recurrence".encode()).hexdigest()[:12]
+    now = time.time()
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "DELETE FROM agent_memory WHERE key = ? AND signature = ?",
+                (key, signature),
+            )
+            conn.execute(
+                "INSERT INTO agent_memory (key, content, source, ts, signature)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (key, fact, "observed", now, signature),
+            )
+            conn.commit()
+    except Exception as e:  # nosec B110
+        log.warning("upsert_recurrence_fact_failed", error=str(e))
+
+
+# ------------------------------------------------------------------
 # Investigation stub (replaced by the real implementation in S3)
 # ------------------------------------------------------------------
 
@@ -377,10 +537,14 @@ async def poll_device_availability(
     )
     from utils.core.timeline import write_timeline_event
     from utils.ha.ha_ws_client import HAWebSocketClient
-    from utils.hitl.card_types import CARD_TYPE_DEVICE_OFFLINE
+    from utils.hitl.card_types import (
+        CARD_TYPE_DEVICE_OFFLINE,
+        CARD_TYPE_DEVICE_RECURRING,
+    )
     from utils.hitl.hitl_tracker import (
         mark_card_resolved,
         should_send_card,
+        was_card_actioned,
     )
     from utils.hitl.notify import get_notifier
 
@@ -491,6 +655,79 @@ async def poll_device_availability(
                     offline_minutes=offline_minutes,
                 )
 
+                # Recurrence gate — check before submitting an investigation.
+                with sqlite3.connect(_db) as conn:
+                    episodes_blob = load_episodes(conn)
+                _recurrence_triggered = False
+                for _dev in finding.devices:
+                    _dev_id = _dev["device_id"]
+                    _self_count = count_self_recovered_in_window(
+                        episodes_blob,
+                        _dev_id,
+                        now,
+                        _cfg.DEVICE_RECURRENCE_WINDOW_DAYS,
+                    )
+                    if _self_count >= _cfg.DEVICE_RECURRENCE_COUNT:
+                        _recurrence_triggered = True
+                        _recurring_device = _dev
+                        _recurring_count = _self_count
+                        break
+
+                if _recurrence_triggered:
+                    _rec_card_key = f"device_recurring:{_recurring_device['device_id']}"
+                    with sqlite3.connect(_db) as conn:
+                        _can_send_recurring = should_send_card(conn, _rec_card_key)
+                    if _can_send_recurring:
+                        _rec_name = _recurring_device["name"]
+                        _rec_msg = (
+                            f"{_rec_name} ({finding.domain}) has gone offline and"
+                            f" self-recovered {_recurring_count}× in"
+                            f" {_cfg.DEVICE_RECURRENCE_WINDOW_DAYS} days."
+                            " No investigation launched."
+                        )
+                        await asyncio.to_thread(
+                            write_timeline_event,
+                            "INFO",
+                            "device_availability_poll",
+                            _rec_msg,
+                            {
+                                "config_entry_id": finding.config_entry_id,
+                                "domain": finding.domain,
+                                "device_id": _recurring_device["device_id"],
+                                "recurrence_count": _recurring_count,
+                            },
+                        )
+                        log.info(
+                            "device_recurrence_triggered",
+                            device=_rec_name,
+                            domain=finding.domain,
+                            count=_recurring_count,
+                        )
+                        from utils.hitl.hitl_tracker import stable_nid
+
+                        _rec_nid = stable_nid(_rec_card_key)
+                        await _notifier.send(
+                            subject=f"Pueo: recurring device — {_rec_name}",
+                            body=_rec_msg,
+                            payload={
+                                "notification_id": _rec_nid,
+                                "card_type": CARD_TYPE_DEVICE_RECURRING,
+                                "suppression_key": _rec_card_key,
+                                "device_id": _recurring_device["device_id"],
+                                "device_name": _rec_name,
+                                "domain": finding.domain,
+                                "config_entry_id": finding.config_entry_id,
+                                "recurrence_count": _recurring_count,
+                                "window_days": _cfg.DEVICE_RECURRENCE_WINDOW_DAYS,
+                            },
+                        )
+                    else:
+                        log.info(
+                            "device_recurrence_card_suppressed",
+                            config_entry_id=finding.config_entry_id,
+                        )
+                    continue
+
                 _finding = finding
                 _db_ref = _db
                 _notifier_ref = _notifier
@@ -573,7 +810,44 @@ async def poll_device_availability(
                     },
                 )
 
+                # Determine self-recovery: no human approved the offline card.
                 with sqlite3.connect(_db) as conn:
+                    _actioned = was_card_actioned(conn, card_key)
+                    _episodes_blob = load_episodes(conn)
+
+                _self_recovered = not _actioned
+                _updated_episodes = _episodes_blob
+                for _dev in finding.devices:
+                    _dev_id = _dev["device_id"]
+                    _offline_at = _dev.get("offline_since") or oldest_offline_since
+                    _updated_episodes = record_episode(
+                        _updated_episodes,
+                        _dev_id,
+                        offline_at=_offline_at,
+                        recovered_at=now,
+                        self_recovered=_self_recovered,
+                        investigated=not _self_recovered,
+                    )
+                    if _self_recovered:
+                        _fact = build_recurrence_fact(
+                            _dev["name"],
+                            finding.domain,
+                            _updated_episodes,
+                            _dev_id,
+                            now,
+                            _cfg.DEVICE_RECURRENCE_WINDOW_DAYS,
+                        )
+                        if _fact:
+                            await asyncio.to_thread(
+                                upsert_recurrence_fact,
+                                _db,
+                                _dev_id,
+                                _fact,
+                                finding.domain,
+                            )
+
+                with sqlite3.connect(_db) as conn:
+                    save_episodes(conn, _updated_episodes)
                     mark_card_resolved(conn, card_key)
 
                 log.info(
@@ -582,6 +856,7 @@ async def poll_device_availability(
                     domain=finding.domain,
                     devices=[d["name"] for d in finding.devices],
                     duration_minutes=duration_minutes,
+                    self_recovered=_self_recovered,
                 )
 
         except Exception as exc:
