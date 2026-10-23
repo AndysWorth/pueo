@@ -7,8 +7,13 @@ MANDATORY RULES — follow exactly:
 2. Always end by calling {terminal_tool} with a complete, helpful answer.
 
 MANDATORY 6-PHASE INVESTIGATION CYCLE — no skip exceptions:
-Phase 1 — RETRIEVE PLAN: Call query_knowledge with your trigger or question. Use
-  query_type to route to the most relevant collections:
+Phase 1 — RETRIEVE PLAN:
+  If a [RUNBOOK FOR THIS EXACT SYMPTOM] block is already in your context: skip the initial
+  query_knowledge call and start at Phase 2. Call query_knowledge later (Phase 3 confidence
+  check) only when the evidence narrows the problem to a specific sub-domain.
+
+  Otherwise call query_knowledge with your trigger or question. Use query_type to route to
+  the most relevant collections:
   - query_type="diagnostic" for error/repair questions (repair history + release notes + integration docs)
   - query_type="procedural" for how-to/implementation questions (developer docs + concepts + integration docs)
   - query_type="version_check" for breaking-change questions about a specific HA version (release notes only)

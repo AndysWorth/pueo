@@ -2,7 +2,7 @@
 signature: device:offline:*
 ---
 
-# Device offline investigation — cloud-push integrations
+# Device offline investigation
 
 ## Triggers
 A device (or group of devices sharing a config entry) has been unavailable for longer than
@@ -32,6 +32,19 @@ myq, rachio, and any cloud-push integration that maintains a persistent connecti
 **Integration config entry error**:
 - `get_integration_diagnostics` shows a config entry in `failed_setup` or `setup_error` state.
 - Recommend `reload_integration` (gated) or re-authentication in HA UI.
+
+**Local / media devices** (TVs, Cast, DLNA, LIFX, androidtv, roku):
+- TVs and media players (Cast, DLNA, `androidtv`, `roku`) go unavailable when powered off or
+  asleep — this is **expected behaviour**, not a fault.
+- Wi-Fi bulbs (LIFX) show `No response from <ip> after 9 attempts` in the log when powered off
+  or out of range. Reload will not help if the device is physically absent.
+- Use `get_entity_history(entity_id=<entity>, hours=168)` (7 days) to detect a daily power-off
+  pattern. If the device goes offline every evening at a similar time, it is user-controlled
+  sleep — set `outcome="monitoring"`, not `outcome="needs_action"`.
+- Check NetAlertX presence before anything else: absent from LAN = physical/power issue;
+  present on LAN = integration or cast discovery fault.
+- `outcome="monitoring"` when the device self-recovers on a regular schedule. Note the pattern
+  (e.g. "offline 22:30–07:10 daily") in the summary so the user knows this is expected.
 
 ## Investigation steps
 

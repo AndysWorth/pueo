@@ -358,6 +358,9 @@ class ToolExecutor:
         self._query_knowledge_had_results: bool = False
         # Per-session runbook usage tracking: strategy_ids seen in pre-inject or query_knowledge
         self._injected_strategy_ids: set[str] = set()
+        # Chunk ids that were pre-injected into initial_context by AgentLoop.
+        # _query_knowledge replaces any of these with "(already in your context: <id>)".
+        self._pre_injected_chunk_ids: set[str] = set()
         # Declared by the model in a finish_* terminal tool call (strategy_id or "none")
         self._declared_runbook_id: Optional[str] = None
         # Episode ID for the current AgentLoop run (set via set_episode_id before each run)
@@ -383,6 +386,7 @@ class ToolExecutor:
         self._sandbox_output = ""
         self._query_knowledge_had_results = False
         self._injected_strategy_ids = set()
+        self._pre_injected_chunk_ids = set()
         self._declared_runbook_id = None
         self._episode_id = ""
         self._session_signature = ""
@@ -1247,11 +1251,19 @@ class ToolExecutor:
         other_chunks = [c for c in chunks if c.collection != "strategies"]
         ordered = runbook_chunks + other_chunks
 
-        output = "\n\n".join(
-            f"{self._knowledge_authority_label(c.collection, c.metadata, getattr(c, 'chunk_id', ''))} "
-            f"[{c.collection} | {c.source}]\n{c.text}"
-            for c in ordered
-        )
+        # Replace chunks that were already pre-injected into initial_context so the model
+        # isn't asked to read the same runbook twice (S2 dedup).
+        parts: list[str] = []
+        for c in ordered:
+            cid = getattr(c, "chunk_id", "")
+            if cid and cid in self._pre_injected_chunk_ids:
+                parts.append(f"(already in your context: {cid})")
+            else:
+                parts.append(
+                    f"{self._knowledge_authority_label(c.collection, c.metadata, cid)} "
+                    f"[{c.collection} | {c.source}]\n{c.text}"
+                )
+        output = "\n\n".join(parts)
         return ToolResult(tool_name="query_knowledge", success=True, output=output)
 
     # ------------------------------------------------------------------

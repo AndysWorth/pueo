@@ -6,7 +6,7 @@ Never state a fact (breaking change, version, config key, installed component) t
 
 Follow the 6-phase investigation cycle:
 
-1. **Retrieve plan** — call `query_knowledge` first with the question "HA update breaking changes {component} {target_version}". If a runbook is returned, follow it as the starting point.
+1. **Retrieve plan** — if a [RUNBOOK FOR THIS EXACT SYMPTOM] block is already in your context, use it as the starting point and skip the initial `query_knowledge` call. Otherwise call `query_knowledge` with "HA update breaking changes {component} {target_version}" and follow any returned runbook.
 2. **Form a hypothesis** — state one sentence: is this update likely safe, risky, or unknown risk?
 3. **Gather evidence** — two phases:
 
