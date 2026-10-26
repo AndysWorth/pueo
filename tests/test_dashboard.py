@@ -9588,6 +9588,39 @@ class TestRunbooksTab:
         assert resp.status_code == 200
         assert "No agent sessions recorded yet." in resp.text
 
+    def test_tool_quirks_table_renders(self, db_path):
+        import json
+        import sqlite3
+
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        quirks = [
+            {
+                "tool": "get_integration_diagnostics",
+                "kind": "failed",
+                "detail": "cast does not provide diagnostics (HTTP 404)",
+                "example": "get_integration_diagnostics(cast)",
+                "count": 3,
+                "signatures": ["device:offline:cast"],
+                "last_seen": "2026-10-26T10:00:00Z",
+            },
+            {"tool": "search_integrations", "kind": "empty", "count": 1},
+        ]
+        with sqlite3.connect(db_path) as conn:
+            for i, q in enumerate(quirks):
+                conn.execute(
+                    "INSERT INTO user_prefs (key, value) VALUES (?, ?)",
+                    (f"procedure_quirk:{i}", json.dumps(q)),
+                )
+        resp = TestClient(dashboard.app).get("/runbooks")
+
+        assert resp.status_code == 200
+        assert "Recurring tool quirks (2)" in resp.text
+        assert "cast does not provide diagnostics (HTTP 404)" in resp.text
+        assert "returned no results" in resp.text
+        assert "2026-10-26" in resp.text
+
     def test_dev_mode_off_returns_404(self, db_path, monkeypatch):
         import web.dashboard as dashboard
         from fastapi.testclient import TestClient

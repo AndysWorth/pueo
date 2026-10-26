@@ -1101,3 +1101,68 @@ class TestSignatureStats:
         assert report.signature_stats == []
         assert report.unmatched_seeds == []
         assert len(report.candidates) == 1
+
+
+# ── Tool quirks (#991) ─────────────────────────────────────────────────────────
+
+
+def _quirk_db(tmp_path, values):
+    import json
+
+    db = str(tmp_path / "quirks.db")
+    _seed_db(db, [])
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS user_prefs (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+        )
+        for i, v in enumerate(values):
+            conn.execute(
+                "INSERT INTO user_prefs (key, value) VALUES (?, ?)",
+                (f"procedure_quirk:{i}", v if isinstance(v, str) else json.dumps(v)),
+            )
+        conn.execute("INSERT INTO user_prefs (key, value) VALUES ('other', '{}')")
+    return db
+
+
+class TestToolQuirks:
+    def test_sorted_by_count_then_breadth_and_capped(self, tmp_path):
+        from utils.knowledge.kb_meta_analyzer import _load_tool_quirks
+
+        db = _quirk_db(
+            tmp_path,
+            [
+                {
+                    "tool": "a",
+                    "kind": "failed",
+                    "detail": "x",
+                    "count": 2,
+                    "signatures": ["s1"],
+                },
+                {"tool": "b", "kind": "empty", "count": 5, "signatures": ["s1"]},
+                {
+                    "tool": "c",
+                    "count": 2,
+                    "signatures": ["s1", "s2"],
+                    "last_seen": "2026-10-26T00:00:00Z",
+                },
+                "not json",
+                {"count": 9},  # no tool
+            ],
+        )
+        quirks = _load_tool_quirks(db)
+        assert [q.tool for q in quirks] == ["b", "c", "a"]
+        assert quirks[1].kind == "failed"  # default
+        assert quirks[1].last_seen == "2026-10-26T00:00:00Z"
+        assert [q.tool for q in _load_tool_quirks(db, limit=1)] == ["b"]
+
+    def test_missing_table_returns_empty(self, tmp_path):
+        from utils.knowledge.kb_meta_analyzer import _load_tool_quirks
+
+        db = str(tmp_path / "empty.db")
+        _seed_db(db, [])
+        assert _load_tool_quirks(db) == []
+
+    def test_report_includes_quirks(self, tmp_path):
+        db = _quirk_db(tmp_path, [{"tool": "fetch_url", "detail": "404", "count": 1}])
+        report = analyze_local_runbooks(db)
+        assert [q.tool for q in report.tool_quirks] == ["fetch_url"]

@@ -80,6 +80,29 @@
   </table>
   </div>
 {% endif %}
+{% if report.tool_quirks %}
+<details style="margin:0.5rem 0;" open>
+  <summary class="rb-meta" style="cursor:pointer;">Recurring tool quirks ({{ report.tool_quirks | length }}) — fix these in the tool, not the runbook</summary>
+  <table class="rb-quirks" style="width:100%;border-collapse:collapse;font-size:0.8rem;margin-top:0.3rem;">
+    <thead>
+      <tr style="text-align:left;color:#555;border-bottom:1px solid #ddd;">
+        <th>Tool</th><th>Problem</th><th>Sessions</th><th>Signatures</th><th>Last seen</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for q in report.tool_quirks %}
+      <tr style="border-bottom:1px solid #eee;">
+        <td style="font-family:monospace;" title="{{ q.example }}">{{ q.tool }}</td>
+        <td>{% if q.kind == "empty" %}returned no results{% else %}{{ q.detail }}{% endif %}</td>
+        <td>{{ q.count }}</td>
+        <td style="font-family:monospace;">{{ q.signatures | join(", ") }}</td>
+        <td>{{ q.last_seen[:10] if q.last_seen else "—" }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</details>
+{% endif %}
 {% if report.unmatched_seeds %}
 <details style="margin:0.5rem 0 1rem;">
   <summary class="rb-meta" style="cursor:pointer;">Seeds never matched ({{ report.unmatched_seeds | length }})</summary>

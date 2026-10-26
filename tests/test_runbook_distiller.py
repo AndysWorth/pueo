@@ -1802,3 +1802,386 @@ class TestEnqueueProceduralDistillation:
             )
         )
         assert result is True
+
+
+# ---------------------------------------------------------------------------
+# Relaxed lesson grounding, deterministic extractor, tool quirks (#991)
+# ---------------------------------------------------------------------------
+
+
+def _step(name, n, args=None, output="ok", success=True, error=None, awaiting=False):
+    from utils.agent.tool_registry import AgentStep, ToolCall, ToolResult
+
+    return AgentStep(
+        step_number=n,
+        tool_call=ToolCall(name=name, arguments=args or {}),
+        tool_result=ToolResult(
+            tool_name=name,
+            success=success,
+            output=output,
+            error=error,
+            awaiting_approval=awaiting,
+        ),
+        timestamp=0.0,
+    )
+
+
+class TestLessonIsGrounded:
+    def _steps(self):
+        return [
+            _step("read_logs", 1, {"lines": 40}, output="ERROR noaa_coops traceback"),
+            _step("get_entity_history", 2, {"entity_id": "light.top", "hours": 48}),
+            _step("get_entity_history", 3, {"entity_id": "light.top", "hours": 48}),
+            _step(
+                "get_integration_diagnostics",
+                4,
+                {"domain_or_entry_id": "cast"},
+                output="",
+                success=False,
+                error="cast does not provide diagnostics (HTTP 404)",
+            ),
+            _step("finish_device_availability", 5, output=""),
+        ]
+
+    def test_meta_lesson_accepted_without_content_words(self):
+        from utils.knowledge.runbook_distiller import _lesson_is_grounded
+
+        steps = self._steps()
+        lesson = "Step 2 and step 3 were redundant: get_entity_history called 2x"
+        assert _lesson_is_grounded(lesson, steps[1], steps)
+
+    def test_step_reference_widens_evidence(self):
+        from utils.knowledge.runbook_distiller import _lesson_is_grounded
+
+        steps = self._steps()
+        # light.top lives in step 2's args; the lesson cites step 4 but mentions step 2.
+        lesson = "get_integration_diagnostics failed (404) after step 2 used light.top"
+        assert _lesson_is_grounded(lesson, steps[3], steps)
+        assert not _lesson_is_grounded(
+            "get_integration_diagnostics failed (404) for light.top", steps[3], steps
+        )
+
+    def test_lesson_naming_no_tool_rejected(self):
+        from utils.knowledge.runbook_distiller import _lesson_is_grounded
+
+        steps = self._steps()
+        assert not _lesson_is_grounded("Step 4 failed with 404", steps[3], steps)
+        assert not _lesson_is_grounded("", steps[3], steps)
+
+    def test_terminal_tool_does_not_count_as_named_tool(self):
+        from utils.knowledge.runbook_distiller import _lesson_is_grounded
+
+        steps = self._steps()
+        assert not _lesson_is_grounded(
+            "finish_device_availability returned EMPTY output", steps[4], steps
+        )
+
+    def test_invented_token_rejected(self):
+        from utils.knowledge.runbook_distiller import _lesson_is_grounded
+
+        steps = self._steps()
+        assert not _lesson_is_grounded(
+            "get_integration_diagnostics needs entry 01ABC", steps[3], steps
+        )
+
+    def test_log_reader_content_rejected_but_args_accepted(self):
+        from utils.knowledge.runbook_distiller import _lesson_is_grounded
+
+        steps = self._steps()
+        assert not _lesson_is_grounded(
+            "read_logs output contained a noaa_coops traceback", steps[0], steps
+        )
+        assert _lesson_is_grounded(
+            "read_logs with lines 40 returned unrelated tracebacks", steps[0], steps
+        )
+
+
+class TestExtractProcedureFacts:
+    def test_failure_with_httpx_noise_normalised(self):
+        from utils.knowledge.runbook_distiller import extract_procedure_facts
+
+        steps = [
+            _step(
+                "get_integration_diagnostics",
+                2,
+                {"domain_or_entry_id": "01JJ5506C3JCZNYTNHMPBZRD9T"},
+                output="",
+                success=False,
+                error=(
+                    "Diagnostics fetch failed: Client error '404 Not Found' for url "
+                    "'http://ha:8123/api/diagnostics/config_entry/01JJ5506C3JCZNYTNHMPBZRD9T'"
+                    "\nFor more information check: https://developer.mozilla.org/404"
+                ),
+            )
+        ]
+        notes = extract_procedure_facts(steps)
+        assert [n.lesson for n in notes] == [
+            "`get_integration_diagnostics(<id>)` failed: "
+            "Diagnostics fetch failed: HTTP 404 Not Found"
+        ]
+        assert notes[0].evidence_step == 2
+
+    def test_correction_recorded(self):
+        from utils.knowledge.runbook_distiller import extract_procedure_facts
+
+        steps = [
+            _step(
+                "get_entity_history",
+                2,
+                {"entity_id": "humidy", "hours": 24},
+                output="",
+                success=False,
+                error="history fetch failed: 400",
+            ),
+            _step(
+                "get_entity_history",
+                3,
+                {"entity_id": "humidifier.humidy", "hours": 24},
+                output="2026-10-26 unavailable",
+            ),
+        ]
+        (note,) = extract_procedure_facts(steps)
+        assert note.lesson == (
+            "`get_entity_history(entity_id=humidy, hours=24)` failed (history fetch "
+            "failed: 400); `get_entity_history(entity_id=humidifier.humidy, hours=24)` "
+            "worked"
+        )
+
+    def test_unrelated_command_is_not_a_correction(self):
+        from utils.knowledge.runbook_distiller import extract_procedure_facts
+
+        steps = [
+            _step(
+                "run_ha_command",
+                1,
+                {"command": "ha apps info netalertx_full_access"},
+                output="",
+                success=False,
+                error="exit 1: Error: App netalertx_full_access does not exist",
+            ),
+            _step("run_ha_command", 2, {"command": "ha apps list"}, output="apps"),
+            _step("search_integrations", 3, {"query": "x"}, output="Installed: x"),
+        ]
+        (note,) = extract_procedure_facts(steps)
+        assert note.lesson.endswith(
+            "failed: exit 1: Error: App netalertx_full_access does not exist"
+        )
+
+    def test_correction_requires_same_arg_names(self):
+        from utils.knowledge.runbook_distiller import _is_correction
+        from utils.agent.tool_registry import ToolCall
+
+        bad = ToolCall(name="t", arguments={"a": "x"})
+        assert not _is_correction(bad, ToolCall(name="t", arguments={"b": "x"}))
+        assert not _is_correction(bad, ToolCall(name="u", arguments={"a": "x.y"}))
+        assert not _is_correction(bad, ToolCall(name="t", arguments={"a": "x"}))
+        assert _is_correction(
+            ToolCall(name="t", arguments={"a": "x", "h": 1}),
+            ToolCall(name="t", arguments={"a": "d.x", "h": 1}),
+        )
+
+    def test_skips_environment_approval_terminal_and_empty_log_reads(self):
+        from utils.knowledge.runbook_distiller import extract_procedure_facts
+
+        steps = [
+            _step(
+                "get_logbook",
+                1,
+                output="",
+                success=False,
+                error="REST client not available",
+            ),
+            _step(
+                "reload_integration", 2, output="queued", success=False, awaiting=True
+            ),
+            _step("finish_device_availability", 3, output=""),
+            _step("search_log", 4, {"pattern": "tuya"}, output="(no matches)"),
+            _step("read_logs", 5, output=""),
+        ]
+        assert extract_procedure_facts(steps) == []
+
+    def test_empty_result_and_repeat_ordering(self):
+        from utils.knowledge.runbook_distiller import extract_procedure_facts
+
+        steps = [
+            _step(
+                "search_integrations",
+                1,
+                {"query": "top"},
+                output="No integration named 'top'",
+            ),
+            _step(
+                "get_entity_history",
+                2,
+                {"entity_id": "light.top", "reason": "a"},
+                output="data",
+            ),
+            _step(
+                "get_entity_history",
+                3,
+                {"entity_id": "light.top", "reason": "b"},
+                output="data",
+            ),
+            _step(
+                "fetch_url",
+                4,
+                {"url": "https://x"},
+                output="",
+                success=False,
+                error="HTTP Error 404: Not Found",
+            ),
+        ]
+        lessons = [n.lesson for n in extract_procedure_facts(steps)]
+        assert lessons == [
+            "`fetch_url(https://x)` failed: HTTP Error 404: Not Found",
+            "`get_entity_history(light.top)` was called 2× with identical arguments; "
+            "reuse the first result",
+            "`search_integrations(top)` returned no results",
+        ]
+
+    def test_failure_without_error_text(self):
+        from utils.knowledge.runbook_distiller import extract_procedure_facts
+
+        (note,) = extract_procedure_facts(
+            [_step("read_file", 1, {"path": "/x"}, output="", success=False)]
+        )
+        assert note.lesson == "`read_file(/x)` failed: (no error text)"
+
+    def test_long_output_starting_with_no_is_not_empty(self):
+        from utils.knowledge.runbook_distiller import extract_procedure_facts
+
+        out = "No issues, but here is a lot of detail " + "x" * 300
+        assert extract_procedure_facts([_step("get_text", 1, output=out)]) == []
+
+
+def _prefs_db(tmp_path):
+    db = str(tmp_path / "prefs.db")
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "CREATE TABLE user_prefs (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+        )
+    return db
+
+
+def _fail_step(n=1, domain="cast"):
+    return _step(
+        "get_integration_diagnostics",
+        n,
+        {"domain_or_entry_id": domain},
+        output="",
+        success=False,
+        error=f"Diagnostics fetch failed: HTTP 404 for {domain}",
+    )
+
+
+class TestRecordToolQuirks:
+    def test_counts_once_per_session_and_accumulates_signatures(self, tmp_path):
+        from utils.knowledge.runbook_distiller import _record_tool_quirks
+
+        db = _prefs_db(tmp_path)
+        steps = [_fail_step(1), _fail_step(2)]
+        assert _record_tool_quirks(db, "device:offline:cast", steps) == 1
+        _record_tool_quirks(db, "device:offline:cast", steps)
+        _record_tool_quirks(db, "device:offline:post_restart", steps)
+        with sqlite3.connect(db) as conn:
+            rows = conn.execute("SELECT key, value FROM user_prefs").fetchall()
+        assert len(rows) == 1
+        assert rows[0][0].startswith("procedure_quirk:")
+        q = json.loads(rows[0][1])
+        assert q["count"] == 3
+        assert q["signatures"] == ["device:offline:cast", "device:offline:post_restart"]
+        assert q["tool"] == "get_integration_diagnostics"
+        assert q["example"] == "get_integration_diagnostics(cast)"
+
+    def test_no_problems_writes_nothing(self, tmp_path):
+        from utils.knowledge.runbook_distiller import _record_tool_quirks
+
+        assert _record_tool_quirks(_prefs_db(tmp_path), "s", [_step("x", 1)]) == 0
+
+    def test_missing_table_returns_zero(self, tmp_path):
+        from utils.knowledge.runbook_distiller import _record_tool_quirks
+
+        assert _record_tool_quirks(str(tmp_path / "none.db"), "s", [_fail_step()]) == 0
+
+
+class TestDistillProcedureExtractor:
+    SIG = "device:offline:cast"
+
+    def _db(self, tmp_path):
+        db = _make_db(tmp_path)
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS user_prefs (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+            )
+        return db
+
+    def test_extracted_notes_kept_when_llm_fails(self, tmp_path):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.runbook_distiller import distill_procedure
+
+        class _BrokenLLM:
+            async def chat(self, **kw):
+                raise RuntimeError("Ollama down")
+
+        db = self._db(tmp_path)
+        asyncio.run(
+            distill_procedure(
+                signature=self.SIG,
+                steps=[_fail_step()],
+                outcome="monitoring",
+                episode_id="ep_x1",
+                db_path=db,
+                knowledge_store=FakeKnowledgeStore(),
+                model="m",
+                llm_client=_BrokenLLM(),
+            )
+        )
+        with sqlite3.connect(db) as conn:
+            approach = conn.execute("SELECT approach FROM agent_strategies").fetchone()[
+                0
+            ]
+            quirks = conn.execute(
+                "SELECT COUNT(*) FROM user_prefs WHERE key LIKE 'procedure_quirk:%'"
+            ).fetchone()[0]
+        assert "`get_integration_diagnostics(cast)` failed" in approach
+        assert quirks == 1
+
+    def test_prompt_lists_extracted_notes(self, tmp_path):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.runbook_distiller import distill_procedure
+
+        prompts: list[str] = []
+
+        class _Capture(_FakeLLMWithLessons):
+            async def chat(
+                self, model, messages, options, format, think=None
+            ):  # noqa: A002
+                prompts.append(messages[0]["content"])
+                return await super().chat(model, messages, options, format, think)
+
+        asyncio.run(
+            distill_procedure(
+                signature=self.SIG,
+                steps=[_fail_step()],
+                outcome="monitoring",
+                episode_id="ep_x2",
+                db_path=self._db(tmp_path),
+                knowledge_store=FakeKnowledgeStore(),
+                model="m",
+                llm_client=_Capture(lessons=[]),
+            )
+        )
+        assert "Already recorded (do not repeat these):" in prompts[0]
+        assert "`get_integration_diagnostics(cast)` failed" in prompts[0]
+
+
+class TestBuildProcedurePromptRules:
+    def test_forbids_log_restatement_and_requires_tool_name(self):
+        from utils.knowledge.runbook_distiller import _build_procedure_prompt
+
+        prompt = _build_procedure_prompt(
+            signature="s", outcome="success", step_trace="t"
+        )
+        assert "Do NOT restate what a log or tool output said" in prompt
+        assert "Name the tool in every lesson" in prompt
+        assert "Already recorded" not in prompt
