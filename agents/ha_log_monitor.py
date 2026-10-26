@@ -236,6 +236,60 @@ def _update_resolve_card(suppression_key: str) -> None:
         )
 
 
+def _close_installed_update_card(suppression_key: str, watch_dir: str) -> bool:
+    """Write .approved for an approved card whose update is now gone but has no sentinel.
+
+    Acts only when all four conditions hold: the .json card exists, no sentinel
+    (.approved/.rejected/.deferred/.resolved) exists, the DB row has
+    last_action='approved', and the entity is not currently executing.  Returns True
+    when it writes the sentinel, False otherwise.
+    """
+    from utils.hitl.hitl_tracker import stable_nid
+
+    entity_id = suppression_key.removeprefix("update:")
+    try:
+        from agents.ha_update_manager import is_entity_executing_update
+
+        if is_entity_executing_update(entity_id):
+            return False
+    except Exception:  # nosec B110
+        pass
+
+    with sqlite3.connect(_config.DB_PATH) as _conn:
+        row = _conn.execute(
+            "SELECT last_action, resolved_at FROM hitl_suppression WHERE card_key = ?",
+            (suppression_key,),
+        ).fetchone()
+    if row is None or row[0] != "approved" or row[1] is not None:
+        return False
+
+    nid = stable_nid(suppression_key)
+    watch = Path(watch_dir)
+    card_path = watch / f"{nid}.json"
+    if not card_path.exists():
+        return False
+    for ext in (".approved", ".rejected", ".deferred", ".resolved"):
+        if (watch / f"{nid}{ext}").exists():
+            return False
+
+    try:
+        data = json.loads(card_path.read_text())
+        data["fix_applied"] = True
+        card_path.write_text(json.dumps(data, indent=2))
+    except Exception:  # nosec B110
+        pass
+    try:
+        (watch / f"{nid}.approved").touch()
+    except Exception:  # nosec B110
+        return False
+    log.info(
+        "update_interrupted_approval_closed",
+        suppression_key=suppression_key,
+        entity_id=entity_id,
+    )
+    return True
+
+
 def _update_sweep_absent_pending(seen_keys: set) -> list:
     """Return (card_key,) rows for update cards no longer present in HA."""
     with sqlite3.connect(_config.DB_PATH) as _conn:
@@ -1466,6 +1520,45 @@ async def poll_for_updates(
                 if not _is_pending:
                     _update_gone.pop(suppression_key, None)
                     await asyncio.to_thread(_update_resolve_card, suppression_key)
+                    _closed = await asyncio.to_thread(
+                        _close_installed_update_card, suppression_key, NOTIFY_WATCH_DIR
+                    )
+                    if _closed:
+                        try:
+                            from utils.core.timeline import write_timeline_event
+
+                            await asyncio.to_thread(
+                                write_timeline_event,
+                                "INFO",
+                                "update_check",
+                                f"{u.component} update to"
+                                f" {u.installed_version} confirmed installed"
+                                f" — completing interrupted approval",
+                                {
+                                    "component": u.component,
+                                    "installed_version": u.installed_version,
+                                    "resolution": "interrupted_approval_closed",
+                                },
+                            )
+                        except Exception:  # nosec B110
+                            pass
+                        try:
+                            from agents.ha_agent_advanced import resolve_session_outcome
+                            from agents.ha_update_manager import (
+                                _enqueue_distillation_for_subject,
+                            )
+
+                            await asyncio.to_thread(
+                                resolve_session_outcome,
+                                u.entity_id,
+                                "success",
+                                "system",
+                            )
+                            await _enqueue_distillation_for_subject(
+                                u.entity_id, "success"
+                            )
+                        except Exception:  # nosec B110
+                            pass
                 if _is_pending:
                     if suppression_key not in _update_gone:
                         _update_gone[suppression_key] = time.monotonic()
