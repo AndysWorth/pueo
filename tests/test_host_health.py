@@ -859,6 +859,30 @@ class TestResourcePollerCheckHostHealth:
         assert len(notifier.sent) == 1
         assert "disk_wear" in notifier.sent[0]["payload"]["kind"]
 
+    def test_boot_change_records_ha_start(self, tmp_path, monkeypatch):
+        """A changed boot_ts records an HA start for the device settle window."""
+        import asyncio
+        import sqlite3
+
+        import config as cfg_mod
+        import utils.disk.host_health as hh_mod
+        from utils.ha.device_availability import load_ha_start_ts
+
+        monkeypatch.setattr(cfg_mod, "HOST_HEALTH_INVESTIGATION_ENABLED", False)
+        poller, db = self._make_poller(tmp_path)
+
+        monkeypatch.setattr(hh_mod, "_last_host_health", _make_health())
+        asyncio.run(poller._check_host_health(_make_status()))
+        with sqlite3.connect(db) as conn:
+            assert load_ha_start_ts(conn) is None  # first sighting is not a boot
+
+        monkeypatch.setattr(
+            hh_mod, "_last_host_health", _make_health(boot_ts=1_700_050_000.0)
+        )
+        asyncio.run(poller._check_host_health(_make_status()))
+        with sqlite3.connect(db) as conn:
+            assert load_ha_start_ts(conn) == 1_700_050_000.0
+
     def test_dedup_prevents_second_notification(self, tmp_path, monkeypatch):
         import asyncio
 

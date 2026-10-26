@@ -997,6 +997,8 @@ agent:
   lovelace_check_interval_minutes: 30
   device_availability_enabled: true
   device_availability_grace_minutes: 10
+  # device_availability_min_state_coverage: 0.5
+  # device_availability_restart_settle_minutes: 15
   # device_recurrence_count: 3
   # device_recurrence_window_days: 14
   # ha_event_subscribe: true

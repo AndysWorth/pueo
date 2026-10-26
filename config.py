@@ -139,6 +139,15 @@ DEVICE_AVAILABILITY_ENABLED: bool = bool(
 DEVICE_AVAILABILITY_GRACE_MINUTES: int = int(
     _agent.get("device_availability_grace_minutes", 10)
 )
+# Skip a poll whose states payload covers less than this fraction of registry
+# entities (HA still starting up).
+DEVICE_AVAILABILITY_MIN_STATE_COVERAGE: float = float(
+    _agent.get("device_availability_min_state_coverage", 0.5)
+)
+# No offline/recovered transitions for this long after an HA start.
+DEVICE_AVAILABILITY_RESTART_SETTLE_MINUTES: int = int(
+    _agent.get("device_availability_restart_settle_minutes", 15)
+)
 DEVICE_RECURRENCE_COUNT: int = int(_agent.get("device_recurrence_count", 3))
 DEVICE_RECURRENCE_WINDOW_DAYS: int = int(
     _agent.get("device_recurrence_window_days", 14)

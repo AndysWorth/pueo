@@ -960,6 +960,17 @@ class ResourcePoller:
             mem_warn_mb=self._mem_warn_mb,
         )
 
+        # A host reboot restarts HA too; the device availability poll holds
+        # transitions for a settle window after it.
+        if (
+            health.boot_ts is not None
+            and last_boot_ts is not None
+            and abs(health.boot_ts - last_boot_ts) > 30.0
+        ):
+            from utils.ha.device_availability import record_ha_start
+
+            await asyncio.to_thread(record_ha_start, _db, health.boot_ts)
+
         # Persist current boot_ts so future polls can detect changes
         if health.boot_ts is not None:
             await asyncio.to_thread(self._write_last_boot_ts, _db, health.boot_ts)
