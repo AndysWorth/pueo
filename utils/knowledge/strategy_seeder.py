@@ -180,6 +180,11 @@ _SEED_PROMPTS: list[tuple[str, str, str]] = [
         "device offline, device unavailable, econet unavailable, ecobee offline, MQTT disconnect, cloud push thread death, integration unavailable, TV offline, LIFX offline, Cast unavailable, media player unavailable",
     ),
     (
+        "seed_device_post_restart.md",
+        "Devices offline after a Home Assistant restart",
+        "devices unavailable after restart, devices offline after update, many integrations offline at once, post-restart sweep, host reboot exposed devices, turned off devices",
+    ),
+    (
         "seed_host_rpi_firmware.md",
         "rpi_firmware_update_blocked — CM4 EEPROM read-only",
         "rpi_firmware_update_blocked, CM4 EEPROM update blocked, eeprom_update_unavailable",

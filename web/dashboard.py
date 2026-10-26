@@ -2754,6 +2754,49 @@ async def wrong(nid: str, request: Request) -> RedirectResponse:
     return RedirectResponse(url=_verdict_return_url(form), status_code=303)
 
 
+@app.post("/off/{nid}")
+async def turned_off(nid: str, request: Request) -> RedirectResponse:
+    """Device-offline "I turned these off": disarm the devices until seen online.
+
+    The user's answer is a verification.  A post-restart sweep is told to expect
+    devices that were already off, so the answer confirms it (success).  A
+    per-integration session blamed a fault, so it was wrong (failure + correction).
+    """
+    from utils.ha.device_availability import disarm_devices
+    from utils.hitl.hitl_tracker import mark_card_resolved
+
+    watch_dir = Path(NOTIFY_WATCH_DIR)
+    json_path = watch_dir / f"{nid}.json"
+    form = await request.form()
+    if json_path.exists() and _status(nid, watch_dir) == "PENDING":
+        data = json.loads(json_path.read_text())
+        payload = data.get("payload", {})
+        devices = [d for d in payload.get("devices", []) if isinstance(d, dict)]
+        if payload.get("card_type") == "device_offline" and devices:
+            await asyncio.to_thread(disarm_devices, DB_PATH, devices, nid)
+            names = ", ".join(str(d.get("name", "")) for d in devices[:10])
+            correction = (
+                f"The user switched these devices off on purpose: {names}."
+                " Nothing was broken."
+            )
+            verification = "success" if payload.get("post_restart") else "failure"
+            _episode_id = payload.get("episode_id", "")
+            if _episode_id:
+                await asyncio.to_thread(
+                    _resolve_card_outcome, _episode_id, verification, correction
+                )
+                await _trigger_post_verify_distillation(
+                    _episode_id, verification, correction
+                )
+            suppression_key = payload.get("suppression_key", "")
+            if suppression_key:
+                await asyncio.to_thread(
+                    _hitl_write, mark_card_resolved, suppression_key
+                )
+            (watch_dir / f"{nid}.approved").touch()
+    return RedirectResponse(url=_verdict_return_url(form), status_code=303)
+
+
 @app.get("/known-issues")
 async def known_issues() -> JSONResponse:
     """Return all active Known Issues as JSON."""

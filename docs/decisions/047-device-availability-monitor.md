@@ -159,6 +159,17 @@ HA restarts (two Core updates and an unplanned host reboot) produced false recov
 - **Pinned `offline_since`.** It is set when a device is first seen offline and kept until the device is seen online again, so a restart resetting `last_changed` doesn't shorten the episode.
 - **Investigated is not self-recovered.** The snapshot carries `investigated` once an investigation is submitted for the device. Such an episode is recorded with `self_recovered=False` and writes no recurrence fact. The recurrence average uses per-episode durations.
 
+## Amendment (2026-10-26, #987): disarm, post-restart sweep, prior-session context
+
+The restarts also exposed 15 devices the user had **switched off on purpose**. Pueo ran one investigation per integration, and each one invented a different cause. A repeat session couldn't see that the previous one had been rejected.
+
+- **"I turned these off" (disarm).** The `device_offline` card has a button that posts `/off/{nid}`. Each device gets a `user_prefs` row `device_availability:disarmed:<device_id>`. These are separate rows, not a snapshot field, so a poll that saves the snapshot at the same moment can't lose the answer. A disarmed device never alerts, and the evaluator closes any open episode for it. When it is next seen online it is re-armed (the row is deleted), and no recovery or episode is recorded. A restart can't re-arm it, because unknown is not online. The answer is a user verification (ADR 046): a post-restart sweep session is marked `success`, because its seed expects devices that were already off, and a per-integration session is marked `failure`, because it blamed a fault. Both carry the correction "switched off on purpose". One instance fact per integration (`device:offline:<domain>`, source `user:<nid>`) lists the devices the user has said they switch off. The card's suppression row is resolved.
+- **Grouped post-restart sweep.** Findings that appear within 10 min after the settle window ends (`in_post_restart_sweep`) are merged into one `OfflineFinding` with `ha_start_ts` set (`merge_post_restart_findings`), after entries that are suppressed or backed off are dropped. It runs one investigation with signature `device:offline:post_restart` (seed `seed_device_post_restart.md`, which outranks the generic device seed by specificity) and subject `post_restart`. Its context lists the HA start time, `update_executor`/`update_check`/`resource` timeline events from 2 h before to 15 min after the start, every device with its integration, and the hint that restart-exposed devices were usually already off. The recurrence gate is skipped for a sweep. The snapshot records each alerted device's `card_key`, so a recovery resolves the sweep card instead of the entry card.
+- **Entity ids in context.** Each device line lists up to 5 entity_ids, so the model doesn't guess them.
+- **Prior-session block.** `AgentLoop.run(prior_subject_keys=…)` (default `[subject_key]`) pre-injects up to 3 `session_outcomes` rows from the last 14 days as `[PREVIOUS INVESTIGATION] <date>: <root_cause or summary> (verification: <state>)`, plus any user correction. This applies to every session type. A sweep also looks up the per-integration subject keys of its devices. The terminal-call stub now keeps `root_cause`.
+
+Grouping is restart-only. Several integrations dropping at the same moment without a restart (for example a router outage) still get one investigation each.
+
 ---
 
 ## Files
@@ -172,9 +183,11 @@ HA restarts (two Core updates and an unplanned host reboot) produced false recov
 - `utils/knowledge/strategy_seeder.py` — seed registration
 - `prompts/agent_loop_device_availability.md`
 - `prompts/seed_device_offline.md`
+- `prompts/seed_device_post_restart.md` — grouped post-restart sweep (#987)
+- `utils/agent/agent_loop.py` — `_fetch_prior_sessions()` prior-session block (#987)
 - `config.py`, `config.yaml.default`, `setup.sh` — `DEVICE_RECURRENCE_COUNT`, `DEVICE_RECURRENCE_WINDOW_DAYS`, `DEVICE_AVAILABILITY_MIN_STATE_COVERAGE`, `DEVICE_AVAILABILITY_RESTART_SETTLE_MINUTES`
 - `main.py` — supervisor wiring; records an HA start on subscriber reconnect
 - `utils/disk/resource.py` — records an HA start on host `boot_ts` change
-- `web/dashboard.py` — `/keep-watching/` endpoint, `device_recurring` approve handler
-- `web/templates/index.html` — `device_recurring` card rendering
+- `web/dashboard.py` — `/keep-watching/` endpoint, `device_recurring` approve handler, `/off/{nid}` disarm
+- `web/templates/index.html` — `device_recurring` card rendering, "I turned these off" button
 - `tests/test_device_availability.py`

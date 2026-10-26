@@ -5737,6 +5737,9 @@ class ToolExecutor:
             "recommended_actions": recommended_actions,
             "episode_id": self._episode_id,
         }
+        if getattr(finding, "ha_start_ts", None) is not None:
+            _payload["post_restart"] = True
+            _payload["ha_start_ts"] = finding.ha_start_ts
         if verification_question:
             _payload["verification_question"] = verification_question
             _payload["signature"] = self._session_signature

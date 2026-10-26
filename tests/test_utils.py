@@ -7441,6 +7441,7 @@ class TestSeedRegistry:
         from utils.ha.ha_environment import HAEnvironmentProfile
         from utils.knowledge.runbook_signature import (
             sig_device_availability,
+            sig_device_post_restart,
             sig_host_health,
             sig_notification,
             sig_repair,
@@ -7466,6 +7467,7 @@ class TestSeedRegistry:
             sig_host_health("resolution_issue", "rpi_firmware_update_blocked"),
             sig_host_health("resolution_issue", "no_current_backup"),
             sig_device_availability("econet"),
+            sig_device_post_restart(),
         ]
 
     def test_every_seed_file_registered_or_retired(self):
@@ -9919,3 +9921,187 @@ class TestPreInjectSupplementalCap:
         assert "econet-seed" in ex._pre_injected_chunk_ids
         # "irrelevant" chunk should not be in context (no "econet" in text or metadata)
         assert "irrelevant" not in ex._pre_injected_chunk_ids
+
+
+class TestFetchPriorSessions:
+    """[PREVIOUS INVESTIGATION] pre-inject from session_outcomes (#987)."""
+
+    def _db(self, tmp_path, monkeypatch, rows=()):
+        import sqlite3
+
+        import agents.ha_agent_advanced as haa
+
+        db = str(tmp_path / "prior.db")
+        monkeypatch.setattr(haa, "DB_PATH", db)
+        haa.init_local_database()
+        with sqlite3.connect(db) as conn:
+            conn.executemany(
+                "INSERT INTO session_outcomes (episode_id, subject_key, created_at,"
+                " conclusion_json, verification, correction) VALUES (?,?,?,?,?,?)",
+                rows,
+            )
+        return db
+
+    _NOW = 1_793_000_000.0  # 2026-10-26T…Z
+
+    def _iso(self, days_ago: float) -> str:
+        import time
+
+        return time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ", time.gmtime(self._NOW - days_ago * 86400)
+        )
+
+    def test_lists_recent_sessions_newest_first(self, tmp_path, monkeypatch):
+        import json
+
+        from utils.agent.agent_loop import _fetch_prior_sessions
+
+        db = self._db(
+            tmp_path,
+            monkeypatch,
+            [
+                (
+                    "e1",
+                    "k",
+                    self._iso(3),
+                    json.dumps({"summary": "Old summary"}),
+                    "unverified",
+                    None,
+                ),
+                (
+                    "e2",
+                    "k",
+                    self._iso(1),
+                    json.dumps({"root_cause": "Tuya MQTT drop", "summary": "s"}),
+                    "failure",
+                    "Turned off on purpose",
+                ),
+                ("e3", "k", self._iso(20), "{}", "pending", None),  # too old
+                ("e4", "other", self._iso(1), "{}", "pending", None),
+            ],
+        )
+        block = _fetch_prior_sessions(db, ["k"], now=self._NOW)
+        lines = [l for l in block.splitlines() if l.startswith("[PREVIOUS")]
+        assert len(lines) == 2
+        assert "Tuya MQTT drop (verification: failure)" in lines[0]
+        assert "user correction: Turned off on purpose" in lines[0]
+        assert "Old summary (verification: unverified)" in lines[1]
+        assert " UTC: " in lines[0]
+
+    def test_long_text_truncated_and_empty_conclusion(self, tmp_path, monkeypatch):
+        import json
+
+        from utils.agent.agent_loop import _fetch_prior_sessions
+
+        db = self._db(
+            tmp_path,
+            monkeypatch,
+            [
+                (
+                    "e1",
+                    "k",
+                    self._iso(1),
+                    json.dumps({"summary": "x" * 400}),
+                    None,
+                    None,
+                ),
+                ("e2", "k", self._iso(2), "not json", "pending", None),
+            ],
+        )
+        block = _fetch_prior_sessions(db, ["k"], now=self._NOW)
+        assert "x" * 300 + "…" in block
+        assert "(verification: pending)" in block
+        assert "(no conclusion recorded)" in block
+
+    def test_none_returns_empty(self, tmp_path, monkeypatch):
+        from utils.agent.agent_loop import _fetch_prior_sessions
+
+        db = self._db(tmp_path, monkeypatch)
+        assert _fetch_prior_sessions(db, ["k"], now=self._NOW) == ""
+        assert _fetch_prior_sessions(db, [""], now=self._NOW) == ""
+        assert _fetch_prior_sessions("", ["k"]) == ""
+        assert _fetch_prior_sessions(str(tmp_path / "missing.db"), ["k"]) == ""
+
+    def test_run_injects_block_and_stub_keeps_root_cause(self, tmp_path, monkeypatch):
+        import asyncio
+        import json
+        import sqlite3
+        import time
+
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import build_device_availability_tool_registry
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        recent = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 3600))
+        db = self._db(
+            tmp_path,
+            monkeypatch,
+            [
+                (
+                    "e1",
+                    "e1:matter",
+                    recent,
+                    json.dumps({"root_cause": "Matter server drop"}),
+                    "failure",
+                    None,
+                )
+            ],
+        )
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_device_availability",
+                                "arguments": {
+                                    "summary": "s",
+                                    "root_cause": "Devices were off",
+                                    "outcome": "monitoring",
+                                    "recommended_actions": [],
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
+        from unittest import mock
+
+        store = mock.Mock()
+        store.query.return_value = []
+        loop = AgentLoop(
+            llm_client=llm,
+            tool_executor=ToolExecutor(
+                ha_ssh_client=FakeSSHClient(),
+                gate=FakeAutonomyGate(),
+                notifier=FakeNotifier(),
+                db_path=db,
+            ),
+            tool_registry=build_device_availability_tool_registry(),
+            terminal_tool_name="finish_device_availability",
+            activity_type="device_availability",
+            db_path=db,
+            knowledge_store=store,
+        )
+        asyncio.run(
+            loop.run(
+                initial_context="Devices offline",
+                signature="device:offline:matter",
+                subject_key="e1:matter",
+            )
+        )
+        user_msg = llm.calls[0]["messages"][1]["content"]
+        assert "[PREVIOUS INVESTIGATION]" in user_msg
+        assert "Matter server drop (verification: failure)" in user_msg
+        with sqlite3.connect(db) as conn:
+            rows = conn.execute(
+                "SELECT conclusion_json FROM session_outcomes WHERE episode_id != 'e1'"
+            ).fetchall()
+        assert any(
+            json.loads(r[0]).get("root_cause") == "Devices were off" for r in rows
+        )
