@@ -103,6 +103,45 @@ _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_\-]*$")
 _UUID_RE = re.compile(
     r"^(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$"
 )
+# Validates HA integration domains (e.g. "tuya", "dlna_dmr") for read_logs filtering.
+_DOMAIN_RE = re.compile(r"^[a-z0-9_]+$")
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+_LOG_RECORD_START_RE = re.compile(r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}")
+# Startup progress records list every integration still loading, so they would
+# match any domain without saying anything about it.
+_BOOTSTRAP_WAIT_RE = re.compile(
+    r"\[homeassistant\.bootstrap\] Waiting (?:for|on) integrations"
+)
+
+
+def _filter_log_by_domain(text: str, domain: str, limit: int) -> str:
+    """Keep only log records that mention *domain*, with their continuation lines.
+
+    A record starts at a timestamped line; following untimestamped lines (a
+    traceback) belong to it.  Returns the last *limit* lines of matching records,
+    so an integration's errors aren't drowned out by other integrations'.
+    """
+    pattern = re.compile(rf"\b{re.escape(domain)}\b", re.I)
+    kept: list[str] = []
+    record: list[str] = []
+
+    def _flush() -> None:
+        if (
+            record
+            and not _BOOTSTRAP_WAIT_RE.search(record[0])
+            and any(pattern.search(line) for line in record)
+        ):
+            kept.extend(record)
+
+    for line in text.splitlines():
+        if _LOG_RECORD_START_RE.match(_ANSI_RE.sub("", line)):
+            _flush()
+            record = []
+        record.append(line)
+    _flush()
+    if not kept:
+        return f"(no log records mentioning {domain!r} in the scanned lines)"
+    return "\n".join(kept[-limit:])
 
 
 def _is_ha_command_allowed(normalized: str) -> bool:
@@ -478,6 +517,7 @@ class ToolExecutor:
                     int(args.get("lines", 100)),
                     args.get("log_source", "ha_core"),
                     args.get("addon_slug"),
+                    args.get("domain"),
                 )
             if name == "list_log_sources":
                 return await self._list_log_sources()
@@ -861,8 +901,18 @@ class ToolExecutor:
         lines: int,
         log_source: str = "ha_core",
         addon_slug: Optional[str] = None,
+        domain: Optional[str] = None,
     ) -> ToolResult:
         lines = min(lines, 500)
+        if domain is not None and not _DOMAIN_RE.match(domain):
+            return ToolResult(
+                tool_name="read_logs",
+                success=False,
+                output="",
+                error=f"Invalid domain: {domain!r} (use an integration domain like 'tuya')",
+            )
+        # With a domain filter, scan the full tail and keep only that domain's records.
+        fetch = 500 if domain else lines
         if log_source == "ha_app":
             if not addon_slug:
                 return ToolResult(
@@ -878,10 +928,10 @@ class ToolExecutor:
                     output="",
                     error=f"Invalid addon_slug: {addon_slug!r}",
                 )
-            cmd = f"ha apps logs {addon_slug} -n {lines}"
+            cmd = f"ha apps logs {addon_slug} -n {fetch}"
         else:
             cmd_tmpl = self._HA_LOG_CMDS.get(log_source, self._HA_LOG_CMDS["ha_core"])
-            cmd = cmd_tmpl.format(lines=lines)
+            cmd = cmd_tmpl.format(lines=fetch)
         try:
             exit_code, stdout, stderr = await self._ha_ssh.run(cmd, check=False)
             if exit_code != 0:
@@ -890,6 +940,12 @@ class ToolExecutor:
                     success=False,
                     output="",
                     error=f"exit {exit_code}: {(stderr or stdout or '(no output)')[:500]}",
+                )
+            if domain:
+                return ToolResult(
+                    tool_name="read_logs",
+                    success=True,
+                    output=_filter_log_by_domain(stdout or "", domain, lines),
                 )
             return ToolResult(
                 tool_name="read_logs", success=True, output=stdout or "(no output)"
@@ -1406,13 +1462,56 @@ class ToolExecutor:
             return ToolResult(
                 tool_name="search_integrations",
                 success=True,
-                output=f"No matching integrations found for {query!r}.",
+                output=await self._no_integration_hint(query),
             )
         return ToolResult(
             tool_name="search_integrations",
             success=True,
             output="\n".join(lines),
         )
+
+    _MAX_ENTITY_HINTS = 10
+
+    async def _no_integration_hint(self, query: str) -> str:
+        """Explain that search_integrations wants a domain, and list entity matches.
+
+        Agents often pass a device name ("tuya top light strip"); the entity
+        registry maps that name to entity_ids and their integration domain.
+        """
+        matches: list[dict] = []
+        if self._ws_client is not None:
+            try:
+                registry = await self._ws_client.get_entity_registry()
+            except Exception:  # nosec B110 — hint is best-effort
+                registry = []
+            words = query.lower().split()
+            for e in registry:
+                hay = " ".join(
+                    str(e.get(k) or "")
+                    for k in ("entity_id", "name", "original_name", "platform")
+                ).lower()
+                if words and all(w in hay for w in words):
+                    matches.append(e)
+        example = (
+            matches[0].get("platform")
+            if matches and matches[0].get("platform")
+            else "vesync"
+        )
+        out = [
+            f"No integration named {query!r} — pass an integration domain "
+            f"(e.g. {example})."
+        ]
+        if matches:
+            shown = matches[: self._MAX_ENTITY_HINTS]
+            out.append(f"Entities matching {query!r} ({len(matches)}):")
+            for e in shown:
+                label = e.get("name") or e.get("original_name") or ""
+                out.append(
+                    f"  {e.get('entity_id')}"
+                    + (f" ({label})" if label else "")
+                    + f" — integration {e.get('platform') or '?'}"
+                )
+        return "\n".join(out)
 
     _MAX_HISTORY_ROWS = 200
     _MAX_LOGBOOK_ROWS = 100
@@ -1893,6 +1992,10 @@ class ToolExecutor:
             entries = await self._ws_client.get_all_config_entries()
         except Exception:
             return None
+        # Newer entries use ULID ids, which the hex check above does not catch.
+        for entry in entries:
+            if entry.get("entry_id") == domain_or_entry_id:
+                return domain_or_entry_id
         for entry in entries:
             if entry.get("domain") == domain_or_entry_id and entry.get(
                 "state", ""
@@ -1902,6 +2005,21 @@ class ToolExecutor:
         for entry in entries:
             if entry.get("domain") == domain_or_entry_id:
                 return entry.get("entry_id")
+        return None
+
+    async def _entry_domain(self, domain_or_entry_id: str, entry_id: str) -> str | None:
+        """Best-effort integration domain for an entry, for user-facing messages."""
+        if domain_or_entry_id != entry_id:
+            return domain_or_entry_id
+        if not self._ws_client:
+            return None
+        try:
+            entries = await self._ws_client.get_all_config_entries()
+        except Exception:
+            return None
+        for entry in entries:
+            if entry.get("entry_id") == entry_id:
+                return entry.get("domain")
         return None
 
     async def _get_integration_diagnostics(self, domain_or_entry_id: str) -> ToolResult:
@@ -1927,12 +2045,27 @@ class ToolExecutor:
                 output="",
                 error=(
                     f"No config entry found for {domain_or_entry_id!r}. "
-                    "Use search_integrations to list installed integrations."
+                    "Pass the integration domain (e.g. 'tuya'); device ids and "
+                    "entity ids are not config entry ids. Use search_integrations "
+                    "to find the domain."
                 ),
             )
         try:
             raw = await self._rest_client.get_config_entry_diagnostics(entry_id)
         except Exception as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            if status == 404:
+                domain = await self._entry_domain(domain_or_entry_id, entry_id)
+                return ToolResult(
+                    tool_name="get_integration_diagnostics",
+                    success=False,
+                    output="",
+                    error=(
+                        f"{domain or 'This integration'} does not provide "
+                        "diagnostics (HTTP 404). Use get_entity_history, "
+                        "get_logbook or read_logs(domain=...) instead."
+                    ),
+                )
             return ToolResult(
                 tool_name="get_integration_diagnostics",
                 success=False,
@@ -5147,6 +5280,10 @@ class ToolExecutor:
                 release_url=_release_url,
                 ws_fetcher=_ws_fetcher,
             )
+            # Cached blog-URL stubs carry an internal "STUB:" marker for the
+            # RAG scraper; the agent should see only the notes.
+            if notes.startswith("STUB:"):
+                notes = notes[len("STUB:") :].lstrip()
             # Mark that real notes were obtained (not the "unavailable" sentinel).
             _UNAVAILABLE_SENTINEL = "Release notes unavailable"
             if notes and not notes.startswith(_UNAVAILABLE_SENTINEL):

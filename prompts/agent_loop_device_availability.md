@@ -33,7 +33,7 @@ Phase 2 — FORM A HYPOTHESIS: One sentence about why the device went offline.
   - HA integration crash or config entry error.
 
 Phase 3 — GATHER EVIDENCE:
-  a. read_logs(lines=40, log_source="ha_core") — look for disconnect messages, Traceback,
+  a. read_logs(lines=40, log_source="ha_core", domain=<domain>) — look for disconnect messages, Traceback,
      MQTT errors, connection timeouts, or "Uncaught thread exception" near the offline-since
      time.
   b. get_entity_history(entity_id=<representative entity>, hours=2) — confirm the state

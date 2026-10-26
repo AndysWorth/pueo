@@ -1275,7 +1275,46 @@ class TestSearchIntegrations:
         executor.set_ha_profile(self._make_profile())
         result = asyncio.run(executor._search_integrations("dashy"))
         assert result.success is True
-        assert "No matching" in result.output
+        assert "No integration named 'dashy'" in result.output
+        assert "pass an integration domain" in result.output
+
+    def test_no_match_lists_entity_matches_with_domain(self):
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        executor = self._make_executor()
+        executor.set_ha_profile(self._make_profile())
+        executor.set_ws_client(
+            FakeHAWebSocketClient(
+                entity_registry=[
+                    {
+                        "entity_id": "light.top_light_strip",
+                        "platform": "tuya",
+                        "original_name": "Top Light Strip",
+                    },
+                    {"entity_id": "switch.kitchen", "platform": "matter"},
+                ]
+            )
+        )
+        result = asyncio.run(executor._search_integrations("tuya top light strip"))
+        assert "(e.g. tuya)" in result.output
+        assert "light.top_light_strip (Top Light Strip) — integration tuya" in (
+            result.output
+        )
+        assert "switch.kitchen" not in result.output
+
+    def test_no_match_entity_registry_error_still_hints(self):
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        class _BrokenWS(FakeHAWebSocketClient):
+            async def get_entity_registry(self):
+                raise RuntimeError("ws down")
+
+        executor = self._make_executor()
+        executor.set_ha_profile(self._make_profile())
+        executor.set_ws_client(_BrokenWS())
+        result = asyncio.run(executor._search_integrations("top"))
+        assert "(e.g. vesync)" in result.output
+        assert "Entities matching" not in result.output
 
     def test_case_insensitive_match(self):
         executor = self._make_executor()
@@ -6135,3 +6174,220 @@ class TestSessionOutcomeCardId:
                 " WHERE episode_id = 'ep_card'"
             ).fetchone()
         assert row == ("nid_update_1", "pending")
+
+
+# ---------------------------------------------------------------------------
+# Tool quirk fixes (#991)
+# ---------------------------------------------------------------------------
+
+
+class _Status404(Exception):
+    def __init__(self):
+        super().__init__("Client error '404 Not Found' for url 'http://ha/x'")
+        self.response = type("R", (), {"status_code": 404})()
+
+
+class TestDiagnosticsQuirks:
+    def _executor(self, entries, exc=None):
+        from utils.ha.ha_rest_client import FakeHARestClient
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        class _Rest(FakeHARestClient):
+            async def get_config_entry_diagnostics(self, entry_id):
+                if exc is not None:
+                    raise exc
+                return {"entry": entry_id}
+
+        return TestGetIntegrationDiagnostics()._make_executor(
+            rest_client=_Rest(), ws_client=FakeHAWebSocketClient(config_entries=entries)
+        )
+
+    def _call(self, ex, arg):
+        from utils.agent.tool_registry import ToolCall
+
+        return asyncio.run(
+            ex.execute(
+                ToolCall(
+                    name="get_integration_diagnostics",
+                    arguments={"domain_or_entry_id": arg},
+                )
+            )
+        )
+
+    def test_404_by_domain_says_no_diagnostics(self):
+        ex = self._executor(
+            [{"domain": "cast", "entry_id": "c4b1385a6bc7e64281c7b659ca3f7d04"}],
+            exc=_Status404(),
+        )
+        r = self._call(ex, "cast")
+        assert not r.success
+        assert r.error.startswith("cast does not provide diagnostics (HTTP 404)")
+
+    def test_404_by_entry_id_looks_up_domain(self):
+        ex = self._executor(
+            [{"domain": "dlna_dmr", "entry_id": "01JJ5506C3JCZNYTNHMPBZRD9T"}],
+            exc=_Status404(),
+        )
+        r = self._call(ex, "01JJ5506C3JCZNYTNHMPBZRD9T")
+        assert r.error.startswith("dlna_dmr does not provide diagnostics")
+
+    def test_404_unknown_hex_entry_falls_back_to_generic_name(self):
+        ex = self._executor([], exc=_Status404())
+        r = self._call(ex, "c4b1385a6bc7e64281c7b659ca3f7d04")
+        assert r.error.startswith("This integration does not provide diagnostics")
+
+    def test_404_hex_entry_without_ws_client(self):
+        from utils.ha.ha_rest_client import FakeHARestClient
+
+        class _Rest(FakeHARestClient):
+            async def get_config_entry_diagnostics(self, entry_id):
+                raise _Status404()
+
+        ex = TestGetIntegrationDiagnostics()._make_executor(rest_client=_Rest())
+        r = self._call(ex, "c4b1385a6bc7e64281c7b659ca3f7d04")
+        assert r.error.startswith("This integration does not provide diagnostics")
+
+    def test_404_entry_lookup_ws_error(self):
+        ex = self._executor([], exc=_Status404())
+
+        async def _boom():
+            raise RuntimeError("ws down")
+
+        ex._ws_client.get_all_config_entries = _boom
+        assert asyncio.run(ex._entry_domain("abc", "abc")) is None
+
+    def test_other_http_error_keeps_raw_message(self):
+        ex = self._executor(
+            [{"domain": "hue", "entry_id": "e1"}], exc=RuntimeError("boom")
+        )
+        r = self._call(ex, "hue")
+        assert r.error == "Diagnostics fetch failed: boom"
+
+    def test_ulid_entry_id_resolves(self):
+        ex = self._executor(
+            [{"domain": "dlna_dmr", "entry_id": "01JJ5506C3JCZNYTNHMPBZRD9T"}]
+        )
+        r = self._call(ex, "01JJ5506C3JCZNYTNHMPBZRD9T")
+        assert r.success
+        assert "01JJ5506C3JCZNYTNHMPBZRD9T" in r.output
+
+    def test_unknown_id_hints_to_pass_domain(self):
+        ex = self._executor([{"domain": "tuya", "entry_id": "e1"}])
+        r = self._call(ex, "01JG2MRQ5ZTSBJAK765T1XS42S")
+        assert not r.success
+        assert "Pass the integration domain" in r.error
+        assert "device ids and entity ids are not config entry ids" in r.error
+
+
+_LOG = (
+    "2026-10-26 09:12:01.000 ERROR (MainThread) [homeassistant.components.noaa] boom\n"
+    "Traceback (most recent call last):\n"
+    '  File "x.py", line 1\n'
+    "\x1b[31m2026-10-26 09:12:02.000 WARNING (MainThread) "
+    "[homeassistant.components.tuya] mqtt disconnected\x1b[0m\n"
+    "  tuya continuation\n"
+    "2026-10-26 09:12:03.000 ERROR (MainThread) [custom_components.tuya_local] other\n"
+    "2026-10-26 09:12:04.000 WARNING (MainThread) [homeassistant.bootstrap] "
+    "Waiting for integrations to complete setup: {('tuya', 'x'): 1.0}\n"
+)
+
+
+class TestFilterLogByDomain:
+    def test_keeps_matching_records_with_continuations(self):
+        from utils.agent.tool_executor import _filter_log_by_domain
+
+        out = _filter_log_by_domain(_LOG, "tuya", 100)
+        assert "mqtt disconnected" in out
+        assert "tuya continuation" in out
+        assert "noaa" not in out
+        assert "Traceback" not in out
+        assert "tuya_local" not in out  # word boundary: a different domain
+        assert "Waiting for integrations" not in out  # lists every domain
+
+    def test_limit_keeps_last_lines(self):
+        from utils.agent.tool_executor import _filter_log_by_domain
+
+        out = _filter_log_by_domain(_LOG, "tuya", 1)
+        assert out == "  tuya continuation"
+
+    def test_no_match_message(self):
+        from utils.agent.tool_executor import _filter_log_by_domain
+
+        out = _filter_log_by_domain(_LOG, "vesync", 50)
+        assert out.startswith("(no log records mentioning 'vesync'")
+
+
+class TestReadLogsDomain:
+    def _executor(self, ssh):
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.hitl.notify import FakeNotifier
+
+        return ToolExecutor(
+            ha_ssh_client=ssh, gate=FakeAutonomyGate(), notifier=FakeNotifier()
+        )
+
+    def test_domain_filter_scans_500_lines(self):
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(command_results={"ha core logs": (0, _LOG, "")})
+        ex = self._executor(ssh)
+        r = asyncio.run(
+            ex.execute(
+                ToolCall(name="read_logs", arguments={"lines": 40, "domain": "tuya"})
+            )
+        )
+        assert r.success
+        assert "mqtt disconnected" in r.output
+        assert "noaa" not in r.output
+        assert any("--lines 500" in c for c in ssh.commands_run)
+
+    def test_invalid_domain_rejected(self):
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient()
+        ex = self._executor(ssh)
+        r = asyncio.run(
+            ex.execute(
+                ToolCall(name="read_logs", arguments={"domain": "tuya; rm -rf /"})
+            )
+        )
+        assert not r.success
+        assert "Invalid domain" in r.error
+        assert ssh.commands_run == []
+
+    def test_no_domain_keeps_requested_lines(self):
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(command_results={"ha core logs": (0, _LOG, "")})
+        ex = self._executor(ssh)
+        r = asyncio.run(ex.execute(ToolCall(name="read_logs", arguments={"lines": 40})))
+        assert "noaa" in r.output
+        assert any("--lines 40" in c for c in ssh.commands_run)
+
+
+class TestReleaseNotesStubPrefix:
+    def test_stub_prefix_stripped(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from utils.agent.tool_executor import ToolExecutor
+
+        async def _fake_fetch(*a, **kw):
+            return "STUB:- Raise aiohttp client header limits"
+
+        monkeypatch.setattr(
+            "agents.ha_update_manager.fetch_release_notes_cached", _fake_fetch
+        )
+        ex = ToolExecutor(
+            ha_ssh_client=MagicMock(),
+            gate=MagicMock(),
+            notifier=MagicMock(),
+            db_path=":memory:",
+        )
+        r = asyncio.run(ex._get_update_release_notes("2026.10.4"))
+        assert r.success
+        assert r.output == "- Raise aiohttp client header limits"
+        assert ex._release_notes_obtained is True

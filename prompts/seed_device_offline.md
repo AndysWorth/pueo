@@ -48,7 +48,7 @@ myq, rachio, and any cloud-push integration that maintains a persistent connecti
 
 ## Investigation steps
 
-1. `read_logs(lines=40, log_source="ha_core")` — look for disconnect, Traceback, MQTT error,
+1. `read_logs(lines=40, log_source="ha_core", domain=<domain>)` — look for disconnect, Traceback, MQTT error,
    or "Uncaught thread exception" near the offline-since time.
 2. If log confirms cloud-push thread death: call `reload_integration(domain=<domain>)`.
 3. If log is clean: `get_integration_diagnostics(domain=<domain>)` — check entry state.
