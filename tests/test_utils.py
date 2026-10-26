@@ -980,6 +980,56 @@ class TestFakeSSHClient:
 
         assert asyncio.run(collect()) == []
 
+    def test_command_errors_raises_on_match_and_records_command(self):
+        import asyncssh
+        from utils.ha.ssh_client import FakeSSHClient
+
+        exc = asyncssh.ConnectionLost("peer closed connection")
+        c = FakeSSHClient(command_errors={"ha core update": exc})
+        with pytest.raises(asyncssh.ConnectionLost):
+            asyncio.run(c.run("ha core update --no-progress"))
+        assert "ha core update --no-progress" in c.commands_run
+
+    def test_command_errors_does_not_affect_unmatched_commands(self):
+        import asyncssh
+        from utils.ha.ssh_client import FakeSSHClient
+
+        c = FakeSSHClient(
+            command_errors={"ha core update": asyncssh.ConnectionLost("x")},
+            command_results={"ha core check": (0, "ok", "")},
+        )
+        ec, out, _ = asyncio.run(c.run("ha core check"))
+        assert ec == 0
+        assert out == "ok"
+
+
+class TestAsyncSSHClientKw:
+    def test_kw_includes_keepalive_and_connect_timeout(self, monkeypatch):
+        monkeypatch.delenv("SSH_AUTH_SOCK", raising=False)
+        from utils.ha.ssh_client import (
+            AsyncSSHClient,
+            SSH_CONNECT_TIMEOUT,
+            SSH_KEEPALIVE_COUNT_MAX,
+            SSH_KEEPALIVE_INTERVAL,
+        )
+
+        kw = AsyncSSHClient()._kw()
+        assert kw["keepalive_interval"] == SSH_KEEPALIVE_INTERVAL
+        assert kw["keepalive_count_max"] == SSH_KEEPALIVE_COUNT_MAX
+        assert kw["connect_timeout"] == SSH_CONNECT_TIMEOUT
+        assert "client_keys" in kw
+        assert "agent_path" not in kw
+
+    def test_kw_uses_agent_path_when_ssh_auth_sock_set(self, monkeypatch):
+        monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/ssh-agent.sock")
+        from utils.ha.ssh_client import AsyncSSHClient
+
+        kw = AsyncSSHClient()._kw()
+        assert kw["agent_path"] == "/tmp/ssh-agent.sock"
+        assert "client_keys" not in kw
+        assert "keepalive_interval" in kw
+        assert "connect_timeout" in kw
+
 
 # ── utils/ollama_client.py (FakeLLMClient) ───────────────────────────────────────
 

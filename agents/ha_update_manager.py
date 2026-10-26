@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
+import asyncssh
 import httpx
 from pydantic import BaseModel, Field
 
@@ -1588,6 +1589,28 @@ async def _send_post_update_card(
     await notifier.send(subject, body, payload)
 
 
+async def _send_update_command(
+    ssh_client: SSHClientProtocol, command: str, kind: str
+) -> str:
+    """Run an update command and return stderr; treat a lost connection as non-fatal.
+
+    Core and OS updates restart HA, which drops the SSH session.  Treating that as
+    an error would mask successful updates.  Instead we log and fall through so the
+    caller's version-poll loop decides success from HA's actual state.
+    Backup and offload calls must remain outside this helper (safety invariant).
+    """
+    try:
+        _, _, stderr = await ssh_client.run(command, check=False)
+        return stderr
+    except (asyncssh.Error, OSError, asyncio.TimeoutError) as exc:
+        log.warning(
+            "update_command_connection_lost",
+            kind=kind,
+            error=str(exc),
+        )
+        return ""
+
+
 async def execute_core_update(
     update: UpdateStatus,
     ssh_client: SSHClientProtocol,
@@ -1614,8 +1637,8 @@ async def execute_core_update(
     log.info("core_update_backup_complete", slug=backup_slug)
 
     _emit_step("Backup ready — sending Core update command…")
-    _, _, update_stderr = await ssh_client.run(
-        "ha core update --no-progress", check=False
+    update_stderr = await _send_update_command(
+        ssh_client, "ha core update --no-progress", "core"
     )
     if update_stderr:
         log.warning("core_update_stderr", stderr=update_stderr[:200])
@@ -1739,7 +1762,7 @@ async def execute_os_update(
     log.info("os_update_backup_complete", slug=backup_slug)
 
     _emit_step("Backup ready — sending OS update command…")
-    await ssh_client.run("ha os update --no-progress", check=False)
+    await _send_update_command(ssh_client, "ha os update --no-progress", "os")
 
     host = ha_host or HA_HOST
     port = ha_port or HA_API_PORT
