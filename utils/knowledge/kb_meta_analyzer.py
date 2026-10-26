@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Optional
@@ -11,6 +12,7 @@ if TYPE_CHECKING:
 
 # Shared with the distiller so signature matching and note parsing agree.
 from utils.knowledge.runbook_distiller import (
+    _QUIRK_PREFIX,
     _sig_specificity,
     _split_procedure_notes,
 )
@@ -55,6 +57,7 @@ class MetaAnalysisReport:
     gaps_by_signature: list[tuple[str, list[RunbookRow]]] = field(default_factory=list)
     signature_stats: list["SignatureStats"] = field(default_factory=list)
     unmatched_seeds: list["RunbookRow"] = field(default_factory=list)
+    tool_quirks: list["ToolQuirk"] = field(default_factory=list)
 
 
 @dataclass
@@ -73,6 +76,53 @@ class SignatureStats:
     procedure_notes: int = 0
     instance_facts: int = 0
     last_used_at: Optional[str] = None
+
+
+@dataclass
+class ToolQuirk:
+    """A tool failure or empty result the procedural extractor keeps seeing."""
+
+    tool: str
+    kind: str  # "failed" | "empty"
+    detail: str
+    example: str
+    count: int
+    signatures: list[str] = field(default_factory=list)
+    last_seen: Optional[str] = None
+
+
+_TOP_QUIRKS = 10
+
+
+def _load_tool_quirks(db_path: str, limit: int = _TOP_QUIRKS) -> list[ToolQuirk]:
+    """Return the most frequent recorded tool quirks (sessions seen, then breadth)."""
+    try:
+        with sqlite3.connect(db_path) as conn:
+            rows = conn.execute(
+                "SELECT value FROM user_prefs WHERE key LIKE ?",
+                (_QUIRK_PREFIX + "%",),
+            ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    quirks: list[ToolQuirk] = []
+    for (value,) in rows:
+        try:
+            d = json.loads(value)
+            quirks.append(
+                ToolQuirk(
+                    tool=str(d["tool"]),
+                    kind=str(d.get("kind", "failed")),
+                    detail=str(d.get("detail", "")),
+                    example=str(d.get("example", "")),
+                    count=int(d.get("count", 0)),
+                    signatures=list(d.get("signatures", [])),
+                    last_seen=d.get("last_seen"),
+                )
+            )
+        except (ValueError, KeyError, TypeError):
+            continue
+    quirks.sort(key=lambda q: (-q.count, -len(q.signatures), q.tool))
+    return quirks[:limit]
 
 
 def _load_usage_stats(db_path: str) -> dict[str, tuple[int, Optional[float]]]:
@@ -393,4 +443,5 @@ def analyze_local_runbooks(
         gaps_by_signature=gaps_by_signature,
         signature_stats=sig_stats,
         unmatched_seeds=unmatched_seeds,
+        tool_quirks=_load_tool_quirks(db_path),
     )

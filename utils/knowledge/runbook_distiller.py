@@ -30,7 +30,7 @@ from utils.core.logging import get_logger
 
 if TYPE_CHECKING:
     from interfaces import KnowledgeStoreClientProtocol, LLMClientProtocol
-    from utils.agent.tool_registry import AgentStep
+    from utils.agent.tool_registry import AgentStep, ToolCall
 
 
 def make_llm_client():  # pragma: no cover
@@ -271,29 +271,290 @@ def _grounded_facts(
     return kept
 
 
+# Tools whose output is log content.  A lesson about them may cite how the call
+# was made, never what the log said (that is evidence, not a tool lesson).
+_LOG_READER_TOOLS = frozenset(
+    {"read_logs", "search_log", "read_pueo_log", "summarize_log_window"}
+)
+# finish_* tools end the session; a lesson about them teaches nothing.
+_TERMINAL_TOOL_PREFIX = "finish_"
+_STEP_REF_RE = re.compile(r"\bsteps?\s+(\d+(?:\s*(?:,|and|&|-)\s*\d+)*)", re.I)
+_REPEAT_COUNT_RE = re.compile(r"^(?:\d+[x×]|x\d+)$")
+
+
+def _step_evidence(step: AgentStep) -> str:
+    text = f"{step.tool_call.name}({json.dumps(step.tool_call.arguments)})"
+    if step.tool_call.name in _LOG_READER_TOOLS:
+        return text
+    return f"{text}\n{step.tool_result.output or ''}\n{step.tool_result.error or ''}"
+
+
+def _lesson_is_grounded(lesson: str, step: AgentStep, steps: list[AgentStep]) -> bool:
+    """Relaxed grounding for tool-use lessons (#991).
+
+    The lesson must name a tool from the trace.  Every distinctive token (has a
+    digit or ``._:/-``) must appear in the args or output of the cited step or of
+    any step the lesson mentions as "step N".  Tool names, step numbers and
+    repeat counts ("2x") count as present.  There is no content-word rule: a
+    meta-lesson ("redundant", "FAILED") never appears in tool output.  Log-reader
+    steps contribute only their call, so restating log content is rejected.
+    """
+    text = lesson.strip()
+    if not text:
+        return False
+    tool_names = {s.tool_call.name.lower() for s in steps}
+    low = text.lower()
+    if not any(
+        re.search(rf"\b{re.escape(n)}\b", low)
+        for n in tool_names
+        if not n.startswith(_TERMINAL_TOOL_PREFIX)
+    ):
+        return False
+    by_num = {s.step_number: s for s in steps}
+    cited = {step.step_number}
+    for m in _STEP_REF_RE.finditer(text):
+        cited.update(int(n) for n in re.findall(r"\d+", m.group(1)))
+    evidence = "\n".join(_step_evidence(by_num[n]) for n in cited if n in by_num)
+    ev = evidence.lower()
+    for tok in _FACT_TOKEN_RE.findall(text):
+        t = tok.lower()
+        if not (any(c.isdigit() for c in t) or any(c in "._:/-" for c in t)):
+            continue
+        if t in tool_names or _REPEAT_COUNT_RE.match(t):
+            continue
+        if t.isdigit() and int(t) in cited:
+            continue
+        if t not in ev:
+            return False
+    return True
+
+
 def _grounded_lessons(
     lessons: list[ProceduralLesson], steps: list[AgentStep]
 ) -> list[ProceduralLesson]:
     """Filter lessons to those whose cited step exists and whose text is grounded."""
-    evidence_by_step: dict[int, str] = {}
-    for s in steps:
-        evidence_by_step[s.step_number] = (
-            f"{s.tool_call.name}({json.dumps(s.tool_call.arguments)[:200]})\n"
-            f"{s.tool_result.output or ''}\n{s.tool_result.error or ''}"
-        )
+    by_num = {s.step_number: s for s in steps}
     kept: list[ProceduralLesson] = []
     for lesson in lessons:
-        evidence = evidence_by_step.get(lesson.evidence_step)
-        if evidence is not None and _fact_is_grounded(lesson.lesson, evidence):
+        step = by_num.get(lesson.evidence_step)
+        if step is not None and _lesson_is_grounded(lesson.lesson, step, steps):
             kept.append(lesson)
         else:
             log.info(
                 "procedure_lesson_rejected",
                 lesson=lesson.lesson[:200],
                 evidence_step=lesson.evidence_step,
-                reason="no_such_step" if evidence is None else "ungrounded",
+                reason="no_such_step" if step is None else "ungrounded",
             )
     return kept
+
+
+# ---------------------------------------------------------------------------
+# Deterministic procedure facts (#991, amends ADR 049)
+# ---------------------------------------------------------------------------
+
+# Errors about Pueo's own setup or a transient stall, not about how a tool behaves.
+_ENVIRONMENT_ERROR_RE = re.compile(
+    r"client not available|not configured|timed out|timeout", re.I
+)
+# Config entry ids (32-hex or ULID) and UUIDs vary per instance; normalise them
+# so the same quirk dedupes across sessions.
+_ID_RE = re.compile(
+    r"\b(?:[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}"
+    r"|[0-9a-f]{32}|[0-7][0-9A-HJKMNP-TV-Z]{25})\b"
+)
+_HTTPX_STATUS_RE = re.compile(r"Client error '(\d{3}[^']*)'")
+_HTTPX_NOISE_RE = re.compile(r"\s*for url\s*'[^']*'|\s*For more information.*$", re.S)
+_URL_RE = re.compile(r"https?://\S+")
+_EMPTY_RESULT_RE = re.compile(r"^\(?no\b", re.I)
+_EMPTY_RESULT_MAX_CHARS = 200
+_NOTE_ERROR_CHARS = 120
+_NOTE_ARG_CHARS = 100
+# Free-text args say why a call was made, not how; they never belong in a note.
+_NOTE_SKIP_ARGS = frozenset({"reason"})
+_QUIRK_PREFIX = "procedure_quirk:"
+
+
+def _normalise_error(text: str) -> str:
+    text = _HTTPX_STATUS_RE.sub(r"HTTP \1", text)
+    text = _HTTPX_NOISE_RE.sub("", text)
+    text = _URL_RE.sub("", text)
+    text = _ID_RE.sub("<id>", text)
+    return " ".join(text.split()).rstrip(" .:")[:_NOTE_ERROR_CHARS]
+
+
+def _call_args(call: ToolCall) -> dict:
+    return {k: v for k, v in call.arguments.items() if k not in _NOTE_SKIP_ARGS}
+
+
+def _format_call(call: ToolCall) -> str:
+    """Render a tool call compactly: ``tool(value)`` or ``tool(k=v, k2=v2)``."""
+    args = _call_args(call)
+    parts = [
+        " ".join(_ID_RE.sub("<id>", str(v)).split())[:_NOTE_ARG_CHARS]
+        for v in args.values()
+    ]
+    if len(args) > 1:
+        parts = [f"{k}={p}" for k, p in zip(args, parts)]
+    return f"{call.name}({', '.join(parts)})"
+
+
+def _is_correction(failed: ToolCall, later: ToolCall) -> bool:
+    """True when *later* retries *failed* with a corrected value for the same input.
+
+    Same tool and arg names, and each changed value is related to the one it
+    replaces (one contains the other's last word: ``humidy`` → ``humidifier.humidy``).
+    A different command on the same tool is not a correction.
+    """
+    a, b = _call_args(failed), _call_args(later)
+    if later.name != failed.name or a.keys() != b.keys() or a == b:
+        return False
+    for k in a:
+        old, new = str(a[k]).lower(), str(b[k]).lower()
+        if old == new:
+            continue
+        old_last = (old.split() or [old])[-1]
+        new_last = (new.split() or [new])[-1]
+        if not (old_last in new or new_last in old):
+            return False
+    return True
+
+
+def _is_empty_result(step: AgentStep) -> bool:
+    out = (step.tool_result.output or "").strip()
+    if not out:
+        return True
+    return len(out) < _EMPTY_RESULT_MAX_CHARS and bool(_EMPTY_RESULT_RE.match(out))
+
+
+def _step_problem(step: AgentStep) -> Optional[tuple[str, str]]:
+    """Classify a step as ``("failed", error)`` or ``("empty", "")``, else None.
+
+    Approval hand-offs, terminal tools, environment errors, and empty log
+    searches (absence of a log line is evidence, not a tool problem) are not
+    problems.
+    """
+    r = step.tool_result
+    if r.awaiting_approval or step.tool_call.name.startswith(_TERMINAL_TOOL_PREFIX):
+        return None
+    if not r.success:
+        err = r.error or r.output or ""
+        if _ENVIRONMENT_ERROR_RE.search(err):
+            return None
+        return "failed", _normalise_error(err) or "(no error text)"
+    if step.tool_call.name not in _LOG_READER_TOOLS and _is_empty_result(step):
+        return "empty", ""
+    return None
+
+
+def extract_procedure_facts(steps: list[AgentStep]) -> list[ProceduralLesson]:
+    """Derive tool-use notes from a trace without an LLM.
+
+    Records failed calls with their normalised error (or, when a later call
+    retried the same input with a corrected value and succeeded, the corrected
+    call), identical calls repeated within the session, and calls that returned
+    nothing — in that order, since the note list is capped.  Pure.
+    """
+    failures: list[ProceduralLesson] = []
+    repeats: list[ProceduralLesson] = []
+    empties: list[ProceduralLesson] = []
+    seen: set[str] = set()
+
+    def _add(bucket: list[ProceduralLesson], text: str, step_number: int) -> None:
+        if text not in seen:
+            seen.add(text)
+            bucket.append(ProceduralLesson(lesson=text, evidence_step=step_number))
+
+    calls: dict[str, list[AgentStep]] = {}
+    for i, s in enumerate(steps):
+        key = s.tool_call.name + json.dumps(_call_args(s.tool_call), sort_keys=True)
+        calls.setdefault(key, []).append(s)
+        problem = _step_problem(s)
+        if problem is None:
+            continue
+        kind, detail = problem
+        shown = _format_call(s.tool_call)
+        if kind == "empty":
+            _add(empties, f"`{shown}` returned no results", s.step_number)
+            continue
+        fix = next(
+            (
+                t
+                for t in steps[i + 1 :]
+                if _is_correction(s.tool_call, t.tool_call)
+                and _step_problem(t) is None
+                and t.tool_result.success
+            ),
+            None,
+        )
+        if fix is not None:
+            _add(
+                failures,
+                f"`{shown}` failed ({detail}); `{_format_call(fix.tool_call)}` worked",
+                s.step_number,
+            )
+        else:
+            _add(failures, f"`{shown}` failed: {detail}", s.step_number)
+    for same in calls.values():
+        if len(same) >= 2:
+            _add(
+                repeats,
+                f"`{_format_call(same[0].tool_call)}` was called {len(same)}× "
+                "with identical arguments; reuse the first result",
+                same[1].step_number,
+            )
+    return failures + repeats + empties
+
+
+def _record_tool_quirks(db_path: str, signature: str, steps: list[AgentStep]) -> int:
+    """Count each (tool, problem) once per session in ``user_prefs``.
+
+    One row per quirk (``procedure_quirk:<hash>``) holds the count, the
+    signatures it was seen under, an example call and the last-seen time, so the
+    learning-health table can show which tools keep tripping agents up.
+    Synchronous — call via asyncio.to_thread.  Returns rows written.
+    """
+    found: dict[str, dict] = {}
+    for s in steps:
+        problem = _step_problem(s)
+        if problem is None:
+            continue
+        kind, detail = problem
+        h = hashlib.sha256(f"{s.tool_call.name}|{kind}|{detail}".encode()).hexdigest()
+        found.setdefault(
+            _QUIRK_PREFIX + h[:12],
+            {
+                "tool": s.tool_call.name,
+                "kind": kind,
+                "detail": detail,
+                "example": _format_call(s.tool_call),
+            },
+        )
+    if not found:
+        return 0
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    try:
+        with sqlite3.connect(db_path) as conn:
+            for key, quirk in found.items():
+                row = conn.execute(
+                    "SELECT value FROM user_prefs WHERE key=?", (key,)
+                ).fetchone()
+                prev = json.loads(row[0]) if row else {}
+                sigs = list(prev.get("signatures", []))
+                if signature and signature not in sigs:
+                    sigs.append(signature)
+                quirk.update(
+                    count=int(prev.get("count", 0)) + 1, signatures=sigs, last_seen=now
+                )
+                conn.execute(
+                    "INSERT OR REPLACE INTO user_prefs (key, value) VALUES (?, ?)",
+                    (key, json.dumps(quirk)),
+                )
+            conn.commit()
+    except (sqlite3.Error, ValueError, AttributeError) as exc:
+        log.warning("tool_quirk_record_failed", signature=signature, error=str(exc))
+        return 0
+    return len(found)
 
 
 def _split_procedure_notes(approach: str) -> tuple[str, str]:
@@ -349,11 +610,23 @@ def _build_procedure_prompt(
     signature: str,
     outcome: str,
     step_trace: str,
+    known_notes: Optional[list[str]] = None,
 ) -> str:
     """Build the prompt for procedural-lesson distillation.
 
     Asks for tool-use lessons only — no root-cause verdict or fix summary.
+    *known_notes* are the deterministic extractor's notes, listed so the model
+    does not restate them.
     """
+    known = (
+        [
+            "",
+            "Already recorded (do not repeat these):",
+            *(f"- {n}" for n in known_notes),
+        ]
+        if known_notes
+        else []
+    )
     return "\n".join(
         [
             "You are reviewing a Home Assistant diagnostic session for tool-use lessons.",
@@ -363,6 +636,7 @@ def _build_procedure_prompt(
             "",
             "Tool trace (FAILED = tool error, EMPTY = no output returned):",
             step_trace,
+            *known,
             "",
             "List up to 4 lessons about tool mechanics only:",
             "- Which tool call returned the key evidence (state which step)",
@@ -372,8 +646,12 @@ def _build_procedure_prompt(
             "",
             "Rules:",
             "- Do NOT state a root cause, fix, or verdict.",
-            "- Each lesson must cite a step number and reuse words from that step's "
-            "output, args, or error message.",
+            "- Name the tool in every lesson (e.g. get_integration_diagnostics) and "
+            "cite the step number.",
+            "- Any id, domain, entity_id or number in a lesson must appear in that "
+            "step's args, output or error.",
+            "- Do NOT restate what a log or tool output said (e.g. 'read_logs "
+            "contained a traceback from X') — lessons are about how to call tools.",
             "- Skip lessons that add nothing beyond 'tool X was called' — only note "
             "failures, redundancies, or surprising successes.",
         ]
@@ -1274,15 +1552,21 @@ async def distill_procedure(
     Called without waiting for user verification — only captures HOW to gather
     evidence, never WHAT conclusion to draw.  No ``distilled_at`` stamp (that
     belongs to verdict distillation so recovery never skips the verdict lane).
+    Deterministic notes (``extract_procedure_facts``) come first and are kept
+    even when the LLM call fails.
     """
     if not signature or not steps or not db_path:
         return
+
+    facts = extract_procedure_facts(steps)
+    await asyncio.to_thread(_record_tool_quirks, db_path, signature, steps)
 
     step_trace = _format_step_trace(steps)
     prompt = _build_procedure_prompt(
         signature=signature,
         outcome=outcome,
         step_trace=step_trace,
+        known_notes=[f.lesson for f in facts],
     )
 
     timeout_secs = await asyncio.to_thread(
@@ -1295,6 +1579,7 @@ async def distill_procedure(
     _think = await asyncio.to_thread(one_shot_think, model)
     _client = llm_client if llm_client is not None else make_llm_client()
 
+    llm_lessons: list[ProceduralLesson] = []
     try:
         response = await asyncio.wait_for(
             _client.chat(
@@ -1308,6 +1593,7 @@ async def distill_procedure(
         )
         content = response["message"]["content"]
         result = ProceduralLessons.model_validate_json(content)
+        llm_lessons = _grounded_lessons(result.lessons, steps)
     except Exception as exc:
         log.warning(
             "procedure_distillation_llm_failed",
@@ -1315,9 +1601,8 @@ async def distill_procedure(
             error=str(exc),
             error_type=type(exc).__name__,
         )
-        return
 
-    lessons = _grounded_lessons(result.lessons, steps)
+    lessons = facts + llm_lessons
     if not lessons:
         log.info(
             "procedure_distillation_no_lessons",
@@ -1336,6 +1621,8 @@ async def distill_procedure(
                 signature=signature,
                 episode_id=episode_id,
                 lessons=len(lessons),
+                extracted=len(facts),
+                llm=len(llm_lessons),
             )
     except Exception as exc:  # nosec B110
         log.warning(

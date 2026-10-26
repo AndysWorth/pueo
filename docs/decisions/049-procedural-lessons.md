@@ -90,3 +90,50 @@ The verdict lane stamps `distilled_at`; the procedure lane does not.
   `[CANDIDATE RUNBOOK – unreviewed]` until a verified verdict merges a real approach.
 - Two additional WorkItems are submitted per qualifying session.  Both are PRIORITY_LOW
   and serialised through the existing queue — no concurrency change.
+
+---
+
+## Amendment (2026-10-26, #991): deterministic base + relaxed grounding
+
+**Context.** In the first week the lane rejected 55 of 60 lessons as ungrounded.
+`_fact_is_grounded` was built for instance facts: it requires capitalized words and
+content words to appear in the output, and a meta-lesson ("Step 3 was redundant",
+"FAILED") never appears in tool output.  The few accepted notes restated log content
+("read_logs returned a noaa_coops traceback").  The useful lessons were really tool
+bugs.
+
+**Decision.**
+1. **Deterministic extractor first.** `extract_procedure_facts(steps)` is pure and
+   needs no LLM.  It notes failed calls with a normalised error (httpx URL noise
+   removed, config entry ids and UUIDs → `<id>`), a failed call followed by a
+   successful retry of the same input with a corrected value (`humidy` →
+   `humidifier.humidy`), identical calls repeated in one session (`reason` args
+   ignored), and empty results.  It skips approval hand-offs, `finish_*` tools,
+   environment errors ("client not available", timeouts) and empty log searches,
+   since an absent log line is evidence.  Failures come before repeats and empties
+   because the note list is capped.  Its notes are persisted even when the LLM
+   call fails, and they're listed in the LLM prompt as "already recorded".
+2. **Relaxed LLM grounding.** `_lesson_is_grounded` replaces `_fact_is_grounded`
+   for lessons.  The lesson must name a non-terminal tool from the trace.  Every
+   distinctive token (digit or `._:/-`) must appear in the args or output of the
+   cited step or any step it mentions as "step N".  Tool names, cited step numbers
+   and repeat counts ("2x") count as present.  There is no content-word rule.
+   Log-reader steps (`read_logs`, `search_log`, `read_pueo_log`,
+   `summarize_log_window`) contribute only their call, not their output, so
+   restating log content is rejected.  Replayed against the week's 64 rejected
+   lessons, 22 now pass.  The rest are verdicts, "no calls were redundant", log
+   restatements, or lessons that name no tool.
+3. **Recurring quirks.** Each (tool, problem) is counted once per session in a
+   `user_prefs` row `procedure_quirk:<hash>` (count, signatures, example call, last
+   seen).  No migration is needed.  The `/runbooks` learning-health section lists
+   the top 10, so a quirk gets fixed in the tool instead of being relearned per
+   signature.
+
+**Consequences.** Procedure notes now accumulate from every conclusive session with
+tool problems, whatever the LLM produces.  Note quality depends on tool error text,
+so tool errors should say what to do next.  The #991 fixes do this:
+`get_integration_diagnostics` 404 → "<domain> does not provide diagnostics", ULID
+entry ids resolve, and an unknown id gets a "pass the domain" hint.
+`search_integrations` gives a domain hint plus entity-registry matches.
+`read_logs(domain=…)` filters the core log to one integration.
+`get_update_release_notes` strips the scraper's `STUB:` marker.

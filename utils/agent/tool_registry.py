@@ -132,6 +132,8 @@ READ_LOGS = ToolDefinition(
         "Tail N recent lines from an HA log source over SSH. "
         "log_source: 'ha_core' (default), 'ha_supervisor', 'ha_host' (HAOS journal; 'ha_os' is an alias), or 'ha_app'. "
         "When log_source='ha_app', also pass addon_slug (e.g. 'core_mosquitto'). "
+        "Pass domain (e.g. 'tuya') to keep only that integration's records from the "
+        "last 500 lines, so other integrations' tracebacks don't drown them out. "
         "Use list_log_sources to discover valid addon slugs."
     ),
     parameters={
@@ -149,6 +151,13 @@ READ_LOGS = ToolDefinition(
             "addon_slug": {
                 "type": "string",
                 "description": "Required when log_source='ha_app' (e.g. 'core_mosquitto')",
+            },
+            "domain": {
+                "type": "string",
+                "description": (
+                    "Optional integration domain (e.g. 'tuya'): return only log "
+                    "records mentioning it"
+                ),
             },
         },
         "required": [],

@@ -45,8 +45,8 @@ single post-restart sighting. One restart gives you one data point.
    from an update, a host reboot or nothing Pueo recorded.
 2. `get_integration_diagnostics(domain=<domain>)` once per affected integration to
    check whether its config entry loaded.
-3. `read_logs(lines=60, log_source="ha_core")` and look only for setup errors from the
-   affected integrations after the start time.
+3. `read_logs(lines=60, log_source="ha_core", domain=<domain>)` once per affected
+   integration and look only for its setup errors after the start time.
 4. If one device stands out, use `get_entity_history` on one of the entity_ids
    listed in the context (never guess an entity_id) to see whether it was off
    before the restart.
