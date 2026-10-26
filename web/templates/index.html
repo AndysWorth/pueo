@@ -648,6 +648,11 @@ trigger: {{ r.payload.get("trigger", []) | tojson(indent=2) }}
       </div>
       {% endif %}
       {% endif %}
+      {% if ct == "device_offline" and r.payload.get("devices") %}
+      <form method="POST" action="/off/{{ r.notification_id }}" style="margin-top:0.5rem;">
+        <button type="submit" title="These devices are off on purpose. Pueo stops alerting on them until they come back online and records that you turned them off." style="background:#fff;color:#333;border:1px solid #888;padding:0.3rem 0.85rem;border-radius:4px;cursor:pointer;font-size:0.82rem;">I turned these off</button>
+      </form>
+      {% endif %}
       {% endif %}
     </div>
     {% endif %}

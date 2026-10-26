@@ -282,6 +282,67 @@ def _fetch_memory_chunks(db_path: str, signature: str) -> "list[Any]":
     return chunks
 
 
+_PRIOR_SESSION_WINDOW_DAYS = 14
+_PRIOR_SESSION_LIMIT = 3
+_PRIOR_SESSION_TEXT_CHARS = 300
+
+
+def _fetch_prior_sessions(
+    db_path: str, subject_keys: list[str], now: Optional[float] = None
+) -> str:
+    """Return a [PREVIOUS INVESTIGATION] block for recent sessions on the same subject.
+
+    Lists up to _PRIOR_SESSION_LIMIT session_outcomes rows from the last
+    _PRIOR_SESSION_WINDOW_DAYS, newest first, with what each concluded and
+    whether anyone confirmed it.  Returns "" when there are none.
+    """
+    import json
+    import sqlite3
+
+    keys = [k for k in subject_keys if k]
+    if not db_path or not keys:
+        return ""
+    cutoff = time.strftime(
+        "%Y-%m-%dT%H:%M:%SZ",
+        time.gmtime((now or time.time()) - _PRIOR_SESSION_WINDOW_DAYS * 86400),
+    )
+    try:
+        with sqlite3.connect(db_path) as conn:
+            rows = conn.execute(
+                "SELECT created_at, conclusion_json, verification, correction"
+                " FROM session_outcomes"
+                f" WHERE subject_key IN ({','.join('?' * len(keys))})"  # nosec B608
+                "   AND created_at >= ?"
+                " ORDER BY created_at DESC LIMIT ?",
+                (*keys, cutoff, _PRIOR_SESSION_LIMIT),
+            ).fetchall()
+    except Exception:  # nosec B110
+        return ""
+    lines: list[str] = []
+    for created_at, conclusion_json, verification, correction in rows:
+        try:
+            conclusion = json.loads(conclusion_json or "{}") or {}
+        except (TypeError, ValueError):
+            conclusion = {}
+        text = (
+            conclusion.get("root_cause") or conclusion.get("summary") or ""
+        ).strip() or "(no conclusion recorded)"
+        if len(text) > _PRIOR_SESSION_TEXT_CHARS:
+            text = text[:_PRIOR_SESSION_TEXT_CHARS] + "…"
+        when = str(created_at or "")[:16].replace("T", " ") + " UTC"
+        line = f"[PREVIOUS INVESTIGATION] {when}: {text} (verification: {verification or 'pending'})"
+        if correction:
+            line += f" — user correction: {str(correction)[:200]}"
+        lines.append(line)
+    if not lines:
+        return ""
+    return (
+        "Earlier sessions on this same subject. pending/unverified means nobody"
+        " confirmed the conclusion; failure means it was wrong. Re-check, don't"
+        " repeat it:\n" + "\n".join(lines)
+    )
+
+
 def _parse_content_as_tool_call(
     content: str, known_names: set[str]
 ) -> list[dict] | None:
@@ -817,6 +878,7 @@ class AgentLoop:
         knowledge_query: str = "",
         signature: str = "",
         subject_key: str = "",
+        prior_subject_keys: Optional[list[str]] = None,
     ) -> AgentLoopResult:
         """Run the agent loop and return a result describing what happened.
 
@@ -838,6 +900,9 @@ class AgentLoop:
             Symptom-class signature (from runbook_signature.py). Used for
             exact-match runbook lookup, runbook_usage keying, and distillation
             dedup. Falls back to self._trigger when empty.
+        prior_subject_keys:
+            Subject keys whose recent sessions are pre-injected as
+            [PREVIOUS INVESTIGATION] lines.  Defaults to ``[subject_key]``.
         """
         self._executor.reset()
         self._llm_captures = []
@@ -866,6 +931,19 @@ class AgentLoop:
             ):
                 self._context_inject_callback(enriched[:1000])
             initial_context = enriched
+
+        if self._db_path:
+            prior_block = await asyncio.to_thread(
+                _fetch_prior_sessions,
+                self._db_path,
+                (
+                    prior_subject_keys
+                    if prior_subject_keys is not None
+                    else [subject_key]
+                ),
+            )
+            if prior_block:
+                initial_context = f"{initial_context}\n\n---\n{prior_block}"
 
         initial_context = self._pre_inject_ha_profile(initial_context)
 
@@ -1694,6 +1772,7 @@ class AgentLoop:
                 if tool_call.name == self._terminal_tool_name:
                     episode_stub = {
                         "summary": tool_call.arguments.get("summary", ""),
+                        "root_cause": tool_call.arguments.get("root_cause", ""),
                         "human_explanation": tool_call.arguments.get(
                             "human_explanation", ""
                         ),

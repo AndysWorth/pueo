@@ -9614,3 +9614,156 @@ class TestRunbooksTab:
         assert resp.status_code == 200
         assert "Seeds never matched (1)" in resp.text
         assert "never:matched:*" in resp.text
+
+
+class TestTurnedOffRoute:
+    """'I turned these off' on a device_offline card (#987)."""
+
+    def _client(self, tmp_path, monkeypatch, payload: dict, nid: str = "nid-off"):
+        import json as _json
+        import sqlite3 as _sq
+        import time as _time
+
+        import agents.ha_agent_advanced as adv
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        db_path = str(tmp_path / "db.sqlite")
+        with _sq.connect(db_path) as conn:
+            conn.execute(TestCardEpisodeIdVerification.SESSION_OUTCOMES_DDL)
+            conn.execute(TestCardEpisodeIdVerification.RUNBOOK_USAGE_DDL)
+            conn.execute("CREATE TABLE user_prefs (key TEXT PRIMARY KEY, value TEXT)")
+            conn.execute(
+                "CREATE TABLE agent_memory (key TEXT, content TEXT, source TEXT,"
+                " ts REAL, signature TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO session_outcomes (episode_id, signature, session_type,"
+                " subject_key, created_at, verification)"
+                " VALUES ('ep-off', 'device:offline:matter', 'device_availability',"
+                " 'e1:matter', '2026-10-26T15:00:00Z', 'pending')"
+            )
+        watch_dir = tmp_path / "watch"
+        watch_dir.mkdir()
+        (watch_dir / f"{nid}.json").write_text(
+            _json.dumps(
+                {
+                    "notification_id": nid,
+                    "subject": "Device offline",
+                    "body": "b",
+                    "timestamp": _time.time(),
+                    "payload": payload,
+                }
+            )
+        )
+        distilled: list = []
+
+        async def _fake_distill(ep, verification, correction=""):
+            distilled.append((ep, verification, correction))
+
+        resolved: list = []
+        monkeypatch.setattr(
+            "utils.hitl.hitl_tracker.mark_card_resolved",
+            lambda conn, key: resolved.append(key),
+        )
+        monkeypatch.setattr(
+            dashboard, "_trigger_post_verify_distillation", _fake_distill
+        )
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+        monkeypatch.setattr(dashboard, "DB_PATH", db_path)
+        monkeypatch.setattr(adv, "DB_PATH", db_path)
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        return client, db_path, watch_dir, distilled, resolved
+
+    _DEVICES = [
+        {"device_id": "d1", "name": "Xmas Lights", "domain": "matter"},
+        {"device_id": "d2", "name": "Kasa Plug", "domain": "matter"},
+    ]
+
+    def _payload(self, **extra) -> dict:
+        return {
+            "card_type": "device_offline",
+            "episode_id": "ep-off",
+            "suppression_key": "device_offline:e1",
+            "devices": self._DEVICES,
+            **extra,
+        }
+
+    def _verification(self, db_path):
+        import sqlite3 as _sq
+
+        with _sq.connect(db_path) as conn:
+            return conn.execute(
+                "SELECT verification, verified_by, correction FROM session_outcomes"
+            ).fetchone()
+
+    def test_disarms_devices_resolves_card_and_marks_failure(
+        self, tmp_path, monkeypatch
+    ):
+        import sqlite3 as _sq
+
+        from utils.ha.device_availability import load_disarmed
+
+        client, db, watch, distilled, resolved = self._client(
+            tmp_path, monkeypatch, self._payload()
+        )
+        resp = client.post("/off/nid-off", follow_redirects=False)
+        assert resp.status_code == 303
+        with _sq.connect(db) as conn:
+            assert load_disarmed(conn) == frozenset({"d1", "d2"})
+            facts = conn.execute(
+                "SELECT content, source, signature FROM agent_memory"
+            ).fetchall()
+        assert facts == [
+            (
+                "User-confirmed: these matter devices are sometimes switched off on"
+                " purpose: Xmas Lights, Kasa Plug.",
+                "user:nid-off",
+                "device:offline:matter",
+            )
+        ]
+        verification, by, correction = self._verification(db)
+        # A per-integration session blamed a fault, so it was wrong.
+        assert (verification, by) == ("failure", "user")
+        assert "switched these devices off on purpose" in correction
+        assert distilled == [("ep-off", "failure", correction)]
+        assert resolved == ["device_offline:e1"]
+        assert (watch / "nid-off.approved").exists()
+
+    def test_post_restart_sweep_answer_is_success(self, tmp_path, monkeypatch):
+        client, db, _w, distilled, _r = self._client(
+            tmp_path, monkeypatch, self._payload(post_restart=True)
+        )
+        client.post("/off/nid-off", follow_redirects=False)
+        assert self._verification(db)[0] == "success"
+        assert distilled[0][1] == "success"
+
+    def test_other_card_type_is_ignored(self, tmp_path, monkeypatch):
+        client, db, watch, distilled, _r = self._client(
+            tmp_path, monkeypatch, self._payload(card_type="update")
+        )
+        client.post("/off/nid-off", follow_redirects=False)
+        assert self._verification(db)[0] == "pending"
+        assert distilled == []
+        assert not (watch / "nid-off.approved").exists()
+
+    def test_resolved_card_is_noop(self, tmp_path, monkeypatch):
+        client, db, watch, distilled, _r = self._client(
+            tmp_path, monkeypatch, self._payload()
+        )
+        (watch / "nid-off.approved").touch()
+        client.post("/off/nid-off", follow_redirects=False)
+        assert self._verification(db)[0] == "pending"
+        assert distilled == []
+
+    def test_button_rendered_on_device_offline_card(self, tmp_path, monkeypatch):
+        client, _db, _w, _d, _r = self._client(tmp_path, monkeypatch, self._payload())
+        html = client.get("/queue").text
+        assert 'action="/off/nid-off"' in html
+        assert "I turned these off" in html
+
+    def test_button_absent_on_other_cards(self, tmp_path, monkeypatch):
+        client, _db, _w, _d, _r = self._client(
+            tmp_path, monkeypatch, self._payload(card_type="host_health")
+        )
+        assert "/off/nid-off" not in client.get("/queue").text

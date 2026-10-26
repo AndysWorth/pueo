@@ -1,6 +1,8 @@
 """LLM-guided investigation for device-availability findings (offline devices)."""
 
 import asyncio
+import sqlite3
+import time
 from typing import Any, Optional
 
 from utils.core.logging import get_logger
@@ -11,7 +13,86 @@ log = get_logger("device_availability_investigation")
 
 def device_availability_knowledge_query(finding: OfflineFinding) -> str:
     """Targeted pre-inject query: domain plus 'device offline'."""
+    if finding.ha_start_ts is not None:
+        return "devices unavailable after Home Assistant restart update reboot"
     return f"device offline {finding.domain} unavailable".strip()
+
+
+def _fmt_local(ts: float) -> str:
+    iso = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(float(ts)))
+    return f"{iso} local (epoch {int(ts)})"
+
+
+def format_device_line(d: dict, with_integration: bool = False) -> str:
+    """One context line per device: name, offline-since and its entity_ids."""
+    since = d.get("offline_since")
+    parts = [f"offline since {_fmt_local(since) if since is not None else 'unknown'}"]
+    if d.get("entity_ids"):
+        parts.append("entities: " + ", ".join(d["entity_ids"]))
+    where = ""
+    if with_integration:
+        where = (
+            f" [{d.get('domain') or 'unknown'}, entry {d.get('config_entry_id', '')}]"
+        )
+    return f"  - {d['name']}{where} ({'; '.join(parts)})"
+
+
+# Timeline sources that explain a restart: Pueo-run updates and host reboots.
+# Three entries — matches the "IN (?, ?, ?)" in restart_events().
+_RESTART_EVENT_SOURCES = ("update_executor", "update_check", "resource")
+_RESTART_LOOKBACK_S = 2 * 3600
+
+
+def restart_events(db_path: str, ha_start_ts: float, limit: int = 6) -> list[str]:
+    """Timeline lines from two hours before the HA start up to 15 min after it."""
+    try:
+        with sqlite3.connect(db_path) as conn:
+            rows = conn.execute(
+                "SELECT ts, source, message FROM timeline_events"
+                " WHERE ts BETWEEN ? AND ?"
+                " AND source IN (?, ?, ?)"
+                " ORDER BY ts DESC LIMIT ?",
+                (
+                    ha_start_ts - _RESTART_LOOKBACK_S,
+                    ha_start_ts + 900,
+                    *_RESTART_EVENT_SOURCES,
+                    limit,
+                ),
+            ).fetchall()
+    except Exception as exc:  # nosec B110
+        log.debug("restart_events_fetch_failed", error=str(exc))
+        return []
+    return [
+        f"  - {_fmt_local(ts)} [{src}] {str(msg)[:160]}"
+        for ts, src, msg in reversed(rows)
+    ]
+
+
+def build_post_restart_context(finding: OfflineFinding, db_path: str) -> str:
+    """Initial context for a grouped post-restart sweep."""
+    assert finding.ha_start_ts is not None  # nosec B101
+    domains = sorted({d.get("domain") or "unknown" for d in finding.devices})
+    events = restart_events(db_path, finding.ha_start_ts)
+    event_block = (
+        "\n".join(events)
+        if events
+        else "  (none recorded — the restart may have been manual, from the HA UI,"
+        " or unplanned)"
+    )
+    device_lines = "\n".join(
+        format_device_line(d, with_integration=True) for d in finding.devices
+    )
+    return (
+        "Devices offline after a Home Assistant restart (post-restart sweep):\n"
+        f"HA started: {_fmt_local(finding.ha_start_ts)}\n"
+        f"Updates, reboots and host events around the restart:\n{event_block}\n"
+        f"Integrations: {', '.join(domains)}\n"
+        f"Offline devices ({len(finding.devices)}):\n{device_lines}\n"
+        "Note: these devices were all found offline right after the restart. Devices"
+        " that a restart exposes as unavailable were usually already switched off"
+        " before it — HA just didn't show it until it reloaded. Investigate them as one"
+        " group."
+    )
 
 
 async def build_presence_context(
@@ -138,25 +219,33 @@ async def run_device_availability_investigation(
         terminal_tool="finish_device_availability"
     )
 
-    def _fmt_offline_since(d: dict) -> str:
-        ts = d.get("offline_since")
-        if ts is None:
-            return "unknown"
-        import time as _time
-
-        iso = _time.strftime("%Y-%m-%dT%H:%M:%S", _time.localtime(float(ts)))
-        return f"{iso} local (epoch {int(ts)})"
-
-    device_lines = "\n".join(
-        f"  - {d['name']} (offline since {_fmt_offline_since(d)})"
-        for d in finding.devices
+    from utils.knowledge.runbook_signature import (
+        sig_device_availability,
+        sig_device_post_restart,
     )
-    initial_context = (
-        f"Device availability issue detected:\n"
-        f"Integration: {finding.domain}\n"
-        f"Config entry ID: {finding.config_entry_id}\n"
-        f"Offline devices ({len(finding.devices)}):\n{device_lines}"
-    )
+
+    if finding.ha_start_ts is not None:
+        initial_context = build_post_restart_context(finding, db_path)
+        signature = sig_device_post_restart()
+        subject_key = finding.domain
+        # Earlier per-integration sessions about the same devices count too.
+        prior_keys = [subject_key] + sorted(
+            {
+                f"{d.get('config_entry_id', '')}:{d.get('domain', '')}"
+                for d in finding.devices
+            }
+        )
+    else:
+        device_lines = "\n".join(format_device_line(d) for d in finding.devices)
+        initial_context = (
+            f"Device availability issue detected:\n"
+            f"Integration: {finding.domain}\n"
+            f"Config entry ID: {finding.config_entry_id}\n"
+            f"Offline devices ({len(finding.devices)}):\n{device_lines}"
+        )
+        signature = sig_device_availability(finding.domain)
+        subject_key = f"{finding.config_entry_id}:{finding.domain}"
+        prior_keys = [subject_key]
 
     presence_block = await build_presence_context(
         finding.devices, netalertx_api_client, ws_client
@@ -187,15 +276,14 @@ async def run_device_availability_investigation(
         ),
         capture_llm=True,
     )
-    from utils.knowledge.runbook_signature import sig_device_availability
-
     increment_active_agent()
     try:
         result = await loop.run(
             initial_context=initial_context,
             knowledge_query=device_availability_knowledge_query(finding),
-            signature=sig_device_availability(finding.domain),
-            subject_key=f"{finding.config_entry_id}:{finding.domain}",
+            signature=signature,
+            subject_key=subject_key,
+            prior_subject_keys=prior_keys,
         )
         publish_activity_done("device_availability", result.outcome)
         if result.outcome != "success":

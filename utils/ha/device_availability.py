@@ -17,6 +17,15 @@ the settle window after an HA start (``user_prefs`` ``ha:last_start_ts``).
 ``offline_since`` is pinned when a device is first seen offline and kept until
 it is seen online again, so restarts don't reset it.
 
+Disarm: the user can answer a ``device_offline`` card with "I turned these off".
+Disarmed devices (one ``user_prefs`` row each, ``device_availability:disarmed:<id>``)
+never alert until they are next seen online, which re-arms them.  A restart does
+not re-arm them, because unknown is not online.
+
+Post-restart sweep: findings in the first polls after the settle window are merged
+into one ``OfflineFinding`` (``ha_start_ts`` set) so a restart that exposes devices
+the user already switched off yields one investigation, not one per integration.
+
 Recurrence: per-device episode history is stored in the snapshot JSON alongside
 DeviceState fields (no DB migration needed).  After DEVICE_RECURRENCE_COUNT
 self-recoveries within DEVICE_RECURRENCE_WINDOW_DAYS, Pueo sends one
@@ -57,6 +66,7 @@ class DeviceState:
         None  # persisted until seen online again; drives recovery duration
     )
     investigated: bool = False  # an investigation ran during this episode
+    card_key: Optional[str] = None  # suppression key of the card for this episode
 
 
 @dataclass
@@ -66,6 +76,7 @@ class OfflineFinding:
     config_entry_id: str
     domain: str
     devices: list[dict]  # [{"name": …, "device_id": …, "offline_since": <ts>}]
+    ha_start_ts: Optional[float] = None  # set on a merged post-restart sweep
 
 
 @dataclass
@@ -77,7 +88,11 @@ class AvailabilityResult:
     snapshot: dict  # updated snapshot blob (device_id → DeviceState as dict)
     skipped: Optional[str] = None  # "incomplete_states" | "settling" when skipped
     state_coverage: float = 1.0  # fraction of registry entities with a state row
+    rearmed: list[str] = field(default_factory=list)  # disarmed devices seen online
 
+
+# Entity ids listed per device in the investigation context.
+_MAX_ENTITY_IDS_PER_DEVICE = 5
 
 # A device is online only if some entity reports a real state.
 _NOT_REAL_STATES = frozenset({"unavailable", "unknown"})
@@ -113,6 +128,7 @@ def evaluate_device_availability(
     min_state_coverage: float = 0.0,
     ha_start_ts: Optional[float] = None,
     settle_s: float = 0.0,
+    disarmed: frozenset[str] = frozenset(),
 ) -> AvailabilityResult:
     """Evaluate device availability from HA state snapshots.
 
@@ -143,6 +159,9 @@ def evaluate_device_availability(
     settle_s:
         Settle window in seconds after ``ha_start_ts``.  No transitions are
         evaluated inside it.
+    disarmed:
+        Device ids the user said they switched off.  They never alert; seeing
+        one online re-arms it (listed in ``rearmed``) without a recovery.
 
     Returns
     -------
@@ -198,6 +217,7 @@ def evaluate_device_availability(
     current: dict[str, DeviceState] = {}
     new_offline_by_entry: dict[str, list[dict]] = {}
     recovered_by_entry: dict[str, list[dict]] = {}
+    rearmed: list[str] = []
 
     for dev in device_registry:
         device_id = dev["id"]
@@ -222,13 +242,17 @@ def evaluate_device_availability(
             alerted=bool(prior_entry.get("alerted", False)),
             offline_since=prior_entry.get("offline_since"),
             investigated=bool(prior_entry.get("investigated", False)),
+            card_key=prior_entry.get("card_key"),
         )
         current[device_id] = ds
 
         status = _device_status([state_by_id.get(e["entity_id"]) for e in entities])
 
         if status == "online":
-            if ds.alerted:
+            if device_id in disarmed:
+                # Switched back on by the user: re-arm, not a recovery.
+                rearmed.append(device_id)
+            elif ds.alerted:
                 recovered_by_entry.setdefault(primary_entry_id, []).append(
                     {
                         "name": name,
@@ -236,13 +260,22 @@ def evaluate_device_availability(
                         "domain": domain,
                         "offline_since": ds.offline_since,
                         "investigated": ds.investigated,
+                        "card_key": ds.card_key,
                     }
                 )
             ds.last_online_ts = now
             ds.alerted = False
             ds.offline_since = None
             ds.investigated = False
+            ds.card_key = None
         elif status == "offline":
+            if device_id in disarmed:
+                # Off on purpose — close any open episode and stay quiet.
+                ds.alerted = False
+                ds.offline_since = None
+                ds.investigated = False
+                ds.card_key = None
+                continue
             if ds.alerted or ds.last_online_ts is None:
                 # Already alerted, or never seen online (unarmed) — nothing new.
                 continue
@@ -257,10 +290,15 @@ def evaluate_device_availability(
                         "name": name,
                         "device_id": device_id,
                         "domain": domain,
+                        "config_entry_id": primary_entry_id,
                         "offline_since": ds.offline_since,
+                        "entity_ids": [e["entity_id"] for e in entities][
+                            :_MAX_ENTITY_IDS_PER_DEVICE
+                        ],
                     }
                 )
                 ds.alerted = True
+                ds.card_key = f"device_offline:{primary_entry_id}"
         # status == "unknown": keep everything as it was.
 
     # Build grouped findings
@@ -288,6 +326,7 @@ def evaluate_device_availability(
             "alerted": ds.alerted,
             "offline_since": ds.offline_since,
             "investigated": ds.investigated,
+            "card_key": ds.card_key,
         }
         for device_id, ds in current.items()
     }
@@ -296,6 +335,7 @@ def evaluate_device_availability(
         new_offline=new_offline_findings,
         recovered=recovered_findings,
         snapshot=snapshot,
+        rearmed=rearmed,
     )
 
 
@@ -395,6 +435,154 @@ def record_ha_start(db_path: str, ts: float) -> None:
         log.info("ha_start_recorded", ts=ts)
     except Exception as e:  # nosec B110
         log.warning("ha_start_record_failed", error=str(e))
+
+
+# ------------------------------------------------------------------
+# Post-restart sweep (pure — no I/O)
+# ------------------------------------------------------------------
+
+POST_RESTART_DOMAIN = "post_restart"
+# Findings this soon after the settle window ends count as restart-exposed.
+_POST_RESTART_SWEEP_WINDOW_S = 600
+
+
+def in_post_restart_sweep(
+    now: float,
+    ha_start_ts: Optional[float],
+    settle_s: float,
+    window_s: float = _POST_RESTART_SWEEP_WINDOW_S,
+) -> bool:
+    """True during the first polls after the post-restart settle window."""
+    if ha_start_ts is None:
+        return False
+    settled_at = ha_start_ts + settle_s
+    return settled_at <= now < settled_at + window_s
+
+
+def merge_post_restart_findings(
+    findings: list[OfflineFinding], ha_start_ts: float
+) -> Optional[OfflineFinding]:
+    """Merge per-entry findings into one post-restart sweep finding."""
+    devices = [d for f in findings for d in f.devices]
+    if not devices:
+        return None
+    return OfflineFinding(
+        config_entry_id=f"{POST_RESTART_DOMAIN}:{int(ha_start_ts)}",
+        domain=POST_RESTART_DOMAIN,
+        devices=devices,
+        ha_start_ts=ha_start_ts,
+    )
+
+
+# ------------------------------------------------------------------
+# Disarm ("I turned these off") — one user_prefs row per device
+# ------------------------------------------------------------------
+
+_DISARM_PREFIX = "device_availability:disarmed:"
+
+
+def load_disarmed(conn: sqlite3.Connection) -> frozenset[str]:
+    """Return the ids of devices the user said they switched off."""
+    try:
+        rows = conn.execute(
+            "SELECT key FROM user_prefs WHERE key LIKE ?", (_DISARM_PREFIX + "%",)
+        ).fetchall()
+        return frozenset(r[0][len(_DISARM_PREFIX) :] for r in rows)
+    except Exception as e:  # nosec B110
+        log.warning("device_disarmed_load_failed", error=str(e))
+    return frozenset()
+
+
+def rearm_devices(conn: sqlite3.Connection, device_ids: list[str]) -> None:
+    """Delete the disarm rows of devices seen online again."""
+    if not device_ids:
+        return
+    try:
+        conn.executemany(
+            "DELETE FROM user_prefs WHERE key = ?",
+            [(_DISARM_PREFIX + d,) for d in device_ids],
+        )
+        conn.commit()
+        log.info("device_rearmed", device_ids=device_ids)
+    except Exception as e:  # nosec B110
+        log.warning("device_rearm_failed", error=str(e))
+
+
+def _intentionally_off_fact_key(domain: str) -> str:
+    return (
+        "fact_"
+        + hashlib.sha256(f"{domain}:intentionally_off".encode()).hexdigest()[:12]
+    )
+
+
+_OFF_FACT_PREFIX = (
+    "User-confirmed: these {domain} devices are sometimes switched off on purpose: "
+)
+
+
+def disarm_devices(db_path: str, devices: list[dict], nid: str) -> list[str]:
+    """Disarm *devices* and record one user-verified instance fact per domain.
+
+    Writes the disarm rows (written row by row, so a concurrent poll can't lose
+    them) and merges the device names into the domain's "switched off on
+    purpose" fact.  Returns the disarmed device ids.
+    """
+    now = time.time()
+    ids = [d["device_id"] for d in devices if d.get("device_id")]
+    names_by_domain: dict[str, list[str]] = {}
+    for d in devices:
+        dom = d.get("domain") or ""
+        if dom and d.get("name"):
+            names_by_domain.setdefault(dom, []).append(d["name"])
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.executemany(
+                "INSERT INTO user_prefs (key, value) VALUES (?, ?)"
+                " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [
+                    (
+                        _DISARM_PREFIX + d["device_id"],
+                        json.dumps({"ts": now, "nid": nid}),
+                    )
+                    for d in devices
+                    if d.get("device_id")
+                ],
+            )
+            for dom, names in names_by_domain.items():
+                key = _intentionally_off_fact_key(dom)
+                signature = f"device:offline:{dom}"
+                prefix = _OFF_FACT_PREFIX.format(domain=dom)
+                row = conn.execute(
+                    "SELECT content FROM agent_memory WHERE key = ? AND signature = ?",
+                    (key, signature),
+                ).fetchone()
+                known: list[str] = []
+                if row and str(row[0]).startswith(prefix):
+                    known = [
+                        n for n in row[0][len(prefix) :].rstrip(".").split(", ") if n
+                    ]
+                merged = known + [n for n in names if n not in known]
+                conn.execute(
+                    "DELETE FROM agent_memory WHERE key = ? AND signature = ?",
+                    (key, signature),
+                )
+                conn.execute(
+                    "INSERT INTO agent_memory (key, content, source, ts, signature)"
+                    " VALUES (?, ?, ?, ?, ?)",
+                    (
+                        key,
+                        prefix + ", ".join(merged) + ".",
+                        f"user:{nid}",
+                        now,
+                        signature,
+                    ),
+                )
+            conn.commit()
+        log.info("device_disarmed", device_ids=ids, nid=nid)
+    except Exception as e:  # nosec B110
+        log.warning("device_disarm_failed", nid=nid, error=str(e))
+        return []
+    return ids
 
 
 # ------------------------------------------------------------------
@@ -588,6 +776,37 @@ async def _run_device_availability_investigation(
 # Poll loop
 # ------------------------------------------------------------------
 
+
+def _post_restart_sweep(
+    findings: list[OfflineFinding], db_path: str, ha_start_ts: float
+) -> list[OfflineFinding]:
+    """Drop suppressed/backed-off entries, then merge the rest into one sweep."""
+    from utils.hitl.hitl_tracker import should_send_card
+
+    eligible: list[OfflineFinding] = []
+    with sqlite3.connect(db_path) as conn:
+        for f in findings:
+            if should_send_card(
+                conn, f"device_offline:{f.config_entry_id}"
+            ) and should_send_card(conn, f"device_offline_backoff:{f.config_entry_id}"):
+                eligible.append(f)
+            else:
+                log.info(
+                    "device_offline_sweep_entry_suppressed",
+                    config_entry_id=f.config_entry_id,
+                )
+    sweep = merge_post_restart_findings(eligible, ha_start_ts)
+    if sweep is None:
+        return []
+    log.info(
+        "device_offline_post_restart_sweep",
+        ha_start_ts=ha_start_ts,
+        entries=[f.config_entry_id for f in eligible],
+        devices=len(sweep.devices),
+    )
+    return [sweep]
+
+
 _POLL_INTERVAL_SECONDS = 60
 _REGISTRY_CACHE_SECONDS = _REGISTRY_TTL_SECONDS  # 1800 s
 
@@ -663,8 +882,10 @@ async def poll_device_availability(
             with sqlite3.connect(_db) as conn:
                 prior = load_snapshot(conn)
                 ha_start_ts = load_ha_start_ts(conn)
+                disarmed = load_disarmed(conn)
 
             grace_s = _cfg.DEVICE_AVAILABILITY_GRACE_MINUTES * 60
+            settle_s = _cfg.DEVICE_AVAILABILITY_RESTART_SETTLE_MINUTES * 60
             result = evaluate_device_availability(
                 states=states,
                 entity_registry=entity_registry,
@@ -675,7 +896,8 @@ async def poll_device_availability(
                 grace_s=grace_s,
                 min_state_coverage=_cfg.DEVICE_AVAILABILITY_MIN_STATE_COVERAGE,
                 ha_start_ts=ha_start_ts,
-                settle_s=_cfg.DEVICE_AVAILABILITY_RESTART_SETTLE_MINUTES * 60,
+                settle_s=settle_s,
+                disarmed=disarmed,
             )
 
             if result.skipped == "incomplete_states":
@@ -691,9 +913,18 @@ async def poll_device_availability(
             else:
                 with sqlite3.connect(_db) as conn:
                     save_snapshot(conn, result.snapshot)
+                    rearm_devices(conn, result.rearmed)
+
+            findings = result.new_offline
+            if (
+                findings
+                and ha_start_ts is not None
+                and in_post_restart_sweep(now, ha_start_ts, settle_s)
+            ):
+                findings = _post_restart_sweep(findings, _db, ha_start_ts)
 
             # Process newly offline devices.
-            for finding in result.new_offline:
+            for finding in findings:
                 card_key = f"device_offline:{finding.config_entry_id}"
                 backoff_key = f"device_offline_backoff:{finding.config_entry_id}"
 
@@ -750,7 +981,8 @@ async def poll_device_availability(
                 with sqlite3.connect(_db) as conn:
                     episodes_blob = load_episodes(conn)
                 _recurrence_triggered = False
-                for _dev in finding.devices:
+                # A post-restart sweep is investigated as one group.
+                for _dev in finding.devices if finding.ha_start_ts is None else []:
                     _dev_id = _dev["device_id"]
                     _self_count = count_self_recovered_in_window(
                         episodes_blob,
@@ -869,12 +1101,19 @@ async def poll_device_availability(
                     _snap_dev = result.snapshot.get(_dev["device_id"])
                     if _snap_dev is not None:
                         _snap_dev["investigated"] = True
+                        _snap_dev["card_key"] = card_key
                 with sqlite3.connect(_db) as conn:
                     save_snapshot(conn, result.snapshot)
 
             # Process recoveries.
             for finding in result.recovered:
-                card_key = f"device_offline:{finding.config_entry_id}"
+                # A swept device's card is the sweep card, not its entry's.
+                card_keys = sorted(
+                    {
+                        d.get("card_key") or f"device_offline:{finding.config_entry_id}"
+                        for d in finding.devices
+                    }
+                )
 
                 names = [d["name"] for d in finding.devices]
                 if len(names) == 1:
@@ -912,7 +1151,7 @@ async def poll_device_availability(
                 # Self-recovery: no human approved the offline card and no
                 # investigation (which may have reloaded the integration) ran.
                 with sqlite3.connect(_db) as conn:
-                    _actioned = was_card_actioned(conn, card_key)
+                    _actioned = any(was_card_actioned(conn, k) for k in card_keys)
                     _episodes_blob = load_episodes(conn)
 
                 _updated_episodes = _episodes_blob
@@ -950,7 +1189,8 @@ async def poll_device_availability(
 
                 with sqlite3.connect(_db) as conn:
                     save_episodes(conn, _updated_episodes)
-                    mark_card_resolved(conn, card_key)
+                    for _k in card_keys:
+                        mark_card_resolved(conn, _k)
 
                 log.info(
                     "device_recovered",

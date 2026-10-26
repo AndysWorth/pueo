@@ -3597,3 +3597,506 @@ class TestPollRestartCorrectness:
         with sqlite3.connect(db) as conn:
             assert load_snapshot(conn) == prior
             assert load_episodes(conn) == {}
+
+
+# ---------------------------------------------------------------------------
+# #987: disarm, post-restart sweep, entity_ids in context
+# ---------------------------------------------------------------------------
+
+
+def _two_entry_ws(state: str = "unavailable"):
+    """Two devices on two integrations, both in *state*."""
+    from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+    return FakeHAWebSocketClient(
+        devices=[
+            _device("dev-A", "Xmas Lights", ["entry-matter"]),
+            _device("dev-B", "Living TV", ["entry-cast"]),
+        ],
+        entity_registry=[
+            _entity("switch.xmas", "dev-A"),
+            _entity("media_player.living", "dev-B"),
+        ],
+        config_entries=[_entry("entry-matter", "matter"), _entry("entry-cast", "cast")],
+        states=[
+            # An hour before _NOW, so the grace period has passed.
+            _state("switch.xmas", state, "2023-11-16T01:13:20Z"),
+            _state("media_player.living", state, "2023-11-16T01:13:20Z"),
+        ],
+    )
+
+
+class TestDisarmEvaluator:
+    _ENTS = [_entity("switch.a", "dev1")]
+    _DEVS = [_device("dev1", "Xmas Lights", ["e1"])]
+    _ENTRIES = [_entry("e1", "matter")]
+
+    def _run(self, state, prior, disarmed=frozenset({"dev1"})):
+        return evaluate_device_availability(
+            states=[_state("switch.a", state)],
+            entity_registry=self._ENTS,
+            device_registry=self._DEVS,
+            config_entries=self._ENTRIES,
+            prior=prior,
+            now=_NOW,
+            grace_s=_GRACE_S,
+            disarmed=disarmed,
+        )
+
+    def test_disarmed_offline_device_never_alerts(self):
+        result = self._run("unavailable", _prior_online("dev1"))
+        assert result.new_offline == []
+        assert result.snapshot["dev1"]["alerted"] is False
+
+    def test_disarm_closes_open_episode(self):
+        prior = {
+            "dev1": {
+                "last_online_ts": _NOW - 3600,
+                "alerted": True,
+                "offline_since": _NOW - 1800,
+                "investigated": True,
+                "card_key": "device_offline:e1",
+            }
+        }
+        snap = self._run("unavailable", prior).snapshot["dev1"]
+        assert snap == {
+            "last_online_ts": _NOW - 3600,
+            "alerted": False,
+            "offline_since": None,
+            "investigated": False,
+            "card_key": None,
+        }
+
+    def test_online_disarmed_device_rearms_without_recovery(self):
+        result = self._run("on", _prior_alerted("dev1"))
+        assert result.rearmed == ["dev1"]
+        assert result.recovered == []
+        assert result.snapshot["dev1"]["last_online_ts"] == _NOW
+
+    def test_unknown_state_keeps_device_disarmed(self):
+        result = self._run("unknown", _prior_online("dev1"))
+        assert result.rearmed == []
+        assert result.new_offline == []
+
+    def test_alert_records_card_key_and_entity_ids(self):
+        result = self._run("unavailable", _prior_online("dev1"), disarmed=frozenset())
+        dev = result.new_offline[0].devices[0]
+        assert dev["entity_ids"] == ["switch.a"]
+        assert dev["config_entry_id"] == "e1"
+        assert result.snapshot["dev1"]["card_key"] == "device_offline:e1"
+
+    def test_entity_ids_capped_per_device(self):
+        ents = [_entity(f"sensor.s{i}", "dev1") for i in range(8)]
+        result = evaluate_device_availability(
+            states=[_state(e["entity_id"], "unavailable") for e in ents],
+            entity_registry=ents,
+            device_registry=self._DEVS,
+            config_entries=self._ENTRIES,
+            prior=_prior_online("dev1"),
+            now=_NOW,
+            grace_s=_GRACE_S,
+        )
+        assert len(result.new_offline[0].devices[0]["entity_ids"]) == 5
+
+    def test_recovery_carries_card_key(self):
+        prior = {
+            "dev1": {
+                "last_online_ts": _NOW - 3600,
+                "alerted": True,
+                "card_key": "device_offline:post_restart:1",
+            }
+        }
+        result = self._run("on", prior, disarmed=frozenset())
+        assert result.recovered[0].devices[0]["card_key"] == (
+            "device_offline:post_restart:1"
+        )
+        assert result.snapshot["dev1"]["card_key"] is None
+
+
+class TestPostRestartSweepHelpers:
+    def test_in_window(self):
+        from utils.ha.device_availability import in_post_restart_sweep
+
+        start, settle = 1000.0, 900.0
+        assert in_post_restart_sweep(1900.0, start, settle)
+        assert in_post_restart_sweep(2499.0, start, settle)
+        assert not in_post_restart_sweep(1899.0, start, settle)  # still settling
+        assert not in_post_restart_sweep(2500.0, start, settle)  # window over
+        assert not in_post_restart_sweep(1900.0, None, settle)
+
+    def test_merge(self):
+        from utils.ha.device_availability import merge_post_restart_findings
+
+        f1 = OfflineFinding("e1", "matter", [{"device_id": "a", "name": "A"}])
+        f2 = OfflineFinding("e2", "cast", [{"device_id": "b", "name": "B"}])
+        merged = merge_post_restart_findings([f1, f2], 1234.9)
+        assert merged is not None
+        assert merged.config_entry_id == "post_restart:1234"
+        assert merged.domain == "post_restart"
+        assert [d["device_id"] for d in merged.devices] == ["a", "b"]
+        assert merged.ha_start_ts == 1234.9
+
+    def test_merge_empty(self):
+        from utils.ha.device_availability import merge_post_restart_findings
+
+        assert merge_post_restart_findings([], 1.0) is None
+
+
+class TestDisarmStorage:
+    def _db(self, tmp_path):
+        db = _make_poll_db(tmp_path)
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "CREATE TABLE agent_memory (key TEXT, content TEXT, source TEXT,"
+                " ts REAL, signature TEXT)"
+            )
+        return db
+
+    def test_disarm_load_rearm(self, tmp_path):
+        from utils.ha.device_availability import (
+            disarm_devices,
+            load_disarmed,
+            rearm_devices,
+        )
+
+        db = self._db(tmp_path)
+        ids = disarm_devices(
+            db,
+            [
+                {"device_id": "a", "name": "A", "domain": "matter"},
+                {"device_id": "b", "name": "B", "domain": "cast"},
+            ],
+            "nid1",
+        )
+        assert ids == ["a", "b"]
+        with sqlite3.connect(db) as conn:
+            assert load_disarmed(conn) == frozenset({"a", "b"})
+            rearm_devices(conn, ["a"])
+            rearm_devices(conn, [])
+            assert load_disarmed(conn) == frozenset({"b"})
+            sigs = sorted(
+                r[0] for r in conn.execute("SELECT signature FROM agent_memory")
+            )
+        assert sigs == ["device:offline:cast", "device:offline:matter"]
+
+    def test_fact_merges_names_across_answers(self, tmp_path):
+        from utils.ha.device_availability import disarm_devices
+
+        db = self._db(tmp_path)
+        disarm_devices(db, [{"device_id": "a", "name": "A", "domain": "matter"}], "n1")
+        disarm_devices(
+            db,
+            [
+                {"device_id": "a", "name": "A", "domain": "matter"},
+                {"device_id": "c", "name": "C", "domain": "matter"},
+            ],
+            "n2",
+        )
+        with sqlite3.connect(db) as conn:
+            rows = conn.execute("SELECT content, source FROM agent_memory").fetchall()
+        assert rows == [
+            (
+                "User-confirmed: these matter devices are sometimes switched off on"
+                " purpose: A, C.",
+                "user:n2",
+            )
+        ]
+
+    def test_disarm_failure_returns_empty(self, tmp_path):
+        from utils.ha.device_availability import disarm_devices
+
+        db = _make_poll_db(tmp_path)  # no agent_memory table
+        assert (
+            disarm_devices(db, [{"device_id": "a", "name": "A", "domain": "x"}], "n")
+            == []
+        )
+
+    def test_load_and_rearm_tolerate_missing_table(self, tmp_path):
+        from utils.ha.device_availability import load_disarmed, rearm_devices
+
+        with sqlite3.connect(str(tmp_path / "empty.db")) as conn:
+            assert load_disarmed(conn) == frozenset()
+            rearm_devices(conn, ["a"])  # logs, never raises
+
+
+class TestPollPostRestartSweep:
+    def _arm(self, db, ha_start_ts):
+        prior = {
+            "dev-A": {"last_online_ts": _NOW - 7200.0, "alerted": False},
+            "dev-B": {"last_online_ts": _NOW - 7200.0, "alerted": False},
+        }
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO user_prefs (key, value) VALUES (?,?)",
+                ("device_availability:state", json.dumps(prior)),
+            )
+            conn.execute(
+                "INSERT INTO user_prefs (key, value) VALUES (?,?)",
+                ("ha:last_start_ts", str(ha_start_ts)),
+            )
+
+    def _poll(self, db, ws, monkeypatch, now):
+        import utils.agent.work_queue as wq_mod
+        import utils.ha.device_availability as da_mod
+
+        calls: list = []
+
+        async def _fake_investigation(finding, **kw):
+            calls.append(finding)
+
+        monkeypatch.setattr(wq_mod, "get_work_queue_or_none", lambda: None)
+        monkeypatch.setattr(
+            da_mod, "_run_device_availability_investigation", _fake_investigation
+        )
+        with mock.patch("utils.ha.device_availability.time") as mock_time:
+            mock_time.time.return_value = now
+            asyncio.run(
+                _run_one_iteration(
+                    lambda: da_mod.poll_device_availability(ws_client=ws, db_path=db),
+                    timeout=0.3,
+                )
+            )
+        return calls
+
+    def test_findings_merged_into_one_sweep(self, tmp_path, monkeypatch):
+        db = _make_poll_db(tmp_path)
+        start = _NOW - 15 * 60  # settle window (15 min default) just ended
+        self._arm(db, start)
+        calls = self._poll(db, _two_entry_ws(), monkeypatch, _NOW + 30)
+        assert len(calls) == 1
+        sweep = calls[0]
+        assert sweep.ha_start_ts == start
+        assert sweep.domain == "post_restart"
+        assert {d["device_id"] for d in sweep.devices} == {"dev-A", "dev-B"}
+        with sqlite3.connect(db) as conn:
+            snap = load_snapshot(conn)
+        assert snap["dev-A"]["card_key"] == f"device_offline:post_restart:{int(start)}"
+        assert snap["dev-A"]["investigated"] is True
+
+    def test_suppressed_entry_left_out_of_sweep(self, tmp_path, monkeypatch):
+        db = _make_poll_db(tmp_path)
+        self._arm(db, _NOW - 15 * 60)
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO hitl_suppression (card_key, known_issue) VALUES (?, 1)",
+                ("device_offline:entry-cast",),
+            )
+        calls = self._poll(db, _two_entry_ws(), monkeypatch, _NOW + 30)
+        assert len(calls) == 1
+        assert [d["device_id"] for d in calls[0].devices] == ["dev-A"]
+
+    def test_all_entries_suppressed_no_sweep(self, tmp_path, monkeypatch):
+        db = _make_poll_db(tmp_path)
+        self._arm(db, _NOW - 15 * 60)
+        with sqlite3.connect(db) as conn:
+            for key in ("device_offline:entry-cast", "device_offline:entry-matter"):
+                conn.execute(
+                    "INSERT INTO hitl_suppression (card_key, known_issue) VALUES (?, 1)",
+                    (key,),
+                )
+        assert self._poll(db, _two_entry_ws(), monkeypatch, _NOW + 30) == []
+
+    def test_outside_window_one_investigation_per_entry(self, tmp_path, monkeypatch):
+        db = _make_poll_db(tmp_path)
+        self._arm(db, _NOW - 6 * 3600)
+        calls = self._poll(db, _two_entry_ws(), monkeypatch, _NOW + 30)
+        assert sorted(c.config_entry_id for c in calls) == [
+            "entry-cast",
+            "entry-matter",
+        ]
+        assert all(c.ha_start_ts is None for c in calls)
+
+    def test_recovery_resolves_sweep_card(self, tmp_path, monkeypatch):
+        import utils.hitl.hitl_tracker as ht
+
+        db = _make_poll_db(tmp_path)
+        sweep_key = "device_offline:post_restart:1"
+        prior = {
+            "dev-A": {
+                "last_online_ts": _NOW - 7200.0,
+                "alerted": True,
+                "offline_since": _NOW - 3600.0,
+                "investigated": True,
+                "card_key": sweep_key,
+            }
+        }
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO user_prefs (key, value) VALUES (?,?)",
+                ("device_availability:state", json.dumps(prior)),
+            )
+        resolved: list = []
+        monkeypatch.setattr(
+            ht, "mark_card_resolved", lambda conn, key: resolved.append(key)
+        )
+        self._poll(db, _two_entry_ws("on"), monkeypatch, _NOW)
+        assert resolved == [sweep_key]
+
+    def test_online_disarmed_device_rearmed(self, tmp_path, monkeypatch):
+        from utils.ha.device_availability import load_disarmed
+
+        db = _make_poll_db(tmp_path)
+        self._arm(db, _NOW - 6 * 3600)
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO user_prefs (key, value) VALUES (?, '{}')",
+                ("device_availability:disarmed:dev-A",),
+            )
+        self._poll(db, _two_entry_ws("on"), monkeypatch, _NOW)
+        with sqlite3.connect(db) as conn:
+            assert load_disarmed(conn) == frozenset()
+
+
+class TestPostRestartContext:
+    def _finding(self, start=1_700_000_000.0):
+        return OfflineFinding(
+            config_entry_id="post_restart:1700000000",
+            domain="post_restart",
+            devices=[
+                {
+                    "name": "Xmas Lights",
+                    "device_id": "a",
+                    "domain": "matter",
+                    "config_entry_id": "e1",
+                    "offline_since": start,
+                    "entity_ids": ["switch.xmas"],
+                },
+                {
+                    "name": "Living TV",
+                    "device_id": "b",
+                    "domain": "cast",
+                    "config_entry_id": "e2",
+                    "offline_since": None,
+                },
+            ],
+            ha_start_ts=start,
+        )
+
+    def _db(self, tmp_path, events=()):
+        db = str(tmp_path / "tl.db")
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "CREATE TABLE timeline_events (id INTEGER PRIMARY KEY, ts REAL,"
+                " level TEXT, source TEXT, message TEXT, detail_json TEXT)"
+            )
+            conn.executemany(
+                "INSERT INTO timeline_events (ts, level, source, message)"
+                " VALUES (?, 'INFO', ?, ?)",
+                events,
+            )
+        return db
+
+    def test_format_device_line(self):
+        from utils.ha.device_availability_investigation import format_device_line
+
+        d = self._finding().devices[0]
+        line = format_device_line(d)
+        assert line.startswith("  - Xmas Lights (offline since ")
+        assert "entities: switch.xmas" in line
+        assert "[matter, entry e1]" in format_device_line(d, with_integration=True)
+        assert "offline since unknown" in format_device_line(self._finding().devices[1])
+
+    def test_restart_events_window_and_sources(self, tmp_path):
+        from utils.ha.device_availability_investigation import restart_events
+
+        start = 1_700_000_000.0
+        db = self._db(
+            tmp_path,
+            [
+                (start - 600, "update_executor", "Update executed: core → 2026.10.3"),
+                (start - 300, "agent_loop", "unrelated"),
+                (start - 3 * 3600, "update_executor", "too old"),
+                (start + 60, "resource", "Host health: unexpected_reboot"),
+            ],
+        )
+        lines = restart_events(db, start)
+        assert len(lines) == 2
+        assert "[update_executor] Update executed: core → 2026.10.3" in lines[0]
+        assert "unexpected_reboot" in lines[1]
+
+    def test_restart_events_missing_table(self, tmp_path):
+        from utils.ha.device_availability_investigation import restart_events
+
+        assert restart_events(str(tmp_path / "none.db"), 1.0) == []
+
+    def test_build_context(self, tmp_path):
+        from utils.ha.device_availability_investigation import (
+            build_post_restart_context,
+            device_availability_knowledge_query,
+        )
+
+        finding = self._finding()
+        ctx = build_post_restart_context(finding, self._db(tmp_path))
+        assert "post-restart sweep" in ctx
+        assert "Integrations: cast, matter" in ctx
+        assert "none recorded" in ctx
+        assert "switch.xmas" in ctx
+        assert "already switched off" in ctx
+        assert "restart" in device_availability_knowledge_query(finding)
+
+    def test_build_context_lists_events(self, tmp_path):
+        from utils.ha.device_availability_investigation import (
+            build_post_restart_context,
+        )
+
+        start = 1_700_000_000.0
+        db = self._db(
+            tmp_path, [(start - 60, "update_executor", "Update executed: core")]
+        )
+        assert "Update executed: core" in build_post_restart_context(
+            self._finding(start), db
+        )
+
+    def test_sweep_investigation_uses_post_restart_signature(
+        self, tmp_path, monkeypatch
+    ):
+        import utils.agent.agent_loop as al
+        import utils.agent.supervisor as sup
+        import utils.ha.ha_environment as env
+        from utils.ha.device_availability_investigation import (
+            run_device_availability_investigation,
+        )
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        for name in ("increment_active_agent", "decrement_active_agent"):
+            monkeypatch.setattr(sup, name, lambda: None)
+        monkeypatch.setattr(sup, "publish_activity_done", lambda *a, **k: None)
+        monkeypatch.setattr(
+            sup, "make_activity_timeline_callback", lambda *a, **k: None
+        )
+        monkeypatch.setattr(env, "load_environment_profile", lambda db: None)
+        seen: dict = {}
+
+        async def _fake_run(self, **kw):
+            seen.update(kw)
+            return mock.Mock(outcome="success")
+
+        monkeypatch.setattr(al.AgentLoop, "run", _fake_run)
+        db = self._db(tmp_path)
+        asyncio.run(
+            run_device_availability_investigation(
+                finding=self._finding(),
+                notifier=FakeNotifier(),
+                db_path=db,
+                llm_client=FakeToolCallingLLMClient([]),
+                ssh_client=FakeSSHClient(),
+            )
+        )
+        assert seen["signature"] == "device:offline:post_restart"
+        assert seen["subject_key"] == "post_restart"
+        assert seen["prior_subject_keys"] == ["post_restart", "e1:matter", "e2:cast"]
+        assert "post-restart sweep" in seen["initial_context"]
+
+
+class TestSigDevicePostRestart:
+    def test_value_and_seed_match(self):
+        from utils.knowledge.runbook_distiller import _sig_specificity
+        from utils.knowledge.runbook_signature import sig_device_post_restart
+
+        sig = sig_device_post_restart()
+        assert sig == "device:offline:post_restart"
+        # The dedicated seed outranks the generic device seed.
+        assert _sig_specificity("device:offline:post_restart", sig) == (True, 3)
+        assert _sig_specificity("device:offline:*", sig) == (True, 2)

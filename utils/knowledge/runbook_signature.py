@@ -92,6 +92,11 @@ def sig_device_availability(domain: str) -> str:
     return f"device:offline:{_part(domain)}"
 
 
+def sig_device_post_restart() -> str:
+    """device:offline:post_restart — one grouped sweep after an HA restart."""
+    return "device:offline:post_restart"
+
+
 # Signatures written before ``_part`` mapped "-" to "_" (#945).  Rewritten in place
 # at startup by strategy_seeder.normalize_legacy_signatures().
 LEGACY_SIGNATURE_RENAMES: dict[str, str] = {
