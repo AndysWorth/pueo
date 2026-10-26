@@ -931,6 +931,46 @@ class TestRunDeviceAvailabilityInvestigation:
             ).fetchone()
         assert row is None
 
+    def test_context_includes_last_ha_start(self, tmp_path, monkeypatch):
+        """#993: the per-integration context carries the last HA start time."""
+        import asyncio
+
+        import utils.agent.agent_loop as _al_mod
+        import utils.ha.ha_environment as _env_mod
+        from utils.agent.tool_registry import AgentLoopResult
+        from utils.ha.device_availability import record_ha_start
+        from utils.ha.device_availability_investigation import (
+            run_device_availability_investigation,
+        )
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        self._patch_supervisor(monkeypatch)
+        monkeypatch.setattr(_env_mod, "load_environment_profile", lambda db: None)
+        seen: dict = {}
+
+        class _CapturingLoop(_al_mod.AgentLoop):
+            async def run(self, *args, **kwargs):
+                seen["context"] = kwargs.get("initial_context", "")
+                return AgentLoopResult(outcome="exhausted")
+
+        monkeypatch.setattr(_al_mod, "AgentLoop", _CapturingLoop)
+        db = self._make_db(tmp_path)
+        record_ha_start(db, 1_700_000_000.0)
+
+        asyncio.run(
+            run_device_availability_investigation(
+                finding=self._finding(),
+                notifier=FakeNotifier(),
+                db_path=db,
+                llm_client=FakeToolCallingLLMClient([]),
+                ssh_client=FakeSSHClient(),
+            )
+        )
+        assert "Last HA start: " in seen["context"]
+        assert "(epoch 1700000000)" in seen["context"]
+
     def test_non_success_writes_backoff(self, tmp_path, monkeypatch):
         """When AgentLoop returns a non-success outcome, backoff row is written."""
         import asyncio
@@ -3476,7 +3516,7 @@ class TestRecurrenceAverage:
         }
         fact = build_recurrence_fact("Plug", "matter", episodes, "dev1", now, 14)
         assert "2×" in fact
-        assert "avg 60 min" in fact
+        assert "typical duration 60 min" in fact
 
     def test_no_complete_episode_falls_back_to_plain_text(self):
         from utils.ha.device_availability import build_recurrence_fact
@@ -3492,7 +3532,78 @@ class TestRecurrenceAverage:
             ]
         }
         fact = build_recurrence_fact("Plug", "matter", episodes, "dev1", 1e6, 14)
-        assert fact.endswith("self-recovering each time.")
+        assert fact == (
+            "Plug (matter) was offline 1× in 14 days, coming back on its own each time."
+        )
+
+
+def _local_ts(hour: int, minute: int, day: int = 20) -> float:
+    import datetime
+
+    return datetime.datetime(2026, 10, day, hour, minute).timestamp()
+
+
+class TestRecurrenceWording:
+    """#993: counts and per-episode timing only, never a cause-like time range."""
+
+    def _fact(self, starts: list[tuple[int, int, int]], minutes: int = 30) -> str:
+        from utils.ha.device_availability import build_recurrence_fact
+
+        episodes = {
+            "dev1": [
+                {
+                    "offline_at": _local_ts(h, m, d),
+                    "recovered_at": _local_ts(h, m, d) + minutes * 60,
+                    "self_recovered": True,
+                    "investigated": False,
+                }
+                for h, m, d in starts
+            ]
+        }
+        return build_recurrence_fact(
+            "TV", "cast", episodes, "dev1", _local_ts(23, 0, 26), 14
+        )
+
+    def test_usual_start_when_most_starts_cluster(self):
+        fact = self._fact([(22, 30, 20), (22, 40, 21), (22, 20, 22), (3, 0, 23)])
+        assert fact == (
+            "TV (cast) was offline 4× in 14 days "
+            "(typical duration 30 min, usually starting 22:20)."
+        )
+
+    def test_cluster_across_midnight(self):
+        fact = self._fact([(23, 50, 20), (0, 10, 21), (23, 40, 22)])
+        assert "usually starting 23:40" in fact
+
+    def test_varying_start_times(self):
+        fact = self._fact([(1, 0, 20), (9, 0, 21), (17, 0, 22)])
+        assert "starting at varying times" in fact
+
+    def test_single_episode(self):
+        fact = self._fact([(7, 20, 25)], minutes=45)
+        assert fact == (
+            "TV (cast) was offline 1× in 14 days "
+            "(typical duration 45 min, starting 07:20)."
+        )
+
+    def test_typical_duration_is_median(self):
+        from utils.ha.device_availability import build_recurrence_fact
+
+        base = _local_ts(8, 0, 20)
+        episodes = {
+            "dev1": [
+                {
+                    "offline_at": base + i * 86400,
+                    "recovered_at": base + i * 86400 + mins * 60,
+                    "self_recovered": True,
+                }
+                for i, mins in enumerate([10, 20, 2000])
+            ]
+        }
+        fact = build_recurrence_fact(
+            "TV", "cast", episodes, "dev1", _local_ts(23, 0, 26), 14
+        )
+        assert "typical duration 20 min" in fact
 
 
 class TestHAStartTs:
@@ -4245,3 +4356,25 @@ class TestPollPredictionChecks:
         )
         self._run(monkeypatch, db, _make_offline_ws(), _NOW + 3600.0)
         assert self._verification(db) == ("failure", "system")
+
+
+class TestLastHaStartLine:
+    def test_line_when_recorded(self, tmp_path):
+        from utils.ha.device_availability import record_ha_start
+        from utils.ha.device_availability_investigation import last_ha_start_line
+
+        db = _make_poll_db(tmp_path)
+        record_ha_start(db, 1_700_000_000.0)
+        line = last_ha_start_line(db)
+        assert line.startswith("Last HA start: ")
+        assert line.endswith("(epoch 1700000000)\n")
+
+    def test_empty_when_not_recorded(self, tmp_path):
+        from utils.ha.device_availability_investigation import last_ha_start_line
+
+        assert last_ha_start_line(_make_poll_db(tmp_path)) == ""
+
+    def test_empty_when_db_unreadable(self, tmp_path):
+        from utils.ha.device_availability_investigation import last_ha_start_line
+
+        assert last_ha_start_line(str(tmp_path / "missing" / "x.db")) == ""

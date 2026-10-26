@@ -6,7 +6,7 @@ import time
 from typing import Any, Optional
 
 from utils.core.logging import get_logger
-from utils.ha.device_availability import OfflineFinding
+from utils.ha.device_availability import OfflineFinding, load_ha_start_ts
 
 log = get_logger("device_availability_investigation")
 
@@ -66,6 +66,21 @@ def restart_events(db_path: str, ha_start_ts: float, limit: int = 6) -> list[str
         f"  - {_fmt_local(ts)} [{src}] {str(msg)[:160]}"
         for ts, src, msg in reversed(rows)
     ]
+
+
+def last_ha_start_line(db_path: str) -> str:
+    """'Last HA start: …' context line, or '' when none is recorded.
+
+    seed_device_offline.md asks the model whether the device went offline right
+    after a restart, so per-integration sessions need the start time too (#993).
+    """
+    try:
+        with sqlite3.connect(db_path) as conn:
+            ts = load_ha_start_ts(conn)
+    except Exception as exc:  # nosec B110
+        log.debug("last_ha_start_fetch_failed", error=str(exc))
+        return ""
+    return f"Last HA start: {_fmt_local(ts)}\n" if ts is not None else ""
 
 
 def build_post_restart_context(finding: OfflineFinding, db_path: str) -> str:
@@ -241,6 +256,7 @@ async def run_device_availability_investigation(
             f"Device availability issue detected:\n"
             f"Integration: {finding.domain}\n"
             f"Config entry ID: {finding.config_entry_id}\n"
+            f"{last_ha_start_line(db_path)}"
             f"Offline devices ({len(finding.devices)}):\n{device_lines}"
         )
         signature = sig_device_availability(finding.domain)

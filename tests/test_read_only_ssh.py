@@ -31,6 +31,7 @@ class TestIsReadOnlyCommand:
             "ha supervisor logs --lines 100",
             "ha host logs --lines 100",
             "ha host logs --lines 5000",
+            "ha host logs --boot -1 --lines 200",
             "ha apps logs core_mosquitto -n 500",
             "ha apps list --raw-json",
         ],
@@ -65,6 +66,10 @@ class TestIsReadOnlyCommand:
             "ha core logs --follow",
             "ha os logs --lines 100",
             "ha core logs --lines 99999",
+            "ha host logs --boot -1 --lines 200; reboot",
+            "ha host logs --boot -2 --lines 200",
+            "ha host logs --boot -1 --follow",
+            "ha core logs --boot -1 --lines 200",
         ],
     )
     def test_write_or_unknown_commands_blocked(self, cmd):

@@ -21,8 +21,9 @@ release changes the expectation or the user replaces the CM4 module.
 
 ## Action
 
-1. `remember(key="rpi_firmware_blocked", content="rpi_firmware_update_blocked present;
-   blocked_reason=eeprom_update_unavailable; CM4 EEPROM is read-only; no Supervisor fix
-   exists; informational only.")` — persists this fact across sessions.
+1. `remember(key="rpi_firmware_blocked", content="rpi firmware: update_blocked=true,
+   blocked_reason=eeprom_update_unavailable", evidence_tool="run_ha_command")` — persists
+   what the command output shows across sessions. Keep the explanation (CM4 EEPROM is
+   read-only) for the summary; it is not in the output, so `remember` rejects it.
 2. Set `outcome="informational"` with the EEPROM dates and `blocked_reason` in the summary.
 3. Do NOT include `recommended_actions` — there is nothing to do.

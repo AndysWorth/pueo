@@ -24,6 +24,7 @@ log = get_logger("read_only_ssh")
 # list_log_sources. Each pattern is anchored and admits no shell metacharacters.
 _READ_ONLY_COMMAND_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^ha (?:core|supervisor|host) logs --lines \d{1,4}$"),
+    re.compile(r"^ha host logs --boot -1 --lines \d{1,4}$"),
     re.compile(r"^ha apps logs [a-z0-9][a-z0-9_\-]* -n \d{1,4}$"),
     re.compile(r"^ha apps list --raw-json$"),
 )

@@ -7582,6 +7582,63 @@ class TestPromptNoVerdictRules:
         assert "Never escalate to CRITICAL" in text
 
 
+class TestDeviceAndHostSeedContent:
+    """#993: seeds must not hand the model causes to repeat as facts."""
+
+    def _seed(self, name: str) -> str:
+        from pathlib import Path
+
+        return (Path(__file__).parent.parent / "prompts" / name).read_text("utf-8")
+
+    def test_device_seed_has_no_speculative_lore(self):
+        text = self._seed("seed_device_offline.md").lower()
+        for lore in ("server rotation", "certificate renewal", "remember("):
+            assert lore not in text, lore
+
+    def test_device_seed_rules(self):
+        text = self._seed("seed_device_offline.md")
+        assert "I turned these off" in text
+        assert "counts, not causes" in text
+        assert "domain=<domain>" in text
+        for kind in (
+            "recovers_after_reload",
+            "recovers_without_action",
+            "stays_offline",
+        ):
+            assert kind in text
+
+    def test_device_seed_prediction_kinds_match_tool(self):
+        import re
+
+        from utils.agent.tool_registry import _PREDICTION_PROPERTIES
+
+        kinds = set(_PREDICTION_PROPERTIES["kind"]["enum"])
+        used = set(
+            re.findall(r'"kind": "([a-z_]+)"', self._seed("seed_device_offline.md"))
+        )
+        assert used and used <= kinds
+
+    def test_host_seed_reads_previous_boot(self):
+        assert 'log_source="ha_host_prev_boot"' in self._seed("seed_host_health.md")
+
+    def test_rpi_seed_remember_example_is_grounded(self):
+        """The seed's remember() example must pass grounding on the real command output."""
+        import re
+
+        from utils.knowledge.runbook_distiller import _fact_is_grounded
+
+        text = self._seed("seed_host_rpi_firmware.md")
+        m = re.search(r'remember\(key="[^"]+", content="([^"]+)"', text)
+        assert m and 'evidence_tool="run_ha_command"' in text
+        content = " ".join(m.group(1).split())
+        output = (
+            '{"result":"ok","data":{"current_version":"1638442201","latest_version":'
+            '"1767975133","update_available":true,"update_blocked":true,'
+            '"update_pending":false,"blocked_reason":"eeprom_update_unavailable"}}'
+        )
+        assert _fact_is_grounded(content, output)
+
+
 class TestNormalizeLegacySignatures:
     """normalize_legacy_signatures rewrites pre-#945 hyphen-collapsed signatures."""
 

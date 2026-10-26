@@ -201,6 +201,38 @@ _SEED_PROMPTS: list[tuple[str, str, str]] = [
     ),
 ]
 
+# Signature family (first signature segment) of seeds that have no ``signature:``
+# but are written for one kind of session.  Mid-session query_knowledge hides them
+# from other kinds (#993).  Unsigned seeds not listed here are general references
+# shown to every session.
+SEED_FAMILIES: dict[str, str] = {
+    "seed_host_health.md": "host",
+    "seed_disk_space.md": "host",
+    "seed_lovelace_config.md": "lovelace",
+    "seed_repair_issue.md": "repair",
+    "seed_notification_analysis.md": "notification",
+    "seed_update_analysis.md": "update",
+    "seed_automation_authoring.md": "chat",
+}
+
+
+def strategy_family(metadata: dict, chunk_id: str = "") -> Optional[str]:
+    """Return the signature family a strategies chunk belongs to, or None if general.
+
+    Signed chunks (seeds and learned runbooks) use their signature's first segment;
+    ``*`` there means any family, so it returns None.  Unsigned seeds use
+    SEED_FAMILIES.
+    """
+    sig = str(metadata.get("signature") or "")
+    if sig:
+        family = sig.split(":", 1)[0]
+        return None if family in ("", "*") else family
+    filename = str(metadata.get("filename") or "")
+    if not filename and chunk_id.startswith("seed:"):
+        filename = chunk_id[len("seed:") :]
+    return SEED_FAMILIES.get(filename)
+
+
 # Tables whose ``signature`` column may hold a legacy signature.  Fixed list — the
 # names are interpolated into SQL.
 _SIGNATURE_TABLES: tuple[str, ...] = (

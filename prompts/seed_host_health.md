@@ -15,5 +15,14 @@ supervisor_unhealthy, supervisor_unsupported, resolution_issue.
 - For disk_wear: `ha host info --raw-json` → `disk_life_time`. There is no automated
   fix: `outcome="needs_action"`; recommend a fresh backup off the host and planning a
   storage replacement.
-- For unexpected_reboot: `read_logs(log_source="ha_host")` for OOM kill lines.
+- For unexpected_reboot: the current boot's log starts after the reboot, so it can't
+  show why the host went down. Before concluding, read the end of the previous boot with
+  `read_logs(log_source="ha_host_prev_boot", lines=200)`.
+  - An orderly shutdown (`systemd` stopping services, `Unmounted …`, `Reached target …
+    Shutdown`) means something asked the host to restart: a user, an automation, an
+    update or the Supervisor. Say so, and say which one only if a log line shows it.
+  - OOM kills, kernel panics or I/O errors just before the end point to that cause.
+  - A log that stops mid-stream with no shutdown lines means power was lost, or the host
+    hung and was reset. It does not tell you which.
+  Then `read_logs(log_source="ha_host")` for the current boot's errors.
 - For supervisor_unhealthy/unsupported: `ha os info`, `ha resolution info --raw-json`.
