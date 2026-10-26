@@ -2231,20 +2231,30 @@ async def execute_update(
         )
         return False
 
-    if update.component == "core":
-        return await execute_core_update(
-            update,
-            ssh_client,
-            notifier,
-            gate,
-            llm_client,
-            ha_rest_client=ha_rest_client,
+    # Guard: prevent poll_for_updates from closing the card mid-execution.
+    # Only register if the entity isn't already tracked (the auto-apply path manages its
+    # own entry at a higher level and must not have it removed by our finally).
+    _added_to_executing = update.entity_id not in _entities_executing_update
+    if _added_to_executing:
+        _entities_executing_update.add(update.entity_id)
+    try:
+        if update.component == "core":
+            return await execute_core_update(
+                update,
+                ssh_client,
+                notifier,
+                gate,
+                llm_client,
+                ha_rest_client=ha_rest_client,
+            )
+        if update.component == "os":
+            return await execute_os_update(update, ssh_client, notifier, gate)
+        return await execute_addon_update(
+            update, ssh_client, notifier, gate, ha_rest_client=ha_rest_client
         )
-    if update.component == "os":
-        return await execute_os_update(update, ssh_client, notifier, gate)
-    return await execute_addon_update(
-        update, ssh_client, notifier, gate, ha_rest_client=ha_rest_client
-    )
+    finally:
+        if _added_to_executing:
+            _entities_executing_update.discard(update.entity_id)
 
 
 async def reconcile_in_progress_updates(

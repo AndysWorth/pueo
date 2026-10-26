@@ -3904,3 +3904,285 @@ class TestResolveSiblingEntityAttribution:
         assert mgr.is_entity_executing_update("update.test_entity")
         mgr._entities_executing_update.discard("update.test_entity")
         assert not mgr.is_entity_executing_update("update.test_entity")
+
+
+# ---------------------------------------------------------------------------
+# execute_update — executing guard
+# ---------------------------------------------------------------------------
+
+
+class TestExecuteUpdateExecutingGuard:
+    """execute_update registers the entity in _entities_executing_update for its duration."""
+
+    def test_registers_and_removes_on_success(self, tmp_path, pueo_dirs, monkeypatch):
+        """execute_update adds entity_id while running and removes it in finally."""
+        import asyncio
+        from unittest.mock import AsyncMock, patch
+
+        import agents.ha_update_manager as mgr
+        from utils.ha.ha_rest_client import UpdateStatus
+
+        entity_id = "update.home_assistant_core_update"
+        update = UpdateStatus(
+            component="core",
+            entity_id=entity_id,
+            installed_version="2026.10.3",
+            latest_version="2026.10.4",
+            update_available=True,
+            release_url=None,
+            release_summary=None,
+            in_progress=False,
+        )
+
+        # Ensure clean state
+        mgr._entities_executing_update.discard(entity_id)
+        seen_during = []
+
+        async def _fake_core_update(*args, **kwargs):
+            seen_during.append(mgr.is_entity_executing_update(entity_id))
+            return True
+
+        with patch(
+            "agents.ha_update_manager.execute_core_update", new=_fake_core_update
+        ):
+            with patch(
+                "agents.ha_agent_advanced.is_reboot_required_active",
+                return_value=False,
+            ):
+                asyncio.run(
+                    mgr.execute_update(
+                        update,
+                        object(),
+                        AsyncMock(),
+                        object(),
+                    )
+                )
+
+        assert seen_during == [True], "Entity must be registered during execution"
+        assert not mgr.is_entity_executing_update(entity_id), "Must be removed after"
+
+    def test_removes_on_exception(self, tmp_path, pueo_dirs, monkeypatch):
+        """execute_update removes entity_id even when execute_core_update raises."""
+        import asyncio
+        from unittest.mock import AsyncMock, patch
+
+        import agents.ha_update_manager as mgr
+        from utils.ha.ha_rest_client import UpdateStatus
+
+        entity_id = "update.home_assistant_core_update"
+        update = UpdateStatus(
+            component="core",
+            entity_id=entity_id,
+            installed_version="2026.10.3",
+            latest_version="2026.10.4",
+            update_available=True,
+            release_url=None,
+            release_summary=None,
+            in_progress=False,
+        )
+        mgr._entities_executing_update.discard(entity_id)
+
+        async def _raising(*args, **kwargs):
+            raise RuntimeError("simulated failure")
+
+        with patch("agents.ha_update_manager.execute_core_update", new=_raising):
+            with patch(
+                "agents.ha_agent_advanced.is_reboot_required_active", return_value=False
+            ):
+                with pytest.raises(RuntimeError):
+                    asyncio.run(
+                        mgr.execute_update(
+                            update,
+                            object(),
+                            AsyncMock(),
+                            object(),
+                        )
+                    )
+
+        assert not mgr.is_entity_executing_update(entity_id)
+
+    def test_does_not_remove_when_already_present(
+        self, tmp_path, pueo_dirs, monkeypatch
+    ):
+        """execute_update does not discard the entry added by the auto-apply path."""
+        import asyncio
+        from unittest.mock import AsyncMock, patch
+
+        import agents.ha_update_manager as mgr
+        from utils.ha.ha_rest_client import UpdateStatus
+
+        entity_id = "update.home_assistant_core_update"
+        update = UpdateStatus(
+            component="core",
+            entity_id=entity_id,
+            installed_version="2026.10.3",
+            latest_version="2026.10.4",
+            update_available=True,
+            release_url=None,
+            release_summary=None,
+            in_progress=False,
+        )
+        # Simulate auto-apply path already holding the entry
+        mgr._entities_executing_update.add(entity_id)
+        try:
+
+            async def _ok(*args, **kwargs):
+                return True
+
+            with patch("agents.ha_update_manager.execute_core_update", new=_ok):
+                with patch(
+                    "agents.ha_agent_advanced.is_reboot_required_active",
+                    return_value=False,
+                ):
+                    asyncio.run(
+                        mgr.execute_update(
+                            update,
+                            object(),
+                            AsyncMock(),
+                            object(),
+                        )
+                    )
+
+            # Auto-apply path's entry must still be present
+            assert mgr.is_entity_executing_update(entity_id)
+        finally:
+            mgr._entities_executing_update.discard(entity_id)
+
+
+# ---------------------------------------------------------------------------
+# _close_installed_update_card
+# ---------------------------------------------------------------------------
+
+
+class TestCloseInstalledUpdateCard:
+    """_close_installed_update_card writes .approved for approved-but-stuck cards."""
+
+    def _make_db(self, tmp_path: Path, suppression_key: str, last_action: str) -> str:
+        db_path = str(tmp_path / "state.db")
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(_HITL_DDL)
+            conn.execute(
+                "INSERT INTO hitl_suppression"
+                " (card_key, send_count, last_action) VALUES (?, 1, ?)",
+                (suppression_key, last_action),
+            )
+        return db_path
+
+    def _make_card(self, watch_dir: Path, nid: str) -> Path:
+        card = watch_dir / f"{nid}.json"
+        card.write_text('{"payload": {"component": "core"}}')
+        return card
+
+    def test_writes_approved_for_approved_card(self, tmp_path, pueo_dirs, monkeypatch):
+        """Approved card with no sentinel → writes .approved, sets fix_applied, returns True."""
+        import json
+
+        from agents.ha_log_monitor import _close_installed_update_card
+        from utils.hitl.hitl_tracker import stable_nid
+
+        key = "update:update.home_assistant_core_update"
+        db_path = self._make_db(tmp_path, key, "approved")
+        monkeypatch.setattr("agents.ha_log_monitor._config.DB_PATH", db_path)
+
+        watch = tmp_path / "hitl"
+        watch.mkdir()
+        nid = stable_nid(key)
+        self._make_card(watch, nid)
+
+        result = _close_installed_update_card(key, str(watch))
+
+        assert result is True
+        assert (watch / f"{nid}.approved").exists()
+        data = json.loads((watch / f"{nid}.json").read_text())
+        assert data.get("fix_applied") is True
+
+    def test_noop_when_approved_sentinel_exists(self, tmp_path, pueo_dirs, monkeypatch):
+        """Existing .approved sentinel → no-op, returns False."""
+        from agents.ha_log_monitor import _close_installed_update_card
+        from utils.hitl.hitl_tracker import stable_nid
+
+        key = "update:update.home_assistant_core_update"
+        db_path = self._make_db(tmp_path, key, "approved")
+        monkeypatch.setattr("agents.ha_log_monitor._config.DB_PATH", db_path)
+
+        watch = tmp_path / "hitl"
+        watch.mkdir()
+        nid = stable_nid(key)
+        self._make_card(watch, nid)
+        (watch / f"{nid}.approved").touch()
+
+        result = _close_installed_update_card(key, str(watch))
+
+        assert result is False
+
+    def test_noop_when_rejected_sentinel_exists(self, tmp_path, pueo_dirs, monkeypatch):
+        """Existing .rejected sentinel → returns False."""
+        from agents.ha_log_monitor import _close_installed_update_card
+        from utils.hitl.hitl_tracker import stable_nid
+
+        key = "update:update.home_assistant_core_update"
+        db_path = self._make_db(tmp_path, key, "approved")
+        monkeypatch.setattr("agents.ha_log_monitor._config.DB_PATH", db_path)
+
+        watch = tmp_path / "hitl"
+        watch.mkdir()
+        nid = stable_nid(key)
+        self._make_card(watch, nid)
+        (watch / f"{nid}.rejected").touch()
+
+        assert _close_installed_update_card(key, str(watch)) is False
+
+    def test_noop_when_last_action_not_approved(self, tmp_path, pueo_dirs, monkeypatch):
+        """Card with last_action=None (pending) → returns False, left to external path."""
+        from agents.ha_log_monitor import _close_installed_update_card
+        from utils.hitl.hitl_tracker import stable_nid
+
+        key = "update:update.home_assistant_core_update"
+        db_path = self._make_db(tmp_path, key, None)  # type: ignore[arg-type]
+        monkeypatch.setattr("agents.ha_log_monitor._config.DB_PATH", db_path)
+
+        watch = tmp_path / "hitl"
+        watch.mkdir()
+        nid = stable_nid(key)
+        self._make_card(watch, nid)
+
+        assert _close_installed_update_card(key, str(watch)) is False
+        assert not (watch / f"{nid}.approved").exists()
+
+    def test_noop_when_no_json(self, tmp_path, pueo_dirs, monkeypatch):
+        """No .json card → returns False."""
+        from agents.ha_log_monitor import _close_installed_update_card
+
+        key = "update:update.home_assistant_core_update"
+        db_path = self._make_db(tmp_path, key, "approved")
+        monkeypatch.setattr("agents.ha_log_monitor._config.DB_PATH", db_path)
+
+        watch = tmp_path / "hitl"
+        watch.mkdir()
+
+        assert _close_installed_update_card(key, str(watch)) is False
+
+    def test_noop_when_entity_executing(self, tmp_path, pueo_dirs, monkeypatch):
+        """Entity currently executing → returns False (race guard)."""
+        import agents.ha_update_manager as mgr
+        from agents.ha_log_monitor import _close_installed_update_card
+        from utils.hitl.hitl_tracker import stable_nid
+
+        key = "update:update.home_assistant_core_update"
+        entity_id = "update.home_assistant_core_update"
+        db_path = self._make_db(tmp_path, key, "approved")
+        monkeypatch.setattr("agents.ha_log_monitor._config.DB_PATH", db_path)
+
+        watch = tmp_path / "hitl"
+        watch.mkdir()
+        nid = stable_nid(key)
+        self._make_card(watch, nid)
+
+        mgr._entities_executing_update.add(entity_id)
+        try:
+            result = _close_installed_update_card(key, str(watch))
+        finally:
+            mgr._entities_executing_update.discard(entity_id)
+
+        assert result is False
+        assert not (watch / f"{nid}.approved").exists()
