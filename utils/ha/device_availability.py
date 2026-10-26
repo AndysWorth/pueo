@@ -37,6 +37,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import statistics
 import time
 from dataclasses import dataclass, field
 from typing import Optional
@@ -655,35 +656,40 @@ def build_recurrence_fact(
     count = len(recent)
     if count == 0:
         return ""
-    # Build time range description
-    offline_times = [e["offline_at"] for e in recent if e.get("offline_at")]
-    # Per-episode durations — sorting the two lists separately mispairs them.
-    durations = [
-        e["recovered_at"] - e["offline_at"]
-        for e in recent
-        if e.get("offline_at") and e.get("recovered_at")
-    ]
-    if offline_times and durations:
-        import datetime
-
-        def _hm(ts: float) -> str:
-            return datetime.datetime.fromtimestamp(ts).strftime("%H:%M")
-
-        earliest = min(offline_times)
-        latest = max(offline_times)
-        if len(set(_hm(t) for t in offline_times)) == 1:
-            time_range = f"around {_hm(offline_times[0])}"
-        else:
-            time_range = f"between {_hm(earliest)} and {_hm(latest)}"
-        avg_duration = int(sum(durations) / len(durations) / 60)
-        return (
-            f"{device_name} ({domain}) went offline {count}× in {window_days} days,"
-            f" {time_range}, recovering on its own (avg {avg_duration} min)."
-        )
+    # Per-episode data only: sorting offline and recovered lists separately mispairs
+    # them.  The fact counts episodes; it states no cause (#993).
+    complete = [e for e in recent if e.get("offline_at") and e.get("recovered_at")]
+    head = f"{device_name} ({domain}) was offline {count}× in {window_days} days"
+    if not complete:
+        return f"{head}, coming back on its own each time."
+    durations = sorted(e["recovered_at"] - e["offline_at"] for e in complete)
+    typical = int(statistics.median(durations) / 60)
     return (
-        f"{device_name} ({domain}) went offline {count}× in {window_days} days,"
-        " self-recovering each time."
+        f"{head} (typical duration {typical} min, "
+        f"{_usual_start([e['offline_at'] for e in complete])})."
     )
+
+
+def _usual_start(offline_times: list[float]) -> str:
+    """Describe when episodes start: 'usually starting HH:MM' or 'at varying times'.
+
+    The median local start time counts as usual when at least half the starts fall
+    within an hour of it (wrapping around midnight).
+    """
+    import datetime
+
+    minutes = sorted(
+        datetime.datetime.fromtimestamp(t).hour * 60
+        + datetime.datetime.fromtimestamp(t).minute
+        for t in offline_times
+    )
+    mid = minutes[(len(minutes) - 1) // 2]
+    if len(minutes) == 1:
+        return f"starting {mid // 60:02d}:{mid % 60:02d}"
+    near = sum(1 for m in minutes if min(abs(m - mid), 1440 - abs(m - mid)) <= 60)
+    if near * 2 >= len(minutes):
+        return f"usually starting {mid // 60:02d}:{mid % 60:02d}"
+    return "starting at varying times"
 
 
 def load_episodes(conn: sqlite3.Connection) -> dict:

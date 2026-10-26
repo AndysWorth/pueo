@@ -130,7 +130,9 @@ READ_LOGS = ToolDefinition(
     name="read_logs",
     description=(
         "Tail N recent lines from an HA log source over SSH. "
-        "log_source: 'ha_core' (default), 'ha_supervisor', 'ha_host' (HAOS journal; 'ha_os' is an alias), or 'ha_app'. "
+        "log_source: 'ha_core' (default), 'ha_supervisor', 'ha_host' (HAOS journal; 'ha_os' is an alias), "
+        "'ha_host_prev_boot' (the end of the previous boot's host journal, to see why "
+        "the host went down), or 'ha_app'. "
         "When log_source='ha_app', also pass addon_slug (e.g. 'core_mosquitto'). "
         "Pass domain (e.g. 'tuya') to keep only that integration's records from the "
         "last 500 lines, so other integrations' tracebacks don't drown them out. "
@@ -145,7 +147,14 @@ READ_LOGS = ToolDefinition(
             },
             "log_source": {
                 "type": "string",
-                "enum": ["ha_core", "ha_supervisor", "ha_os", "ha_host", "ha_app"],
+                "enum": [
+                    "ha_core",
+                    "ha_supervisor",
+                    "ha_os",
+                    "ha_host",
+                    "ha_host_prev_boot",
+                    "ha_app",
+                ],
                 "description": "Which HA log source to read (default 'ha_core')",
             },
             "addon_slug": {
@@ -424,6 +433,39 @@ REMEMBER = ToolDefinition(
             },
         },
         "required": ["key", "content"],
+    },
+)
+
+# remember() for automated investigations: the fact must be grounded in an output of
+# evidence_tool from this session (#993).  Chat keeps REMEMBER.
+REMEMBER_GROUNDED = ToolDefinition(
+    name="remember",
+    description=(
+        "Store an instance fact that a tool output from this session shows, e.g. "
+        "an entity_id, a version or an error the log printed. Use the output's exact "
+        "names and values. Never store a cause you inferred; the fact is rejected "
+        "unless evidence_tool's output contains it."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "key": {
+                "type": "string",
+                "description": "Short label, e.g. '<domain>_quirk'",
+            },
+            "content": {
+                "type": "string",
+                "description": "The fact, in the tool output's own terms",
+            },
+            "evidence_tool": {
+                "type": "string",
+                "description": (
+                    "Name of the tool you already called this session whose output "
+                    "shows the fact (e.g. 'read_logs')"
+                ),
+            },
+        },
+        "required": ["key", "content", "evidence_tool"],
     },
 )
 
@@ -2397,7 +2439,7 @@ def build_host_health_tool_registry() -> ToolRegistry:
         SEARCH_LOG,
         RUN_HA_COMMAND,
         QUERY_KNOWLEDGE,
-        REMEMBER,
+        REMEMBER_GROUNDED,
         RECALL,
         GET_HA_PROFILE,
         CALL_SERVICE,
@@ -2762,7 +2804,7 @@ def build_device_availability_tool_registry() -> ToolRegistry:
         RELOAD_INTEGRATION,
         GET_NETWORK_PRESENCE,
         RECALL,
-        REMEMBER,
+        REMEMBER_GROUNDED,
         REQUEST_ESCALATION,
         READ_SOURCE,
         DISCARD_RESULT,

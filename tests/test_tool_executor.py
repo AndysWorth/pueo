@@ -1113,7 +1113,7 @@ class TestListLogSources:
         result = asyncio.run(executor._list_log_sources())
         assert result.success is True
         data = json.loads(result.output)
-        assert len(data["system_sources"]) == 4
+        assert len(data["system_sources"]) == 5
         assert data["app_sources"] == []
 
     def test_no_ssh_returns_system_sources_only(self):
@@ -1124,7 +1124,7 @@ class TestListLogSources:
         result = asyncio.run(executor._list_log_sources())
         assert result.success is True
         data = json.loads(result.output)
-        assert len(data["system_sources"]) == 4
+        assert len(data["system_sources"]) == 5
         assert data["app_sources"] == []
 
 
@@ -6391,3 +6391,298 @@ class TestReleaseNotesStubPrefix:
         assert r.success
         assert r.output == "- Raise aiohttp client header limits"
         assert ex._release_notes_obtained is True
+
+
+# ---------------------------------------------------------------------------
+# #993: query_knowledge scoping, grounded remember, previous-boot host log
+# ---------------------------------------------------------------------------
+
+
+def _scoped_executor(tmp_path, signature: str = "", ssh=None):
+    import agents.ha_agent_advanced as haa
+    from utils.agent.autonomy import FakeAutonomyGate
+    from utils.agent.tool_executor import ToolExecutor
+    from utils.ha.ssh_client import FakeSSHClient
+    from utils.hitl.notify import FakeNotifier
+    from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+    db = str(tmp_path / "test.db")
+    with patch.object(haa, "DB_PATH", db):
+        haa.init_local_database()
+    store = FakeKnowledgeStore()
+    ex = ToolExecutor(
+        ha_ssh_client=ssh or FakeSSHClient(file_contents={}, command_results={}),
+        gate=FakeAutonomyGate(auto_execute_result=False),  # type: ignore[arg-type]
+        notifier=FakeNotifier(),
+        knowledge_store=store,
+        db_path=db,
+    )
+    ex.set_signature(signature)
+    return ex, store, db
+
+
+def _seed_store(store) -> None:
+    rows = [
+        ("seed:seed_host_health.md", {"filename": "seed_host_health.md"}),
+        ("seed:seed_update_addon.md", {"signature": "update:addon:*"}),
+        ("seed:seed_device_offline.md", {"signature": "device:offline:*"}),
+        ("seed:seed_supervisor_cli.md", {"filename": "seed_supervisor_cli.md"}),
+        ("cand:tuya", {"signature": "device:offline:tuya"}),
+    ]
+    for cid, meta in rows:
+        store.upsert(
+            "strategies",
+            ids=[cid],
+            documents=[f"tuya offline runbook {cid}"],
+            metadatas=[{"source": "seed_prompt", **meta}],
+        )
+    store.upsert(
+        "ha_integration_docs",
+        ids=["doc-tuya"],
+        documents=["tuya offline docs"],
+        metadatas=[{"source": "ha_docs/tuya"}],
+    )
+
+
+class TestQueryKnowledgeScoping:
+    def test_device_session_drops_other_families(self, tmp_path):
+        ex, store, _ = _scoped_executor(tmp_path, "device:offline:tuya")
+        _seed_store(store)
+        out = asyncio.run(ex._query_knowledge("tuya offline")).output
+        assert "seed_host_health" not in out
+        assert "seed_update_addon" not in out
+        assert "seed_device_offline" in out
+        assert "cand:tuya" in out
+        assert "seed_supervisor_cli" in out  # general reference
+        assert "tuya offline docs" in out  # other collections untouched
+
+    def test_scoping_applies_with_integration_filter(self, tmp_path):
+        ex, store, _ = _scoped_executor(tmp_path, "device:offline:tuya")
+        _seed_store(store)
+        out = asyncio.run(
+            ex._query_knowledge("tuya offline", integration_filter=["tuya"])
+        ).output
+        assert "seed_host_health" not in out
+        assert "seed_device_offline" in out
+
+    def test_chat_session_sees_everything(self, tmp_path):
+        ex, store, _ = _scoped_executor(tmp_path, "chat:unclassified")
+        _seed_store(store)
+        out = asyncio.run(ex._query_knowledge("tuya offline")).output
+        assert "seed_host_health" in out
+        assert "seed_update_addon" in out
+
+    def test_unsigned_session_sees_everything(self, tmp_path):
+        ex, store, _ = _scoped_executor(tmp_path, "manual")
+        _seed_store(store)
+        out = asyncio.run(ex._query_knowledge("tuya offline")).output
+        assert "seed_host_health" in out
+
+    def test_all_out_of_scope_reports_no_knowledge(self, tmp_path):
+        ex, store, _ = _scoped_executor(tmp_path, "device:offline:tuya")
+        store.upsert(
+            "strategies",
+            ids=["seed:seed_host_health.md"],
+            documents=["swap pressure runbook"],
+            metadatas=[{"filename": "seed_host_health.md"}],
+        )
+        r = asyncio.run(ex._query_knowledge("swap pressure"))
+        assert r.success
+        assert "No relevant knowledge found" in r.output
+
+
+class TestStrategyFamily:
+    @pytest.mark.parametrize(
+        "meta,chunk_id,expected",
+        [
+            ({"signature": "device:offline:*"}, "", "device"),
+            ({"signature": "repair:*:restart_required"}, "", "repair"),
+            ({"signature": "*:anything"}, "", None),
+            ({"filename": "seed_host_health.md"}, "", "host"),
+            ({}, "seed:seed_update_analysis.md", "update"),
+            ({"filename": "seed_supervisor_cli.md"}, "", None),
+            ({"source": "pueo_kb"}, "kb_rb_abc", None),
+        ],
+    )
+    def test_family(self, meta, chunk_id, expected):
+        from utils.knowledge.strategy_seeder import strategy_family
+
+        assert strategy_family(meta, chunk_id) == expected
+
+    def test_mapped_seeds_exist_and_are_unsigned(self):
+        """SEED_FAMILIES may only list registered seeds that have no signature."""
+        from utils.knowledge.strategy_seeder import (
+            _SEED_PROMPTS,
+            SEED_FAMILIES,
+            _parse_front_matter_signature,
+        )
+
+        registered = {f for f, _, _ in _SEED_PROMPTS}
+        prompts = Path(__file__).parent.parent / "prompts"
+        for filename in SEED_FAMILIES:
+            assert filename in registered, filename
+            text = (prompts / filename).read_text("utf-8")
+            assert _parse_front_matter_signature(text) is None, filename
+
+
+def _call(ex, name: str, **args):
+    from utils.agent.tool_registry import ToolCall
+
+    return asyncio.run(ex.execute(ToolCall(name=name, arguments=args)))
+
+
+def _memory_rows(db: str) -> list:
+    import sqlite3
+
+    with sqlite3.connect(db) as conn:
+        return conn.execute(
+            "SELECT key, content, source, signature FROM agent_memory"
+        ).fetchall()
+
+
+class TestGroundedRemember:
+    def _ex(self, tmp_path, signature="device:offline:tuya"):
+        from utils.ha.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(
+            file_contents={},
+            command_results={
+                "ha core logs": (
+                    0,
+                    "2026-10-26 10:53 ERROR (MainThread) [tuya] "
+                    "MQTT connection lost: code 7\n",
+                    "",
+                )
+            },
+        )
+        return _scoped_executor(tmp_path, signature, ssh=ssh)
+
+    def test_grounded_fact_is_stored(self, tmp_path):
+        ex, _, db = self._ex(tmp_path)
+        assert _call(ex, "read_logs", lines=40).success
+        r = _call(
+            ex,
+            "remember",
+            key="tuya_quirk",
+            content="tuya MQTT connection lost: code 7",
+            evidence_tool="read_logs",
+            source="user",
+        )
+        assert r.success, r.error
+        assert _memory_rows(db) == [
+            (
+                "tuya_quirk",
+                "tuya MQTT connection lost: code 7",
+                "agent",
+                ex._session_signature,
+            )
+        ]
+
+    def test_invented_cause_is_rejected(self, tmp_path):
+        ex, _, db = self._ex(tmp_path)
+        _call(ex, "read_logs", lines=40)
+        r = _call(
+            ex,
+            "remember",
+            key="tuya_quirk",
+            content="Tuya cloud rotates its MQTT servers daily at 07:20",
+            evidence_tool="read_logs",
+        )
+        assert not r.success
+        assert "does not show this fact" in (r.error or "")
+        assert _memory_rows(db) == []
+
+    def test_missing_evidence_tool_is_rejected(self, tmp_path):
+        ex, _, db = self._ex(tmp_path)
+        _call(ex, "read_logs", lines=40)
+        r = _call(ex, "remember", key="k", content="tuya MQTT connection lost")
+        assert not r.success
+        assert "evidence_tool is required" in (r.error or "")
+        assert _memory_rows(db) == []
+
+    def test_uncalled_evidence_tool_is_rejected(self, tmp_path):
+        ex, _, db = self._ex(tmp_path)
+        r = _call(
+            ex,
+            "remember",
+            key="k",
+            content="tuya MQTT connection lost",
+            evidence_tool="read_logs",
+        )
+        assert not r.success
+        assert "no successful read_logs output" in (r.error or "")
+        assert _memory_rows(db) == []
+
+    def test_failed_calls_are_not_evidence(self, tmp_path):
+        ex, _, db = self._ex(tmp_path)
+        _call(ex, "read_logs", lines=40, domain="bad domain!")
+        r = _call(
+            ex, "remember", key="k", content="bad domain", evidence_tool="read_logs"
+        )
+        assert not r.success
+        assert "no successful read_logs output" in (r.error or "")
+
+    def test_chat_session_is_unchanged(self, tmp_path):
+        ex, _, db = self._ex(tmp_path, signature="chat:unclassified")
+        r = _call(ex, "remember", key="pref", content="User likes dim lights")
+        assert r.success
+        assert _memory_rows(db)[0][:3] == ("pref", "User likes dim lights", "agent")
+
+    def test_reset_clears_session_outputs(self, tmp_path):
+        ex, _, _ = self._ex(tmp_path)
+        _call(ex, "read_logs", lines=40)
+        assert ex._session_outputs
+        ex.reset()
+        assert ex._session_outputs == []
+
+    def test_session_outputs_are_capped(self, tmp_path):
+        ex, _, _ = self._ex(tmp_path)
+        for _ in range(ex._MAX_SESSION_OUTPUTS + 5):
+            _call(ex, "read_logs", lines=5)
+        assert len(ex._session_outputs) == ex._MAX_SESSION_OUTPUTS
+
+    def test_registries_use_grounded_remember(self):
+        from utils.agent.tool_registry import (
+            build_chat_tool_registry,
+            build_device_availability_tool_registry,
+            build_host_health_tool_registry,
+        )
+
+        def _params(reg):
+            return reg._tools["remember"].parameters
+
+        for reg in (
+            build_device_availability_tool_registry(),
+            build_host_health_tool_registry(),
+        ):
+            assert "evidence_tool" in _params(reg)["required"]
+        assert "evidence_tool" not in _params(build_chat_tool_registry())["properties"]
+
+
+class TestReadLogsPrevBoot:
+    def test_prev_boot_command(self, tmp_path):
+        from utils.ha.read_only_ssh import ReadOnlySSHClient
+        from utils.ha.ssh_client import FakeSSHClient
+
+        inner = FakeSSHClient(
+            file_contents={},
+            command_results={
+                "ha host logs --boot -1 --lines 200": (
+                    0,
+                    "systemd[1]: Unmounted NetworkManager persistent connections.\n",
+                    "",
+                )
+            },
+        )
+        ex, _, _ = _scoped_executor(
+            tmp_path, "host:unexpected_reboot:none", ssh=ReadOnlySSHClient(inner)
+        )
+        r = asyncio.run(ex._read_logs(200, "ha_host_prev_boot"))
+        assert r.success, r.error
+        assert "Unmounted" in r.output
+
+    def test_prev_boot_in_tool_enum(self):
+        from utils.agent.tool_registry import READ_LOGS
+
+        enum = READ_LOGS.parameters["properties"]["log_source"]["enum"]
+        assert "ha_host_prev_boot" in enum

@@ -418,6 +418,9 @@ class ToolExecutor:
         # Successful fetch_url bodies this session, keyed by URL; a repeat is answered
         # from here instead of re-fetching (#945).
         self._fetched_urls: dict[str, str] = {}
+        # (tool name, output) of each successful call this session; remember() in an
+        # automated session must be grounded in one of these (#993).
+        self._session_outputs: list[tuple[str, str]] = []
 
     def reset(self) -> None:
         """Reset per-loop state. Called by AgentLoop before each run()."""
@@ -434,6 +437,7 @@ class ToolExecutor:
         self._hitl_card_queued = False
         self._hitl_card_id = None
         self._fetched_urls = {}
+        self._session_outputs = []
         # _dynamic_tools intentionally not reset — registered tools persist across loops
 
     def _mark_card_queued(self, nid: str) -> None:
@@ -500,7 +504,17 @@ class ToolExecutor:
         """Set the current session signature so remember() can stamp it on memory rows."""
         self._session_signature = signature
 
+    # Recorded outputs kept per session for remember() grounding.
+    _MAX_SESSION_OUTPUTS = 60
+
     async def execute(self, tool_call: ToolCall) -> ToolResult:
+        result = await self._execute_tool(tool_call)
+        if result.success and result.output and tool_call.name != "remember":
+            self._session_outputs.append((tool_call.name, result.output))
+            del self._session_outputs[: -self._MAX_SESSION_OUTPUTS]
+        return result
+
+    async def _execute_tool(self, tool_call: ToolCall) -> ToolResult:
         args = tool_call.arguments
         name = tool_call.name
         log.info("tool_execute", tool=name)
@@ -569,6 +583,12 @@ class ToolExecutor:
                     ha_version=args.get("ha_version"),
                 )
             if name == "remember":
+                if self._requires_grounded_memory():
+                    return await self._remember_grounded(
+                        args.get("key", ""),
+                        args.get("content", ""),
+                        args.get("evidence_tool", ""),
+                    )
                 return await self._remember(
                     args.get("key", ""),
                     args.get("content", ""),
@@ -894,6 +914,8 @@ class ToolExecutor:
         "ha_supervisor": "ha supervisor logs --lines {lines}",
         "ha_os": "ha host logs --lines {lines}",  # HAOS has no `ha os logs`
         "ha_host": "ha host logs --lines {lines}",
+        # Tail of the previous boot's journal: why the host went down (#993).
+        "ha_host_prev_boot": "ha host logs --boot -1 --lines {lines}",
     }
 
     async def _read_logs(
@@ -963,6 +985,10 @@ class ToolExecutor:
             {
                 "log_name": "ha_host",
                 "description": "HAOS host journal (systemd, kernel, OS)",
+            },
+            {
+                "log_name": "ha_host_prev_boot",
+                "description": "End of the previous boot's host journal (read_logs only)",
             },
         ]
         app_sources: list[dict] = []
@@ -1196,6 +1222,44 @@ class ToolExecutor:
         ],
     }
 
+    # Session families whose query_knowledge results are limited to their own runbooks.
+    # Chat (and unsigned triggers) see every runbook.
+    _SCOPED_FAMILIES: frozenset[str] = frozenset(
+        {"device", "host", "repair", "update", "notification", "lovelace", "log"}
+    )
+
+    def _session_family(self) -> str:
+        """Signature family of an automated session ('device', 'host', …), else ''."""
+        sig = self._session_signature
+        family = sig.split(":", 1)[0] if ":" in sig else ""
+        return family if family in self._SCOPED_FAMILIES else ""
+
+    def _scope_strategy_chunks(self, chunks: list) -> list:
+        """Drop strategies chunks written for another kind of session (#993).
+
+        A Tuya device session must not be handed the host-health or add-on update
+        runbook.  General (unscoped) runbooks and other collections pass through.
+        """
+        from utils.knowledge.strategy_seeder import strategy_family
+
+        family = self._session_family()
+        if not family:
+            return chunks
+        kept = []
+        for c in chunks:
+            if c.collection == "strategies":
+                cf = strategy_family(c.metadata or {}, getattr(c, "chunk_id", ""))
+                if cf is not None and cf != family:
+                    log.debug(
+                        "query_knowledge_out_of_scope",
+                        chunk_id=getattr(c, "chunk_id", ""),
+                        chunk_family=cf,
+                        session_family=family,
+                    )
+                    continue
+            kept.append(c)
+        return kept
+
     async def _query_knowledge(
         self,
         query: str,
@@ -1213,6 +1277,8 @@ class ToolExecutor:
         from config import RAG_MIN_SCORE, RAG_TOP_K
 
         collections = self._QUERY_TYPE_COLLECTIONS.get(query_type or "", None)
+        # Scoping drops other families' runbooks, so fetch extra to keep top_k results.
+        fetch_k = RAG_TOP_K * 2 if self._session_family() else RAG_TOP_K
 
         if integration_filter:
             # The `strategies` collection has no `impacted_integration` metadata, so
@@ -1230,7 +1296,7 @@ class ToolExecutor:
                     await asyncio.to_thread(
                         self._knowledge_store.query,
                         query,
-                        top_k=RAG_TOP_K,
+                        top_k=fetch_k,
                         collections=["strategies"],
                         min_score=RAG_MIN_SCORE,
                     )
@@ -1240,7 +1306,7 @@ class ToolExecutor:
                     await asyncio.to_thread(
                         self._knowledge_store.query,
                         query,
-                        top_k=RAG_TOP_K,
+                        top_k=fetch_k,
                         collections=other_target,
                         where=where,
                         min_score=RAG_MIN_SCORE,
@@ -1249,15 +1315,17 @@ class ToolExecutor:
             chunk_lists.sort(
                 key=lambda c: c.authority_score * 0.3 + c.score * 0.7, reverse=True
             )
-            chunks = chunk_lists[:RAG_TOP_K]
+            chunks = chunk_lists
         else:
             chunks = await asyncio.to_thread(
                 self._knowledge_store.query,
                 query,
-                top_k=RAG_TOP_K,
+                top_k=fetch_k,
                 collections=collections,
                 min_score=RAG_MIN_SCORE,
             )
+
+        chunks = self._scope_strategy_chunks(chunks)[:RAG_TOP_K]
 
         # Version-aware score boosting: use explicit ha_version or auto-detect from profile.
         effective_version = ha_version
@@ -1359,6 +1427,61 @@ class ToolExecutor:
             return ToolResult(
                 tool_name="remember", success=False, output="", error=str(exc)
             )
+
+    def _requires_grounded_memory(self) -> bool:
+        """True for automated sessions (scoped signature family); chat is unchanged."""
+        return bool(self._session_family())
+
+    async def _remember_grounded(
+        self, key: str, content: str, evidence_tool: str
+    ) -> ToolResult:
+        """remember() for automated sessions: the fact must appear in a tool output.
+
+        A Tuya session once stored an invented cause as a fact, and later sessions
+        read it back as truth (#993).  The fact is checked with the distiller's
+        _fact_is_grounded against every output of *evidence_tool* this session.
+        """
+        from utils.knowledge.runbook_distiller import _fact_is_grounded
+
+        if not evidence_tool:
+            return ToolResult(
+                tool_name="remember",
+                success=False,
+                output="",
+                error=(
+                    "evidence_tool is required: name the tool you called this session "
+                    "whose output shows this fact"
+                ),
+            )
+        evidence = "\n".join(o for n, o in self._session_outputs if n == evidence_tool)
+        if not evidence:
+            return ToolResult(
+                tool_name="remember",
+                success=False,
+                output="",
+                error=(
+                    f"no successful {evidence_tool} output this session; cite a tool "
+                    "you already called, or don't store the fact"
+                ),
+            )
+        if not _fact_is_grounded(content, evidence):
+            log.info(
+                "remember_rejected_ungrounded",
+                key=key,
+                evidence_tool=evidence_tool,
+                content_preview=content[:200],
+            )
+            return ToolResult(
+                tool_name="remember",
+                success=False,
+                output="",
+                error=(
+                    f"Not stored: the {evidence_tool} output does not show this fact. "
+                    "Only remember what a tool output states, using its exact names "
+                    "and values; leave out causes you inferred."
+                ),
+            )
+        return await self._remember(key, content, "agent")
 
     async def _recall(self, query: str) -> ToolResult:
         try:

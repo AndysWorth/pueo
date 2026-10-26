@@ -6,88 +6,100 @@ signature: device:offline:*
 
 ## Triggers
 A device (or group of devices sharing a config entry) has been unavailable for longer than
-the grace period. Common integrations: econet, ecobee, nest, august, ring, smartthings,
-myq, rachio, and any cloud-push integration that maintains a persistent connection.
+the grace period. The initial context lists each device with its entity_ids, its
+offline-since time, and any recurrence facts or previous investigations for it. Only use
+the entity_ids listed there, and never guess one.
 
-## Key distinction: cloud-push vs local/network
+## Before anything else: was HA just restarted?
+While HA is running, an entity keeps its last known state. A device that the user switched
+off can keep looking fine for hours, until a restart or integration reload shows it as
+`unavailable`. If the offline-since time is within a few minutes of an HA restart, Core
+update or host reboot in the context, the device was most likely **already off** before
+the restart.
+- Set `outcome="monitoring"`, and tell the user to answer **"I turned these off"** on the
+  card if they did. Pueo then stops alerting on the device until it is next seen online.
+- Don't reload the integration, and don't diagnose a cloud or network fault from that one
+  sighting.
 
-**Cloud-push thread death** (most common cause for single-vendor devices):
-- HA log shows `Unexpected disconnect`, `MQTT disconnect`, `WebSocket error`, `TimeoutError`,
-  or `Uncaught thread exception` near the offline-since time.
-- The integration's push thread died. HA does not auto-restart it. The integration only
-  recovers on its next hourly poll (`:02` or similar) — which could be 58 minutes away.
-- **Fix: `reload_integration(domain=<domain>)`** restarts the thread immediately.
-- After reload: check entity states or call `get_entity_history` to confirm devices came back.
+## What the evidence can tell you
 
-**Vendor-side cloud outage**:
-- Multiple unrelated integrations affected, or status page shows incident.
-- No HA log errors.
-- **No automated fix**: `outcome="monitoring"`. Tell the user to wait.
+**The integration's connection dropped** (cloud-push or local push):
+- The log for this domain shows a disconnect, `MQTT disconnect`, `WebSocket error`,
+  `TimeoutError` or `Uncaught thread exception` near the offline-since time.
+- `reload_integration(domain=<domain>)` restarts the connection. Afterwards, check an
+  entity's state with `get_entity_history` to confirm the devices came back.
 
-**Local/network device offline** (Zigbee, Z-Wave, local LAN device):
-- Device is powered off, firmware updating, or out of range.
-- Sibling devices on the same integration remain online.
-- **No automated fix**: `outcome="needs_action"`. Recommend checking power and range.
+**The config entry failed**:
+- `get_integration_diagnostics` shows the entry in `setup_error`, `setup_retry` or
+  `failed_setup`, or the log shows the integration's setup failing.
+- Recommend `reload_integration` (gated) or re-authentication in the HA UI.
 
-**Integration config entry error**:
-- `get_integration_diagnostics` shows a config entry in `failed_setup` or `setup_error` state.
-- Recommend `reload_integration` (gated) or re-authentication in HA UI.
+**The device itself is off or unreachable**:
+- Siblings on the same config entry are still online, or NetAlertX shows the device
+  absent from the LAN.
+- No reload will help. Set `outcome="needs_action"` and recommend checking power and
+  Wi-Fi, unless the device is one the user switches off (TVs, media players, seasonal
+  lights), in which case use `outcome="monitoring"`.
 
-**Local / media devices** (TVs, Cast, DLNA, LIFX, androidtv, roku):
-- TVs and media players (Cast, DLNA, `androidtv`, `roku`) go unavailable when powered off or
-  asleep — this is **expected behaviour**, not a fault.
-- Wi-Fi bulbs (LIFX) show `No response from <ip> after 9 attempts` in the log when powered off
-  or out of range. Reload will not help if the device is physically absent.
-- Use `get_entity_history(entity_id=<entity>, hours=168)` (7 days) to detect a daily power-off
-  pattern. If the device goes offline every evening at a similar time, it is user-controlled
-  sleep — set `outcome="monitoring"`, not `outcome="needs_action"`.
-- Check NetAlertX presence before anything else: absent from LAN = physical/power issue;
-  present on LAN = integration or cast discovery fault.
-- `outcome="monitoring"` when the device self-recovers on a regular schedule. Note the pattern
-  (e.g. "offline 22:30–07:10 daily") in the summary so the user knows this is expected.
+**Vendor outage**:
+- A status page fetched with `fetch_url` reports an incident, or several unrelated cloud
+  integrations dropped at the same time with no local errors.
+- No automated fix. Set `outcome="monitoring"`.
+
+TVs and media players (Cast, DLNA, `androidtv`, `roku`) go unavailable when powered off or
+asleep. That is expected, not a fault.
+
+If the evidence supports none of these, say the cause is unknown. Don't fill the gap with a
+plausible story.
+
+## Recurrence facts are counts, not causes
+A recurrence fact such as "was offline 4× in 14 days (typical duration 600 min, usually
+starting 22:30)" records how often the device dropped and for how long. It says nothing
+about why. Use it to check whether this episode fits the usual pattern, and say so in the
+summary. Never turn it into a cause (a vendor schedule, a sleep cycle, a cloud glitch)
+that no tool output shows.
 
 ## Investigation steps
-
-1. `read_logs(lines=40, log_source="ha_core", domain=<domain>)` — look for disconnect, Traceback, MQTT error,
-   or "Uncaught thread exception" near the offline-since time.
-2. If log confirms cloud-push thread death: call `reload_integration(domain=<domain>)`.
-3. If log is clean: `get_integration_diagnostics(domain=<domain>)` — check entry state.
-4. If multiple vendors offline: check `fetch_url` against a vendor status page (if known).
-5. `get_entity_history` on a representative entity to confirm the offline-since time and
-   count prior blips (3+ blips in 7 days = recurring cloud instability).
-6. `get_logbook` to see the sequence of state changes.
-
-## Recurring outages
-
-If `get_entity_history` shows 3+ offline episodes in 7 days and each starts around the same
-time of day (e.g. 07:15–07:30 local time), the cause is likely a recurring vendor-cloud event
-(daily MQTT server rotation, certificate renewal, etc.). Document this in `remember()` as an
-instance fact and include it in the summary so the user knows this is a pattern.
+1. Check the initial context for a restart, update or reboot just before the offline-since
+   time (see above).
+2. `read_logs(lines=40, log_source="ha_core", domain=<domain>)`: look for a disconnect,
+   Traceback or setup error near the offline-since time.
+3. If the log is clean: `get_integration_diagnostics(domain=<domain>)` and check the entry
+   state.
+4. `get_entity_history(entity_id=<listed entity_id>, hours=168)` on one representative
+   entity to see when it went offline and how often in the last week.
+5. If the log shows a dropped connection and the device is still offline:
+   `reload_integration(domain=<domain>)`.
+6. If several vendors are offline at once: `fetch_url` against a known vendor status page.
 
 ## Sibling device heuristic
-
 If some devices under the same config entry are online and others are offline, the cause is
-local (power, range, firmware). If all devices under the entry are offline, the cause is the
-integration or vendor cloud.
+local to those devices (power, range, firmware). If all of them are offline, look at the
+integration or the vendor cloud.
 
 ## Network presence (NetAlertX)
+When the initial context includes a `NetAlertX network presence:` block, check it before
+reading logs:
+- **`present on LAN`**: the device is reachable, so the fault is in the integration or the
+  vendor cloud. Continue with the log and diagnostics steps.
+- **`absent from LAN`**: power, Wi-Fi or physical presence. No reload will fix it.
+- **`not found in NetAlertX`**, or no presence block: fall back to logs and siblings.
 
-When the initial context includes a `NetAlertX network presence:` block, use it as
-the first disambiguating signal before reading logs:
+## Prediction (lets Pueo check your conclusion itself)
+Give `finish_device_availability` a `prediction` whenever your conclusion implies what the
+devices will do next. Pueo watches the devices and verifies the session from what actually
+happens, without waiting for the user.
+- You reloaded the integration because its connection dropped:
+  `{"kind": "recovers_after_reload", "within_minutes": 15}`.
+- The connection dropped or the vendor has an outage, and you expect it to come back by
+  itself: `{"kind": "recovers_without_action", "within_minutes": <N>}`, where N comes from
+  the evidence (for example the typical duration in a recurrence fact).
+- The device is off, unplugged or absent from the LAN:
+  `{"kind": "stays_offline", "within_minutes": 60}`.
 
-- **`present on LAN`** — the device is physically reachable on the local network.
-  HA saying "unavailable" while the device is on the LAN means the fault is in the
-  integration or vendor cloud, not in the device itself. Proceed with
-  cloud-push thread death or config entry diagnostics steps above.
+Leave `prediction` out when the cause is unknown.
 
-- **`absent from LAN`** — the device is not visible in any recent ARP scan.
-  The fault is a physical layer issue (power off, Wi-Fi loss, firmware update, out
-  of range). No integration reload will fix this. Set `outcome="needs_action"` and
-  tell the user to check power, Wi-Fi signal, or physical presence.
-
-- **`not found in NetAlertX`** — the device has no MAC or IP mapping in NetAlertX's
-  inventory, which may mean it has never been scanned or uses a MAC that NetAlertX
-  hasn't seen. Fall back to log analysis.
-
-- Presence block absent or `netalertx_status` ≠ `ok` — NetAlertX is not available.
-  Fall back to log analysis and sibling heuristics.
+## Verification question
+Ask one yes/no question the user can answer from what they know, e.g. "Was the Kasa plug
+switched off at the wall?". Set `fact_if_yes` only to a fact the evidence and that answer
+together establish, such as "Kitchen TV (cast) is switched off at night by the user."

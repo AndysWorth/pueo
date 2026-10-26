@@ -41,3 +41,7 @@ Also: `run_ha_command` now reports a non-zero exit as `success=False, error="exi
 - Adding a new internal read command to a tool used by these registries means adding a pattern to `_READ_ONLY_COMMAND_PATTERNS`. Otherwise the tool fails closed with an explicit error.
 - REST write tools (`call_service`, `reload_integration` in the repair-issue registry) now route through `AutonomyGate(AUTONOMY_LEVEL)`, consistent with `_run_host_health_investigation`. They produce HITL cards at lower autonomy levels instead of being silently auto-approved. Residual risk #874 is closed.
 - Security review: `known_hosts=None` (ADR 004) still applies to the inner client.
+
+## Amendment (#993): previous-boot host journal
+
+`_READ_ONLY_COMMAND_PATTERNS` also allows `ha host logs --boot -1 --lines N`, which reads the end of the previous boot's journal. `read_logs(log_source="ha_host_prev_boot")` uses it. After an unexpected reboot, the current boot's log starts after the restart, so without the previous boot a host-health session can only guess why the host went down. The pattern is anchored to offset `-1` and a numeric line count, so `--follow`, other offsets and chained commands are still rejected. Verified against the live HAOS CLI on 2026-10-26: `ha host logs --help` lists `-b, --boot`, and `ha host logs boots` lists offsets `-1` and `0`.
