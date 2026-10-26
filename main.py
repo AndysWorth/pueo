@@ -1370,6 +1370,21 @@ async def supervisor_main(config_path: Path) -> None:
             except Exception as _spe:  # nosec B110
                 _log.warning("runbook_usage_sweep_failed", error=str(_spe))
 
+            # Once a day: one card listing every open verification question (ADR 050).
+            try:
+                from utils.knowledge.session_verification import (
+                    maybe_send_verification_digest as _msvd,
+                )
+
+                await _msvd(
+                    notifier,
+                    cfg.DB_PATH,
+                    cfg.NOTIFY_WATCH_DIR,
+                    cfg.VERIFICATION_DIGEST_HOUR,
+                )
+            except Exception as _vde:  # nosec B110
+                _log.warning("verification_digest_failed", error=str(_vde))
+
     supervisor.start("backup_sync", _backup_reconcile_loop, interval_seconds=1800)
 
     # Ollama real-time model monitor (15-second poll of /api/ps)

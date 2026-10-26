@@ -807,6 +807,57 @@ def _post_restart_sweep(
     return [sweep]
 
 
+async def check_device_predictions(
+    db_path: str,
+    now: float,
+    recovered: dict[str, bool],
+    still_offline: set[str],
+    knowledge_store: object = None,
+    llm_client: object = None,
+) -> int:
+    """Judge pending session predictions against what the poll just saw (ADR 050).
+
+    *recovered* maps the card_key of each episode that just recovered to whether
+    its card was actioned; *still_offline* lists card_keys of episodes still
+    alerted.  Sessions are matched by ``card_id`` (the card's stable nid).
+    Returns the number of sessions verified.
+    """
+    import asyncio
+
+    from utils.hitl.hitl_tracker import stable_nid
+    from utils.knowledge.session_verification import (
+        judge_prediction,
+        load_pending_predictions,
+        resolve_prediction,
+    )
+
+    if not recovered and not still_offline:
+        return 0
+    by_nid: dict[str, tuple[str, bool]] = {
+        stable_nid(k): (k, False) for k in still_offline
+    }
+    by_nid.update({stable_nid(k): (k, True) for k in recovered})
+    resolved = 0
+    for pending in await asyncio.to_thread(load_pending_predictions, db_path):
+        hit = by_nid.get(pending.card_id)
+        if hit is None or pending.prediction is None:
+            continue
+        key, is_recovered = hit
+        verdict = judge_prediction(
+            pending.prediction,
+            pending.created_ts,
+            now,
+            recovered_at=now if is_recovered else None,
+            actioned=pending.actioned or recovered.get(key, False),
+            reloaded=pending.reloaded,
+        )
+        if verdict is None:
+            continue
+        await resolve_prediction(db_path, pending, verdict, knowledge_store, llm_client)
+        resolved += 1
+    return resolved
+
+
 _POLL_INTERVAL_SECONDS = 60
 _REGISTRY_CACHE_SECONDS = _REGISTRY_TTL_SECONDS  # 1800 s
 
@@ -1106,6 +1157,7 @@ async def poll_device_availability(
                     save_snapshot(conn, result.snapshot)
 
             # Process recoveries.
+            _recovered_keys: dict[str, bool] = {}
             for finding in result.recovered:
                 # A swept device's card is the sweep card, not its entry's.
                 card_keys = sorted(
@@ -1191,6 +1243,8 @@ async def poll_device_availability(
                     save_episodes(conn, _updated_episodes)
                     for _k in card_keys:
                         mark_card_resolved(conn, _k)
+                for _k in card_keys:
+                    _recovered_keys[_k] = _recovered_keys.get(_k, False) or _actioned
 
                 log.info(
                     "device_recovered",
@@ -1199,6 +1253,27 @@ async def poll_device_availability(
                     devices=[d["name"] for d in finding.devices],
                     duration_minutes=duration_minutes,
                     self_recovered=_any_self_recovered,
+                )
+
+            # Prediction checks — states inside the settle window prove nothing.
+            if result.skipped is None:
+                _still_offline = {
+                    str(s["card_key"])
+                    for s in result.snapshot.values()
+                    if s.get("alerted") and s.get("card_key")
+                }
+                # A card recovers only when none of its devices is still offline.
+                await check_device_predictions(
+                    _db,
+                    now,
+                    {
+                        k: v
+                        for k, v in _recovered_keys.items()
+                        if k not in _still_offline
+                    },
+                    _still_offline,
+                    knowledge_store,
+                    llm_client,
                 )
 
         except Exception as exc:

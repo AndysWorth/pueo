@@ -145,10 +145,44 @@
       <form method="POST" action="/reject/{{ r.notification_id }}">
         <button class="btn btn-reject" type="submit">Keep</button>
       </form>
+      {% elif r.payload.get("card_type") == "verification_digest" %}
+      <p style="font-size:0.82rem;color:#444;margin:0 0 0.5rem;">Answer what you can. Each answer goes to its card, and only confirmed sessions teach Pueo.</p>
+      {% for it in r.payload.get("items", []) %}
+      <div style="margin:0 0 0.5rem;padding:0.5rem 0.65rem;background:#f0f7f0;border:1px solid #c3dfc3;border-radius:4px;">
+        <p style="font-size:0.78rem;margin:0 0 0.2rem;color:#555;">{{ it.subject }}</p>
+        <p style="font-size:0.82rem;margin:0 0 0.4rem;color:#1a3a1a;"><strong>{{ it.question }}</strong></p>
+        <form method="POST" action="/right/{{ it.nid }}" style="display:inline;">
+          <input type="hidden" name="return_to" value="/queue">
+          {% if it.acknowledge %}<input type="hidden" name="acknowledge" value="1">{% endif %}
+          <button type="submit" style="background:#2e7d32;color:#fff;border:none;padding:0.3rem 0.85rem;border-radius:4px;cursor:pointer;font-size:0.82rem;margin-right:0.4rem;">Yes</button>
+        </form>
+        <button onclick="window.toggleWrongForm('digest-{{ it.nid }}')" type="button" style="background:#fff;color:#555;border:1px solid #bbb;padding:0.3rem 0.85rem;border-radius:4px;cursor:pointer;font-size:0.82rem;margin-right:0.4rem;">No</button>
+        {% if it.can_turn_off %}
+        <form method="POST" action="/off/{{ it.nid }}" style="display:inline;">
+          <input type="hidden" name="return_to" value="/queue">
+          <button type="submit" title="These devices are off on purpose" style="background:#fff;color:#333;border:1px solid #888;padding:0.3rem 0.85rem;border-radius:4px;cursor:pointer;font-size:0.82rem;">Off on purpose</button>
+        </form>
+        {% endif %}
+        <div id="wrong-form-digest-{{ it.nid }}" style="display:none;margin-top:0.4rem;">
+          <form method="POST" action="/wrong/{{ it.nid }}">
+            <input type="hidden" name="return_to" value="/queue">
+            <input type="text" name="correction" placeholder="What was actually going on? (optional)" style="font-size:0.82rem;padding:0.25rem 0.4rem;border:1px solid #faa;border-radius:4px;width:100%;max-width:28rem;margin-bottom:0.3rem;">
+            <br>
+            <button type="submit" style="background:#dc3545;color:#fff;border:none;padding:0.3rem 0.75rem;border-radius:4px;cursor:pointer;font-size:0.82rem;">Confirm: No, that's wrong</button>
+          </form>
+        </div>
+      </div>
+      {% endfor %}
+      <form method="POST" action="/acknowledge/{{ r.notification_id }}">
+        <button class="btn btn-defer" type="submit">Dismiss digest</button>
+      </form>
       {% else %}
       {% set ct = r.payload.get("card_type", "") %}
       {% set has_fix = r.payload.get("pending_fix_yaml") %}
       {% set is_actionable = ct in ("repair", "update", "netalertx_heal", "netalertx_setup", "netalertx_uninstall", "netalertx_migrate", "netalertx_switch", "resource_action", "disk_recovery", "code_proposal", "open_pr", "ha_repair", "cloud_escalation", "dashboard_entity", "unregistered_entity", "config_entry_reload", "ha_command", "service_call", "automation_create", "companion_setup", "device_recurring") or (ct == "host_health" and not r.payload.get("informational")) or (ct == "device_offline" and r.payload.get("has_fix")) or has_fix %}
+      {% if r.payload.get("prediction_text") %}
+      <p style="font-size:0.8rem;color:#555;margin:0 0 0.5rem;">Pueo predicts this will <strong>{{ r.payload.get("prediction_text") }}</strong> and will check that itself.</p>
+      {% endif %}
       {% if ct == "repair" and r.payload.get("enrichment") %}
       {% set enr = r.payload.enrichment %}
       <div style="margin:0.75rem 0;">

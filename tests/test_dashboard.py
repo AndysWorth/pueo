@@ -9767,3 +9767,108 @@ class TestTurnedOffRoute:
             tmp_path, monkeypatch, self._payload(card_type="host_health")
         )
         assert "/off/nid-off" not in client.get("/queue").text
+
+
+class TestVerificationDigestCard:
+    """ADR 050: the daily digest lists open questions and drops answered rows."""
+
+    def _card(self, watch, nid, payload, sent_at=1):
+        import json
+
+        (watch / f"{nid}.json").write_text(
+            json.dumps(
+                {
+                    "notification_id": nid,
+                    "subject": f"Subject {nid}",
+                    "body": "b",
+                    "sent_at": sent_at,
+                    "payload": {"notification_id": nid, **payload},
+                }
+            )
+        )
+
+    def _digest(self, watch, items):
+        self._card(
+            watch,
+            "digest1",
+            {"card_type": "verification_digest", "items": items, "informational": True},
+            sent_at=9,
+        )
+
+    def _item(self, nid, **kw):
+        return {
+            "nid": nid,
+            "subject": f"Subject {nid}",
+            "question": f"Question {nid}?",
+            "acknowledge": True,
+            "can_turn_off": False,
+            **kw,
+        }
+
+    def test_renders_open_rows_only(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        self._card(tmp_path, "open1", {"card_type": "device_offline", "devices": [{}]})
+        self._card(tmp_path, "done1", {"card_type": "device_offline"})
+        (tmp_path / "done1.approved").touch()
+        self._card(tmp_path, "said1", {"card_type": "update", "user_verdict": "right"})
+        self._digest(
+            tmp_path,
+            [
+                self._item("open1", can_turn_off=True),
+                self._item("done1"),
+                self._item("said1"),
+                self._item("gone1"),
+                self._item("../evil"),
+                "junk",
+            ],
+        )
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/queue").text
+        assert "Question open1?" in html
+        assert 'action="/off/open1"' in html
+        assert 'action="/right/open1"' in html
+        assert "Question done1?" not in html
+        assert "Question said1?" not in html
+        assert "Question gone1?" not in html
+        assert "Dismiss digest" in html
+
+    def test_digest_hidden_when_no_rows_left(self, tmp_path, monkeypatch):
+        import web.dashboard as dashboard
+
+        self._card(tmp_path, "done1", {"card_type": "update"})
+        (tmp_path / "done1.rejected").touch()
+        (tmp_path / "bad1.json").write_text("{nope")
+        self._card(tmp_path, "bad1x", {"card_type": "update"})
+        self._digest(tmp_path, [self._item("done1")])
+        nids = [r.notification_id for r in dashboard._load_requests(tmp_path)]
+        assert "digest1" not in nids
+        assert "bad1x" in nids
+
+    def test_unreadable_row_card_is_dropped(self, tmp_path):
+        import web.dashboard as dashboard
+
+        (tmp_path / "broken.json").write_text("{nope")
+        self._digest(tmp_path, [self._item("broken")])
+        assert all(
+            r.notification_id != "digest1" for r in dashboard._load_requests(tmp_path)
+        )
+
+    def test_prediction_line_rendered(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        self._card(
+            tmp_path,
+            "dev1",
+            {
+                "card_type": "device_offline",
+                "prediction_text": "recover on its own within 30 min",
+            },
+        )
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/queue").text
+        assert "recover on its own within 30 min" in html

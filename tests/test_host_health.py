@@ -932,6 +932,35 @@ class TestResourcePollerCheckHostHealth:
         asyncio.run(poller._check_host_health(_make_status()))
         assert "disk_wear" not in poller._alerted_host
 
+    def test_clear_runs_verifier_and_survives_its_failure(self, tmp_path, monkeypatch):
+        import asyncio
+
+        import config as cfg_mod
+        import utils.disk.host_health as hh_mod
+        import utils.disk.resource as res_mod
+        from unittest import mock
+
+        monkeypatch.setattr(cfg_mod, "HOST_HEALTH_INVESTIGATION_ENABLED", False)
+        monkeypatch.setattr(cfg_mod, "HOST_SWAP_WARN_PCT", 80.0)
+        monkeypatch.setattr(cfg_mod, "HOST_DISK_LIFE_WARN_PCT", 80.0)
+        verify = mock.AsyncMock(side_effect=[0, RuntimeError("boom")])
+        monkeypatch.setattr(res_mod, "verify_host_health_sessions", verify)
+        poller, _ = self._make_poller(tmp_path)
+
+        monkeypatch.setattr(
+            hh_mod, "_last_host_health", _make_health(disk_life_used_pct=85.0)
+        )
+        asyncio.run(poller._check_host_health(_make_status()))
+        assert verify.await_args.kwargs["active"] == {"disk_wear"}
+        assert verify.await_args.kwargs["cleared"] == set()
+
+        monkeypatch.setattr(
+            hh_mod, "_last_host_health", _make_health(disk_life_used_pct=40.0)
+        )
+        asyncio.run(poller._check_host_health(_make_status()))  # error is logged
+        assert verify.await_args.kwargs["cleared"] == {"disk_wear"}
+        assert "disk_wear" not in poller._alerted_host
+
     def test_backoff_blocks_submission_without_alerted(self, tmp_path, monkeypatch):
         """Investigation backoff row suppresses submission; key stays out of _alerted_host."""
         import asyncio
@@ -1323,6 +1352,41 @@ class TestFinishHostHealth:
         payload = notifier.sent[0]["payload"]
         assert "verification_question" not in payload
         assert "fact_if_yes" not in payload
+        assert "prediction" not in payload
+
+    def test_prediction_in_payload(self, tmp_path):
+        import asyncio
+
+        from utils.agent.tool_registry import ToolCall
+
+        from utils.disk.host_health import HostHealthFinding
+        from utils.hitl.notify import FakeNotifier
+
+        notifier = FakeNotifier()
+        db = _make_hitl_db(tmp_path)
+        executor = self._make_executor(db, notifier=notifier)
+        executor.set_host_health_finding(
+            HostHealthFinding(key="disk_wear", kind="disk_wear", severity="WARN")
+        )
+
+        asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="finish_host_health",
+                    arguments={
+                        "summary": "Disk wear at 85%.",
+                        "root_cause": "eMMC aging.",
+                        "outcome": "monitoring",
+                        "recommended_actions": [],
+                        "prediction": {"kind": "stays_offline", "within_minutes": 60},
+                    },
+                )
+            )
+        )
+
+        payload = notifier.sent[0]["payload"]
+        assert payload["prediction"] == {"kind": "stays_offline", "within_minutes": 60}
+        assert payload["prediction_text"] == "stay offline within 60 min"
 
 
 # ---------------------------------------------------------------------------

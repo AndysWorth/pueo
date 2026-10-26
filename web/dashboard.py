@@ -442,7 +442,33 @@ def _load_requests(watch_dir: Path) -> list[HITLRequest]:
         ],
         key=lambda r: r.sent_at,
     )
-    return pending
+    return [r for r in pending if _refresh_digest(r, watch_dir)]
+
+
+def _refresh_digest(r: HITLRequest, watch_dir: Path) -> bool:
+    """Drop digest rows whose card was answered; hide a digest with none left."""
+    if r.payload.get("card_type") != "verification_digest":
+        return True
+    items = []
+    for i in r.payload.get("items", []):
+        if not isinstance(i, dict):
+            continue
+        nid = str(i.get("nid", ""))
+        if not nid.replace("-", "").isalnum():
+            continue
+        card = watch_dir / f"{nid}.json"
+        if not card.exists() or _status(nid, watch_dir) != "PENDING":
+            continue
+        try:
+            answered = (
+                json.loads(card.read_text()).get("payload", {}).get("user_verdict")
+            )
+        except Exception:  # nosec B112
+            continue
+        if not answered:
+            items.append(i)
+    r.payload["items"] = items
+    return bool(items)
 
 
 def _load_last_backup() -> dict:

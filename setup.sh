@@ -1001,6 +1001,7 @@ agent:
   # device_availability_restart_settle_minutes: 15
   # device_recurrence_count: 3
   # device_recurrence_window_days: 14
+  # verification_digest_hour: 9
   # ha_event_subscribe: true
   # ha_event_buffer_size: 500
   # ha_event_fallback_poll_minutes: 60

@@ -767,10 +767,44 @@ def write_session_outcome(
     Subject_key is the domain-specific identifier used by system verifiers (e.g. the
     issue_key for repairs, the entity_id for updates).  card_id is the nid of the
     HITL card the session sent, if any; the sweep holds the row while it is open.
+
+    A card re-sent under the same nid now carries this session's episode_id, so
+    older pending rows for that card can never be answered: they are marked
+    'superseded' with their payload cleared (ADR 050).
     """
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     try:
         with sqlite3.connect(DB_PATH) as conn:
+            if card_id:
+                superseded = [
+                    r[0]
+                    for r in conn.execute(
+                        "SELECT episode_id FROM session_outcomes"
+                        " WHERE card_id = ? AND episode_id != ?"
+                        "   AND (verification IS NULL OR verification = 'pending')",
+                        (card_id, episode_id),
+                    ).fetchall()
+                ]
+                for ep in superseded:
+                    conn.execute(
+                        "UPDATE session_outcomes"
+                        " SET verification = 'superseded', verified_at = ?,"
+                        "     distill_payload_json = NULL"
+                        " WHERE episode_id = ?",
+                        (now, ep),
+                    )
+                    try:
+                        conn.execute(
+                            "UPDATE runbook_usage"
+                            " SET verification = 'superseded', outcome = 'superseded',"
+                            "     verified_at = ?"
+                            " WHERE episode_id = ?"
+                            "   AND (verification IS NULL OR verification = ''"
+                            "        OR verification = 'pending')",
+                            (now, ep),
+                        )
+                    except sqlite3.OperationalError:  # nosec B110
+                        pass
             conn.execute(
                 "INSERT OR IGNORE INTO session_outcomes"
                 " (episode_id, signature, session_type, subject_key,"

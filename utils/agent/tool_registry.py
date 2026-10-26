@@ -2218,6 +2218,16 @@ FINISH_UPDATE_ANALYSIS = ToolDefinition(
 )
 
 
+# Shared by the finish tools whose condition a poll keeps watching (ADR 050).
+_PREDICTION_PROPERTIES: dict = {
+    "kind": {
+        "type": "string",
+        "enum": ["recovers_without_action", "recovers_after_reload", "stays_offline"],
+    },
+    "within_minutes": {"type": "integer", "minimum": 1},
+}
+
+
 FINISH_HOST_HEALTH = ToolDefinition(
     name="finish_host_health",
     description=(
@@ -2270,6 +2280,19 @@ FINISH_HOST_HEALTH = ToolDefinition(
                     "Example: 'LIFX Clip-on goes offline during Wi-Fi band-steering; self-recovers.' "
                     "Omit if no reusable fact applies."
                 ),
+            },
+            "prediction": {
+                "type": "object",
+                "description": (
+                    "Optional falsifiable prediction that Pueo checks itself; a match "
+                    "verifies this session without asking the user. Give one only when "
+                    "the evidence supports it. recovers_without_action: the condition "
+                    "clears with no action within N minutes; stays_offline: it is still "
+                    "present after N minutes. Pueo does not check predictions for "
+                    "unexpected_reboot, which always clears on its own."
+                ),
+                "properties": _PREDICTION_PROPERTIES,
+                "required": ["kind", "within_minutes"],
             },
         },
         "required": ["summary", "root_cause", "outcome", "recommended_actions"],
@@ -2329,6 +2352,20 @@ FINISH_DEVICE_AVAILABILITY = ToolDefinition(
                     "Example: 'LIFX Clip-on goes offline during Wi-Fi band-steering; self-recovers.' "
                     "Omit if no reusable fact applies."
                 ),
+            },
+            "prediction": {
+                "type": "object",
+                "description": (
+                    "Optional falsifiable prediction that Pueo checks itself; a match "
+                    "verifies this session without asking the user. Give one only when "
+                    "the evidence supports it. recovers_without_action: the devices come "
+                    "back with no reload or user action within N minutes; "
+                    "recovers_after_reload: they come back after an integration reload; "
+                    "stays_offline: they are still offline after N minutes (e.g. powered "
+                    "off or unplugged)."
+                ),
+                "properties": _PREDICTION_PROPERTIES,
+                "required": ["kind", "within_minutes"],
             },
         },
         "required": ["summary", "root_cause", "outcome", "recommended_actions"],

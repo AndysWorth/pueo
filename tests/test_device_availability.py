@@ -1142,6 +1142,47 @@ class TestFinishDeviceAvailabilityFields:
         payload = notifier.sent[0]["payload"]
         assert "verification_question" not in payload
         assert "fact_if_yes" not in payload
+        assert "prediction" not in payload
+
+    def test_prediction_in_payload(self, tmp_path):
+        import asyncio
+
+        from utils.agent.tool_registry import ToolCall
+
+        from utils.hitl.notify import FakeNotifier
+
+        notifier = FakeNotifier()
+        db = self._make_db(tmp_path)
+        executor = self._make_executor(db, notifier=notifier)
+        executor.set_device_availability_finding(
+            OfflineFinding(
+                config_entry_id="entry-lifx",
+                domain="lifx",
+                devices=[{"name": "Lamp", "device_id": "dev-L", "offline_since": 0}],
+            )
+        )
+
+        asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="finish_device_availability",
+                    arguments={
+                        "summary": "Offline.",
+                        "root_cause": "Wi-Fi drop.",
+                        "outcome": "monitoring",
+                        "recommended_actions": [],
+                        "prediction": {
+                            "kind": "recovers_without_action",
+                            "within_minutes": 30,
+                        },
+                    },
+                )
+            )
+        )
+
+        payload = notifier.sent[0]["payload"]
+        assert payload["prediction"]["kind"] == "recovers_without_action"
+        assert payload["prediction_text"] == "recover on its own within 30 min"
 
 
 # ---------------------------------------------------------------------------
@@ -4100,3 +4141,107 @@ class TestSigDevicePostRestart:
         # The dedicated seed outranks the generic device seed.
         assert _sig_specificity("device:offline:post_restart", sig) == (True, 3)
         assert _sig_specificity("device:offline:*", sig) == (True, 2)
+
+
+# ---------------------------------------------------------------------------
+# Poll: prediction checks (ADR 050)
+# ---------------------------------------------------------------------------
+
+
+class TestPollPredictionChecks:
+    def _db_with_session(self, tmp_path, monkeypatch, prior: dict, kind: str) -> str:
+        import agents.ha_agent_advanced as adv
+        from utils.hitl.hitl_tracker import stable_nid
+
+        db = _make_poll_db(tmp_path)
+        monkeypatch.setattr(adv, "DB_PATH", db)
+        created = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(_NOW - 600))
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "CREATE TABLE session_outcomes (episode_id TEXT PRIMARY KEY,"
+                " signature TEXT, session_type TEXT, subject_key TEXT,"
+                " conclusion_json TEXT, distill_payload_json TEXT, created_at TEXT,"
+                " verification TEXT, verified_at TEXT, verified_by TEXT,"
+                " correction TEXT, distilled_at TEXT, card_id TEXT)"
+            )
+            conn.execute(
+                "CREATE TABLE runbook_usage (id INTEGER PRIMARY KEY,"
+                " strategy_id TEXT, episode_id TEXT, outcome TEXT,"
+                " verification TEXT, verified_at TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO session_outcomes (episode_id, subject_key,"
+                " conclusion_json, distill_payload_json, created_at, verification,"
+                " card_id) VALUES ('ep1', 'entry-econet:econet', ?, '{}', ?,"
+                " 'pending', ?)",
+                (
+                    json.dumps({"prediction": {"kind": kind, "within_minutes": 30}}),
+                    created,
+                    stable_nid("device_offline:entry-econet"),
+                ),
+            )
+            conn.execute(
+                "INSERT INTO user_prefs (key, value) VALUES (?,?)",
+                ("device_availability:state", json.dumps(prior)),
+            )
+        return db
+
+    def _run(self, monkeypatch, db, ws, now):
+        import utils.agent.supervisor as sv_mod
+        import utils.agent.work_queue as wq_mod
+        import utils.core.timeline as tl_mod
+        import utils.ha.device_availability as da_mod
+
+        monkeypatch.setattr(tl_mod, "write_timeline_event", lambda *a, **k: None)
+        monkeypatch.setattr(
+            da_mod, "_run_device_availability_investigation", mock.AsyncMock()
+        )
+        monkeypatch.setattr(wq_mod, "get_work_queue_or_none", lambda: None)
+        monkeypatch.setattr(sv_mod, "supervised_sleep", _make_single_iteration_sleep())
+        with mock.patch("utils.ha.device_availability.time") as mock_time:
+            mock_time.time.return_value = now
+            asyncio.run(
+                _run_one_iteration(
+                    lambda: da_mod.poll_device_availability(ws_client=ws, db_path=db),
+                    timeout=5.0,
+                )
+            )
+
+    def _verification(self, db) -> tuple:
+        with sqlite3.connect(db) as conn:
+            return conn.execute(
+                "SELECT verification, verified_by FROM session_outcomes"
+                " WHERE episode_id = 'ep1'"
+            ).fetchone()
+
+    def test_recovery_verifies_matching_prediction(self, tmp_path, monkeypatch):
+        prior = {
+            "dev-A": {
+                "last_online_ts": _NOW - 3600.0,
+                "alerted": True,
+                "offline_since": _NOW - 1200.0,
+                "investigated": True,
+                "card_key": "device_offline:entry-econet",
+            }
+        }
+        db = self._db_with_session(
+            tmp_path, monkeypatch, prior, "recovers_without_action"
+        )
+        self._run(monkeypatch, db, _make_online_ws(), _NOW)
+        assert self._verification(db) == ("success", "system")
+
+    def test_still_offline_past_deadline_fails_prediction(self, tmp_path, monkeypatch):
+        prior = {
+            "dev-A": {
+                "last_online_ts": _NOW - 7200.0,
+                "alerted": True,
+                "offline_since": _NOW - 3600.0,
+                "investigated": True,
+                "card_key": "device_offline:entry-econet",
+            }
+        }
+        db = self._db_with_session(
+            tmp_path, monkeypatch, prior, "recovers_without_action"
+        )
+        self._run(monkeypatch, db, _make_offline_ws(), _NOW + 3600.0)
+        assert self._verification(db) == ("failure", "system")
