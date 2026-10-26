@@ -3213,3 +3213,387 @@ class TestKeepWatchingEndpoint:
         if row and row[0]:
             delay = row[0] - time.time()
             assert 29 * 86400 < delay < 31 * 86400
+
+
+# ---------------------------------------------------------------------------
+# Restart correctness (#985): unknown status, coverage, settle window,
+# pinned offline_since, investigated episodes, recurrence average
+# ---------------------------------------------------------------------------
+
+
+def _eval(states, prior, now=_NOW, **kw):
+    """One device (dev1, two entities) on entry1/matter."""
+    return evaluate_device_availability(
+        states=states,
+        entity_registry=[_entity("light.a", "dev1"), _entity("sensor.b", "dev1")],
+        device_registry=[_device("dev1", "Plug", ["entry1"])],
+        config_entries=[_entry("entry1", "matter")],
+        prior=prior,
+        now=now,
+        grace_s=_GRACE_S,
+        **kw,
+    )
+
+
+_ALERTED_SINCE = _NOW - 2662 * 60.0
+
+
+def _prior_alerted_since() -> dict:
+    return {
+        "dev1": {
+            "last_online_ts": _ALERTED_SINCE - 60.0,
+            "alerted": True,
+            "offline_since": _ALERTED_SINCE,
+            "investigated": True,
+        }
+    }
+
+
+class TestDeviceStatus:
+    def test_real_state_is_online(self):
+        from utils.ha.device_availability import _device_status
+
+        assert _device_status([_state("a", "unavailable"), _state("b", "on")]) == (
+            "online"
+        )
+
+    def test_all_unavailable_is_offline(self):
+        from utils.ha.device_availability import _device_status
+
+        assert (
+            _device_status([_state("a", "unavailable"), _state("b", "unavailable")])
+            == "offline"
+        )
+
+    def test_missing_row_is_unknown(self):
+        from utils.ha.device_availability import _device_status
+
+        assert _device_status([_state("a", "unavailable"), None]) == "unknown"
+
+    def test_unknown_state_is_not_online(self):
+        from utils.ha.device_availability import _device_status
+
+        assert _device_status([_state("a", "unknown"), _state("b", "unknown")]) == (
+            "unknown"
+        )
+        assert (
+            _device_status([_state("a", "unknown"), _state("b", "unavailable")])
+            == "unknown"
+        )
+
+
+class TestRestartCorrectness:
+    def test_missing_states_do_not_recover_alerted_device(self):
+        """10-26 09:12: no state rows during startup must not fake a recovery."""
+        prior = _prior_alerted_since()
+        result = _eval([_state("light.a", "unavailable")], prior)
+        assert result.recovered == []
+        snap = result.snapshot["dev1"]
+        assert snap["alerted"] is True
+        assert snap["offline_since"] == _ALERTED_SINCE
+        assert snap["last_online_ts"] == prior["dev1"]["last_online_ts"]
+
+    def test_unknown_states_do_not_recover_alerted_device(self):
+        result = _eval(
+            [_state("light.a", "unknown"), _state("sensor.b", "unknown")],
+            _prior_alerted_since(),
+        )
+        assert result.recovered == []
+        assert result.snapshot["dev1"]["alerted"] is True
+
+    def test_unknown_does_not_arm_unarmed_device(self):
+        result = _eval([_state("light.a", "unknown")], {})
+        assert result.snapshot["dev1"]["last_online_ts"] is None
+
+    def test_real_state_recovers_and_carries_investigated(self):
+        result = _eval(
+            [_state("light.a", "on"), _state("sensor.b", "unavailable")],
+            _prior_alerted_since(),
+        )
+        dev = result.recovered[0].devices[0]
+        assert dev["offline_since"] == _ALERTED_SINCE
+        assert dev["investigated"] is True
+        snap = result.snapshot["dev1"]
+        assert snap["alerted"] is False
+        assert snap["investigated"] is False
+        assert snap["offline_since"] is None
+        assert snap["last_online_ts"] == _NOW
+
+    def test_restart_keeps_original_offline_since(self):
+        """After a restart, last_changed is the restart time; the pinned value wins."""
+        restart_iso = "2023-11-16T01:58:00Z"
+        result = _eval(
+            [
+                _state("light.a", "unavailable", restart_iso),
+                _state("sensor.b", "unavailable", restart_iso),
+            ],
+            _prior_alerted_since(),
+        )
+        assert result.new_offline == []
+        assert result.snapshot["dev1"]["offline_since"] == _ALERTED_SINCE
+
+    def test_offline_since_pinned_during_grace_across_restart(self):
+        """A device in its grace period keeps its first-seen offline_since."""
+        first_iso = "2023-11-16T01:55:00Z"  # _NOW - 300 s
+        prior = {"dev1": {"last_online_ts": _NOW - 400.0, "alerted": False}}
+        r1 = _eval(
+            [
+                _state("light.a", "unavailable", first_iso),
+                _state("sensor.b", "unavailable", first_iso),
+            ],
+            prior,
+        )
+        assert r1.new_offline == []
+        pinned = r1.snapshot["dev1"]["offline_since"]
+        assert pinned == pytest.approx(_NOW - 300.0, abs=1.0)
+
+        # Restart: rows vanish, then come back with a fresh last_changed.
+        r2 = _eval([], r1.snapshot, now=_NOW + 60.0)
+        assert r2.snapshot["dev1"]["offline_since"] == pinned
+        later_iso = "2023-11-16T02:01:00Z"  # _NOW + 60 s
+        r3 = _eval(
+            [
+                _state("light.a", "unavailable", later_iso),
+                _state("sensor.b", "unavailable", later_iso),
+            ],
+            r2.snapshot,
+            now=_NOW + 400.0,
+        )
+        assert r3.new_offline != []
+        assert r3.new_offline[0].devices[0]["offline_since"] == pinned
+
+    def test_incomplete_states_skip_evaluation(self):
+        prior = _prior_alerted_since()
+        result = _eval([_state("light.a", "on")], prior, min_state_coverage=0.6)
+        assert result.skipped == "incomplete_states"
+        assert result.state_coverage == pytest.approx(0.5)
+        assert result.recovered == []
+        assert result.snapshot == prior
+
+    def test_coverage_at_threshold_is_evaluated(self):
+        result = _eval(
+            [_state("light.a", "on")], _prior_alerted_since(), min_state_coverage=0.5
+        )
+        assert result.skipped is None
+        assert result.recovered != []
+
+    def test_coverage_is_one_without_entities(self):
+        result = evaluate_device_availability(
+            states=[],
+            entity_registry=[],
+            device_registry=[],
+            config_entries=[],
+            prior={},
+            now=_NOW,
+            grace_s=_GRACE_S,
+            min_state_coverage=0.5,
+        )
+        assert result.skipped is None
+        assert result.state_coverage == 1.0
+
+    def test_settle_window_holds_recovery(self):
+        prior = _prior_alerted_since()
+        states = [_state("light.a", "on"), _state("sensor.b", "on")]
+        held = _eval(states, prior, ha_start_ts=_NOW - 600.0, settle_s=900.0)
+        assert held.skipped == "settling"
+        assert held.recovered == []
+        assert held.snapshot == prior
+
+        after = _eval(states, prior, ha_start_ts=_NOW - 901.0, settle_s=900.0)
+        assert after.skipped is None
+        assert after.recovered != []
+
+    def test_settle_window_holds_new_offline(self):
+        prior = {"dev1": {"last_online_ts": _NOW - 3600.0, "alerted": False}}
+        states = [_state("light.a", "unavailable"), _state("sensor.b", "unavailable")]
+        held = _eval(states, prior, ha_start_ts=_NOW - 60.0, settle_s=900.0)
+        assert held.new_offline == []
+        assert held.snapshot["dev1"]["alerted"] is False
+
+
+class TestRecurrenceAverage:
+    def test_average_uses_per_episode_durations(self):
+        """An episode without offline_at must not shift the pairing or denominator."""
+        from utils.ha.device_availability import build_recurrence_fact
+
+        now = 1_000_000.0
+        episodes = {
+            "dev1": [
+                {
+                    "offline_at": now - 10_000.0,
+                    "recovered_at": now - 6_400.0,  # 60 min
+                    "self_recovered": True,
+                    "investigated": False,
+                },
+                {
+                    "offline_at": None,
+                    "recovered_at": now - 100.0,
+                    "self_recovered": True,
+                    "investigated": False,
+                },
+            ]
+        }
+        fact = build_recurrence_fact("Plug", "matter", episodes, "dev1", now, 14)
+        assert "2×" in fact
+        assert "avg 60 min" in fact
+
+    def test_no_complete_episode_falls_back_to_plain_text(self):
+        from utils.ha.device_availability import build_recurrence_fact
+
+        episodes = {
+            "dev1": [
+                {
+                    "offline_at": None,
+                    "recovered_at": 999_000.0,
+                    "self_recovered": True,
+                    "investigated": False,
+                }
+            ]
+        }
+        fact = build_recurrence_fact("Plug", "matter", episodes, "dev1", 1e6, 14)
+        assert fact.endswith("self-recovering each time.")
+
+
+class TestHAStartTs:
+    def test_round_trip_and_never_moves_backwards(self, tmp_path):
+        from utils.ha.device_availability import load_ha_start_ts, record_ha_start
+
+        db = _make_poll_db(tmp_path)
+        with sqlite3.connect(db) as conn:
+            assert load_ha_start_ts(conn) is None
+        record_ha_start(db, 2000.0)
+        record_ha_start(db, 1000.0)
+        with sqlite3.connect(db) as conn:
+            assert load_ha_start_ts(conn) == 2000.0
+        record_ha_start(db, 3000.0)
+        with sqlite3.connect(db) as conn:
+            assert load_ha_start_ts(conn) == 3000.0
+
+    def test_load_error_returns_none(self, tmp_path):
+        from utils.ha.device_availability import load_ha_start_ts
+
+        conn = sqlite3.connect(str(tmp_path / "empty.db"))  # no user_prefs table
+        assert load_ha_start_ts(conn) is None
+        conn.close()
+
+    def test_record_error_is_silent(self, tmp_path):
+        from utils.ha.device_availability import record_ha_start
+
+        record_ha_start(str(tmp_path / "missing_dir" / "x.db"), 1.0)
+
+
+class TestPollRestartCorrectness:
+    def _seed(self, db: str, prior: dict, extra: dict | None = None) -> None:
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO user_prefs (key, value) VALUES (?,?)",
+                ("device_availability:state", json.dumps(prior)),
+            )
+            for k, v in (extra or {}).items():
+                conn.execute("INSERT INTO user_prefs (key, value) VALUES (?,?)", (k, v))
+
+    def _poll(self, ws, db, monkeypatch, now):
+        import utils.agent.work_queue as wq_mod
+        import utils.ha.device_availability as da_mod
+
+        monkeypatch.setattr(wq_mod, "get_work_queue_or_none", lambda: None)
+        monkeypatch.setattr(
+            da_mod, "_run_device_availability_investigation", mock.AsyncMock()
+        )
+        with mock.patch("utils.ha.device_availability.time") as mock_time:
+            mock_time.time.return_value = now
+            asyncio.run(
+                _run_one_iteration(
+                    lambda: da_mod.poll_device_availability(ws_client=ws, db_path=db),
+                    timeout=0.3,
+                )
+            )
+
+    def test_investigated_flag_saved_after_investigation(self, tmp_path, monkeypatch):
+        db = _make_poll_db(tmp_path)
+        self._seed(db, {"dev-A": {"last_online_ts": _NOW - 3600.0, "alerted": False}})
+        self._poll(_make_offline_ws(), db, monkeypatch, _NOW + 3600.0)
+        with sqlite3.connect(db) as conn:
+            snap = load_snapshot(conn)
+        assert snap["dev-A"]["alerted"] is True
+        assert snap["dev-A"]["investigated"] is True
+
+    def test_investigated_episode_is_not_self_recovered(self, tmp_path, monkeypatch):
+        from utils.ha.device_availability import load_episodes
+
+        db = _make_poll_db(tmp_path)
+        self._seed(
+            db,
+            {
+                "dev-A": {
+                    "last_online_ts": _NOW - 3600.0,
+                    "alerted": True,
+                    "offline_since": _NOW - 2400.0,
+                    "investigated": True,
+                }
+            },
+        )
+        self._poll(_make_online_ws(), db, monkeypatch, _NOW + 100.0)
+        with sqlite3.connect(db) as conn:
+            eps = load_episodes(conn)
+        ep = eps["dev-A"][-1]
+        assert ep["self_recovered"] is False
+        assert ep["investigated"] is True
+
+    def test_uninvestigated_episode_is_self_recovered(self, tmp_path, monkeypatch):
+        from utils.ha.device_availability import load_episodes
+
+        db = _make_poll_db(tmp_path)
+        self._seed(
+            db,
+            {
+                "dev-A": {
+                    "last_online_ts": _NOW - 3600.0,
+                    "alerted": True,
+                    "offline_since": _NOW - 2400.0,
+                }
+            },
+        )
+        self._poll(_make_online_ws(), db, monkeypatch, _NOW + 100.0)
+        with sqlite3.connect(db) as conn:
+            eps = load_episodes(conn)
+        assert eps["dev-A"][-1]["self_recovered"] is True
+
+    def test_incomplete_states_leave_snapshot_untouched(self, tmp_path, monkeypatch):
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        db = _make_poll_db(tmp_path)
+        prior = {
+            "dev-A": {
+                "last_online_ts": _NOW - 3600.0,
+                "alerted": True,
+                "offline_since": _NOW - 2400.0,
+            }
+        }
+        self._seed(db, prior)
+        ws = FakeHAWebSocketClient(
+            devices=[_device("dev-A", "Heat Pump", ["entry-econet"])],
+            entity_registry=[_entity("water_heater.hp", "dev-A")],
+            config_entries=[_entry("entry-econet", "econet")],
+            states=[],
+        )
+        self._poll(ws, db, monkeypatch, _NOW + 100.0)
+        with sqlite3.connect(db) as conn:
+            assert load_snapshot(conn) == prior
+
+    def test_settle_window_blocks_recovery_in_poll(self, tmp_path, monkeypatch):
+        from utils.ha.device_availability import load_episodes
+
+        db = _make_poll_db(tmp_path)
+        prior = {
+            "dev-A": {
+                "last_online_ts": _NOW - 3600.0,
+                "alerted": True,
+                "offline_since": _NOW - 2400.0,
+            }
+        }
+        self._seed(db, prior, {"ha:last_start_ts": str(_NOW)})
+        self._poll(_make_online_ws(), db, monkeypatch, _NOW + 100.0)
+        with sqlite3.connect(db) as conn:
+            assert load_snapshot(conn) == prior
+            assert load_episodes(conn) == {}

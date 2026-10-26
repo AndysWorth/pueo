@@ -1223,6 +1223,38 @@ class TestHAUpdateManagerConfig:
 
         assert config.KNOWN_ISSUE_REMINDER_DAYS == 14
 
+    def test_device_availability_min_state_coverage_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.DEVICE_AVAILABILITY_MIN_STATE_COVERAGE == 0.5
+
+    def test_device_availability_min_state_coverage_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump({"agent": {"device_availability_min_state_coverage": 0.8}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.DEVICE_AVAILABILITY_MIN_STATE_COVERAGE == 0.8
+
+    def test_device_availability_restart_settle_minutes_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.DEVICE_AVAILABILITY_RESTART_SETTLE_MINUTES == 15
+
+    def test_device_availability_restart_settle_minutes_from_yaml(
+        self, isolated_config
+    ):
+        isolated_config.write_text(
+            yaml.dump({"agent": {"device_availability_restart_settle_minutes": 5}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.DEVICE_AVAILABILITY_RESTART_SETTLE_MINUTES == 5
+
     def test_device_recurrence_count_default(self, isolated_config):
         importlib.reload(sys.modules["config"])
         import config

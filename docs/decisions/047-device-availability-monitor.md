@@ -149,6 +149,18 @@ whether ≥ `DEVICE_RECURRENCE_COUNT` (default 3) self-recovered episodes exist 
 
 ---
 
+## Amendment (2026-10-26, #985): restart safety
+
+HA restarts (two Core updates and an unplanned host reboot) produced false recoveries, and those wrote bogus recurrence facts. The fix has five parts:
+
+- **Unknown is not online.** A device is online only when some entity has a real state (not `unavailable`/`unknown`). It is offline only when every entity has a state row and all are `unavailable`. Anything else is *unknown*: no `last_online_ts` update, no recovery, no alert.
+- **Incomplete payload.** When fewer than `DEVICE_AVAILABILITY_MIN_STATE_COVERAGE` (0.5) of registry entities have a state row, the poll is skipped (`device_availability_skipped_incomplete_states`) and the snapshot is left untouched.
+- **Settle window.** No transitions are evaluated within `DEVICE_AVAILABILITY_RESTART_SETTLE_MINUTES` (15) of an HA start. The start time comes from `user_prefs` `ha:last_start_ts`, which a WS subscriber reconnect (`main.py`) and a host `boot_ts` change (`resource.py`) both record via `record_ha_start()`. It never moves backwards.
+- **Pinned `offline_since`.** It is set when a device is first seen offline and kept until the device is seen online again, so a restart resetting `last_changed` doesn't shorten the episode.
+- **Investigated is not self-recovered.** The snapshot carries `investigated` once an investigation is submitted for the device. Such an episode is recorded with `self_recovered=False` and writes no recurrence fact. The recurrence average uses per-episode durations.
+
+---
+
 ## Files
 
 - `utils/ha/device_availability.py` — pure evaluator + snapshot + episode tracking + poll loop
@@ -160,8 +172,9 @@ whether ≥ `DEVICE_RECURRENCE_COUNT` (default 3) self-recovered episodes exist 
 - `utils/knowledge/strategy_seeder.py` — seed registration
 - `prompts/agent_loop_device_availability.md`
 - `prompts/seed_device_offline.md`
-- `config.py`, `config.yaml.default`, `setup.sh` — `DEVICE_RECURRENCE_COUNT`, `DEVICE_RECURRENCE_WINDOW_DAYS`
-- `main.py` — supervisor wiring
+- `config.py`, `config.yaml.default`, `setup.sh` — `DEVICE_RECURRENCE_COUNT`, `DEVICE_RECURRENCE_WINDOW_DAYS`, `DEVICE_AVAILABILITY_MIN_STATE_COVERAGE`, `DEVICE_AVAILABILITY_RESTART_SETTLE_MINUTES`
+- `main.py` — supervisor wiring; records an HA start on subscriber reconnect
+- `utils/disk/resource.py` — records an HA start on host `boot_ts` change
 - `web/dashboard.py` — `/keep-watching/` endpoint, `device_recurring` approve handler
 - `web/templates/index.html` — `device_recurring` card rendering
 - `tests/test_device_availability.py`

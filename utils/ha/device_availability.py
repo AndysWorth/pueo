@@ -10,6 +10,13 @@ Arming rule: a device only alerts if Pueo has previously seen it online
 on the first run (seasonal, unplugged, Christmas lights …) never alert until they
 come back at least once.
 
+Restart safety: a missing state row or an ``unknown`` state means the device's
+status is *unknown* — never online — so an HA restart can't fake a recovery.
+Evaluation is skipped entirely when the states payload is incomplete, or within
+the settle window after an HA start (``user_prefs`` ``ha:last_start_ts``).
+``offline_since`` is pinned when a device is first seen offline and kept until
+it is seen online again, so restarts don't reset it.
+
 Recurrence: per-device episode history is stored in the snapshot JSON alongside
 DeviceState fields (no DB migration needed).  After DEVICE_RECURRENCE_COUNT
 self-recoveries within DEVICE_RECURRENCE_WINDOW_DAYS, Pueo sends one
@@ -47,8 +54,9 @@ class DeviceState:
     last_online_ts: Optional[float]  # None = never seen online (unarmed)
     alerted: bool  # True while an offline card is open
     offline_since: Optional[float] = (
-        None  # persisted while alerted; drives recovery duration
+        None  # persisted until seen online again; drives recovery duration
     )
+    investigated: bool = False  # an investigation ran during this episode
 
 
 @dataclass
@@ -67,6 +75,26 @@ class AvailabilityResult:
     new_offline: list[OfflineFinding]
     recovered: list[OfflineFinding]  # devices whose alert is now resolved
     snapshot: dict  # updated snapshot blob (device_id → DeviceState as dict)
+    skipped: Optional[str] = None  # "incomplete_states" | "settling" when skipped
+    state_coverage: float = 1.0  # fraction of registry entities with a state row
+
+
+# A device is online only if some entity reports a real state.
+_NOT_REAL_STATES = frozenset({"unavailable", "unknown"})
+
+
+def _device_status(entity_states: list[Optional[dict]]) -> str:
+    """Return "online", "offline" or "unknown" for one device's entity states.
+
+    Missing rows and ``unknown`` states (HA still starting) are not evidence
+    either way, so a device is offline only when every entity has a state row
+    and all of them are ``unavailable``.
+    """
+    if any(s is not None and s["state"] not in _NOT_REAL_STATES for s in entity_states):
+        return "online"
+    if all(s is not None and s["state"] == "unavailable" for s in entity_states):
+        return "offline"
+    return "unknown"
 
 
 # ------------------------------------------------------------------
@@ -82,6 +110,9 @@ def evaluate_device_availability(
     prior: dict,  # previously persisted snapshot blob
     now: float,
     grace_s: float,
+    min_state_coverage: float = 0.0,
+    ha_start_ts: Optional[float] = None,
+    settle_s: float = 0.0,
 ) -> AvailabilityResult:
     """Evaluate device availability from HA state snapshots.
 
@@ -103,6 +134,15 @@ def evaluate_device_availability(
     grace_s:
         Grace period in seconds.  A device must be offline for at least this
         long before it appears in ``new_offline``.
+    min_state_coverage:
+        Minimum fraction of registry entities that must have a state row.
+        Below it the payload is treated as incomplete (HA starting up) and the
+        evaluation is skipped.
+    ha_start_ts:
+        Unix timestamp of the last HA start, or ``None`` if unknown.
+    settle_s:
+        Settle window in seconds after ``ha_start_ts``.  No transitions are
+        evaluated inside it.
 
     Returns
     -------
@@ -130,8 +170,35 @@ def evaluate_device_availability(
             continue
         entities_by_device.setdefault(device_id, []).append(ent)
 
-    # Build current DeviceState for every device that has entities
+    def _skipped(reason: str, coverage: float) -> AvailabilityResult:
+        return AvailabilityResult(
+            new_offline=[],
+            recovered=[],
+            snapshot=dict(prior),
+            skipped=reason,
+            state_coverage=coverage,
+        )
+
+    # Incomplete payload (HA still starting) — no conclusions either way.
+    all_entity_ids = [
+        e["entity_id"] for ents in entities_by_device.values() for e in ents
+    ]
+    coverage = (
+        sum(1 for eid in all_entity_ids if eid in state_by_id) / len(all_entity_ids)
+        if all_entity_ids
+        else 1.0
+    )
+    if coverage < min_state_coverage:
+        return _skipped("incomplete_states", coverage)
+
+    # Settle window after an HA start — restored and half-loaded states lie.
+    if ha_start_ts is not None and now < ha_start_ts + settle_s:
+        return _skipped("settling", coverage)
+
     current: dict[str, DeviceState] = {}
+    new_offline_by_entry: dict[str, list[dict]] = {}
+    recovered_by_entry: dict[str, list[dict]] = {}
+
     for dev in device_registry:
         device_id = dev["id"]
         entities = entities_by_device.get(device_id, [])
@@ -145,83 +212,56 @@ def evaluate_device_availability(
 
         name = dev.get("name_by_user") or dev.get("name") or device_id
 
-        # Determine if the device is currently online (at least one entity is
-        # not unavailable — and every entity has a state row)
-        entity_states = [state_by_id.get(e["entity_id"]) for e in entities]
-        # If any entity has no state yet, treat device as unknown / not offline
-        if any(s is None for s in entity_states):
-            all_unavailable = False
-        else:
-            all_unavailable = all(
-                s["state"] == "unavailable" for s in entity_states  # type: ignore[index]
-            )
-
         prior_entry = prior.get(device_id, {})
-        last_online_ts: Optional[float] = prior_entry.get("last_online_ts")
-        alerted: bool = bool(prior_entry.get("alerted", False))
-
-        if not all_unavailable:
-            # Device is online — update last_online_ts
-            last_online_ts = now
-            alerted = False  # recovery resets alerted flag
-
-        current[device_id] = DeviceState(
+        ds = DeviceState(
             device_id=device_id,
             name=name,
             config_entry_id=primary_entry_id,
             domain=domain,
-            last_online_ts=last_online_ts,
-            alerted=alerted,
-            offline_since=prior_entry.get("offline_since") if alerted else None,
+            last_online_ts=prior_entry.get("last_online_ts"),
+            alerted=bool(prior_entry.get("alerted", False)),
+            offline_since=prior_entry.get("offline_since"),
+            investigated=bool(prior_entry.get("investigated", False)),
         )
+        current[device_id] = ds
 
-    # Detect new offline and recovered states
-    new_offline_by_entry: dict[str, list[dict]] = {}
-    recovered_by_entry: dict[str, list[dict]] = {}
+        status = _device_status([state_by_id.get(e["entity_id"]) for e in entities])
 
-    for device_id, ds in current.items():
-        prior_entry = prior.get(device_id, {})
-        prior_alerted = bool(prior_entry.get("alerted", False))
-
-        # Check if offline now (last_online_ts not updated to `now`)
-        is_offline = ds.last_online_ts != now
-
-        if is_offline and not ds.alerted:
-            if ds.last_online_ts is None:
-                # Never seen online — unarmed, skip
-                continue
-            # Find offline-since from entity last_changed timestamps
-            offline_since = _compute_offline_since(
-                entities_by_device.get(device_id, []), state_by_id
-            )
-            if offline_since is None:
-                offline_since = ds.last_online_ts
-
-            offline_duration = now - offline_since
-            if offline_duration >= grace_s:
-                entry_id = ds.config_entry_id
-                new_offline_by_entry.setdefault(entry_id, []).append(
+        if status == "online":
+            if ds.alerted:
+                recovered_by_entry.setdefault(primary_entry_id, []).append(
                     {
-                        "name": ds.name,
+                        "name": name,
                         "device_id": device_id,
-                        "domain": ds.domain,
-                        "offline_since": offline_since,
+                        "domain": domain,
+                        "offline_since": ds.offline_since,
+                        "investigated": ds.investigated,
+                    }
+                )
+            ds.last_online_ts = now
+            ds.alerted = False
+            ds.offline_since = None
+            ds.investigated = False
+        elif status == "offline":
+            if ds.alerted or ds.last_online_ts is None:
+                # Already alerted, or never seen online (unarmed) — nothing new.
+                continue
+            # Pin offline_since on first sight; a restart resets last_changed.
+            if ds.offline_since is None:
+                ds.offline_since = (
+                    _compute_offline_since(entities, state_by_id) or ds.last_online_ts
+                )
+            if now - ds.offline_since >= grace_s:
+                new_offline_by_entry.setdefault(primary_entry_id, []).append(
+                    {
+                        "name": name,
+                        "device_id": device_id,
+                        "domain": domain,
+                        "offline_since": ds.offline_since,
                     }
                 )
                 ds.alerted = True
-                ds.offline_since = offline_since
-
-        elif prior_alerted and not is_offline:
-            # Was alerted, now online — recovery
-            entry_id = ds.config_entry_id
-            recovered_by_entry.setdefault(entry_id, []).append(
-                {
-                    "name": ds.name,
-                    "device_id": device_id,
-                    "domain": ds.domain,
-                    "offline_since": prior_entry.get("offline_since"),
-                }
-            )
+        # status == "unknown": keep everything as it was.
 
     # Build grouped findings
     new_offline_findings = [
@@ -247,6 +287,7 @@ def evaluate_device_availability(
             "last_online_ts": ds.last_online_ts,
             "alerted": ds.alerted,
             "offline_since": ds.offline_since,
+            "investigated": ds.investigated,
         }
         for device_id, ds in current.items()
     }
@@ -322,6 +363,40 @@ def save_snapshot(conn: sqlite3.Connection, snapshot: dict) -> None:
         log.warning("device_availability_snapshot_save_failed", error=str(e))
 
 
+_HA_START_KEY = "ha:last_start_ts"
+
+
+def load_ha_start_ts(conn: sqlite3.Connection) -> Optional[float]:
+    """Return the last recorded HA start timestamp, or None if absent."""
+    try:
+        row = conn.execute(
+            "SELECT value FROM user_prefs WHERE key = ?", (_HA_START_KEY,)
+        ).fetchone()
+        if row:
+            return float(row[0])
+    except Exception as e:  # nosec B110
+        log.warning("ha_start_ts_load_failed", error=str(e))
+    return None
+
+
+def record_ha_start(db_path: str, ts: float) -> None:
+    """Record an HA start (WS reconnect or host reboot).  Never moves backwards."""
+    try:
+        with sqlite3.connect(db_path) as conn:
+            prev = load_ha_start_ts(conn)
+            if prev is not None and prev >= ts:
+                return
+            conn.execute(
+                "INSERT INTO user_prefs (key, value) VALUES (?, ?)"
+                " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (_HA_START_KEY, str(ts)),
+            )
+            conn.commit()
+        log.info("ha_start_recorded", ts=ts)
+    except Exception as e:  # nosec B110
+        log.warning("ha_start_record_failed", error=str(e))
+
+
 # ------------------------------------------------------------------
 # Recurrence tracking (pure — no I/O)
 # ------------------------------------------------------------------
@@ -394,8 +469,13 @@ def build_recurrence_fact(
         return ""
     # Build time range description
     offline_times = [e["offline_at"] for e in recent if e.get("offline_at")]
-    recovered_times = [e["recovered_at"] for e in recent if e.get("recovered_at")]
-    if offline_times and recovered_times:
+    # Per-episode durations — sorting the two lists separately mispairs them.
+    durations = [
+        e["recovered_at"] - e["offline_at"]
+        for e in recent
+        if e.get("offline_at") and e.get("recovered_at")
+    ]
+    if offline_times and durations:
         import datetime
 
         def _hm(ts: float) -> str:
@@ -407,11 +487,7 @@ def build_recurrence_fact(
             time_range = f"around {_hm(offline_times[0])}"
         else:
             time_range = f"between {_hm(earliest)} and {_hm(latest)}"
-        avg_duration = int(
-            sum(r - o for o, r in zip(sorted(offline_times), sorted(recovered_times)))
-            / count
-            / 60
-        )
+        avg_duration = int(sum(durations) / len(durations) / 60)
         return (
             f"{device_name} ({domain}) went offline {count}× in {window_days} days,"
             f" {time_range}, recovering on its own (avg {avg_duration} min)."
@@ -586,6 +662,7 @@ async def poll_device_availability(
 
             with sqlite3.connect(_db) as conn:
                 prior = load_snapshot(conn)
+                ha_start_ts = load_ha_start_ts(conn)
 
             grace_s = _cfg.DEVICE_AVAILABILITY_GRACE_MINUTES * 60
             result = evaluate_device_availability(
@@ -596,10 +673,24 @@ async def poll_device_availability(
                 prior=prior,
                 now=now,
                 grace_s=grace_s,
+                min_state_coverage=_cfg.DEVICE_AVAILABILITY_MIN_STATE_COVERAGE,
+                ha_start_ts=ha_start_ts,
+                settle_s=_cfg.DEVICE_AVAILABILITY_RESTART_SETTLE_MINUTES * 60,
             )
 
-            with sqlite3.connect(_db) as conn:
-                save_snapshot(conn, result.snapshot)
+            if result.skipped == "incomplete_states":
+                log.info(
+                    "device_availability_skipped_incomplete_states",
+                    state_coverage=round(result.state_coverage, 3),
+                )
+            elif result.skipped == "settling":
+                log.info(
+                    "device_availability_skipped_settling",
+                    ha_start_ts=ha_start_ts,
+                )
+            else:
+                with sqlite3.connect(_db) as conn:
+                    save_snapshot(conn, result.snapshot)
 
             # Process newly offline devices.
             for finding in result.new_offline:
@@ -773,6 +864,14 @@ async def poll_device_availability(
                 else:
                     await _investigate_coro()
 
+                # An investigated episode is never a self-recovery.
+                for _dev in finding.devices:
+                    _snap_dev = result.snapshot.get(_dev["device_id"])
+                    if _snap_dev is not None:
+                        _snap_dev["investigated"] = True
+                with sqlite3.connect(_db) as conn:
+                    save_snapshot(conn, result.snapshot)
+
             # Process recoveries.
             for finding in result.recovered:
                 card_key = f"device_offline:{finding.config_entry_id}"
@@ -810,15 +909,18 @@ async def poll_device_availability(
                     },
                 )
 
-                # Determine self-recovery: no human approved the offline card.
+                # Self-recovery: no human approved the offline card and no
+                # investigation (which may have reloaded the integration) ran.
                 with sqlite3.connect(_db) as conn:
                     _actioned = was_card_actioned(conn, card_key)
                     _episodes_blob = load_episodes(conn)
 
-                _self_recovered = not _actioned
                 _updated_episodes = _episodes_blob
+                _any_self_recovered = False
                 for _dev in finding.devices:
                     _dev_id = _dev["device_id"]
+                    _self_recovered = not _actioned and not _dev.get("investigated")
+                    _any_self_recovered = _any_self_recovered or _self_recovered
                     _offline_at = _dev.get("offline_since") or oldest_offline_since
                     _updated_episodes = record_episode(
                         _updated_episodes,
@@ -856,7 +958,7 @@ async def poll_device_availability(
                     domain=finding.domain,
                     devices=[d["name"] for d in finding.devices],
                     duration_minutes=duration_minutes,
-                    self_recovered=_self_recovered,
+                    self_recovered=_any_self_recovered,
                 )
 
         except Exception as exc:

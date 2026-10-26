@@ -135,6 +135,8 @@ agent:
   lovelace_check_interval_minutes: 30  # How often to check Lovelace dashboards for missing entities (0 = off; requires api_token)
   device_availability_enabled: true   # Monitor device availability; alert when armed devices go offline
   device_availability_grace_minutes: 10  # Grace period before alerting on an offline device
+  # device_availability_min_state_coverage: 0.5  # Skip a poll when fewer states than this fraction of registry entities (HA starting)
+  # device_availability_restart_settle_minutes: 15  # No offline/recovery transitions this long after an HA start
   # device_recurrence_count: 3          # Self-recoveries within the window before asking once and suppressing
   # device_recurrence_window_days: 14   # Rolling window (days) for recurrence counting
   # ha_event_subscribe: true     # Enable long-lived WS event subscriber (requires api_token)
