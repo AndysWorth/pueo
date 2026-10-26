@@ -13,6 +13,10 @@ from utils.core.logging import get_logger
 
 log = get_logger("pueo")
 
+SSH_KEEPALIVE_INTERVAL = 30  # seconds between keepalive probes
+SSH_KEEPALIVE_COUNT_MAX = 3  # probes before declaring the connection dead
+SSH_CONNECT_TIMEOUT = 30  # seconds to wait for TCP + SSH handshake
+
 
 class AsyncSSHClient:  # pragma: no cover
     """Wraps asyncssh behind the SSHClientProtocol interface."""
@@ -28,7 +32,13 @@ class AsyncSSHClient:  # pragma: no cover
         self._key_path = key_path
 
     def _kw(self) -> dict:
-        kw: dict = {"username": self._user, "known_hosts": None}
+        kw: dict = {
+            "username": self._user,
+            "known_hosts": None,
+            "keepalive_interval": SSH_KEEPALIVE_INTERVAL,
+            "keepalive_count_max": SSH_KEEPALIVE_COUNT_MAX,
+            "connect_timeout": SSH_CONNECT_TIMEOUT,
+        }
         agent_sock = os.environ.get("SSH_AUTH_SOCK")
         if agent_sock:
             # Use the SSH agent (handles passphrase-protected keys transparently)
@@ -91,6 +101,7 @@ class FakeSSHClient:
         stream_error: Exception | None = None,
         download_contents: dict[str, bytes] | None = None,
         download_error: Exception | None = None,
+        command_errors: dict[str, Exception] | None = None,
     ) -> None:
         self._file_contents: dict[str, str] = file_contents or {}
         self._command_results: dict[str, tuple[int, str, str]] = command_results or {}
@@ -98,6 +109,7 @@ class FakeSSHClient:
         self._stream_error: Exception | None = stream_error
         self._download_contents: dict[str, bytes] = download_contents or {}
         self._download_error: Exception | None = download_error
+        self._command_errors: dict[str, Exception] = command_errors or {}
         self.written_files: dict[str, str] = {}
         self.commands_run: list[str] = []
         self.downloaded_files: list[tuple[str, str]] = []
@@ -119,6 +131,9 @@ class FakeSSHClient:
 
     async def run(self, command: str, check: bool = False) -> tuple[int, str, str]:
         self.commands_run.append(command)
+        for pattern, exc in self._command_errors.items():
+            if pattern in command:
+                raise exc
         for pattern, result in self._command_results.items():
             if pattern in command:
                 exit_code, stdout, stderr = result

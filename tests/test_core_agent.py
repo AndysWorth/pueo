@@ -6206,6 +6206,62 @@ class TestExecuteCoreUpdate:
 
         assert result is True  # triage failure is swallowed
 
+    def test_connection_lost_on_update_command_falls_through_to_poll(self, caplog):
+        import asyncssh
+        from agents.ha_update_manager import execute_core_update
+        from utils.ha.ssh_client import FakeSSHClient
+
+        import logging
+
+        ssh = FakeSSHClient(
+            command_errors={"ha core update": asyncssh.ConnectionLost("peer closed")},
+            command_results={"ha core check": (0, "ok", "")},
+        )
+        gate, notifier = self._make_gate_notifier()
+
+        async def fake_poll(version, client, timeout_seconds=480):
+            return True
+
+        import agents.ha_update_manager as _mod
+
+        with self._patch_backup():
+            _mod.log.propagate = True
+            with caplog.at_level(logging.WARNING, logger="ha_update_manager"):
+                result = asyncio.run(
+                    execute_core_update(
+                        self._make_update(), ssh, notifier, gate, _poll=fake_poll
+                    )
+                )
+            _mod.log.propagate = False
+
+        assert result is True
+        assert any(
+            "update_command_connection_lost" in r.message for r in caplog.records
+        )
+
+    def test_connection_lost_on_update_command_poll_returns_false(self):
+        import asyncssh
+        from agents.ha_update_manager import execute_core_update
+        from utils.ha.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(
+            command_errors={"ha core update": asyncssh.ConnectionLost("peer closed")},
+        )
+        gate, notifier = self._make_gate_notifier()
+
+        async def fake_poll_fail(version, client, timeout_seconds=480):
+            return False
+
+        with self._patch_backup():
+            result = asyncio.run(
+                execute_core_update(
+                    self._make_update(), ssh, notifier, gate, _poll=fake_poll_fail
+                )
+            )
+
+        assert result is False
+        assert notifier.sent[0]["payload"]["success"] is False
+
 
 # ── execute_os_update ────────────────────────────────────────────────────────
 class TestExecuteOsUpdate:
@@ -6393,6 +6449,76 @@ class TestExecuteOsUpdate:
 
         assert result is False
         assert api_calls[0] == 1
+
+    def test_connection_lost_on_os_update_command_falls_through_to_poll(self):
+        from agents.ha_update_manager import (
+            execute_os_update,
+            set_reboot_pending_after_update,
+        )
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(
+            command_errors={"ha os update": OSError(ConnectionResetError())},
+        )
+        gate = FakeAutonomyGate()
+        notifier = FakeNotifier()
+
+        async def fake_poll(host, port, timeout_seconds=480):
+            return True
+
+        async def fake_api(host, port, token, timeout_seconds=120):
+            return True
+
+        with self._patch_backup():
+            result = asyncio.run(
+                execute_os_update(
+                    self._make_update(),
+                    ssh,
+                    notifier,
+                    gate,
+                    _poll=fake_poll,
+                    _api_poll=fake_api,
+                )
+            )
+
+        set_reboot_pending_after_update(False)  # prevent flag leaking into later tests
+        assert result is True
+        assert notifier.sent[0]["payload"]["success"] is True
+
+    def test_connection_lost_on_os_update_command_poll_returns_false(self):
+        from agents.ha_update_manager import execute_os_update
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(
+            command_errors={"ha os update": OSError(ConnectionResetError())},
+        )
+        gate = FakeAutonomyGate()
+        notifier = FakeNotifier()
+
+        async def fake_poll_fail(host, port, timeout_seconds=480):
+            return False
+
+        async def fake_api(host, port, token, timeout_seconds=120):
+            return True
+
+        with self._patch_backup():
+            result = asyncio.run(
+                execute_os_update(
+                    self._make_update(),
+                    ssh,
+                    notifier,
+                    gate,
+                    _poll=fake_poll_fail,
+                    _api_poll=fake_api,
+                )
+            )
+
+        assert result is False
+        assert notifier.sent[0]["payload"]["success"] is False
 
 
 # ── execute_addon_update ────────────────────────────────────────────────────────
