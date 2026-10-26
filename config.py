@@ -152,6 +152,8 @@ DEVICE_RECURRENCE_COUNT: int = int(_agent.get("device_recurrence_count", 3))
 DEVICE_RECURRENCE_WINDOW_DAYS: int = int(
     _agent.get("device_recurrence_window_days", 14)
 )
+# Local hour (0–23) of the daily card listing open verification questions; -1 = off.
+VERIFICATION_DIGEST_HOUR: int = int(_agent.get("verification_digest_hour", 9))
 
 # HA event subscriber (long-lived WS ring buffer)
 HA_EVENT_SUBSCRIBE: bool = bool(_agent.get("ha_event_subscribe", True))

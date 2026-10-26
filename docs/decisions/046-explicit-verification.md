@@ -3,6 +3,7 @@
 **Status:** Accepted  
 **Date:** 2026-10-20  
 **Supersedes:** ADR 044 §3 ("Card actions as verification") and the "success via card action only" verifier row of ADR 044 §2
+**Amended by:** ADR 050 (prediction checks as system verification; host-health clear no longer counts as success)
 
 ---
 

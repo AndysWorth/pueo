@@ -787,6 +787,7 @@ class ToolExecutor:
                     recommended_actions=args.get("recommended_actions", []),
                     verification_question=args.get("verification_question"),
                     fact_if_yes=args.get("fact_if_yes"),
+                    prediction=args.get("prediction"),
                 )
             if name == "finish_device_availability":
                 self._capture_declared_runbook(args)
@@ -797,6 +798,7 @@ class ToolExecutor:
                     recommended_actions=args.get("recommended_actions", []),
                     verification_question=args.get("verification_question"),
                     fact_if_yes=args.get("fact_if_yes"),
+                    prediction=args.get("prediction"),
                 )
             if name == "discard_result":
                 reason = args.get("reason", "")
@@ -5588,6 +5590,7 @@ class ToolExecutor:
         recommended_actions: list,
         verification_question: Optional[str] = None,
         fact_if_yes: Optional[str] = None,
+        prediction: Optional[dict] = None,
     ) -> ToolResult:
         """Send a host-health investigation card and mark it as sent.
 
@@ -5599,6 +5602,10 @@ class ToolExecutor:
 
         import config as _cfg
         from utils.hitl.card_types import CARD_TYPE_HOST_HEALTH
+        from utils.knowledge.session_verification import (
+            describe_prediction,
+            normalize_prediction,
+        )
         from utils.hitl.hitl_tracker import mark_card_sent, stable_nid
 
         finding = self._host_health_finding
@@ -5665,6 +5672,10 @@ class ToolExecutor:
             _payload["signature"] = self._session_signature
         if fact_if_yes:
             _payload["fact_if_yes"] = fact_if_yes
+        _prediction = normalize_prediction(prediction)
+        if _prediction is not None:
+            _payload["prediction"] = _prediction
+            _payload["prediction_text"] = describe_prediction(_prediction)
         await self._notifier.send(
             subject=f"Pueo: Host health — {finding.kind}",
             body=summary,
@@ -5697,12 +5708,17 @@ class ToolExecutor:
         recommended_actions: list,
         verification_question: Optional[str] = None,
         fact_if_yes: Optional[str] = None,
+        prediction: Optional[dict] = None,
     ) -> ToolResult:
         """Send a device-availability investigation card and mark it as sent."""
         import sqlite3 as _sqlite3
 
         import config as _cfg
         from utils.hitl.card_types import CARD_TYPE_DEVICE_OFFLINE
+        from utils.knowledge.session_verification import (
+            describe_prediction,
+            normalize_prediction,
+        )
         from utils.hitl.hitl_tracker import mark_card_sent, stable_nid
 
         finding = self._device_availability_finding
@@ -5745,6 +5761,10 @@ class ToolExecutor:
             _payload["signature"] = self._session_signature
         if fact_if_yes:
             _payload["fact_if_yes"] = fact_if_yes
+        _prediction = normalize_prediction(prediction)
+        if _prediction is not None:
+            _payload["prediction"] = _prediction
+            _payload["prediction_text"] = describe_prediction(_prediction)
         subject = f"Pueo: Device offline — {', '.join(device_names[:3])}"
         if len(device_names) > 3:
             subject += f" (+{len(device_names) - 3} more)"

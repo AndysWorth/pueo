@@ -1020,6 +1020,7 @@ class ResourcePoller:
             self._alerted_host.add(finding.key)
 
         # Resolve cleared findings
+        cleared_keys = {k for k in self._alerted_host if k not in active_keys}
         for key in list(self._alerted_host):
             if key not in active_keys:
                 import sqlite3 as _sqlite3
@@ -1039,14 +1040,21 @@ class ResourcePoller:
                     )
                 except Exception:  # nosec B110
                     pass
-                # Resolve any pending session outcome for this finding.
-                try:
-                    from agents.ha_agent_advanced import resolve_session_outcome
-
-                    resolve_session_outcome(key, "success", "system")
-                except Exception:  # nosec B110
-                    pass
                 self._alerted_host.discard(key)
+
+        # A cleared condition verifies a session only through its prediction or
+        # a Pueo action (ADR 050); an aged-out finding proves nothing.
+        try:
+            await verify_host_health_sessions(
+                _db,
+                time.time(),
+                cleared=cleared_keys,
+                active=active_keys & self._alerted_host,
+                knowledge_store=self._knowledge_store,
+                llm_client=self._llm_client,
+            )
+        except Exception as exc:  # nosec B110
+            log.warning("host_health_verification_failed", error=str(exc))
 
     async def _submit_host_health_investigation(
         self,
@@ -1186,6 +1194,62 @@ class ResourcePoller:
             )
         except Exception as exc:  # nosec B110 — best-effort advisory card
             log.warning("netalertx_migrate_card_failed", error=str(exc))
+
+
+# Findings that clear on their own by construction (the reboot ages out of its
+# window), so clearing says nothing about the diagnosis.
+_TRANSIENT_HOST_KINDS = frozenset({"unexpected_reboot"})
+
+
+async def verify_host_health_sessions(
+    db_path: str,
+    now: float,
+    cleared: set[str],
+    active: set[str],
+    knowledge_store: Any = None,
+    llm_client: Any = None,
+) -> int:
+    """Verify host-health sessions from what the poll saw (ADR 050).
+
+    A cleared finding verifies its session when the session's prediction
+    holds, or as success when the session itself took an action.  A finding
+    still active is checked only against a prediction deadline.  Transient
+    kinds are never verified this way.  Returns the number of sessions verified.
+    """
+    from utils.knowledge.session_verification import (
+        PredictionVerdict,
+        judge_prediction,
+        load_pending_for_subject,
+        resolve_prediction,
+    )
+
+    resolved = 0
+    for key in sorted(cleared | active):
+        if key.split(":", 1)[0] in _TRANSIENT_HOST_KINDS:
+            continue
+        is_cleared = key in cleared
+        for pending in await asyncio.to_thread(load_pending_for_subject, db_path, key):
+            verdict: Optional[PredictionVerdict]
+            if pending.prediction is not None:
+                verdict = judge_prediction(
+                    pending.prediction,
+                    pending.created_ts,
+                    now,
+                    recovered_at=now if is_cleared else None,
+                    actioned=pending.actioned,
+                    reloaded=pending.reloaded,
+                )
+            elif is_cleared and pending.actioned:
+                verdict = PredictionVerdict("success")
+            else:
+                verdict = None
+            if verdict is None:
+                continue
+            await resolve_prediction(
+                db_path, pending, verdict, knowledge_store, llm_client
+            )
+            resolved += 1
+    return resolved
 
 
 # ---------------------------------------------------------------------------

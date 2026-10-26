@@ -1255,6 +1255,21 @@ class TestHAUpdateManagerConfig:
 
         assert config.DEVICE_AVAILABILITY_RESTART_SETTLE_MINUTES == 5
 
+    def test_verification_digest_hour_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.VERIFICATION_DIGEST_HOUR == 9
+
+    def test_verification_digest_hour_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump({"agent": {"verification_digest_hour": -1}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.VERIFICATION_DIGEST_HOUR == -1
+
     def test_device_recurrence_count_default(self, isolated_config):
         importlib.reload(sys.modules["config"])
         import config

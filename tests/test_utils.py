@@ -10105,3 +10105,81 @@ class TestFetchPriorSessions:
         assert any(
             json.loads(r[0]).get("root_cause") == "Devices were off" for r in rows
         )
+
+    @pytest.mark.parametrize(
+        "prediction, expected",
+        [
+            (
+                {"kind": "stays_offline", "within_minutes": 45},
+                {"kind": "stays_offline", "within_minutes": 45},
+            ),
+            ({"kind": "never"}, None),
+        ],
+    )
+    def test_stub_keeps_valid_prediction(
+        self, tmp_path, monkeypatch, prediction, expected
+    ):
+        import asyncio
+        import json
+        import sqlite3
+        from unittest import mock
+
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import build_device_availability_tool_registry
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        db = self._db(tmp_path, monkeypatch)
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_device_availability",
+                                "arguments": {
+                                    "summary": "s",
+                                    "root_cause": "Unplugged",
+                                    "outcome": "monitoring",
+                                    "recommended_actions": [],
+                                    "prediction": prediction,
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
+        store = mock.Mock()
+        store.query.return_value = []
+        loop = AgentLoop(
+            llm_client=llm,
+            tool_executor=ToolExecutor(
+                ha_ssh_client=FakeSSHClient(),
+                gate=FakeAutonomyGate(),
+                notifier=FakeNotifier(),
+                db_path=db,
+            ),
+            tool_registry=build_device_availability_tool_registry(),
+            terminal_tool_name="finish_device_availability",
+            activity_type="device_availability",
+            db_path=db,
+            knowledge_store=store,
+        )
+        result = asyncio.run(
+            loop.run(
+                initial_context="Devices offline",
+                signature="device:offline:matter",
+                subject_key="e9:matter",
+            )
+        )
+        assert (result.episode_stub or {}).get("prediction") == expected
+        with sqlite3.connect(db) as conn:
+            (conclusion,) = conn.execute(
+                "SELECT conclusion_json FROM session_outcomes"
+                " WHERE subject_key = 'e9:matter'"
+            ).fetchone()
+        assert json.loads(conclusion).get("prediction") == expected

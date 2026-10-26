@@ -222,6 +222,7 @@ def _load_signature_stats(
                 "         THEN 1 ELSE 0 END) AS sessions_30d"
                 " FROM session_outcomes"
                 " WHERE signature IS NOT NULL"
+                "   AND (verification IS NULL OR verification != 'superseded')"
                 " GROUP BY signature"
             ).fetchall()
         for r in rows:

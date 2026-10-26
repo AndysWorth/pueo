@@ -1786,6 +1786,16 @@ class AgentLoop:
                             "gap_description", ""
                         ),
                     }
+                    # Stored in conclusion_json; the watching poll checks it (ADR 050).
+                    from utils.knowledge.session_verification import (
+                        normalize_prediction,
+                    )
+
+                    _prediction = normalize_prediction(
+                        tool_call.arguments.get("prediction")
+                    )
+                    if _prediction is not None:
+                        episode_stub["prediction"] = _prediction
                     if self._capture_llm and self._llm_captures:
                         self._llm_captures[-1].outcome_path = self._terminal_tool_name
                     return "success", episode_stub
