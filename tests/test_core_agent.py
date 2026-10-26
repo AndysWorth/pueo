@@ -6451,7 +6451,10 @@ class TestExecuteOsUpdate:
         assert api_calls[0] == 1
 
     def test_connection_lost_on_os_update_command_falls_through_to_poll(self):
-        from agents.ha_update_manager import execute_os_update
+        from agents.ha_update_manager import (
+            execute_os_update,
+            set_reboot_pending_after_update,
+        )
         from utils.agent.autonomy import FakeAutonomyGate
         from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
@@ -6480,6 +6483,7 @@ class TestExecuteOsUpdate:
                 )
             )
 
+        set_reboot_pending_after_update(False)  # prevent flag leaking into later tests
         assert result is True
         assert notifier.sent[0]["payload"]["success"] is True
 
