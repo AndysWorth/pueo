@@ -9905,3 +9905,247 @@ class TestVerificationDigestCard:
         client = TestClient(dashboard.app, raise_server_exceptions=True)
         html = client.get("/queue").text
         assert "recover on its own within 30 min" in html
+
+
+# ── Network links ─────────────────────────────────────────────────────────────
+
+
+class TestNetworkLinksRoutes:
+    """Tests for /network-links GET + POST save/unlink routes."""
+
+    def _make_db(self, tmp_path):
+        db = tmp_path / "state.db"
+        with sqlite3.connect(str(db)) as conn:
+            conn.execute("CREATE TABLE user_prefs(key TEXT PRIMARY KEY, value TEXT)")
+        return db
+
+    def test_get_netalertx_disabled(self, tmp_path, monkeypatch):
+        import web.dashboard as dashboard
+        import config as _config
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setattr(_config, "NETALERTX_ENABLED", False)
+        monkeypatch.setattr(dashboard, "DB_PATH", str(self._make_db(tmp_path)))
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/network-links").text
+        assert "not configured" in html
+
+    def test_save_and_unlink_roundtrip(self, tmp_path, monkeypatch):
+        import web.dashboard as dashboard
+        import config as _config
+        from fastapi.testclient import TestClient
+
+        db = self._make_db(tmp_path)
+        monkeypatch.setattr(dashboard, "DB_PATH", str(db))
+        monkeypatch.setattr(_config, "DB_PATH", str(db))
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+
+        resp = client.post(
+            "/network-links/save",
+            data={"device_id": "dev-abc", "mac": "AA:BB:CC:DD:EE:FF"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+
+        with sqlite3.connect(str(db)) as conn:
+            row = conn.execute(
+                "SELECT value FROM user_prefs WHERE key='netalertx:link:dev-abc'"
+            ).fetchone()
+        assert row is not None
+        assert row[0] == "aa:bb:cc:dd:ee:ff"
+
+        resp2 = client.post(
+            "/network-links/unlink",
+            data={"device_id": "dev-abc"},
+        )
+        assert resp2.status_code == 200
+        assert resp2.json()["ok"] is True
+
+        with sqlite3.connect(str(db)) as conn:
+            row2 = conn.execute(
+                "SELECT value FROM user_prefs WHERE key='netalertx:link:dev-abc'"
+            ).fetchone()
+        assert row2 is None
+
+    def test_save_missing_params_returns_error(self, tmp_path, monkeypatch):
+        import web.dashboard as dashboard
+        import config as _config
+        from fastapi.testclient import TestClient
+
+        db = self._make_db(tmp_path)
+        monkeypatch.setattr(dashboard, "DB_PATH", str(db))
+        monkeypatch.setattr(_config, "DB_PATH", str(db))
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+
+        # Missing both fields — FastAPI form validation rejects with 422.
+        resp = client.post("/network-links/save", data={})
+        assert resp.status_code == 422
+
+    def test_candidates_roundtrip_with_manual_link(self, tmp_path):
+        """Manual link stored via save is picked up by candidates_for_device."""
+        import sqlite3 as _sqlite3
+        from utils.ha.network_identity import (
+            candidates_for_device,
+            load_manual_links,
+        )
+
+        db = self._make_db(tmp_path)
+        with _sqlite3.connect(str(db)) as conn:
+            conn.execute(
+                "INSERT INTO user_prefs(key, value) VALUES(?, ?)",
+                ("netalertx:link:dev-xyz", "11:22:33:44:55:66"),
+            )
+
+        manual = load_manual_links(str(db))
+        device = {"id": "dev-xyz", "connections": [], "config_entries": []}
+        cands = candidates_for_device(device, {}, manual)
+        assert cands == [("manual", "11:22:33:44:55:66")]
+
+    def test_device_offline_card_shows_link_button(self, tmp_path, monkeypatch):
+        """index.html shows 'Link network device' when unmapped_device_ids is set."""
+        import json
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        watch = tmp_path / "hitl"
+        watch.mkdir()
+        nid = "dev-offline-1"
+        (watch / f"{nid}.json").write_text(
+            json.dumps(
+                {
+                    "notification_id": nid,
+                    "subject": "Device offline",
+                    "body": "b",
+                    "sent_at": 1,
+                    "payload": {
+                        "notification_id": nid,
+                        "card_type": "device_offline",
+                        "devices": [{"name": "Cast", "device_id": "dev-cast"}],
+                        "unmapped_device_ids": ["dev-cast"],
+                    },
+                }
+            )
+        )
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch))
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/queue").text
+        assert "Link network device" in html
+        assert "/network-links" in html
+
+    def test_device_offline_card_no_link_button_when_mapped(
+        self, tmp_path, monkeypatch
+    ):
+        """index.html does not show link button when unmapped_device_ids is absent."""
+        import json
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        watch = tmp_path / "hitl"
+        watch.mkdir()
+        nid = "dev-offline-2"
+        (watch / f"{nid}.json").write_text(
+            json.dumps(
+                {
+                    "notification_id": nid,
+                    "subject": "Device offline",
+                    "body": "b",
+                    "sent_at": 1,
+                    "payload": {
+                        "notification_id": nid,
+                        "card_type": "device_offline",
+                        "devices": [{"name": "Known Device", "device_id": "dev-known"}],
+                    },
+                }
+            )
+        )
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch))
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/queue").text
+        assert "Link network device" not in html
+
+
+class TestSetUnmappedDeviceIds:
+    """set_unmapped_device_ids stores ids on ToolExecutor and finish_device_availability includes them."""
+
+    def test_set_and_retrieve(self):
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.autonomy import AutonomyGate
+
+        gate = AutonomyGate(0)
+        ex = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=gate,
+            notifier=None,
+            db_path=":memory:",
+        )
+        assert ex._unmapped_device_ids == []
+        ex.set_unmapped_device_ids(["dev-a", "dev-b"])
+        assert ex._unmapped_device_ids == ["dev-a", "dev-b"]
+
+    def test_finish_device_availability_includes_unmapped(self, tmp_path, monkeypatch):
+        import asyncio
+        import json
+        import sqlite3 as _sqlite3
+        from pathlib import Path
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.ha.device_availability import OfflineFinding
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.autonomy import AutonomyGate
+
+        db = tmp_path / "state.db"
+        with _sqlite3.connect(str(db)) as conn:
+            conn.execute(
+                """CREATE TABLE hitl_suppression (
+                card_key TEXT PRIMARY KEY,
+                card_type TEXT NOT NULL DEFAULT '',
+                description TEXT NOT NULL DEFAULT '',
+                first_sent_at REAL NOT NULL DEFAULT 0,
+                last_sent_at REAL NOT NULL DEFAULT 0,
+                send_count INTEGER NOT NULL DEFAULT 1,
+                last_action TEXT,
+                last_action_at REAL,
+                rejection_count INTEGER NOT NULL DEFAULT 0,
+                next_allowed_at REAL,
+                known_issue INTEGER NOT NULL DEFAULT 0,
+                known_issue_note TEXT,
+                resolved_at REAL
+                )"""
+            )
+
+        watch = tmp_path / "hitl"
+        watch.mkdir()
+
+        sent_payload: dict = {}
+
+        class _FakeNotifier:
+            async def send(self, subject, body, payload=None):
+                sent_payload.update(payload or {})
+
+        gate = AutonomyGate(0)
+        ex = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=gate,
+            notifier=_FakeNotifier(),
+            db_path=str(db),
+        )
+        ex.set_unmapped_device_ids(["dev-cast", "dev-matter"])
+
+        finding = OfflineFinding(
+            config_entry_id="entry-1",
+            domain="cast",
+            devices=[{"name": "TV", "device_id": "dev-cast", "offline_since": 0.0}],
+        )
+        ex.set_device_availability_finding(finding)
+
+        monkeypatch.setattr(ex, "_notifier", _FakeNotifier())
+
+        asyncio.run(
+            ex._finish_device_availability(
+                summary="TV offline",
+                root_cause="cloud outage",
+                outcome="needs_action",
+                recommended_actions=["check cloud"],
+            )
+        )
+        assert sent_payload.get("unmapped_device_ids") == ["dev-cast", "dev-matter"]

@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+  .nl-header { display:flex; align-items:center; justify-content:space-between;
+    margin-bottom:1rem; flex-wrap:wrap; gap:0.5rem; }
+  .nl-table { width:100%; border-collapse:collapse; font-size:0.85rem; }
+  .nl-table th { text-align:left; padding:0.4rem 0.75rem; border-bottom:2px solid #ddd;
+    color:#555; font-weight:600; }
+  .nl-table td { padding:0.5rem 0.75rem; border-bottom:1px solid #eee; vertical-align:middle; }
+  .badge { display:inline-block; padding:0.1rem 0.45rem; border-radius:3px;
+    font-size:0.73rem; font-weight:700; }
+  .badge-manual  { background:#d4edda; color:#155724; }
+  .badge-mac     { background:#cce5ff; color:#004085; }
+  .badge-ip      { background:#fff3cd; color:#856404; }
+  .badge-config  { background:#e2e3e5; color:#383d41; }
+  .badge-none    { background:#f8d7da; color:#721c24; }
+  .picker { font-size:0.82rem; padding:0.25rem 0.5rem; border:1px solid #ccc;
+    border-radius:4px; min-width:200px; }
+  .btn-link   { padding:0.25rem 0.7rem; font-size:0.82rem; border:none; border-radius:4px;
+    background:#6366f1; color:#fff; cursor:pointer; font-weight:600; }
+  .btn-link:hover { background:#4f46e5; }
+  .btn-unlink { padding:0.25rem 0.7rem; font-size:0.82rem; border:1px solid #ccc;
+    border-radius:4px; background:#fff; color:#666; cursor:pointer; }
+  .btn-unlink:hover { background:#f5f5f5; }
+  .save-ok  { color:#28a745; font-size:0.78rem; font-weight:600; margin-left:0.4rem; }
+  .save-err { color:#dc3545; font-size:0.78rem; font-weight:600; margin-left:0.4rem; }
+  .empty { color:#888; font-style:italic; font-size:0.88rem; }
+</style>
+
+<div class="nl-header">
+  <div>
+    <h2 style="font-size:1rem;color:#555;margin:0;">Network Device Links</h2>
+    <p style="font-size:0.82rem;color:#888;margin:0.25rem 0 0;">
+      Associate HA devices that have no MAC or IP with a NetAlertX device.
+      Pueo uses these links to determine LAN presence for device-offline investigations.
+    </p>
+  </div>
+</div>
+
+{% if not netalertx_enabled %}
+<div class="card"><p class="empty">NetAlertX is not configured. Enable it in Settings to use this page.</p></div>
+{% elif not nax_ready %}
+<div class="card"><p class="empty">NetAlertX is configured but has no API token yet. Complete the pairing in Settings first.</p></div>
+{% elif not devices %}
+<div class="card"><p class="empty">No network-based HA devices found. Pueo needs access to the HA device registry to build this list.</p></div>
+{% else %}
+<div class="card" style="overflow-x:auto;">
+  <table class="nl-table">
+    <thead>
+      <tr>
+        <th>HA Device</th>
+        <th>Integration</th>
+        <th>Mapping</th>
+        <th>Action</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for d in devices %}
+      <tr id="row-{{ d.device_id }}">
+        <td>
+          <span style="font-weight:600;">{{ d.name }}</span>
+          {% if d.model %}<br><span style="font-size:0.75rem;color:#888;">{{ d.model }}</span>{% endif %}
+        </td>
+        <td style="color:#555;">{{ d.integration }}</td>
+        <td>
+          {% if d.method == "manual" %}
+          <span class="badge badge-manual">manual link</span>
+          <span style="font-size:0.75rem;color:#555;margin-left:0.3rem;">→ {{ d.nax_name or d.nax_mac }}</span>
+          {% elif d.method == "mac" %}
+          <span class="badge badge-mac">MAC</span>
+          <span style="font-size:0.75rem;color:#555;margin-left:0.3rem;">{{ d.nax_mac }}</span>
+          {% elif d.method == "ip" %}
+          <span class="badge badge-ip">IP</span>
+          <span style="font-size:0.75rem;color:#555;margin-left:0.3rem;">{{ d.nax_mac }}</span>
+          {% elif d.method == "config_entry" %}
+          <span class="badge badge-config">config-entry IP</span>
+          <span style="font-size:0.75rem;color:#555;margin-left:0.3rem;">{{ d.nax_mac }}</span>
+          {% else %}
+          <span class="badge badge-none">unmapped</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if d.method == "manual" %}
+          <form method="POST" action="/network-links/unlink" style="display:inline;"
+                onsubmit="return handleUnlink(event, '{{ d.device_id }}')">
+            <input type="hidden" name="device_id" value="{{ d.device_id }}">
+            <button type="submit" class="btn-unlink">Unlink</button>
+          </form>
+          <span id="status-{{ d.device_id }}"></span>
+          {% elif d.method == "mac" or d.method == "ip" or d.method == "config_entry" %}
+          <span style="font-size:0.78rem;color:#888;">auto-matched</span>
+          {% else %}
+          {% if nax_devices %}
+          <form method="POST" action="/network-links/save" style="display:inline-flex;gap:0.4rem;align-items:center;"
+                onsubmit="return handleLink(event, '{{ d.device_id }}')">
+            <input type="hidden" name="device_id" value="{{ d.device_id }}">
+            <select name="mac" class="picker" required>
+              <option value="">— select NetAlertX device —</option>
+              {% for n in nax_devices %}
+              <option value="{{ n.mac }}">{{ n.label }}</option>
+              {% endfor %}
+            </select>
+            <button type="submit" class="btn-link">Link</button>
+          </form>
+          <span id="status-{{ d.device_id }}"></span>
+          {% else %}
+          <span style="font-size:0.78rem;color:#888;">no NetAlertX devices available</span>
+          {% endif %}
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+<script>
+window.handleLink = function(evt, deviceId) {
+  evt.preventDefault();
+  var form = evt.target;
+  var data = new FormData(form);
+  fetch('/network-links/save', {method:'POST', body: new URLSearchParams(data)})
+    .then(function(r){ return r.json(); })
+    .then(function(j) {
+      var el = document.getElementById('status-' + deviceId);
+      if (j.ok) {
+        el.className = 'save-ok';
+        el.textContent = '✓ linked';
+        setTimeout(function(){ location.reload(); }, 800);
+      } else {
+        el.className = 'save-err';
+        el.textContent = j.error || 'error';
+      }
+    })
+    .catch(function(){ document.getElementById('status-' + deviceId).className='save-err'; document.getElementById('status-' + deviceId).textContent='error'; });
+  return false;
+};
+
+window.handleUnlink = function(evt, deviceId) {
+  evt.preventDefault();
+  var form = evt.target;
+  var data = new FormData(form);
+  fetch('/network-links/unlink', {method:'POST', body: new URLSearchParams(data)})
+    .then(function(r){ return r.json(); })
+    .then(function(j) {
+      var el = document.getElementById('status-' + deviceId);
+      if (j.ok) {
+        el.className = 'save-ok';
+        el.textContent = '✓ unlinked';
+        setTimeout(function(){ location.reload(); }, 800);
+      } else {
+        el.className = 'save-err';
+        el.textContent = j.error || 'error';
+      }
+    })
+    .catch(function(){ document.getElementById('status-' + deviceId).className='save-err'; document.getElementById('status-' + deviceId).textContent='error'; });
+  return false;
+};
+</script>
+{% endblock %}

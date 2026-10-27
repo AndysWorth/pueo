@@ -389,6 +389,7 @@ class ToolExecutor:
         self._pending_update_status: Optional[Any] = None
         self._host_health_finding: Optional[Any] = None
         self._device_availability_finding: Optional[Any] = None
+        self._unmapped_device_ids: list[str] = []
         self._pending_auto_apply: bool = False
         # Advisory line for the card sent when auto-apply is blocked (#976).
         self._auto_apply_advisory: str = ""
@@ -495,6 +496,10 @@ class ToolExecutor:
     def set_device_availability_finding(self, finding: Any) -> None:
         """Store the OfflineFinding so _finish_device_availability can build the card."""
         self._device_availability_finding = finding
+
+    def set_unmapped_device_ids(self, ids: list) -> None:
+        """Store HA device IDs that were unmapped in the presence context."""
+        self._unmapped_device_ids = list(ids)
 
     def set_episode_id(self, episode_id: str) -> None:
         """Set the current AgentLoop episode ID so finish_* cards can include it."""
@@ -6051,6 +6056,8 @@ class ToolExecutor:
             "recommended_actions": recommended_actions,
             "episode_id": self._episode_id,
         }
+        if self._unmapped_device_ids:
+            _payload["unmapped_device_ids"] = self._unmapped_device_ids
         if getattr(finding, "ha_start_ts", None) is not None:
             _payload["post_restart"] = True
             _payload["ha_start_ts"] = finding.ha_start_ts

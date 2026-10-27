@@ -2393,8 +2393,11 @@ class TestBuildPresenceContext:
         import asyncio
         from utils.ha.device_availability_investigation import build_presence_context
 
-        result = asyncio.run(build_presence_context(self._devices(), None, None))
+        result, unmapped = asyncio.run(
+            build_presence_context(self._devices(), None, None)
+        )
         assert result == ""
+        assert unmapped == []
 
     def test_returns_empty_when_no_token(self):
         import asyncio
@@ -2403,8 +2406,11 @@ class TestBuildPresenceContext:
         class _NoToken:
             has_token = False
 
-        result = asyncio.run(build_presence_context(self._devices(), _NoToken(), None))
+        result, unmapped = asyncio.run(
+            build_presence_context(self._devices(), _NoToken(), None)
+        )
         assert result == ""
+        assert unmapped == []
 
     def test_present_on_lan(self):
         import asyncio
@@ -2432,12 +2438,13 @@ class TestBuildPresenceContext:
                     }
                 ]
 
-        result = asyncio.run(
+        result, unmapped = asyncio.run(
             build_presence_context(self._devices(), _FakeNAX(), _FakeWS())
         )
         assert "present on LAN" in result
         assert "Heat Pump" in result
         assert "aa:bb:cc:dd:ee:ff" in result
+        assert unmapped == []
 
     def test_absent_from_lan(self):
         import asyncio
@@ -2465,11 +2472,12 @@ class TestBuildPresenceContext:
                     }
                 ]
 
-        result = asyncio.run(
+        result, unmapped = asyncio.run(
             build_presence_context(self._devices(), _FakeNAX(), _FakeWS())
         )
         assert "absent from LAN" in result
         assert "Heat Pump" in result
+        assert unmapped == []
 
     def test_no_mac_mapping(self):
         import asyncio
@@ -2486,12 +2494,13 @@ class TestBuildPresenceContext:
                 # Device has no MAC connection
                 return [{"id": "dev-A", "connections": []}]
 
-        result = asyncio.run(
+        result, unmapped = asyncio.run(
             build_presence_context(self._devices(), _FakeNAX(), _FakeWS())
         )
         # Unmapped device: no MAC/IP candidates → reported as "unknown"
         assert "unknown" in result
         assert "no MAC/IP mapping" in result
+        assert "dev-A" in unmapped
 
     def test_not_found_in_netalertx(self):
         import asyncio
@@ -2513,11 +2522,12 @@ class TestBuildPresenceContext:
                     }
                 ]
 
-        result = asyncio.run(
+        result, unmapped = asyncio.run(
             build_presence_context(self._devices(), _FakeNAX(), _FakeWS())
         )
         assert "not found in NetAlertX" in result
         assert "aa:bb:cc:dd:ee:ff" in result
+        assert unmapped == []
 
     def test_api_error_returns_empty(self):
         import asyncio
@@ -2538,10 +2548,11 @@ class TestBuildPresenceContext:
                     }
                 ]
 
-        result = asyncio.run(
+        result, unmapped = asyncio.run(
             build_presence_context(self._devices(), _ErrorNAX(), _FakeWS())
         )
         assert result == ""
+        assert unmapped == []
 
     def test_ws_error_falls_back_gracefully(self):
         import asyncio
@@ -2558,7 +2569,7 @@ class TestBuildPresenceContext:
                 raise RuntimeError("ws error")
 
         # ws error → registry empty → candidates empty → "unknown"
-        result = asyncio.run(
+        result, unmapped = asyncio.run(
             build_presence_context(self._devices(), _FakeNAX(), _FailWS())
         )
         assert "unknown" in result
@@ -2574,7 +2585,9 @@ class TestBuildPresenceContext:
                 return []
 
         # no ws_client → registry empty → candidates empty → "unknown"
-        result = asyncio.run(build_presence_context(self._devices(), _FakeNAX(), None))
+        result, unmapped = asyncio.run(
+            build_presence_context(self._devices(), _FakeNAX(), None)
+        )
         assert "unknown" in result
 
     def test_header_present_in_block(self):
@@ -2603,7 +2616,7 @@ class TestBuildPresenceContext:
                     }
                 ]
 
-        result = asyncio.run(
+        result, _ = asyncio.run(
             build_presence_context(self._devices(), _FakeNAX(), _FakeWS())
         )
         assert result.startswith("\n\nNetAlertX network presence:\n")
