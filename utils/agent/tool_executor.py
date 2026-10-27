@@ -3880,24 +3880,66 @@ class ToolExecutor:
             )
 
     async def _rewrite_netalertx_conf(self, overrides: dict) -> ToolResult:
-        from netalertx.config_validator import validate_app_conf
-        from netalertx.healer import _addon_conf_path, _merge_conf
+        from netalertx.app_conf import (
+            AppConfSyntaxError,
+            format_value,
+            merge,
+            parse_check,
+            write_app_conf,
+        )
         from netalertx.installer import resolve_addon_slug
 
         slug = resolve_addon_slug()
+        formatted = {k: format_value(v) for k, v in overrides.items()}
+
         if slug:
-            conf_path = _addon_conf_path(slug)
-            ssh = self._ha_ssh
-        else:
-            conf_path = "/data/app.conf"
-            ssh = self._nax_ssh or self._ha_ssh
+            # HA add-on mode: use the safe writer (backup → LKG → write)
+            try:
+                diff = await write_app_conf(
+                    self._ha_ssh,
+                    slug,
+                    formatted,
+                    reason="tool:rewrite_netalertx_conf",
+                )
+                return ToolResult(
+                    tool_name="rewrite_netalertx_conf",
+                    success=True,
+                    output=f"app.conf updated: {diff}",
+                )
+            except AppConfSyntaxError as exc:
+                return ToolResult(
+                    tool_name="rewrite_netalertx_conf",
+                    success=False,
+                    output="",
+                    error=f"Syntax error in proposed conf — write aborted: {exc}",
+                )
+            except Exception as exc:
+                return ToolResult(
+                    tool_name="rewrite_netalertx_conf",
+                    success=False,
+                    output="",
+                    error=str(exc),
+                )
+
+        # Docker mode: no HA backup available; apply syntax check + key validation
+        from netalertx.config_validator import validate_app_conf
+
+        docker_path = "/data/app.conf"
+        ssh = self._nax_ssh or self._ha_ssh
         try:
-            current = await ssh.read_file(conf_path)
+            current = await ssh.read_file(docker_path)
         except (FileNotFoundError, OSError):
             current = ""
-
-        fixed = _merge_conf(current, {k: str(v) for k, v in overrides.items()})
-        issues = validate_app_conf(fixed)
+        merged, _ = merge(current, formatted)
+        errors = parse_check(merged)
+        if errors:
+            return ToolResult(
+                tool_name="rewrite_netalertx_conf",
+                success=False,
+                output="",
+                error=f"Syntax error in proposed conf — write aborted: {errors[0]}",
+            )
+        issues = validate_app_conf(merged)
         blocking = [i for i in issues if i.severity in ("HIGH", "CRITICAL")]
         if blocking:
             reasons = [i.message for i in blocking]
@@ -3907,9 +3949,8 @@ class ToolExecutor:
                 output="",
                 error=f"Config still invalid after merge: {'; '.join(reasons)}",
             )
-
         try:
-            await ssh.write_file(conf_path, fixed)
+            await ssh.write_file(docker_path, merged)
             return ToolResult(
                 tool_name="rewrite_netalertx_conf",
                 success=True,

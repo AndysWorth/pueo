@@ -1775,7 +1775,7 @@ async def supervisor_main(config_path: Path) -> None:
                                         notifier,
                                         AutonomyGate(_cfg_tok.AUTONOMY_LEVEL),
                                         _cfg_tok.DB_PATH,
-                                        _cfg_tok.NETALERTX_ADDON_SLUG,
+                                        resolve_addon_slug(_cfg_tok.DB_PATH),
                                     )
                                 except Exception:  # nosec B110
                                     pass
@@ -1817,7 +1817,9 @@ async def supervisor_main(config_path: Path) -> None:
                 _reconcile_d_notifier = notifier
                 _reconcile_d_gate = AutonomyGate(cfg.AUTONOMY_LEVEL)
                 _reconcile_d_db = cfg.DB_PATH
-                _reconcile_d_slug = cfg.NETALERTX_ADDON_SLUG
+                import netalertx.installer as _nax_ins_d
+
+                _reconcile_d_slug = _nax_ins_d.resolve_addon_slug(cfg.DB_PATH)
 
                 async def _do_reconcile_d() -> None:
                     try:

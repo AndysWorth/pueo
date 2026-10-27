@@ -907,15 +907,32 @@ async def _step6_configure_app_conf(
         "TIMEZONE": f"'{timezone}'",
         "LOADED_PLUGINS": merged_plugins,
     }
-    merged_conf, diff = _merge_app_conf(original_conf, updates)
 
-    # Backup before write (safety invariant)
-    from agents.ha_agent_sandbox_engine import execute_remote_backup
+    # Safe write: backup → parse_check → LKG → write
+    from netalertx.app_conf import AppConfSyntaxError, write_app_conf
 
     try:
-        backup_slug = await execute_remote_backup(ssh_client=ssh_client)
-        details["app_conf_backup_slug"] = backup_slug
-        log.info("step6_backup_created", backup_slug=backup_slug, correlation_id=cid)
+        diff = await write_app_conf(
+            ssh_client,
+            slug,
+            updates,
+            reason="installer:step6",
+            explicit_path=conf_path,
+        )
+        details["app_conf_backup_slug"] = "taken_by_write_app_conf"
+        log.info(
+            "step6_app_conf_written", diff=diff, path=conf_path, correlation_id=cid
+        )
+    except AppConfSyntaxError as e:
+        log.error("step6_app_conf_syntax_error", error=str(e), correlation_id=cid)
+        await gate.require_approval(
+            subject="NetAlertX installer: app.conf syntax error",
+            body=f"The proposed app.conf failed compile(): {e}. Aborting without write.",
+            payload={"notification_id": f"{cid}_step6_syntax_error", "step": 6},
+            notifier=notifier,
+            risk=RiskLevel.CRITICAL,
+        )
+        return False
     except Exception as e:
         log.error("step6_backup_failed", error=str(e), correlation_id=cid)
         await gate.require_approval(
@@ -926,9 +943,6 @@ async def _step6_configure_app_conf(
             risk=RiskLevel.CRITICAL,
         )
         return False
-
-    await ssh_client.write_file(conf_path, merged_conf)
-    log.info("step6_app_conf_written", diff=diff, path=conf_path, correlation_id=cid)
 
     # Restart and verify
     log.info("running_command", cmd=f"ha apps restart {slug}", correlation_id=cid)
