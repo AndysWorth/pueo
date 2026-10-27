@@ -11150,6 +11150,106 @@ class TestToolExecutor:
         assert result.success
         assert any(f"ha apps restart {slug}" in cmd for cmd in ha_ssh.commands_run)
 
+    def test_restart_netalertx_addon_mode_queues_hitl_at_level_2(self, monkeypatch):
+        """At level 2, restart_netalertx queues for HITL approval before executing."""
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import ToolCall
+
+        slug = "db21ed7f_netalertx_fa"
+        monkeypatch.setattr(
+            "netalertx.installer.resolve_addon_slug", lambda db_path=None: slug
+        )
+        ha_ssh = FakeSSHClient(
+            command_results={f"ha apps restart {slug}": (0, "ok", "")}
+        )
+        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
+        notifier = FakeNotifier(approve=False)
+        executor = ToolExecutor(
+            ha_ssh_client=ha_ssh,
+            gate=gate,
+            notifier=notifier,
+        )
+        result = asyncio.run(executor.execute(ToolCall(name="restart_netalertx")))
+        assert not result.success
+        assert result.awaiting_approval
+        assert gate.should_auto_execute_calls  # gate was consulted
+        assert ha_ssh.commands_run == []  # no SSH command run without approval
+
+    def test_restart_netalertx_verify_failure_triggers_rollback_and_card(
+        self, monkeypatch, tmp_path
+    ):
+        """When get_about() keeps failing, the tool restores LKG conf and sends a HIGH card."""
+        import sqlite3
+
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_executor import ToolExecutor
+        import utils.agent.tool_executor as te_mod
+        from utils.agent.tool_registry import ToolCall
+
+        slug = "db21ed7f_netalertx_fa"
+        conf_path = f"/app_configs/{slug}/config/app.conf"
+        lkg_path = conf_path + ".pueo-lkg"
+
+        monkeypatch.setattr(
+            "netalertx.installer.resolve_addon_slug", lambda db_path=None: slug
+        )
+        monkeypatch.setattr(te_mod, "_RESTART_VERIFY_POLL_INTERVAL_S", 0.0)
+        monkeypatch.setattr(te_mod, "_RESTART_VERIFY_MAX_ATTEMPTS", 2)
+
+        async def _fake_root(_ssh):
+            return "/app_configs"
+
+        monkeypatch.setattr(
+            "utils.ha.app_configs.resolve_app_config_root",
+            _fake_root,
+        )
+
+        class _FailingAPI:
+            has_token = True
+
+            async def get_about(self):
+                raise OSError("API down")
+
+            async def trigger_scan(self):
+                pass
+
+        db_path = str(tmp_path / "test.db")
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "CREATE TABLE hitl_suppression "
+                "(card_key TEXT PRIMARY KEY, card_type TEXT, description TEXT, "
+                "first_sent_at REAL, last_sent_at REAL, send_count INTEGER DEFAULT 0, "
+                "known_issue INTEGER DEFAULT 0, next_allowed_at REAL, "
+                "resolved_at REAL, last_action TEXT)"
+            )
+
+        ha_ssh = FakeSSHClient(
+            command_results={
+                f"ha apps restart {slug}": (0, "ok", ""),
+            },
+            file_contents={lkg_path: "SCAN_SUBNETS=['10.0.0.0/24 --interface=end0']\n"},
+        )
+        notifier = FakeNotifier(approve=True)
+        executor = ToolExecutor(
+            ha_ssh_client=ha_ssh,
+            gate=FakeAutonomyGate(auto_execute_result=True),
+            notifier=notifier,
+            netalertx_api_client=_FailingAPI(),
+            db_path=db_path,
+        )
+        result = asyncio.run(executor.execute(ToolCall(name="restart_netalertx")))
+        assert not result.success
+        assert "did not recover" in result.error
+        # LKG was restored (written back)
+        assert conf_path in ha_ssh.written_files
+        # Card was sent
+        assert len(notifier.sent) >= 1
+
     # -- rewrite_netalertx_conf add-on mode -------------------------------------
 
     def test_rewrite_netalertx_conf_addon_mode(self, monkeypatch):
@@ -11210,6 +11310,41 @@ class TestToolExecutor:
         )
         assert result.success
         assert conf_path in ha_ssh.written_files
+
+    # -- rewrite_netalertx_conf add-on mode gates at MEDIUM ---------------------
+
+    def test_rewrite_netalertx_conf_addon_mode_gates_at_medium(self, monkeypatch):
+        """At level < 4, rewrite_netalertx_conf queues for HITL approval in add-on mode."""
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import ToolCall
+
+        slug = "db21ed7f_netalertx_fa"
+        monkeypatch.setattr(
+            "netalertx.installer.resolve_addon_slug", lambda db_path=None: slug
+        )
+        ha_ssh = FakeSSHClient()
+        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
+        notifier = FakeNotifier(approve=False)
+        executor = ToolExecutor(
+            ha_ssh_client=ha_ssh,
+            gate=gate,
+            notifier=notifier,
+        )
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="rewrite_netalertx_conf",
+                    arguments={"overrides": {"SCAN_SUBNETS": "['10.0.0.0/24']"}},
+                )
+            )
+        )
+        assert not result.success
+        assert result.awaiting_approval
+        assert gate.should_auto_execute_calls  # gate was consulted
+        assert ha_ssh.written_files == {}  # no write without approval
 
     # -- rewrite_netalertx_conf with no existing config file --------------------
 

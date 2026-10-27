@@ -359,12 +359,12 @@ def _evaluation_to_diagnostic(evaluation: LogEvaluation) -> "NetAlertXDiagnostic
     from netalertx.diagnosis import NetAlertXDiagnostic
 
     summary = evaluation.root_cause_summary.lower()
-    if any(kw in summary for kw in ("mqtt", "broker", "mosquitto")):
-        category = "mqtt"
-    elif any(kw in summary for kw in ("scan", "arp", "network", "unreachable")):
-        category = "networking"
+    if any(kw in summary for kw in ("scan", "arp", "network", "unreachable")):
+        category: str = "networking"
     elif any(kw in summary for kw in ("database", "db")):
         category = "database"
+    elif any(kw in summary for kw in ("mqtt", "broker", "mosquitto", "config", "conf")):
+        category = "config"
     else:
         category = "networking"
 
@@ -377,7 +377,7 @@ def _evaluation_to_diagnostic(evaluation: LogEvaluation) -> "NetAlertXDiagnostic
     return NetAlertXDiagnostic(
         issue=evaluation.root_cause_summary,
         severity=severity,
-        category=category,
+        category=category,  # type: ignore[arg-type]
         recommended_fix="See log context for details.",
         affected_netalertx_version="unknown",
     )

@@ -357,6 +357,8 @@ async def run_diagnose(
         llm_client,
         ssh_client=_ha_ssh,
         knowledge_store=knowledge_store,
+        gate=_gate,
+        notifier=_notifier,
     )
 
     # 6. Print summary

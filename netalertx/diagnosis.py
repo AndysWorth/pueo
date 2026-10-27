@@ -7,7 +7,7 @@ Returns None when there is nothing to diagnose (no anomalies, no config issues).
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -26,7 +26,9 @@ if TYPE_CHECKING:
     )
     from netalertx.config_validator import ConfigIssue
     from netalertx.health import HealthReport
+    from utils.agent.autonomy import AutonomyGate
     from utils.agent.tool_registry import AgentLoopResult
+    from utils.hitl.notify import NotifierProtocol
 
 log = get_logger("netalertx.diagnosis")
 
@@ -34,8 +36,12 @@ log = get_logger("netalertx.diagnosis")
 class NetAlertXDiagnostic(BaseModel):
     issue: str = Field(description="Short description of the identified problem.")
     severity: str = Field(description="LOW | MEDIUM | HIGH | CRITICAL")
-    category: str = Field(
-        description="networking | mqtt | database | version | ha_integration"
+    category: Literal[
+        "networking", "config", "database", "version", "ha_integration", "availability"
+    ] = Field(
+        description=(
+            "networking | config | database | version | ha_integration | availability"
+        )
     )
     recommended_fix: str = Field(
         description="Concrete remediation steps, including relevant commands or config changes."
@@ -98,6 +104,8 @@ async def diagnose_health_report(
     llm_client: Optional["LLMClientProtocol"] = None,
     ssh_client: Optional["SSHClientProtocol"] = None,
     knowledge_store: Optional["KnowledgeStoreClientProtocol"] = None,
+    gate: Optional["AutonomyGate"] = None,
+    notifier: Optional["NotifierProtocol"] = None,
 ) -> tuple[Optional[NetAlertXDiagnostic], Optional[LLMTrace]]:
     """Return a (NetAlertXDiagnostic, LLMTrace) tuple, or (None, None) if nothing to diagnose.
 
@@ -125,6 +133,7 @@ async def diagnose_health_report(
             _result_future: asyncio.Future = asyncio.get_event_loop().create_future()
             _ctx_snap, _c_snap, _m_snap = context, client, model
             _ssh_snap, _ks_snap = ssh_client, knowledge_store
+            _gate_snap, _notifier_snap = gate, notifier
 
             async def _diag_coro(
                 _ctx: str = _ctx_snap,
@@ -132,9 +141,13 @@ async def diagnose_health_report(
                 _m: str = _m_snap,
                 _ssh: "SSHClientProtocol" = _ssh_snap,
                 _ks: Optional["KnowledgeStoreClientProtocol"] = _ks_snap,
+                _g: Optional["AutonomyGate"] = _gate_snap,
+                _n: Optional["NotifierProtocol"] = _notifier_snap,
             ) -> None:
                 try:
-                    _r = await _diagnose_with_agent_loop(_ctx, _c, _m, _ssh, _ks)
+                    _r = await _diagnose_with_agent_loop(
+                        _ctx, _c, _m, _ssh, _ks, _g, _n
+                    )
                     if not _result_future.done():
                         _result_future.set_result(_r)
                 except Exception as _exc:
@@ -153,7 +166,7 @@ async def diagnose_health_report(
             )
             return await _result_future
         return await _diagnose_with_agent_loop(
-            context, client, model, ssh_client, knowledge_store
+            context, client, model, ssh_client, knowledge_store, gate, notifier
         )
     return await _diagnose_one_shot(context, client, model)
 
@@ -164,13 +177,19 @@ async def _diagnose_with_agent_loop(
     model: str,
     ssh_client: "SSHClientProtocol",
     knowledge_store: Optional["KnowledgeStoreClientProtocol"] = None,
+    gate: Optional["AutonomyGate"] = None,
+    notifier: Optional["NotifierProtocol"] = None,
 ) -> tuple[Optional[NetAlertXDiagnostic], Optional[LLMTrace]]:
     """Run an AgentLoop to diagnose NetAlertX health anomalies adaptively."""
     from utils.agent.agent_loop import AgentLoop
+    from utils.agent.autonomy import AutonomyGate
     from utils.agent.tool_executor import ToolExecutor
     from utils.agent.tool_registry import build_health_diagnosis_registry
-    from utils.agent.autonomy import FakeAutonomyGate
+    from utils.ha.read_only_ssh import ReadOnlySSHClient
     from utils.hitl.notify import FakeNotifier
+
+    _gate = gate or AutonomyGate(_config.AUTONOMY_LEVEL)
+    _notifier = notifier or FakeNotifier()
 
     initial_message = (
         "Diagnose the following NetAlertX health issues:\n\n"
@@ -180,9 +199,10 @@ async def _diagnose_with_agent_loop(
     )
 
     executor = ToolExecutor(
-        ha_ssh_client=ssh_client,
-        gate=FakeAutonomyGate(),  # type: ignore[arg-type]
-        notifier=FakeNotifier(),
+        ha_ssh_client=ReadOnlySSHClient(ssh_client),
+        gate=_gate,
+        notifier=_notifier,
+        knowledge_store=knowledge_store,
     )
     registry = build_health_diagnosis_registry()
     try:
