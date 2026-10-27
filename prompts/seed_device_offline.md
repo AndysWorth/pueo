@@ -83,7 +83,9 @@ reading logs:
 - **`present on LAN`**: the device is reachable, so the fault is in the integration or the
   vendor cloud. Continue with the log and diagnostics steps.
 - **`absent from LAN`**: power, Wi-Fi or physical presence. No reload will fix it.
-- **`not found in NetAlertX`**, or no presence block: fall back to logs and siblings.
+- **`unknown (no MAC/IP mapping)`** or **`not found in NetAlertX`**, or no presence block:
+  fall back to logs and siblings. Treat "unknown" as inconclusive — do not assume physical
+  fault.
 
 ## Prediction (lets Pueo check your conclusion itself)
 Give `finish_device_availability` a `prediction` whenever your conclusion implies what the

@@ -4231,6 +4231,9 @@ async def _run_chat_loop(
         HA_API_TOKEN,
         HA_HOST,
         HA_USER,
+        NETALERTX_API_PORT,
+        NETALERTX_API_TOKEN,
+        NETALERTX_HOST,
         NOTIFIER,
         NOTIFY_URL,
         NOTIFY_WATCH_DIR,
@@ -4278,8 +4281,20 @@ async def _run_chat_loop(
             from utils.ha.ha_rest_client import HARestClient as _HARestClient
 
             _rest = _HARestClient(HA_HOST, HA_API_PORT, HA_API_TOKEN)
+        _nax = None
+        if NETALERTX_HOST:
+            from netalertx.api_client import NetAlertXAPIClient as _NAXAPI
+
+            _nax = _NAXAPI(
+                f"http://{NETALERTX_HOST}:{NETALERTX_API_PORT}",
+                NETALERTX_API_TOKEN,
+            )
         executor = ToolExecutor(
-            ha_ssh_client=ssh, gate=gate, notifier=notifier, ha_rest_client=_rest
+            ha_ssh_client=ssh,
+            gate=gate,
+            notifier=notifier,
+            ha_rest_client=_rest,
+            netalertx_api_client=_nax,
         )
 
     async def on_pre_step(tool_call: ToolCall) -> None:
