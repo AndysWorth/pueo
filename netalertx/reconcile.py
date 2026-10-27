@@ -63,11 +63,16 @@ async def _fix_scan_subnets(ssh: "SSHClientProtocol", slug: str) -> None:
     Does NOT restart NetAlertX; the fix takes effect on the next restart.
     """
     if not slug:
-        log.debug("reconcile_subnet_skip_no_slug")
+        from netalertx.installer import resolve_addon_slug
+
+        slug = resolve_addon_slug()
+
+    if not slug:
+        log.warning("reconcile_subnet_skip_no_slug")
         return
 
+    from netalertx.app_conf import AppConfSyntaxError, write_app_conf
     from netalertx.config_validator import validate_scan_subnets
-    from netalertx.installer import _merge_app_conf
     from utils.ha.app_configs import resolve_app_config_root
 
     app_config_root = await resolve_app_config_root(ssh)
@@ -89,9 +94,17 @@ async def _fix_scan_subnets(ssh: "SSHClientProtocol", slug: str) -> None:
         log.warning("reconcile_scan_subnets_empty_after_clean", conf_path=conf_path)
         return
 
-    merged, diff = _merge_app_conf(conf_text, {"SCAN_SUBNETS": new_val})
-    await ssh.write_file(conf_path, merged)
-    log.info("reconcile_scan_subnets_fixed", diff=diff, path=conf_path)
+    try:
+        diff = await write_app_conf(
+            ssh,
+            slug,
+            {"SCAN_SUBNETS": new_val},
+            reason="reconcile_scan_subnets",
+            app_config_root=app_config_root or "",
+        )
+        log.info("reconcile_scan_subnets_fixed", diff=diff, path=conf_path)
+    except AppConfSyntaxError as exc:
+        log.error("reconcile_scan_subnets_syntax_error", error=str(exc))
 
 
 def _build_clean_scan_subnets(conf_text: str) -> str:

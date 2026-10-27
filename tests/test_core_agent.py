@@ -11165,6 +11165,25 @@ class TestToolExecutor:
         monkeypatch.setattr(
             "netalertx.installer.resolve_addon_slug", lambda db_path=None: slug
         )
+
+        async def _fake_backup(**_kw):
+            return "bk001"
+
+        async def _fake_root(_ssh):
+            return "/app_configs"
+
+        monkeypatch.setattr(
+            "agents.ha_agent_sandbox_engine.execute_remote_backup",
+            _fake_backup,
+        )
+        monkeypatch.setattr(
+            "agents.ha_agent_sandbox_engine.record_backup_slug",
+            lambda *a: None,
+        )
+        monkeypatch.setattr(
+            "utils.ha.app_configs.resolve_app_config_root",
+            _fake_root,
+        )
         initial_conf = (
             "MQTT_BROKER='homeassistant.local'\n"
             "MQTT_PORT=1883\n"

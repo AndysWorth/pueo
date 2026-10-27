@@ -335,35 +335,31 @@ class NetAlertXHealer:
     # ------------------------------------------------------------------
 
     async def _rewrite_app_conf(self, diagnostic: "NetAlertXDiagnostic") -> None:
+        from netalertx.app_conf import AppConfSyntaxError, format_value, write_app_conf
         from netalertx.installer import resolve_addon_slug
 
         log.info("netalertx_app_conf_rewrite_start")
         slug = resolve_addon_slug()
-        if slug:
-            conf_path = _addon_conf_path(slug)
-            ssh = self._ha_ssh
-        else:
-            conf_path = _CONF_PATH_DOCKER
-            ssh = self._ssh
-        try:
-            current = await ssh.read_file(conf_path)
-        except (FileNotFoundError, OSError):
-            current = ""
-
-        overrides = _extract_conf_overrides(diagnostic.recommended_fix)
-        fixed = _merge_conf(current, overrides) if overrides else current
-
-        issues = validate_app_conf(fixed)
-        blocking = [i for i in issues if i.severity in ("HIGH", "CRITICAL")]
-        if blocking and not overrides:
-            log.error(
-                "netalertx_app_conf_still_invalid",
-                count=len(blocking),
-            )
+        if not slug:
+            log.error("netalertx_app_conf_rewrite_no_slug")
             return
 
-        await ssh.write_file(conf_path, fixed)
-        log.info("netalertx_app_conf_rewrite_done")
+        overrides = _extract_conf_overrides(diagnostic.recommended_fix)
+        if not overrides:
+            log.warning("netalertx_app_conf_rewrite_no_overrides")
+            return
+
+        formatted = {k: format_value(v) for k, v in overrides.items()}
+        try:
+            diff = await write_app_conf(
+                self._ha_ssh,
+                slug,
+                formatted,
+                reason=f"healer:{diagnostic.category}",
+            )
+            log.info("netalertx_app_conf_rewrite_done", diff=diff)
+        except AppConfSyntaxError as exc:
+            log.error("netalertx_app_conf_rewrite_syntax_error", error=str(exc))
 
     async def _restart_container(self) -> None:
         from netalertx.installer import resolve_addon_slug

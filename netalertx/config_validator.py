@@ -24,8 +24,20 @@ class ConfigIssue(BaseModel):
 
 
 def validate_app_conf(conf_text: str) -> list[ConfigIssue]:
-    """Check app.conf for required keys and plugin presence."""
+    """Check app.conf for syntax errors, required keys, and plugin presence."""
+    from netalertx.app_conf import parse_check
+
     issues: list[ConfigIssue] = []
+
+    for error in parse_check(conf_text):
+        issues.append(
+            ConfigIssue(
+                field="syntax",
+                message=f"app.conf is not valid Python: {error}",
+                severity="CRITICAL",
+            )
+        )
+
     present: dict[str, str] = {}
 
     for line in conf_text.splitlines():

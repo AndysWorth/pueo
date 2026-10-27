@@ -4630,9 +4630,9 @@ class TestNetAlertXConfigValidator:
 
         conf = "\n".join(
             [
-                "SCAN_SUBNETS=192.168.1.0/24--eth0",
-                "TIMEZONE=America/New_York",
-                "LOADED_PLUGINS=ARPSCAN,NMAPDEV",
+                "SCAN_SUBNETS=['10.0.0.0/24 --interface=eth0']",
+                "TIMEZONE='America/New_York'",
+                "LOADED_PLUGINS=['ARPSCAN', 'NMAPDEV']",
             ]
         )
         assert validate_app_conf(conf) == []
@@ -4670,9 +4670,9 @@ class TestNetAlertXConfigValidator:
 
         conf = "\n".join(
             [
-                "SCAN_SUBNETS=192.168.1.0/24--eth0",
-                "TIMEZONE=America/New_York",
-                "LOADED_PLUGINS=NMAPDEV",
+                "SCAN_SUBNETS=['10.0.0.0/24']",
+                "TIMEZONE='America/New_York'",
+                "LOADED_PLUGINS=['NMAPDEV']",
             ]
         )
         issues = validate_app_conf(conf)
@@ -4686,9 +4686,9 @@ class TestNetAlertXConfigValidator:
         conf = "\n".join(
             [
                 "# This is a comment",
-                "SCAN_SUBNETS=192.168.1.0/24--eth0",
-                "TIMEZONE=America/New_York",
-                "LOADED_PLUGINS=ARPSCAN",
+                "SCAN_SUBNETS=['10.0.0.0/24']",
+                "TIMEZONE='America/New_York'",
+                "LOADED_PLUGINS=['ARPSCAN']",
             ]
         )
         assert validate_app_conf(conf) == []
@@ -9523,11 +9523,17 @@ class TestReconcileSubnetFix:
             file_contents={"/app_configs/my-slug/config/app.conf": dirty_conf}
         )
 
-        # resolve_app_config_root is a local import inside _fix_scan_subnets;
-        # patch at the source module so the import picks up the stub.
         monkeypatch.setattr(
             "utils.ha.app_configs.resolve_app_config_root",
             lambda _ssh: _async_return("/app_configs"),
+        )
+        monkeypatch.setattr(
+            "agents.ha_agent_sandbox_engine.execute_remote_backup",
+            lambda **_kw: _async_return("abc123"),
+        )
+        monkeypatch.setattr(
+            "agents.ha_agent_sandbox_engine.record_backup_slug",
+            lambda *a: None,
         )
 
         asyncio.run(_fix_scan_subnets(ssh, "my-slug"))
@@ -9655,3 +9661,280 @@ class TestSyncNamesOptions:
         # Should write "From MAC", not "From IP"
         assert mac in report.written
         assert ("AA:BB:CC:DD:EE:FF", "devName", "From MAC") in nax.updates
+
+
+# ── netalertx.app_conf ────────────────────────────────────────────────────────
+
+
+class TestParseCheck:
+    def test_valid_conf_returns_no_errors(self):
+        from netalertx.app_conf import parse_check
+
+        conf = "MQTT_BROKER='localhost'\nMQTT_PORT=1883\n"
+        assert parse_check(conf) == []
+
+    def test_empty_assignment_is_a_syntax_error(self):
+        from netalertx.app_conf import parse_check
+
+        errors = parse_check("MQTT_BROKER = \n")
+        assert len(errors) == 1
+        assert "SyntaxError" in errors[0]
+
+    def test_multiple_valid_types_accepted(self):
+        from netalertx.app_conf import parse_check
+
+        conf = (
+            "MQTT_BROKER='localhost'\n"
+            "MQTT_PORT=1883\n"
+            "ENABLED=True\n"
+            "SCAN_SUBNETS=['10.0.0.0/24 --interface=end0']\n"
+        )
+        assert parse_check(conf) == []
+
+
+class TestFormatValue:
+    def test_empty_string_becomes_quoted_empty(self):
+        from netalertx.app_conf import format_value
+
+        assert format_value("") == "''"
+
+    def test_none_becomes_quoted_empty(self):
+        from netalertx.app_conf import format_value
+
+        assert format_value(None) == "''"
+
+    def test_int_passthrough(self):
+        from netalertx.app_conf import format_value
+
+        assert format_value(1883) == "1883"
+
+    def test_bool_passthrough(self):
+        from netalertx.app_conf import format_value
+
+        assert format_value(True) == "True"
+
+    def test_quoted_string_passthrough(self):
+        from netalertx.app_conf import format_value
+
+        assert format_value("'localhost'") == "'localhost'"
+
+    def test_list_literal_passthrough(self):
+        from netalertx.app_conf import format_value
+
+        assert format_value("['10.0.0.0/24']") == "['10.0.0.0/24']"
+
+    def test_bare_word_gets_quoted(self):
+        from netalertx.app_conf import format_value
+
+        result = format_value("UTC")
+        assert result.startswith("'") or result.startswith('"')
+
+
+class TestMerge:
+    def test_updates_existing_key(self):
+        from netalertx.app_conf import merge
+
+        original = "MQTT_BROKER = 'old'\nMQTT_PORT = 1234\n"
+        merged, diff = merge(original, {"MQTT_BROKER": "'new'"})
+        assert "MQTT_BROKER = 'new'" in merged
+        assert "MQTT_PORT = 1234" in merged
+        assert "MQTT_BROKER" in diff
+
+    def test_appends_missing_key(self):
+        from netalertx.app_conf import merge
+
+        original = "MQTT_PORT = 1883\n"
+        merged, diff = merge(original, {"HA_URL": "'http://ha.local:8123'"})
+        assert "HA_URL = 'http://ha.local:8123'" in merged
+        assert "HA_URL" in diff
+
+    def test_preserves_unchanged_key_out_of_diff(self):
+        from netalertx.app_conf import merge
+
+        original = "MQTT_BROKER = 'same'\n"
+        merged, diff = merge(original, {"MQTT_BROKER": "'same'"})
+        assert "MQTT_BROKER = 'same'" in merged
+        assert "MQTT_BROKER" not in diff
+
+    def test_preserves_interface_suffix_in_scan_subnets(self):
+        from netalertx.app_conf import merge
+
+        original = "SCAN_SUBNETS = ['10.0.0.0/24 --interface=end0']\n"
+        merged, diff = merge(
+            original, {"SCAN_SUBNETS": "['10.0.0.0/24 --interface=end0']"}
+        )
+        assert "--interface=end0" in merged
+
+    def test_round_trip_keeps_interface_suffix(self):
+        from netalertx.app_conf import merge
+
+        clean = "['10.0.0.0/24 --interface=end0']"
+        original = f"SCAN_SUBNETS = {clean}\n"
+        merged, _ = merge(original, {"SCAN_SUBNETS": clean})
+        assert "--interface=end0" in merged
+
+
+class TestWriteAppConf:
+    def _make_ssh(self, conf_text):
+        from utils.ha.ssh_client import FakeSSHClient
+
+        return FakeSSHClient(
+            file_contents={"/app_configs/test-slug/config/app.conf": conf_text},
+        )
+
+    def _patch_backup(self, monkeypatch, backup_slug="bk001"):
+        monkeypatch.setattr(
+            "agents.ha_agent_sandbox_engine.execute_remote_backup",
+            lambda **_kw: _async_return(backup_slug),
+        )
+        monkeypatch.setattr(
+            "agents.ha_agent_sandbox_engine.record_backup_slug",
+            lambda *a: None,
+        )
+        monkeypatch.setattr(
+            "utils.ha.app_configs.resolve_app_config_root",
+            lambda _ssh: _async_return("/app_configs"),
+        )
+
+    def test_backup_called_before_write(self, monkeypatch):
+        import asyncio
+        from netalertx.app_conf import write_app_conf
+
+        calls = []
+        monkeypatch.setattr(
+            "agents.ha_agent_sandbox_engine.execute_remote_backup",
+            lambda **_kw: (calls.append("backup"), _async_return("bk001"))[1],
+        )
+        monkeypatch.setattr(
+            "agents.ha_agent_sandbox_engine.record_backup_slug",
+            lambda *a: None,
+        )
+        monkeypatch.setattr(
+            "utils.ha.app_configs.resolve_app_config_root",
+            lambda _ssh: _async_return("/app_configs"),
+        )
+
+        ssh = self._make_ssh("MQTT_BROKER = 'old'\n")
+        asyncio.run(
+            write_app_conf(ssh, "test-slug", {"MQTT_BROKER": "'new'"}, reason="test")
+        )
+        assert "backup" in calls
+
+    def test_syntax_error_aborts_before_write(self, monkeypatch):
+        import asyncio
+        from netalertx.app_conf import AppConfSyntaxError, write_app_conf
+
+        self._patch_backup(monkeypatch)
+        # Force a syntax error: merge empty value which compile() rejects
+        ssh = self._make_ssh("MQTT_BROKER = 'old'\n")
+        with pytest.raises(AppConfSyntaxError):
+            asyncio.run(
+                write_app_conf(
+                    ssh,
+                    "test-slug",
+                    {"MQTT_BROKER": ""},  # bare empty → MQTT_BROKER =  → SyntaxError
+                    reason="test",
+                )
+            )
+        # app.conf not written
+        assert "/app_configs/test-slug/config/app.conf" not in ssh.written_files
+
+    def test_lkg_saved_before_conf_write(self, monkeypatch):
+        import asyncio
+        from netalertx.app_conf import write_app_conf
+
+        self._patch_backup(monkeypatch)
+        original = "MQTT_BROKER = 'old'\n"
+        ssh = self._make_ssh(original)
+        asyncio.run(
+            write_app_conf(ssh, "test-slug", {"MQTT_BROKER": "'new'"}, reason="test")
+        )
+        lkg_path = "/app_configs/test-slug/config/app.conf.pueo-lkg"
+        assert lkg_path in ssh.written_files
+        assert ssh.written_files[lkg_path] == original
+
+    def test_write_succeeds_with_valid_update(self, monkeypatch):
+        import asyncio
+        from netalertx.app_conf import write_app_conf
+
+        self._patch_backup(monkeypatch)
+        ssh = self._make_ssh("MQTT_BROKER = 'old'\n")
+        diff = asyncio.run(
+            write_app_conf(ssh, "test-slug", {"MQTT_BROKER": "'new'"}, reason="test")
+        )
+        conf_path = "/app_configs/test-slug/config/app.conf"
+        assert conf_path in ssh.written_files
+        assert "MQTT_BROKER = 'new'" in ssh.written_files[conf_path]
+        assert "MQTT_BROKER" in diff
+
+
+class TestValidateAppConfSyntax:
+    def test_syntax_error_returns_critical_issue(self):
+        from netalertx.config_validator import validate_app_conf
+
+        conf = (
+            "SCAN_SUBNETS=['10.0.0.0/24']\n"
+            "TIMEZONE='UTC'\n"
+            "LOADED_PLUGINS=['ARPSCAN']\n"
+            "MQTT_BROKER = \n"  # SyntaxError
+        )
+        issues = validate_app_conf(conf)
+        critical = [i for i in issues if i.severity == "CRITICAL"]
+        assert len(critical) >= 1
+        assert critical[0].field == "syntax"
+
+    def test_valid_conf_no_syntax_issue(self):
+        from netalertx.config_validator import validate_app_conf
+
+        conf = (
+            "SCAN_SUBNETS=['10.0.0.0/24']\n"
+            "TIMEZONE='UTC'\n"
+            "LOADED_PLUGINS=['ARPSCAN']\n"
+            "MQTT_BROKER='localhost'\n"
+        )
+        issues = validate_app_conf(conf)
+        assert all(i.severity != "CRITICAL" for i in issues)
+
+    def test_syntax_issue_json_roundtrip(self):
+        from netalertx.config_validator import ConfigIssue
+
+        issue = ConfigIssue(
+            field="syntax",
+            message="app.conf is not valid Python: SyntaxError at line 4: ...",
+            severity="CRITICAL",
+        )
+        assert ConfigIssue.model_validate_json(issue.model_dump_json()) == issue
+
+
+class TestFixScanSubnetsSlugResolution:
+    def test_calls_resolve_slug_when_slug_empty(self, monkeypatch):
+        import asyncio
+        from netalertx.reconcile import _fix_scan_subnets
+        from utils.ha.ssh_client import FakeSSHClient
+
+        resolved = []
+        monkeypatch.setattr(
+            "netalertx.installer.resolve_addon_slug",
+            lambda *a, **kw: (resolved.append("called"), "")[1],
+        )
+        ssh = FakeSSHClient()
+        asyncio.run(_fix_scan_subnets(ssh, ""))
+        assert "called" in resolved
+
+    def test_warning_logged_when_slug_unresolvable(self, monkeypatch, caplog):
+        import asyncio
+        import logging
+        import netalertx.reconcile as _rec_mod
+        from netalertx.reconcile import _fix_scan_subnets
+        from utils.ha.ssh_client import FakeSSHClient
+
+        monkeypatch.setattr(
+            "netalertx.installer.resolve_addon_slug",
+            lambda *a, **kw: "",
+        )
+        _rec_mod.log._logger.propagate = True
+        ssh = FakeSSHClient()
+        with caplog.at_level(logging.WARNING):
+            asyncio.run(_fix_scan_subnets(ssh, ""))
+        _rec_mod.log._logger.propagate = False
+        assert any("reconcile_subnet_skip_no_slug" in r.message for r in caplog.records)
