@@ -929,7 +929,6 @@ class TestInstallerDiagnostics:
         return InstallerDiagnostic(**defaults)
 
 
-
 # ===========================================================================
 # TestLLMTrace  (item 23)
 # ===========================================================================
