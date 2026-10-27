@@ -583,6 +583,21 @@ class TestNetAlertXConfigKeys:
 
         assert config.NETALERTX_SEVERITY_CONFIDENCE_THRESHOLD == 0.75
 
+    def test_netalertx_event_poll_failure_threshold_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.NETALERTX_EVENT_POLL_FAILURE_THRESHOLD == 3
+
+    def test_netalertx_event_poll_failure_threshold_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump({"netalertx": {"event_poll_failure_threshold": 5}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.NETALERTX_EVENT_POLL_FAILURE_THRESHOLD == 5
+
 
 class TestResourceSensingConfig:
     def test_resource_poll_interval_default(self, isolated_config):

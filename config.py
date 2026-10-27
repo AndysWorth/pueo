@@ -329,6 +329,9 @@ NETALERTX_MAX_SCAN_AGE_MINUTES: int = int(_nax.get("max_scan_age_minutes", 20))
 NETALERTX_EVENT_POLL_INTERVAL_MINUTES: int = int(
     _nax.get("event_poll_interval_minutes", 5)
 )
+NETALERTX_EVENT_POLL_FAILURE_THRESHOLD: int = int(
+    _nax.get("event_poll_failure_threshold", 3)
+)
 NETALERTX_LOG_CONTAINER_NAME: str = _nax.get("log_container_name", "netalertx")
 NETALERTX_MAX_DB_HISTORY_ROWS: int = int(_nax.get("max_db_history_rows", 100000))
 NETALERTX_SIDEBAR: bool = bool(_nax.get("sidebar", True))

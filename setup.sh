@@ -940,6 +940,7 @@ netalertx:
   # auto_generated_name_patterns: ["^unknown-", "^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$"]
   # max_scan_age_minutes: 20
   # event_poll_interval_minutes: 5
+  # event_poll_failure_threshold: 3
   # log_container_name: netalertx
   # max_db_history_rows: 100000
 

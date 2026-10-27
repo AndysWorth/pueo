@@ -1258,6 +1258,20 @@ RESTART_NETALERTX = ToolDefinition(
     },
 )
 
+READ_NETALERTX_CONF = ToolDefinition(
+    name="read_netalertx_conf",
+    description=(
+        "Read the current NetAlertX app.conf from the HA host. "
+        "Returns a redacted copy with API tokens, passwords and SMTP credentials masked. "
+        "Use this to inspect conf values before calling rewrite_netalertx_conf."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {},
+        "required": [],
+    },
+)
+
 REWRITE_NETALERTX_CONF = ToolDefinition(
     name="rewrite_netalertx_conf",
     description=(
@@ -2563,6 +2577,7 @@ def build_netalertx_tool_registry() -> ToolRegistry:
         QUERY_NETALERTX,
         APPLY_FIX,
         RESTART_NETALERTX,
+        READ_NETALERTX_CONF,
         REWRITE_NETALERTX_CONF,
         FINISH_REPAIR,
         QUERY_KNOWLEDGE,
@@ -2614,6 +2629,7 @@ def build_chat_tool_registry() -> ToolRegistry:
         INVESTIGATE_DEVICE,
         GET_NETWORK_PRESENCE,
         RESTART_NETALERTX,
+        READ_NETALERTX_CONF,
         REWRITE_NETALERTX_CONF,
         READ_PUEO_LOG,
         SEARCH_LOG,
@@ -2684,6 +2700,7 @@ def build_health_diagnosis_registry() -> ToolRegistry:
         SUMMARIZE_LOG_WINDOW,
         REQUEST_ESCALATION,
         LIST_LOG_SOURCES,
+        READ_NETALERTX_CONF,
         FINISH_HEALTH_DIAGNOSIS,
     ):
         reg.register(tool)

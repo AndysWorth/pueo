@@ -119,6 +119,17 @@ _BOOTSTRAP_WAIT_RE = re.compile(
 )
 
 
+def _coerce_int(value: object, default: int) -> int:
+    """Convert *value* to int, tolerating float-shaped strings like '100.0'.
+
+    LLMs occasionally pass integer tool args as floats; plain int() rejects them.
+    """
+    try:
+        return int(float(value))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+
+
 def _filter_log_by_domain(text: str, domain: str, limit: int) -> str:
     """Keep only log records that mention *domain*, with their continuation lines.
 
@@ -538,7 +549,7 @@ class ToolExecutor:
                 return await self._read_config(args.get("path", CONFIG_REMOTE_PATH))
             if name == "read_logs":
                 return await self._read_logs(
-                    int(args.get("lines", 100)),
+                    _coerce_int(args.get("lines"), 100),
                     args.get("log_source", "ha_core"),
                     args.get("addon_slug"),
                     args.get("domain"),
@@ -665,7 +676,7 @@ class ToolExecutor:
                 return await self._get_recent_events(
                     event_type=args.get("event_type") or None,
                     entity_id=args.get("entity_id") or None,
-                    limit=int(args.get("limit", 20)),
+                    limit=_coerce_int(args.get("limit"), 20),
                 )
             if name == "get_disk_usage":
                 return await self._get_disk_usage()
@@ -714,11 +725,13 @@ class ToolExecutor:
                 return await self._switch_model(args.get("model_name"))
             if name == "restart_netalertx":
                 return await self._restart_netalertx()
+            if name == "read_netalertx_conf":
+                return await self._read_netalertx_conf()
             if name == "rewrite_netalertx_conf":
                 return await self._rewrite_netalertx_conf(args.get("overrides", {}))
             if name == "read_pueo_log":
                 return await self._read_pueo_log(
-                    int(args.get("lines", 100)),
+                    _coerce_int(args.get("lines"), 100),
                     args.get("level"),
                     args.get("filename", "pueo.log"),
                     args.get("after"),
@@ -4155,6 +4168,53 @@ class ToolExecutor:
                 output="",
                 error=str(exc),
             )
+
+    async def _read_netalertx_conf(self) -> ToolResult:
+        """Read the current NetAlertX app.conf, redacting sensitive keys."""
+        import re
+
+        from netalertx.installer import resolve_addon_slug
+        from utils.ha.app_configs import resolve_app_config_root
+
+        _REDACT_RE = re.compile(
+            r"(API_TOKEN|SMTP_\w+|PASSWORD|_PASSWORD|_PASS|api_key|API_KEY)\s*=\s*'[^']*'",
+            re.IGNORECASE,
+        )
+
+        slug = resolve_addon_slug()
+        if not slug:
+            return ToolResult(
+                tool_name="read_netalertx_conf",
+                success=False,
+                output="",
+                error="NetAlertX addon slug is not configured — cannot read app.conf",
+            )
+        try:
+            root = await resolve_app_config_root(self._ha_ssh)
+            path = f"{root}/{slug}/config/app.conf"
+            text = await self._ha_ssh.read_file(path)
+        except (FileNotFoundError, OSError) as exc:
+            return ToolResult(
+                tool_name="read_netalertx_conf",
+                success=False,
+                output="",
+                error=f"app.conf not found: {exc}",
+            )
+        except Exception as exc:
+            return ToolResult(
+                tool_name="read_netalertx_conf",
+                success=False,
+                output="",
+                error=str(exc),
+            )
+        redacted = _REDACT_RE.sub(
+            lambda m: m.group(0).split("=")[0] + "='***REDACTED***'", text
+        )
+        return ToolResult(
+            tool_name="read_netalertx_conf",
+            success=True,
+            output=f"# app.conf from {path} (sensitive keys redacted)\n\n{redacted}",
+        )
 
     def _capture_declared_runbook(self, args: dict) -> None:
         """Store the runbook_followed value from a terminal tool call."""

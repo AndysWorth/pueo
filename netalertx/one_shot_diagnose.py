@@ -215,6 +215,95 @@ def _print_summary(
         )
 
 
+async def _diagnose_unreachable(
+    error: Exception,
+    ha_ssh_client: "SSHClientProtocol",
+    slug: str,
+    llm_client: "Optional[LLMClientProtocol]",
+    knowledge_store: "Optional[ChromaKnowledgeStore]",
+    gate: "AutonomyGate",
+    notifier: "NotifierProtocol",
+) -> None:
+    """Collect evidence and run an availability diagnosis when the API is unreachable.
+
+    Gathers ha apps info, app log tail and app.conf parse results, then calls
+    diagnose_health_report so the user gets a card rather than a silent failure.
+    """
+    import sqlite3 as _sqlite3
+
+    import config as _cfg_dyn
+    from netalertx.app_conf import parse_check
+    from netalertx.config_validator import ConfigIssue
+    from netalertx.health import HealthReport
+    from utils.ha.app_configs import resolve_app_config_root
+    from utils.hitl.card_types import CARD_TYPE_NETALERTX_HEAL
+    from utils.hitl.hitl_tracker import mark_card_sent, should_send_card, stable_nid
+
+    anomaly = f"NetAlertX API unreachable: {error}"
+    config_issues: list[ConfigIssue] = []
+
+    try:
+        root = await resolve_app_config_root(ha_ssh_client)
+        if slug:
+            conf_path = f"{root}/{slug}/config/app.conf"
+            try:
+                conf_text = await ha_ssh_client.read_file(conf_path)
+                for err in parse_check(conf_text):
+                    config_issues.append(
+                        ConfigIssue(
+                            field="syntax",
+                            message=f"app.conf syntax error: {err}",
+                            severity="CRITICAL",
+                        )
+                    )
+            except (FileNotFoundError, OSError):
+                pass
+    except Exception:  # nosec B110
+        pass
+
+    report = HealthReport(
+        last_scan_age_minutes=0,
+        device_counts={},
+        anomalies=[anomaly],
+        netalertx_version="unknown",
+    )
+
+    diagnostic, _ = await diagnose_health_report(
+        report,
+        config_issues,
+        llm_client,
+        ssh_client=ha_ssh_client,
+        knowledge_store=knowledge_store,
+        gate=gate,
+        notifier=notifier,
+    )
+
+    if diagnostic is not None:
+        card_key = "netalertx_api_unreachable"
+        nid = stable_nid(card_key)
+        subject = "Pueo: NetAlertX is unreachable"
+        body = f"{diagnostic.severity}: {diagnostic.issue[:200]}\n\nRecommended: {diagnostic.recommended_fix[:300]}"
+        db_path = getattr(_cfg_dyn, "DB_PATH", "")
+        try:
+            with _sqlite3.connect(db_path) as conn:
+                if should_send_card(conn, card_key):
+                    await notifier.send(
+                        subject=subject,
+                        body=body,
+                        payload={
+                            "notification_id": nid,
+                            "card_type": CARD_TYPE_NETALERTX_HEAL,
+                            "severity": diagnostic.severity,
+                            "category": diagnostic.category,
+                            "episode_id": None,
+                        },
+                    )
+                    mark_card_sent(conn, card_key, CARD_TYPE_NETALERTX_HEAL, subject)
+                    log.info("netalertx_unreachable_card_sent", nid=nid)
+        except Exception as exc:  # nosec B110
+            log.error("netalertx_unreachable_card_failed", error=str(exc))
+
+
 async def run_diagnose(
     ssh_client: "SSHClientProtocol | None" = None,
     ha_ssh_client: "SSHClientProtocol | None" = None,
@@ -267,11 +356,20 @@ async def run_diagnose(
             _api.set_token(_early_token)
             persist_api_token(_early_token)
 
-    # 1. Connectivity check — exit early if NetAlertX is unreachable
+    # 1. Connectivity check — if unreachable, collect evidence and diagnose availability
     try:
         await _api.get_about()
     except Exception as exc:
         log.error("netalertx_api_unreachable", error=str(exc))
+        await _diagnose_unreachable(
+            exc,
+            _ha_ssh,
+            _slug,
+            llm_client,
+            knowledge_store,
+            _gate,
+            _notifier,
+        )
         return
 
     # If connectivity succeeded and we have a token, mark it confirmed.
@@ -350,7 +448,21 @@ async def run_diagnose(
     # 4c. API token — try auto-read from app.db if token is empty
     await _check_and_refresh_token(_ha_ssh, _slug, _app_config_root, config_issues)
 
-    # 5. AI synthesis — pass _ha_ssh to enable adaptive AgentLoop evidence gathering
+    # 5. AI synthesis — skip LLM for purely deterministic issues (SCAN_SUBNETS overlap).
+    # The startup reconcile owns those; the LLM heal loop runs only for HIGH+ severity.
+    _deterministic_only = (
+        not report.anomalies
+        and all(i.field == "SCAN_SUBNETS" for i in config_issues)
+        and bool(config_issues)
+    )
+    if _deterministic_only:
+        log.info(
+            "netalertx_diagnose_deterministic_skip",
+            note="only SCAN_SUBNETS drift found; startup reconcile handles this — skipping LLM",
+        )
+        _print_summary(report, log_evaluation, config_issues, None)
+        return
+
     diagnostic, _llm_trace = await diagnose_health_report(
         report,
         config_issues,
@@ -376,12 +488,13 @@ async def run_diagnose(
         _result_msg,
     )
 
-    # 7. Heal — the healer + autonomy gate handle auto-execute vs. approval-required blocking.
+    # 7. Heal — only for HIGH or CRITICAL severity; LOW/MEDIUM are informational.
+    # The healer + autonomy gate handle auto-execute vs. approval-required blocking.
     # At level 4, healer runs immediately. At levels 2–3, healer calls
     # require_approval(), sends a dashboard notification, and blocks until the
     # user approves or rejects. At level 1 (report only), require_approval
     # returns False without notifying and no action is taken.
-    if diagnostic is not None:
+    if diagnostic is not None and diagnostic.severity in ("HIGH", "CRITICAL"):
         _healer = healer
         if _healer is None:
             from netalertx.healer import NetAlertXHealer
