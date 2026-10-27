@@ -663,21 +663,16 @@ class ResourcePoller:
                     await self._maybe_send_migrate_card()
         else:
             if "disk_critical" in self._alerted:
-                import sqlite3 as _sqlite3
-                from pathlib import Path as _Path
-
                 import config as _cfg  # type: ignore[assignment]
-                from utils.hitl.hitl_tracker import mark_card_resolved, stable_nid
+                from utils.hitl.hitl_tracker import resolve_card, stable_nid
 
-                with _sqlite3.connect(self._db_path or _cfg.DB_PATH) as _rc:
-                    mark_card_resolved(_rc, "resource:disk_critical")
-                # Touch a .resolved marker so the dashboard drops the card from
-                # the pending queue without requiring user action.
-                try:
-                    _nid = stable_nid("resource:disk_critical")
-                    (_Path(_cfg.NOTIFY_WATCH_DIR) / f"{_nid}.resolved").touch()
-                except Exception:  # nosec B110 — file write is best-effort
-                    pass
+                _nid = stable_nid("resource:disk_critical")
+                resolve_card(
+                    _cfg.NOTIFY_WATCH_DIR,
+                    _nid,
+                    db_path=self._db_path or _cfg.DB_PATH,
+                    card_key="resource:disk_critical",
+                )
                 try:
                     from utils.core.timeline import write_timeline_event
 

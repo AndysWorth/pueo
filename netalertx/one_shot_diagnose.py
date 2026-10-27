@@ -257,12 +257,32 @@ async def run_diagnose(
     _notifier = notifier or get_notifier(NOTIFIER, NOTIFY_URL, NOTIFY_WATCH_DIR)
     _slug = addon_slug if addon_slug is not None else NETALERTX_ADDON_SLUG
 
+    # 0.5. Auto-read token before the connectivity check — if the token is empty
+    # the API client will be rejected by NetAlertX before get_about() can succeed.
+    if not _api.has_token and _slug:
+        from netalertx.token import persist_api_token, read_api_token
+
+        _early_token = await read_api_token(_ha_ssh, _slug)
+        if _early_token:
+            _api.set_token(_early_token)
+            persist_api_token(_early_token)
+
     # 1. Connectivity check — exit early if NetAlertX is unreachable
     try:
         await _api.get_about()
     except Exception as exc:
         log.error("netalertx_api_unreachable", error=str(exc))
         return
+
+    # If connectivity succeeded and we have a token, mark it confirmed.
+    if _api.has_token:
+        import config as _cfg_dyn
+        from netalertx.token import on_token_confirmed
+
+        on_token_confirmed(
+            getattr(_cfg_dyn, "DB_PATH", ""),
+            watch_dir=getattr(_cfg_dyn, "NOTIFY_WATCH_DIR", None),
+        )
 
     # 2. Health report — REST API poll.
     monitor = NetAlertXHealthMonitor(api_client=_api)

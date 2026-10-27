@@ -1199,6 +1199,7 @@ async def _step8_finalize_token(
             _token = await read_api_token(ssh_client, slug, _app_config_root)
         if _token:
             if persist_api_token(_token):
+                _cfg_dyn.NETALERTX_API_TOKEN = _token
                 log.info("step8_api_token_persisted", correlation_id=cid)
             else:
                 log.warning(
@@ -1239,6 +1240,13 @@ async def _step8_finalize_token(
 
     _write_install_state(db_path, final_state, details, cid)
     log.info("step8_complete", final_state=final_state, correlation_id=cid)
+    if final_state == "FULLY_OPERATIONAL":
+        try:
+            from netalertx.token import on_token_confirmed
+
+            on_token_confirmed(db_path)
+        except Exception:  # nosec B110
+            pass
     return True
 
 
@@ -1499,13 +1507,13 @@ async def main(
     log.info("netalertx_setup_done", state=final_state)
 
     if final_state == "FULLY_OPERATIONAL":
-        from config import NETALERTX_API_TOKEN, NETALERTX_API_PORT, NETALERTX_HOST
+        import config as _cfg_main
         from netalertx.api_client import NetAlertXAPIClient
         from netalertx.ha_name_sync import HaNameSync
 
-        _base_url = f"http://{NETALERTX_HOST}:{NETALERTX_API_PORT}"
+        _base_url = f"http://{_cfg_main.NETALERTX_HOST}:{_cfg_main.NETALERTX_API_PORT}"
 
-        if not NETALERTX_API_TOKEN:
+        if not _cfg_main.NETALERTX_API_TOKEN:
             log.warning(
                 "netalertx_api_token_missing",
                 reason="FULLY_OPERATIONAL but netalertx.api_token is empty; ha_name_sync skipped",
@@ -1545,7 +1553,9 @@ async def main(
                 reason="NetAlertX API did not become ready within 30 s — re-run setup to sync device names",
             )
         else:
-            _api = NetAlertXAPIClient(base_url=_base_url, api_token=NETALERTX_API_TOKEN)
+            _api = NetAlertXAPIClient(
+                base_url=_base_url, api_token=_cfg_main.NETALERTX_API_TOKEN
+            )
             _syncer = HaNameSync(
                 ssh_client=_ssh,
                 api_client=_api,

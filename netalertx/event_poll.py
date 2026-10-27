@@ -77,6 +77,9 @@ async def poll_once(
 
     Returns the number of events routed.
     """
+    if not api_client.has_token:
+        log.debug("netalertx_event_poll_no_token")
+        return 0
     hwm = await asyncio.to_thread(_read_hwm, db_path)
     events = await api_client.get_events()
 
@@ -110,10 +113,22 @@ async def run_event_poll(
 ) -> None:
     """Continuous poll loop — fetch /events on each interval until cancelled."""
     while True:
+        routed = 0
         try:
-            await poll_once(api_client, router, db_path)
+            routed = await poll_once(api_client, router, db_path)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             log.warning("netalertx_event_poll_error", error=str(exc))
+        try:
+            from utils.agent.supervisor import get_supervisor_instance as _get_sv
+
+            _sv = _get_sv()
+            if _sv is not None:
+                _sv.touch(
+                    "netalertx_event_poll",
+                    outcome=f"{routed} event(s) routed" if routed else "No new events",
+                )
+        except Exception:  # nosec B110
+            pass
         await asyncio.sleep(interval_minutes * 60)

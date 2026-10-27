@@ -6202,6 +6202,13 @@ class _FakeAPIClient:
         self.trigger_scan_calls = 0
         self.trigger_scan_types: list[str] = []
 
+    @property
+    def has_token(self) -> bool:
+        return True
+
+    def set_token(self, token: str) -> None:
+        pass
+
     async def trigger_scan(self, scan_type: str = "ARPSCAN") -> None:
         self.trigger_scan_calls += 1
         self.trigger_scan_types.append(scan_type)
@@ -6710,6 +6717,13 @@ class TestNetAlertXOneShotDiagnose:
             self._devices = devices or []
             self._about = about or {"version": "v26.7.1"}
             self._raise_on_about = raise_on_about
+
+        @property
+        def has_token(self) -> bool:
+            return True
+
+        def set_token(self, token: str) -> None:
+            pass
 
         async def get_about(self):
             if self._raise_on_about:
@@ -7510,6 +7524,13 @@ class TestOneShotDiagnoseSlugAutoRecovery:
 
     class _FakeAPIClient:
         def __init__(self):
+            pass
+
+        @property
+        def has_token(self) -> bool:
+            return True
+
+        def set_token(self, token: str) -> None:
             pass
 
         async def get_about(self):
@@ -9949,3 +9970,198 @@ class TestGetNetworkPresenceRegistrations:
         from utils.mcp.pueo_mcp_server import _MCP_TOOL_NAMES
 
         assert "get_network_presence" in _MCP_TOOL_NAMES
+
+
+# ── token lifecycle (#995) ────────────────────────────────────────────────────
+
+
+class TestOnTokenConfirmed:
+    """on_token_confirmed clears stale setup cards and promotes install state."""
+
+    def _make_db(self, tmp_path, monkeypatch, state="OPERATIONAL_NO_API"):
+        return _make_installer_db_at_state(tmp_path, monkeypatch, state)
+
+    def test_clears_token_required_card(self, tmp_path, monkeypatch):
+        from netalertx.token import on_token_confirmed
+
+        watch = tmp_path / "hitl"
+        watch.mkdir()
+        (watch / "netalertx_api_token_required.json").write_text("{}")
+        import config as _cfg
+
+        monkeypatch.setattr(_cfg, "NOTIFY_WATCH_DIR", str(watch))
+        db = self._make_db(tmp_path, monkeypatch)
+        on_token_confirmed(db, watch_dir=str(watch))
+        assert (watch / "netalertx_api_token_required.resolved").exists()
+
+    def test_noop_when_no_card(self, tmp_path, monkeypatch):
+        from netalertx.token import on_token_confirmed
+
+        watch = tmp_path / "hitl"
+        watch.mkdir()
+        import config as _cfg
+
+        monkeypatch.setattr(_cfg, "NOTIFY_WATCH_DIR", str(watch))
+        db = self._make_db(tmp_path, monkeypatch)
+        # Should not raise even when no .json card files exist
+        on_token_confirmed(db, watch_dir=str(watch))
+        # resolve_card writes .resolved regardless of .json presence — that's fine
+
+    def test_promotes_operational_no_api_to_fully_operational(
+        self, tmp_path, monkeypatch
+    ):
+        from netalertx.installer import _read_install_state
+        from netalertx.token import on_token_confirmed
+
+        watch = tmp_path / "hitl"
+        watch.mkdir()
+        db = self._make_db(tmp_path, monkeypatch, state="OPERATIONAL_NO_API")
+        on_token_confirmed(db, watch_dir=str(watch))
+        state, _ = _read_install_state(db)
+        assert state == "FULLY_OPERATIONAL"
+
+    def test_does_not_demote_fully_operational(self, tmp_path, monkeypatch):
+        from netalertx.installer import _read_install_state
+        from netalertx.token import on_token_confirmed
+
+        watch = tmp_path / "hitl"
+        watch.mkdir()
+        db = self._make_db(tmp_path, monkeypatch, state="FULLY_OPERATIONAL")
+        on_token_confirmed(db, watch_dir=str(watch))
+        state, _ = _read_install_state(db)
+        assert state == "FULLY_OPERATIONAL"
+
+    def test_clears_connection_failed_card(self, tmp_path, monkeypatch):
+        from netalertx.token import on_token_confirmed
+
+        watch = tmp_path / "hitl"
+        watch.mkdir()
+        (watch / "netalertx_setup_connection_failed.json").write_text("{}")
+        import config as _cfg
+
+        monkeypatch.setattr(_cfg, "NOTIFY_WATCH_DIR", str(watch))
+        db = self._make_db(tmp_path, monkeypatch)
+        on_token_confirmed(db, watch_dir=str(watch))
+        assert (watch / "netalertx_setup_connection_failed.resolved").exists()
+
+
+class TestFileNotifierResolveClear:
+    """FileNotifier.send deletes a stale .resolved so a re-sent card is pending again."""
+
+    def test_send_clears_resolved_sentinel(self, tmp_path):
+        import asyncio
+        from utils.hitl.notify import FileNotifier
+
+        notifier = FileNotifier(str(tmp_path))
+        nid = "netalertx_api_token_required"
+        # Simulate: card previously resolved
+        (tmp_path / f"{nid}.resolved").touch()
+        asyncio.run(
+            notifier.send(
+                "subject",
+                "body",
+                {"notification_id": nid},
+            )
+        )
+        # .resolved must be gone so the re-sent card is treated as pending
+        assert not (tmp_path / f"{nid}.resolved").exists()
+        # card file present
+        assert (tmp_path / f"{nid}.json").exists()
+
+
+class TestEventPollSkipsWhenNoToken:
+    """poll_once returns 0 immediately when the API client has no token."""
+
+    def test_poll_once_skips_without_token(self, tmp_path):
+        import asyncio
+        import sqlite3
+        from netalertx.api_client import NetAlertXAPIClient
+        from netalertx.event_poll import poll_once
+        from netalertx.event_router import NetAlertXEventRouter
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+
+        db = str(tmp_path / "test.db")
+        with sqlite3.connect(db) as conn:
+            conn.execute("CREATE TABLE user_prefs (key TEXT PRIMARY KEY, value TEXT)")
+
+        api = NetAlertXAPIClient("http://nax.local", "")  # no token
+        notifier = FakeNotifier(approve=True)
+        gate = FakeAutonomyGate(auto_execute_result=True)
+        router = NetAlertXEventRouter(notifier=notifier, gate=gate)
+        routed = asyncio.run(poll_once(api, router, db))
+        assert routed == 0
+
+
+class TestOneShotDiagnoseTokenPreRead:
+    """run_diagnose refreshes the API token before the connectivity check."""
+
+    def test_empty_token_read_from_app_db_before_get_about(self, tmp_path, monkeypatch):
+        """When NETALERTX_API_TOKEN is empty, diagnose reads the token from
+        app.db via FakeSSHClient and calls set_token on the API client so
+        that get_about() can succeed."""
+        import asyncio
+        import config as _cfg
+        from netalertx.one_shot_diagnose import run_diagnose
+        from utils.ha.ssh_client import FakeSSHClient
+
+        monkeypatch.setattr(_cfg, "NETALERTX_API_TOKEN", "")
+        import netalertx.one_shot_diagnose as _diag_mod
+
+        monkeypatch.setattr(_diag_mod, "NETALERTX_API_TOKEN", "")
+        monkeypatch.setattr(_diag_mod, "NETALERTX_ADDON_SLUG", _SLUG)
+
+        # FakeSSHClient returns an app.db with a token so read_api_token succeeds
+        ha_ssh = FakeSSHClient(
+            download_contents={_APP_DB_REMOTE: _make_app_db_bytes("auto-token-xyz")}
+        )
+
+        tokens_set = []
+
+        class _TrackingAPI:
+            """Tracks set_token calls; allows get_about only after a token is set."""
+
+            _token = ""
+
+            @property
+            def has_token(self):
+                return bool(self._token)
+
+            def set_token(self, t):
+                self._token = t
+                tokens_set.append(t)
+
+            async def get_about(self):
+                if not self._token:
+                    raise RuntimeError("no token — set_token not called")
+                # Succeed so the rest of run_diagnose can continue
+
+        fake_api = _TrackingAPI()
+
+        # Patch NetAlertXHealthMonitor at the module where it is used
+        import netalertx.one_shot_diagnose as _diag_mod2
+        from netalertx.health import HealthReport
+
+        class _FakeMonitor:
+            def __init__(self, **_):
+                pass
+
+            async def poll_once(self):
+                return HealthReport(
+                    last_scan_age_minutes=0,
+                    device_counts={"total": 0, "online": 0},
+                    anomalies=[],
+                    netalertx_version="0",
+                )
+
+        monkeypatch.setattr(_diag_mod2, "NetAlertXHealthMonitor", _FakeMonitor)
+
+        asyncio.run(
+            run_diagnose(
+                api_client=fake_api,
+                ha_ssh_client=ha_ssh,
+                llm_client=None,
+            )
+        )
+        assert tokens_set, "set_token was never called — token pre-read did not fire"
+        assert tokens_set[0] == "auto-token-xyz", f"unexpected token: {tokens_set[0]}"

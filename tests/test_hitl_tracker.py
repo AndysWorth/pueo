@@ -485,3 +485,63 @@ def test_is_pending_true_while_genuinely_pending(conn):
 
 def test_is_pending_false_for_unknown_key(conn):
     assert _is_pending_query(conn, "update:never_seen") is False
+
+
+# ---------------------------------------------------------------------------
+# resolve_card
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_card_writes_resolved_sentinel(tmp_path):
+    from utils.hitl.hitl_tracker import resolve_card
+
+    card = tmp_path / "netalertx_api_token_required.json"
+    card.write_text("{}")
+    result = resolve_card(str(tmp_path), "netalertx_api_token_required")
+    assert result is True
+    assert (tmp_path / "netalertx_api_token_required.resolved").exists()
+
+
+def test_resolve_card_no_json_returns_false_but_writes_resolved(tmp_path):
+    from utils.hitl.hitl_tracker import resolve_card
+
+    # No .json file — resolve_card still writes .resolved (dashboard uses it)
+    # but returns False to signal the card was absent.
+    result = resolve_card(str(tmp_path), "netalertx_api_token_required")
+    assert result is False
+    assert (tmp_path / "netalertx_api_token_required.resolved").exists()
+
+
+def test_resolve_card_idempotent(tmp_path):
+    from utils.hitl.hitl_tracker import resolve_card
+
+    card = tmp_path / "netalertx_api_token_required.json"
+    card.write_text("{}")
+    resolve_card(str(tmp_path), "netalertx_api_token_required")
+    result = resolve_card(str(tmp_path), "netalertx_api_token_required")
+    assert result is True
+
+
+def test_resolve_card_updates_suppression_row(tmp_path):
+    from utils.hitl.hitl_tracker import mark_card_sent, resolve_card
+
+    db_path = str(tmp_path / "test.db")
+    with sqlite3.connect(db_path) as c:
+        c.execute(_DDL)
+        mark_card_sent(c, "netalertx_api_token_required", "netalertx", "token needed")
+
+    card = tmp_path / "netalertx_api_token_required.json"
+    card.write_text("{}")
+    resolve_card(
+        str(tmp_path),
+        "netalertx_api_token_required",
+        db_path=db_path,
+        card_key="netalertx_api_token_required",
+    )
+
+    with sqlite3.connect(db_path) as c:
+        row = c.execute(
+            "SELECT resolved_at FROM hitl_suppression WHERE card_key=?",
+            ("netalertx_api_token_required",),
+        ).fetchone()
+    assert row is not None and row[0] is not None

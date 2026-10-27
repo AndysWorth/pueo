@@ -136,3 +136,41 @@ def persist_api_token(token: str) -> bool:
 
     config_path.write_text("".join(result))
     return True
+
+
+def on_token_confirmed(db_path: str, watch_dir: str | None = None) -> None:
+    """Clear stale setup cards and promote OPERATIONAL_NO_API → FULLY_OPERATIONAL.
+
+    Call whenever a valid NetAlertX API token has been confirmed working.
+    Idempotent and never raises.
+    """
+    import uuid
+
+    import config as _cfg
+    from utils.hitl.hitl_tracker import resolve_card
+
+    _watch: str = watch_dir or str(getattr(_cfg, "NOTIFY_WATCH_DIR", "hitl/"))
+
+    for _nid in (
+        "netalertx_api_token_required",
+        "netalertx_setup_connection_failed",
+        "netalertx_docker_setup_connection_failed",
+    ):
+        try:
+            resolve_card(_watch, _nid)
+        except Exception:  # nosec B110
+            pass
+
+    try:
+        from netalertx.installer import _read_install_state, _write_install_state
+
+        state, details = _read_install_state(db_path)
+        if state == "OPERATIONAL_NO_API":
+            _write_install_state(
+                db_path, "FULLY_OPERATIONAL", details, str(uuid.uuid4())
+            )
+            log.info("netalertx_token_confirmed_promoted")
+    except Exception:  # nosec B110
+        pass
+
+    log.info("netalertx_token_confirmed")
