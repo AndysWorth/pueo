@@ -59,7 +59,6 @@ ssh -i $SSH_KEY -o StrictHostKeyChecking=no root@$HA_HOST \
 **What to look for:**
 - `state: started` — if `state: stopped` or `state: error`, addon is down
 - `version` — current version
-- `services: - mqtt:want` — NetAlertX requests MQTT service from HA
 - Port mapping: `20211/tcp` = WebUI, `20212/tcp` = GraphQL & API
 - **Note:** The addon slug is `db21ed7f_netalertx_fa`, NOT `netalertx_fa`
 
@@ -116,8 +115,7 @@ if 'errors' in result:
     exit()
 settings = result.get('data',{}).get('settings',{}).get('settings',[])
 print(f'Total settings: {len(settings)}')
-keys_to_show = ['MQTT_RUN','MQTT_BROKER','MQTT_PORT','MQTT_USER','MQTT_PASSWORD',
-                'SCAN_SUBNETS','TIMEZONE','ARPSCAN_RUN','ARPSCAN_RUN_SCHD',
+keys_to_show = ['SCAN_SUBNETS','TIMEZONE','ARPSCAN_RUN','ARPSCAN_RUN_SCHD',
                 'BACKEND_API_URL','REPORT_DASHBOARD_URL','VERSION','API_TOKEN']
 for s in settings:
     k = s.get('setKey','')
@@ -127,9 +125,7 @@ for s in settings:
 ```
 
 **Critical things to check:**
-- `MQTT_RUN` → must be `on_notification` or `always_after_scan`, NOT `disabled`
 - `SCAN_SUBNETS` → must match your home LAN (e.g., `['10.0.0.0/24  eth0']`), NOT `172.30.32.0/23`
-- `MQTT_BROKER` → should be `homeassistant.local` or HA's IP
 - `BACKEND_API_URL` → if empty, no webhook notifications configured
 - `REPORT_DASHBOARD_URL` → if still the placeholder string, not configured
 
@@ -262,26 +258,7 @@ curl -s "http://$HA_HOST:20211/php/server/query_json.php?file=table_devices.json
 
 ---
 
-## Step 6 — MQTT broker check
-
-```bash
-ssh -i $SSH_KEY -o StrictHostKeyChecking=no root@$HA_HOST \
-  "ha apps info core_mosquitto 2>&1 | grep -E 'state:|version:'"
-
-ssh -i $SSH_KEY -o StrictHostKeyChecking=no root@$HA_HOST \
-  "ha apps logs core_mosquitto 2>&1" | tail -30
-```
-
-**What to look for:**
-- Mosquitto should be `state: started`
-- Look for repeated connect/disconnect cycles (could indicate bad credentials or connection loop)
-- `error: received null username or password` → something connecting without credentials
-- `not authorised` → wrong credentials
-- `u'mqtttester'` connections → Pueo's MQTT health probe connecting
-
----
-
-## Step 7 — NetAlertX addon logs
+## Step 6 — NetAlertX addon logs
 
 ```bash
 ssh -i $SSH_KEY -o StrictHostKeyChecking=no root@$HA_HOST \
@@ -289,18 +266,17 @@ ssh -i $SSH_KEY -o StrictHostKeyChecking=no root@$HA_HOST \
 
 # Check for errors specifically
 ssh -i $SSH_KEY -o StrictHostKeyChecking=no root@$HA_HOST \
-  "ha apps logs db21ed7f_netalertx_fa 2>&1" | grep -E "(ERROR|WARNING|MQTT|ARPSCAN.*YES|failed)" | head -30
+  "ha apps logs db21ed7f_netalertx_fa 2>&1" | grep -E "(ERROR|WARNING|ARPSCAN.*YES|failed)" | head -30
 ```
 
 **What to look for:**
 - `[Scheduler] run for ARPSCAN: YES` → scan is triggering (if always NO, check schedule and timezone)
-- `[MQTT]` entries → any MQTT activity
 - `[Notification] No changes to report` → normal if no new/down devices
 - `[HTTP]` entries → API calls being made (useful to see if Pueo is hitting the API)
 
 ---
 
-## Step 8 — HA integration check
+## Step 7 — HA integration check
 
 ```bash
 # Check NetAlertX-related entities
@@ -335,7 +311,7 @@ for e in na[:10]:
 
 ---
 
-## Step 9 — HA automation config
+## Step 8 — HA automation config
 
 ```bash
 ssh -i $SSH_KEY -o StrictHostKeyChecking=no root@$HA_HOST \
@@ -349,7 +325,7 @@ ssh -i $SSH_KEY -o StrictHostKeyChecking=no root@$HA_HOST \
 
 ---
 
-## Step 10 — GraphQL API surface (if REST endpoints fail)
+## Step 9 — GraphQL API surface (if REST endpoints fail)
 
 ```bash
 # Full schema
@@ -392,11 +368,9 @@ After running all checks, report:
 CONNECTIVITY:       SSH ✓/✗  HA API ✓/✗  NetAlertX ✓/✗
 ADDON STATE:        started/stopped/error, version x.x.x
 SCAN SUBNET:        <value> — correct LAN? YES/NO
-MQTT_RUN:           enabled/disabled
-MQTT CONNECTION:    working/failing (Mosquitto logs)
 DEVICES:            N total, M present last scan, K new/unacknowledged
 WEBUI SPINNER:      loading OK / hung (check Step 5.5 — Infinity devName)
 HA INTEGRATION:     automation last_triggered: <timestamp or null>
-NOTIFICATION PATH:  MQTT / webhook / none configured
+NOTIFICATION PATH:  webhook / none configured
 BROKEN PUEO CODE:   list of issues in Pueo code vs live API
 ```

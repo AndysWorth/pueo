@@ -372,14 +372,9 @@ async def _step5_write_app_conf(
 
     plugins_m = re.search(r"LOADED_PLUGINS\s*=\s*(\[.*?\])", original_conf, re.DOTALL)
     plugins_val = plugins_m.group(1) if plugins_m else "[]"
-    merged_plugins = _merge_plugins(plugins_val, ["MQTT", "ARPSCAN"])
+    merged_plugins = _merge_plugins(plugins_val, ["ARPSCAN"])
 
     updates: dict[str, str] = {
-        "MQTT_BROKER": f"'{HA_HOST}'",
-        "MQTT_PORT": "1883",
-        "HA_URL": f"'http://{HA_HOST}:8123'",
-        "HA_BEARER_TOKEN": f"'{HA_API_TOKEN}'",
-        "HA_WEBHOOK_URL": f"'http://{HA_HOST}:8123/api/webhook/netalertx_event'",
         "SCAN_SUBNETS": scan_subnets_val,
         "TIMEZONE": "'UTC'",
         "LOADED_PLUGINS": merged_plugins,

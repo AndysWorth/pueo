@@ -493,7 +493,6 @@ class TestNetAlertXInstallerSteps1to4:
         return FakeSSHClient(
             command_results={
                 "ha supervisor info": (0, "supervisor_info: ok", ""),
-                "ha apps info core_mosquitto": (0, "state: running", ""),
                 "ip route show default": (
                     0,
                     "default via 192.168.1.1 dev eth0 proto dhcp",
@@ -519,7 +518,6 @@ class TestNetAlertXInstallerSteps1to4:
             command_results={
                 "ha supervisor info": (1, "", "not found"),
                 "docker info": (0, "docker info ok", ""),
-                "ha apps info core_mosquitto": (0, "state: running", ""),
                 "ip route show default": (
                     0,
                     "default via 10.0.0.1 dev wlan0 proto dhcp",
@@ -629,25 +627,7 @@ class TestNetAlertXInstallerSteps1to4:
             "no deployment target" in c["subject"] for c in gate.require_approval_calls
         )
 
-    # ── step 2: mosquitto ─────────────────────────────────────────────────────
-
-    def test_step2_mosquitto_already_running_skips_install(self, tmp_path, monkeypatch):
-        import asyncio
-        from netalertx.installer import run_steps_1_to_4
-
-        db = _make_installer_db(tmp_path, monkeypatch)
-        monkeypatch.setattr("netalertx.installer.NETALERTX_SCAN_INTERFACE", "eth0")
-
-        gate = self._gate_auto()
-        asyncio.run(
-            run_steps_1_to_4(
-                self._make_supervisor_ssh(), gate, self._notifier(), db_path=db
-            )
-        )
-        # No Mosquitto install approval should have been requested
-        assert not any(
-            "install Mosquitto" in c["subject"] for c in gate.require_approval_calls
-        )
+    # ── step 2 (legacy — mosquitto step removed) ──────────────────────────────
 
     def test_normalize_addon_state_maps_started_to_running(self):
         from netalertx.installer import _normalize_addon_state
@@ -657,115 +637,6 @@ class TestNetAlertXInstallerSteps1to4:
         assert _normalize_addon_state("running") == "running"
         assert _normalize_addon_state("stopped") == "stopped"
         assert _normalize_addon_state("error") == "error"
-
-    def test_step2_mosquitto_state_started_treated_as_running(
-        self, tmp_path, monkeypatch
-    ):
-        """HA supervisor returns 'started', not 'running' — installer must accept it."""
-        import asyncio
-        from utils.ha.ssh_client import FakeSSHClient
-        from netalertx.installer import run_steps_1_to_4, _read_install_state
-
-        db = _make_installer_db(tmp_path, monkeypatch)
-        monkeypatch.setattr("netalertx.installer.NETALERTX_SCAN_INTERFACE", "eth0")
-
-        ssh = FakeSSHClient(
-            command_results={
-                "ha supervisor info": (0, "supervisor_info: ok", ""),
-                "ha apps info core_mosquitto": (0, "state: started", ""),
-                "ip route show default": (
-                    0,
-                    "default via 192.168.1.1 dev eth0 proto dhcp",
-                    "",
-                ),
-                "ha store repositories list": (
-                    0,
-                    "https://github.com/alexbelgium/hassio-addons",
-                    "",
-                ),
-                "ha store addons": (
-                    0,
-                    "slug: netalertx_fa\nrepository: alexbelgium/hassio-addons",
-                    "",
-                ),
-            }
-        )
-        gate = self._gate_auto()
-        ok = asyncio.run(run_steps_1_to_4(ssh, gate, self._notifier(), db_path=db))
-        assert ok
-        state, _ = _read_install_state(db)
-        # All 4 steps complete, so state advances past MQTT_RUNNING to ADDON_REPO_ADDED.
-        assert state == "ADDON_REPO_ADDED"
-        assert not any(
-            "install Mosquitto" in c["subject"] for c in gate.require_approval_calls
-        )
-
-    def test_step2_mosquitto_not_installed_requires_approval(
-        self, tmp_path, monkeypatch
-    ):
-        import asyncio
-        from utils.ha.ssh_client import FakeSSHClient
-        from netalertx.installer import run_steps_1_to_4
-
-        db = _make_installer_db(tmp_path, monkeypatch)
-        monkeypatch.setattr("netalertx.installer.NETALERTX_SCAN_INTERFACE", "eth0")
-
-        call_counts: dict[str, int] = {}
-
-        class TrackingSSHClient(FakeSSHClient):
-            async def run(self, command, check=False):  # type: ignore[override]
-                call_counts[command] = call_counts.get(command, 0) + 1
-                # After install+start, polling returns running
-                if (
-                    "ha apps info core_mosquitto" in command
-                    and call_counts.get(command, 0) > 1
-                ):
-                    return 0, "state: running", ""
-                return await super().run(command, check=check)
-
-        ssh = TrackingSSHClient(
-            command_results={
-                "ha supervisor info": (0, "ok", ""),
-                "ha apps info core_mosquitto": (0, "not found", ""),
-                "ha apps install core_mosquitto": (0, "", ""),
-                "ha apps start core_mosquitto": (0, "", ""),
-                "ip route show default": (0, "default via 1.1.1.1 dev eth0", ""),
-                "ha store repositories list": (
-                    0,
-                    "https://github.com/alexbelgium/hassio-addons",
-                    "",
-                ),
-                "ha store addons": (0, "slug: netalertx_fa", ""),
-            }
-        )
-        gate = self._gate_ask()
-        asyncio.run(
-            run_steps_1_to_4(ssh, gate, self._notifier(approve=True), db_path=db)
-        )
-        assert any(
-            "install Mosquitto" in c["subject"] for c in gate.require_approval_calls
-        )
-
-    def test_step2_mosquitto_install_rejection_aborts(self, tmp_path, monkeypatch):
-        import asyncio
-        from utils.ha.ssh_client import FakeSSHClient
-        from netalertx.installer import run_steps_1_to_4
-
-        db = _make_installer_db(tmp_path, monkeypatch)
-
-        ssh = FakeSSHClient(
-            command_results={
-                "ha supervisor info": (0, "ok", ""),
-                "ha apps info core_mosquitto": (0, "not found", ""),
-            }
-        )
-        state = asyncio.run(
-            run_steps_1_to_4(
-                ssh, self._gate_ask(), self._notifier(approve=False), db_path=db
-            )
-        )
-        # State advanced to MQTT_INSTALLED (step 1 done) but not MQTT_RUNNING
-        assert state == "MQTT_INSTALLED"
 
     # ── step 3: interface detection ───────────────────────────────────────────
 
@@ -816,7 +687,6 @@ class TestNetAlertXInstallerSteps1to4:
         ssh = FakeSSHClient(
             command_results={
                 "ha supervisor info": (0, "ok", ""),
-                "ha apps info core_mosquitto": (0, "state: running", ""),
                 "ip route show default": (
                     0,
                     "default via 1.1.1.1 dev eth0\ndefault via 2.2.2.2 dev wlan0",
@@ -853,7 +723,6 @@ class TestNetAlertXInstallerSteps1to4:
         ssh = FakeSSHClient(
             command_results={
                 "ha supervisor info": (0, "ok", ""),
-                "ha apps info core_mosquitto": (0, "state: running", ""),
                 "ip route show default": (
                     0,
                     "default via 1.1.1.1 dev eth0\ndefault via 2.2.2.2 dev wlan0",
@@ -879,7 +748,6 @@ class TestNetAlertXInstallerSteps1to4:
         ssh = FakeSSHClient(
             command_results={
                 "ha supervisor info": (0, "ok", ""),
-                "ha apps info core_mosquitto": (0, "state: running", ""),
                 "ip route show default": (0, "no route found", ""),
             }
         )
@@ -920,7 +788,6 @@ class TestNetAlertXInstallerSteps1to4:
         ssh = FakeSSHClient(
             command_results={
                 "ha supervisor info": (0, "ok", ""),
-                "ha apps info core_mosquitto": (0, "state: running", ""),
                 "ip route show default": (0, "default via 1.1.1.1 dev eth0", ""),
                 # List returns empty both times → add appears to fail
                 "ha store repositories list": (0, "", ""),
@@ -1057,108 +924,6 @@ class TestNetAlertXInstallerSteps1to4:
             output, "https://github.com/alexbelgium/hassio-addons"
         )
         assert slug == "db21ed7f_netalertx_fa"
-
-    def test_step2_mosquitto_not_running_starts_without_installing(
-        self, tmp_path, monkeypatch
-    ):
-        import asyncio
-        from utils.ha.ssh_client import FakeSSHClient
-        from netalertx.installer import run_steps_1_to_4, _read_install_state
-
-        db = _make_installer_db(tmp_path, monkeypatch)
-        monkeypatch.setattr("netalertx.installer.NETALERTX_SCAN_INTERFACE", "eth0")
-
-        call_counts: dict[str, int] = {}
-
-        class TrackingSSHClient(FakeSSHClient):
-            async def run(self, command, check=False):  # type: ignore[override]
-                call_counts[command] = call_counts.get(command, 0) + 1
-                if "ha apps info core_mosquitto" in command:
-                    if call_counts[command] == 1:
-                        return 0, "state: stopped", ""
-                    return 0, "state: running", ""
-                return await super().run(command, check=check)
-
-        ssh = TrackingSSHClient(
-            command_results={
-                "ha supervisor info": (0, "ok", ""),
-                "ha apps start core_mosquitto": (0, "", ""),
-                "ip route show default": (0, "default via 1.1.1.1 dev eth0", ""),
-                "ha store repositories list": (
-                    0,
-                    "https://github.com/alexbelgium/hassio-addons",
-                    "",
-                ),
-                "ha store addons": (0, "slug: netalertx_fa", ""),
-            }
-        )
-        asyncio.run(
-            run_steps_1_to_4(ssh, self._gate_auto(), self._notifier(), db_path=db)
-        )
-        assert "ha apps start core_mosquitto" in ssh.commands_run
-        assert "ha apps install core_mosquitto" not in ssh.commands_run
-
-    def test_step2_mosquitto_start_poll_fails_aborts(self, tmp_path, monkeypatch):
-        import asyncio
-        from utils.ha.ssh_client import FakeSSHClient
-        from utils.llm.ollama_client import FakeToolCallingLLMClient
-        from netalertx.installer import run_steps_1_to_4
-        from netalertx.installer_diagnostics import InstallerDiagnostic
-
-        db = _make_installer_db(tmp_path, monkeypatch)
-
-        async def poll_false(*a, **k):
-            return False
-
-        monkeypatch.setattr("netalertx.installer._poll_addon_state", poll_false)
-
-        diag = InstallerDiagnostic(
-            primary_hypothesis="Port 1883 is in use",
-            confidence=0.8,
-            supporting_evidence=["state: stopped"],
-            alternative_hypotheses=[],
-            recommended_action="Stop the conflicting process",
-            can_auto_fix=False,
-        )
-        llm = FakeToolCallingLLMClient(
-            [
-                {
-                    "tool_calls": [
-                        {
-                            "function": {
-                                "name": "finish_installer_diagnosis",
-                                "arguments": {
-                                    **diag.model_dump(),
-                                    "summary": diag.primary_hypothesis,
-                                },
-                            }
-                        }
-                    ]
-                }
-            ]
-        )
-        ssh = FakeSSHClient(
-            command_results={
-                "ha supervisor info": (0, "ok", ""),
-                "ha apps info core_mosquitto": (0, "state: stopped", ""),
-                "ha apps start core_mosquitto": (0, "", ""),
-            }
-        )
-        gate = self._gate_ask()
-        state = asyncio.run(
-            run_steps_1_to_4(
-                ssh,
-                gate,
-                self._notifier(approve=False),
-                db_path=db,
-                llm_client=llm,
-            )
-        )
-        assert state == "MQTT_INSTALLED"
-        assert any(
-            "failed to start" in c["subject"].lower()
-            for c in gate.require_approval_calls
-        )
 
     def test_step3_interface_already_in_details_is_idempotent(
         self, tmp_path, monkeypatch
@@ -1480,7 +1245,7 @@ class TestInstallerHelpers5to8:
 _SLUG = "netalertx_fa"
 _DATA_PATH = "/data/netalertx"
 _CONF_PATH = f"{_DATA_PATH}/config/app.conf"
-_ORIG_APP_CONF = "MQTT_BROKER = 'localhost'\nLOADED_PLUGINS = ['ARPSCAN']\n"
+_ORIG_APP_CONF = "LOADED_PLUGINS = ['ARPSCAN']\n"
 _HA_CONF = "homeassistant:\n  time_zone: America/New_York\n"
 _AUTOMATIONS_PATH = "/config/automations.yaml"
 # Path that _step8_finalize_token downloads app.db from (effective_root defaults
@@ -1772,14 +1537,7 @@ class TestNetAlertXInstallerSteps5to8:
 
         return FakeAutonomyGate(auto_execute_result=False, approval_result=approval)
 
-    _MQTT_GREP_CMD = (
-        'grep -c \'"domain":"mqtt"\' '
-        "/config/.storage/core.config_entries 2>/dev/null || true"
-    )
-
-    def _make_full_ssh(
-        self, app_conf=_ORIG_APP_CONF, automations="", mqtt_present=True
-    ):
+    def _make_full_ssh(self, app_conf=_ORIG_APP_CONF, automations=""):
         """SSH client configured for a typical steps-5-8 run (all pass)."""
         from utils.ha.ssh_client import FakeSSHClient
 
@@ -1806,29 +1564,15 @@ class TestNetAlertXInstallerSteps5to8:
                     "inet 192.168.1.5/24 brd 192.168.1.255 scope global eth0\n",
                     "",
                 ),
-                self._MQTT_GREP_CMD: (0, "1" if mqtt_present else "0", ""),
             },
             # Provide a valid app.db so _step8_finalize_token can read the token
             # and advance to FULLY_OPERATIONAL (rather than OPERATIONAL_NO_API).
             download_contents={_APP_DB_REMOTE: _make_app_db_bytes()},
         )
 
-    def _make_full_ssh_no_mqtt(self, **kwargs):
-        """SSH client where the MQTT config entry is absent."""
-        return self._make_full_ssh(mqtt_present=False, **kwargs)
-
-    def _http_with_mqtt(self):
+    def _http_client(self):
         return _make_mock_http(
             [
-                ("GET", "/api/config/config_entries/entry", 200, [{"domain": "mqtt"}]),
-                ("GET", "/health", 200, {"status": "ok"}),
-            ]
-        )
-
-    def _http_no_mqtt(self):
-        return _make_mock_http(
-            [
-                ("GET", "/api/config/config_entries/entry", 200, [{"domain": "other"}]),
                 ("GET", "/health", 200, {"status": "ok"}),
             ]
         )
@@ -1888,7 +1632,7 @@ class TestNetAlertXInstallerSteps5to8:
                 self._gate_auto(),
                 self._notifier(),
                 db_path=db,
-                http_client=self._http_with_mqtt(),
+                http_client=self._http_client(),
             )
         )
         assert state == "FULLY_OPERATIONAL"
@@ -1920,7 +1664,7 @@ class TestNetAlertXInstallerSteps5to8:
                 self._gate_auto(),
                 self._notifier(),
                 db_path=db,
-                http_client=self._http_with_mqtt(),
+                http_client=self._http_client(),
             )
         )
         # No install or start commands issued since addon reported running
@@ -1987,7 +1731,7 @@ class TestNetAlertXInstallerSteps5to8:
                 gate,
                 self._notifier(),
                 db_path=db,
-                http_client=self._http_with_mqtt(),
+                http_client=self._http_client(),
                 llm_client=llm,
             )
         )
@@ -2063,7 +1807,7 @@ class TestNetAlertXInstallerSteps5to8:
                 gate,
                 self._notifier(),
                 db_path=db,
-                http_client=self._http_with_mqtt(),
+                http_client=self._http_client(),
                 llm_client=llm,
             )
         )
@@ -2093,7 +1837,7 @@ class TestNetAlertXInstallerSteps5to8:
                 gate,
                 self._notifier(),
                 db_path=db,
-                http_client=self._http_with_mqtt(),
+                http_client=self._http_client(),
             )
         )
         assert state == "ADDON_REPO_ADDED"
@@ -2125,7 +1869,7 @@ class TestNetAlertXInstallerSteps5to8:
                 self._gate_auto(),
                 self._notifier(),
                 db_path=db,
-                http_client=self._http_with_mqtt(),
+                http_client=self._http_client(),
             )
         )
         # Step 5 is entirely skipped — no install or start commands
@@ -2159,14 +1903,12 @@ class TestNetAlertXInstallerSteps5to8:
                 self._gate_auto(),
                 self._notifier(),
                 db_path=db,
-                http_client=self._http_with_mqtt(),
+                http_client=self._http_client(),
             )
         )
 
         written = ssh.written_files.get(_CONF_PATH, "")
-        assert "MQTT" in written
         assert "ARPSCAN" in written
-        assert "MQTT_BROKER" in written
 
     def test_step6_backup_failure_aborts(self, tmp_path, monkeypatch):
         import asyncio
@@ -2210,7 +1952,7 @@ class TestNetAlertXInstallerSteps5to8:
                 gate,
                 self._notifier(),
                 db_path=db,
-                http_client=self._http_with_mqtt(),
+                http_client=self._http_client(),
             )
         )
         assert state == "ADDON_RUNNING"
@@ -2240,21 +1982,18 @@ class TestNetAlertXInstallerSteps5to8:
                 self._gate_auto(),
                 self._notifier(),
                 db_path=db,
-                http_client=self._http_with_mqtt(),
+                http_client=self._http_client(),
             )
         )
         # Step 6 was skipped — no app.conf write
         assert _CONF_PATH not in ssh.written_files
 
-    # ── step 7: verify MQTT integration ──────────────────────────────────────
+    # ── step 7: legacy MQTT state auto-advance ───────────────────────────────
 
-    def test_step7_mqtt_found_advances(self, tmp_path, monkeypatch):
+    def test_step7_auto_advances_from_netalertx_configured(self, tmp_path, monkeypatch):
         import asyncio
 
-        from netalertx.installer import (
-            _read_install_state,
-            run_steps_5_to_8,
-        )  # noqa: F401
+        from netalertx.installer import run_steps_5_to_8
 
         async def poll_true(*a, **k):
             return True
@@ -2275,69 +2014,12 @@ class TestNetAlertXInstallerSteps5to8:
                 self._gate_auto(),
                 self._notifier(),
                 db_path=db,
-                http_client=self._http_with_mqtt(),
+                http_client=self._http_client(),
             )
         )
         assert state == "FULLY_OPERATIONAL"
 
-    def test_step7_mqtt_not_found_approval_advances(self, tmp_path, monkeypatch):
-        import asyncio
-
-        from netalertx.installer import run_steps_5_to_8
-
-        async def poll_true(*a, **k):
-            return True
-
-        monkeypatch.setattr("netalertx.installer._poll_addon_state", poll_true)
-
-        ssh = self._make_full_ssh_no_mqtt()
-        db = _make_installer_db_at_state(
-            tmp_path,
-            monkeypatch,
-            "NETALERTX_CONFIGURED",
-            {"addon_slug": _SLUG, "scan_interface": "eth0"},
-        )
-
-        # Gate asks and approves — MQTT not found by SSH or HTTP, but user confirmed
-        gate = self._gate_ask(approval=True)
-        state = asyncio.run(
-            run_steps_5_to_8(
-                ssh,
-                gate,
-                self._notifier(approve=True),
-                db_path=db,
-                http_client=self._http_no_mqtt(),
-            )
-        )
-        assert state == "FULLY_OPERATIONAL"
-        assert gate.require_approval_calls  # HITL notification was sent
-
-    def test_step7_mqtt_not_found_rejection_aborts(self, tmp_path, monkeypatch):
-        import asyncio
-
-        from netalertx.installer import run_steps_5_to_8
-
-        ssh = self._make_full_ssh_no_mqtt()
-        db = _make_installer_db_at_state(
-            tmp_path,
-            monkeypatch,
-            "NETALERTX_CONFIGURED",
-            {"addon_slug": _SLUG, "scan_interface": "eth0"},
-        )
-
-        gate = self._gate_ask(approval=False)
-        state = asyncio.run(
-            run_steps_5_to_8(
-                ssh,
-                gate,
-                self._notifier(approve=False),
-                db_path=db,
-                http_client=self._http_no_mqtt(),
-            )
-        )
-        assert state == "NETALERTX_CONFIGURED"
-
-    def test_step7_idempotent_from_mqtt_verified(self, tmp_path, monkeypatch):
+    def test_step7_auto_advances_from_ha_mqtt_verified(self, tmp_path, monkeypatch):
         import asyncio
 
         from netalertx.installer import run_steps_5_to_8
@@ -2362,11 +2044,11 @@ class TestNetAlertXInstallerSteps5to8:
                 gate,
                 self._notifier(),
                 db_path=db,
-                http_client=self._http_with_mqtt(),
+                http_client=self._http_client(),
             )
         )
         assert state == "FULLY_OPERATIONAL"
-        assert not gate.require_approval_calls  # step 7 was skipped
+        assert not gate.require_approval_calls  # step 7 was already done
 
     # ── step 8: finalize token ────────────────────────────────────────────────
 
@@ -2393,7 +2075,7 @@ class TestNetAlertXInstallerSteps5to8:
                 self._gate_auto(),
                 self._notifier(),
                 db_path=db,
-                http_client=self._http_with_mqtt(),
+                http_client=self._http_client(),
             )
         )
         assert state == "FULLY_OPERATIONAL"
@@ -2418,7 +2100,7 @@ class TestNetAlertXInstallerSteps5to8:
                 self._gate_auto(),
                 self._notifier(),
                 db_path=db,
-                http_client=self._http_with_mqtt(),
+                http_client=self._http_client(),
             )
         )
         assert len(ssh2.commands_run) == 0  # complete no-op
@@ -2475,7 +2157,7 @@ class TestNetAlertXInstallerSteps5to8:
                 self._gate_auto(),
                 self._notifier(),
                 db_path=db,
-                http_client=self._http_with_mqtt(),
+                http_client=self._http_client(),
             )
         )
         assert state == "FULLY_OPERATIONAL"
@@ -2499,7 +2181,7 @@ class TestNetAlertXInstallerSteps5to8:
                 self._gate_auto(),
                 self._notifier(),
                 db_path=db,
-                http_client=self._http_with_mqtt(),
+                http_client=self._http_client(),
             )
         )
         assert state == "FULLY_OPERATIONAL"
@@ -2553,10 +2235,10 @@ class TestNetAlertXInstallerSteps5to8:
                 self._gate_auto(),
                 self._notifier(),
                 db_path=db,
-                http_client=self._http_with_mqtt(),
+                http_client=self._http_client(),
             )
         )
-        assert "MQTT" in ssh.written_files.get(fallback_conf, "")
+        assert "ARPSCAN" in ssh.written_files.get(fallback_conf, "")
         assert state == "FULLY_OPERATIONAL"
 
     def test_step6_app_conf_missing_aborts_without_backup(self, tmp_path, monkeypatch):
@@ -2604,7 +2286,7 @@ class TestNetAlertXInstallerSteps5to8:
                 gate,
                 self._notifier(),
                 db_path=db,
-                http_client=self._http_with_mqtt(),
+                http_client=self._http_client(),
             )
         )
         # Step 6 aborts; state stays at ADDON_RUNNING
@@ -2644,7 +2326,7 @@ class TestNetAlertXInstallerSteps5to8:
                 self._gate_auto(),
                 self._notifier(),
                 db_path=db,
-                http_client=self._http_with_mqtt(),
+                http_client=self._http_client(),
             )
         )
         assert state == "FULLY_OPERATIONAL"
@@ -2690,7 +2372,7 @@ class TestNetAlertXInstallerSteps5to8:
                 self._gate_auto(),
                 self._notifier(),
                 db_path=db,
-                http_client=self._http_with_mqtt(),
+                http_client=self._http_client(),
             )
         )
         assert state == "FULLY_OPERATIONAL"
@@ -2744,7 +2426,7 @@ class TestNetAlertXInstallerSteps5to8:
                 gate,
                 self._notifier(approve=False),
                 db_path=db,
-                http_client=self._http_with_mqtt(),
+                http_client=self._http_client(),
             )
         )
         assert state == "ADDON_RUNNING"
@@ -2837,140 +2519,6 @@ class TestNetAlertXInstallerSteps5to8:
             )
         )
         assert state == "FULLY_OPERATIONAL"
-
-    # ── step 7: _mqtt_configured edge paths ──────────────────────────────────
-
-    def test_step7_mqtt_check_non_200_triggers_hitl(self, tmp_path, monkeypatch):
-        import asyncio
-
-        import httpx
-
-        from netalertx.installer import run_steps_5_to_8
-
-        async def poll_true(*a, **k):
-            return True
-
-        monkeypatch.setattr("netalertx.installer._poll_addon_state", poll_true)
-
-        class _Non200Transport(httpx.AsyncBaseTransport):
-            async def handle_async_request(self, request):
-                return httpx.Response(
-                    503, content=b"", headers={"Content-Type": "text/plain"}
-                )
-
-        http = httpx.AsyncClient(transport=_Non200Transport())
-        # Set a fake token so the HTTP path is actually exercised (not skipped).
-        monkeypatch.setattr("netalertx.installer.HA_API_TOKEN", "test-token")
-        ssh = self._make_full_ssh_no_mqtt()
-        db = _make_installer_db_at_state(
-            tmp_path,
-            monkeypatch,
-            "NETALERTX_CONFIGURED",
-            {"addon_slug": _SLUG, "scan_interface": "eth0"},
-        )
-        gate = self._gate_ask(approval=True)
-        state = asyncio.run(
-            run_steps_5_to_8(
-                ssh,
-                gate,
-                self._notifier(approve=True),
-                db_path=db,
-                http_client=http,
-            )
-        )
-        assert state == "FULLY_OPERATIONAL"
-        assert gate.require_approval_calls
-
-    def test_step7_mqtt_check_exception_triggers_hitl(self, tmp_path, monkeypatch):
-        import asyncio
-
-        import httpx
-
-        from netalertx.installer import run_steps_5_to_8
-
-        async def poll_true(*a, **k):
-            return True
-
-        monkeypatch.setattr("netalertx.installer._poll_addon_state", poll_true)
-
-        class _ExceptionTransport(httpx.AsyncBaseTransport):
-            async def handle_async_request(self, request):
-                raise httpx.ConnectError("refused")
-
-        http = httpx.AsyncClient(transport=_ExceptionTransport())
-        # Set a fake token so the HTTP path is actually exercised (not skipped).
-        monkeypatch.setattr("netalertx.installer.HA_API_TOKEN", "test-token")
-        ssh = self._make_full_ssh_no_mqtt()
-        db = _make_installer_db_at_state(
-            tmp_path,
-            monkeypatch,
-            "NETALERTX_CONFIGURED",
-            {"addon_slug": _SLUG, "scan_interface": "eth0"},
-        )
-        gate = self._gate_ask(approval=True)
-        state = asyncio.run(
-            run_steps_5_to_8(
-                ssh,
-                gate,
-                self._notifier(approve=True),
-                db_path=db,
-                http_client=http,
-            )
-        )
-        assert state == "FULLY_OPERATIONAL"
-        assert gate.require_approval_calls
-
-    def test_step7_approved_and_recheck_returns_true(self, tmp_path, monkeypatch):
-        import asyncio
-
-        import httpx
-
-        from netalertx.installer import run_steps_5_to_8
-
-        async def poll_true(*a, **k):
-            return True
-
-        monkeypatch.setattr("netalertx.installer._poll_addon_state", poll_true)
-
-        call_count = [0]
-
-        class _MqttAppearsAfterApproval(httpx.AsyncBaseTransport):
-            async def handle_async_request(self, request):
-                if "/api/config/config_entries/entry" in str(request.url):
-                    call_count[0] += 1
-                    if call_count[0] == 1:
-                        body = b'[{"domain":"other"}]'
-                    else:
-                        body = b'[{"domain":"mqtt"}]'
-                    return httpx.Response(
-                        200, content=body, headers={"Content-Type": "application/json"}
-                    )
-                return httpx.Response(
-                    200, content=b"{}", headers={"Content-Type": "application/json"}
-                )
-
-        http = httpx.AsyncClient(transport=_MqttAppearsAfterApproval())
-        # Force the HTTP path so both initial check and recheck use the mock.
-        monkeypatch.setattr("netalertx.installer.HA_API_TOKEN", "test-token")
-        ssh = self._make_full_ssh_no_mqtt()
-        db = _make_installer_db_at_state(
-            tmp_path,
-            monkeypatch,
-            "NETALERTX_CONFIGURED",
-            {"addon_slug": _SLUG, "scan_interface": "eth0"},
-        )
-        gate = self._gate_ask(approval=True)
-        state = asyncio.run(
-            run_steps_5_to_8(
-                ssh,
-                gate,
-                self._notifier(approve=True),
-                db_path=db,
-                http_client=http,
-            )
-        )
-        assert state == "FULLY_OPERATIONAL"
-        assert call_count[0] == 2
 
     # ── step 8: finalize token ─────────────────────────────────────────────────
 
@@ -3224,13 +2772,12 @@ class TestRunInstaller:
 
         ssh = FakeSSHClient(
             file_contents={
-                _conf: "MQTT_BROKER = 'localhost'\n",
+                _conf: "LOADED_PLUGINS = ['ARPSCAN']\n",
                 "/config/configuration.yaml": "homeassistant:\n  time_zone: UTC\n",
                 "/config/automations.yaml": "",
             },
             command_results={
                 "ha supervisor info": (0, "ok", ""),
-                "ha apps info core_mosquitto": (0, "state: running", ""),
                 "ip route show default": (0, "default via 1.1.1.1 dev eth0", ""),
                 "ha store repositories list": (
                     0,
@@ -5083,13 +4630,9 @@ class TestNetAlertXConfigValidator:
 
         conf = "\n".join(
             [
-                "MQTT_BROKER=192.168.1.1",
-                "MQTT_PORT=1883",
-                "HA_URL=http://homeassistant.local:8123",
-                "HA_BEARER_TOKEN=abc123",
                 "SCAN_SUBNETS=192.168.1.0/24--eth0",
                 "TIMEZONE=America/New_York",
-                "LOADED_PLUGINS=ARPSCAN,MQTT,NMAPDEV",
+                "LOADED_PLUGINS=ARPSCAN,NMAPDEV",
             ]
         )
         assert validate_app_conf(conf) == []
@@ -5099,65 +4642,37 @@ class TestNetAlertXConfigValidator:
 
         conf = "\n".join(
             [
-                "MQTT_PORT=1883",
-                "HA_URL=http://homeassistant.local:8123",
-                "HA_BEARER_TOKEN=abc123",
-                "SCAN_SUBNETS=192.168.1.0/24--eth0",
                 "TIMEZONE=America/New_York",
-                "LOADED_PLUGINS=ARPSCAN,MQTT",
+                "LOADED_PLUGINS=ARPSCAN",
+                # SCAN_SUBNETS missing
             ]
         )
         issues = validate_app_conf(conf)
         fields = [i.field for i in issues]
-        assert "MQTT_BROKER" in fields
+        assert "SCAN_SUBNETS" in fields
 
     def test_empty_required_value_returns_issue(self):
         from netalertx.config_validator import validate_app_conf
 
         conf = "\n".join(
             [
-                "MQTT_BROKER=",
-                "MQTT_PORT=1883",
-                "HA_URL=http://homeassistant.local:8123",
-                "HA_BEARER_TOKEN=abc123",
-                "SCAN_SUBNETS=192.168.1.0/24--eth0",
+                "SCAN_SUBNETS=",
                 "TIMEZONE=America/New_York",
-                "LOADED_PLUGINS=ARPSCAN,MQTT",
+                "LOADED_PLUGINS=ARPSCAN",
             ]
         )
         issues = validate_app_conf(conf)
         fields = [i.field for i in issues]
-        assert "MQTT_BROKER" in fields
-
-    def test_missing_mqtt_plugin_returns_issue(self):
-        from netalertx.config_validator import validate_app_conf
-
-        conf = "\n".join(
-            [
-                "MQTT_BROKER=192.168.1.1",
-                "MQTT_PORT=1883",
-                "HA_URL=http://homeassistant.local:8123",
-                "HA_BEARER_TOKEN=abc123",
-                "SCAN_SUBNETS=192.168.1.0/24--eth0",
-                "TIMEZONE=America/New_York",
-                "LOADED_PLUGINS=ARPSCAN,NMAPDEV",
-            ]
-        )
-        issues = validate_app_conf(conf)
-        assert any(i.field == "LOADED_PLUGINS" and "MQTT" in i.message for i in issues)
+        assert "SCAN_SUBNETS" in fields
 
     def test_missing_arpscan_plugin_returns_issue(self):
         from netalertx.config_validator import validate_app_conf
 
         conf = "\n".join(
             [
-                "MQTT_BROKER=192.168.1.1",
-                "MQTT_PORT=1883",
-                "HA_URL=http://homeassistant.local:8123",
-                "HA_BEARER_TOKEN=abc123",
                 "SCAN_SUBNETS=192.168.1.0/24--eth0",
                 "TIMEZONE=America/New_York",
-                "LOADED_PLUGINS=MQTT,NMAPDEV",
+                "LOADED_PLUGINS=NMAPDEV",
             ]
         )
         issues = validate_app_conf(conf)
@@ -5171,85 +4686,12 @@ class TestNetAlertXConfigValidator:
         conf = "\n".join(
             [
                 "# This is a comment",
-                "MQTT_BROKER=192.168.1.1",
-                "MQTT_PORT=1883",
-                "HA_URL=http://homeassistant.local:8123",
-                "HA_BEARER_TOKEN=abc123",
                 "SCAN_SUBNETS=192.168.1.0/24--eth0",
                 "TIMEZONE=America/New_York",
-                "LOADED_PLUGINS=ARPSCAN,MQTT",
+                "LOADED_PLUGINS=ARPSCAN",
             ]
         )
         assert validate_app_conf(conf) == []
-
-    # ── validate_ha_config ────────────────────────────────────────────────────
-
-    def test_mqtt_key_detected(self):
-        from netalertx.config_validator import validate_ha_config
-
-        config_yaml = "homeassistant:\n  name: Home\nmqtt:\n  broker: localhost\n"
-        issues = validate_ha_config(config_yaml)
-        assert len(issues) == 1
-        assert issues[0].field == "mqtt"
-        assert issues[0].severity == "HIGH"
-
-    def test_no_mqtt_key_returns_no_issues(self):
-        from netalertx.config_validator import validate_ha_config
-
-        config_yaml = "homeassistant:\n  name: Home\n  time_zone: UTC\n"
-        assert validate_ha_config(config_yaml) == []
-
-    def test_invalid_yaml_returns_issue(self):
-        from netalertx.config_validator import validate_ha_config
-
-        issues = validate_ha_config(":\tnot: valid: yaml\n\t\t")
-        assert len(issues) == 1
-        assert "parse" in issues[0].message.lower()
-
-    def test_empty_config_returns_no_issues(self):
-        from netalertx.config_validator import validate_ha_config
-
-        assert validate_ha_config("") == []
-
-    # ── validate_webhook_automation ───────────────────────────────────────────
-
-    def test_snake_case_field_detected(self):
-        from netalertx.config_validator import validate_webhook_automation
-
-        automation_yaml = (
-            "trigger:\n"
-            "  - platform: webhook\n"
-            "    webhook_id: netalertx_event\n"
-            "action:\n"
-            "  - data:\n"
-            "      mac: '{{ trigger.json.eve_mac }}'\n"
-        )
-        issues = validate_webhook_automation(automation_yaml)
-        assert any(i.field == "eve_mac" for i in issues)
-
-    def test_camelcase_fields_return_no_issues(self):
-        from netalertx.config_validator import validate_webhook_automation
-
-        automation_yaml = (
-            "trigger:\n"
-            "  - platform: webhook\n"
-            "    webhook_id: netalertx_event\n"
-            "action:\n"
-            "  - data:\n"
-            "      mac: '{{ trigger.json.eveMac }}'\n"
-            "      ip: '{{ trigger.json.eveIp }}'\n"
-        )
-        assert validate_webhook_automation(automation_yaml) == []
-
-    def test_multiple_snake_case_fields_all_detected(self):
-        from netalertx.config_validator import validate_webhook_automation
-
-        automation_yaml = "eve_mac: x\neve_ip: y\ndev_vendor: z\n"
-        issues = validate_webhook_automation(automation_yaml)
-        fields = [i.field for i in issues]
-        assert "eve_mac" in fields
-        assert "eve_ip" in fields
-        assert "dev_vendor" in fields
 
     # ── validate_scan_subnets ──────────────────────────────────────────────────
 
@@ -5302,10 +4744,10 @@ class TestNetAlertXDiagnostic:
         from netalertx.diagnosis import NetAlertXDiagnostic
 
         d = NetAlertXDiagnostic(
-            issue="MQTT broker down",
+            issue="Database table row count exceeds threshold",
             severity="MEDIUM",
-            category="mqtt",
-            recommended_fix="Restart Mosquitto add-on.",
+            category="database",
+            recommended_fix="Trigger DBCLNP cleanup plugin.",
             affected_netalertx_version="v26.7.1",
         )
         assert NetAlertXDiagnostic.model_validate_json(d.model_dump_json()) == d
@@ -5361,7 +4803,6 @@ class TestNetAlertXDiagnostic:
         report = HealthReport(
             last_scan_age_minutes=5,
             device_counts={"total": 10, "online": 8},
-            mqtt_active=True,
             anomalies=[],
             netalertx_version="v26.7.1",
         )
@@ -5379,21 +4820,20 @@ class TestNetAlertXDiagnostic:
         report = HealthReport(
             last_scan_age_minutes=5,
             device_counts={"total": 10, "online": 8},
-            mqtt_active=True,
             anomalies=[],
             netalertx_version="v26.7.1",
         )
         issue = ConfigIssue(
-            field="mqtt",
-            message="Top-level mqtt: key found",
+            field="SCAN_SUBNETS",
+            message="SCAN_SUBNETS is empty",
             severity="HIGH",
         )
-        llm = self._make_fake_llm("mqtt")
+        llm = self._make_fake_llm("networking")
         result, _trace = asyncio.run(
             diagnose_health_report(report, config_issues=[issue], llm_client=llm)
         )
         assert result is not None
-        assert result.category == "mqtt"
+        assert result.category == "networking"
 
     def test_llm_failure_returns_none(self):
         import asyncio
@@ -5684,103 +5124,6 @@ class TestNetAlertXHealer:
         assert ssh.written_files == {}
         assert ssh.commands_run == []
 
-    def test_level_2_approval_executes_mqtt_fix(self):
-        import asyncio
-
-        from utils.agent.autonomy import FakeAutonomyGate
-        from utils.hitl.notify import FakeNotifier
-        from utils.ha.ssh_client import FakeSSHClient
-
-        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
-        notifier = FakeNotifier(approve=True)
-        ssh = FakeSSHClient(file_contents={"/data/app.conf": "MQTT_BROKER=wronghost\n"})
-        ha_ssh = FakeSSHClient(
-            file_contents={
-                "/config/configuration.yaml": "homeassistant:\n  name: Home\n"
-            }
-        )
-        healer = self._make_healer(
-            gate=gate, ssh_client=ssh, ha_ssh_client=ha_ssh, notifier=notifier
-        )
-        asyncio.run(
-            healer.heal(
-                self._make_diag(
-                    "mqtt", recommended_fix="MQTT_BROKER=homeassistant.local"
-                )
-            )
-        )
-
-        # app.conf was written
-        assert "/data/app.conf" in ssh.written_files
-
-    # -----------------------------------------------------------------------
-    # Level 3 — guided: app.conf auto-proceeds (MEDIUM); HA config approval
-    # -----------------------------------------------------------------------
-
-    def test_level_3_app_conf_auto_proceeds(self):
-        import asyncio
-
-        from utils.agent.autonomy import FakeAutonomyGate
-        from utils.hitl.notify import FakeNotifier
-        from utils.ha.ssh_client import FakeSSHClient
-
-        # auto_execute_result=True means should_auto_execute returns True → MEDIUM auto-proceeds
-        gate = FakeAutonomyGate(auto_execute_result=True, approval_result=True)
-        notifier = FakeNotifier(approve=True)
-        ssh = FakeSSHClient(file_contents={"/data/app.conf": "MQTT_BROKER=oldhost\n"})
-        ha_ssh = FakeSSHClient(
-            file_contents={
-                "/config/configuration.yaml": "homeassistant:\n  name: Home\n"
-            }
-        )
-        healer = self._make_healer(
-            gate=gate, ssh_client=ssh, ha_ssh_client=ha_ssh, notifier=notifier
-        )
-        asyncio.run(
-            healer.heal(
-                self._make_diag(
-                    "mqtt", recommended_fix="MQTT_BROKER=homeassistant.local"
-                )
-            )
-        )
-
-        # app.conf written without require_approval being called for MEDIUM
-        assert "/data/app.conf" in ssh.written_files
-        # should_auto_execute was checked
-        assert len(gate.should_auto_execute_calls) >= 1
-
-    def test_level_3_ha_config_requires_approval(self):
-        import asyncio
-
-        from utils.agent.autonomy import FakeAutonomyGate
-        from utils.hitl.notify import FakeNotifier
-        from utils.ha.ssh_client import FakeSSHClient
-
-        # auto_execute_result=False means should_auto_execute returns False → HIGH needs approval
-        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
-        notifier = FakeNotifier(approve=True)
-        ssh = FakeSSHClient(
-            file_contents={
-                "/data/app.conf": "MQTT_BROKER=x\nLOADED_PLUGINS=MQTT ARPSCAN\n"
-            }
-        )
-        ha_ssh = FakeSSHClient(
-            file_contents={
-                "/config/configuration.yaml": "mqtt:\n  broker: homeassistant.local\nhomeassistant:\n  name: Home\n"
-            },
-            command_results={"ha backup new": (0, "Slug: test-slug-nax\n", "")},
-        )
-        healer = self._make_healer(
-            gate=gate, ssh_client=ssh, ha_ssh_client=ha_ssh, notifier=notifier
-        )
-        asyncio.run(healer.heal(self._make_diag("mqtt")))
-
-        # require_approval was called (gate gated the HA config action)
-        ha_approval_calls = [
-            c for c in gate.require_approval_calls if "mqtt" in c["subject"].lower()
-        ]
-        assert len(ha_approval_calls) >= 1
-
     # -----------------------------------------------------------------------
     # Level 4 — autonomous: networking triggers restart + rescan without HITL
     # -----------------------------------------------------------------------
@@ -5907,7 +5250,7 @@ class TestNetAlertXHealer:
         assert result is False
 
     # -----------------------------------------------------------------------
-    # ha_integration category
+    # notify-only categories (database, version, ha_integration, mqtt, etc.)
     # -----------------------------------------------------------------------
 
     def test_ha_integration_requires_approval(self):
@@ -6075,79 +5418,6 @@ class TestNetAlertXHealer:
         assert result is False
         assert len(gate.require_approval_calls) == 1
 
-    def test_ha_integration_approval_writes_automation(self):
-        """When approved, _fix_ha_automation_fields writes fixed content."""
-        import asyncio
-
-        from utils.agent.autonomy import FakeAutonomyGate
-        from utils.hitl.notify import FakeNotifier
-        from utils.ha.ssh_client import FakeSSHClient
-
-        old_yaml = "- trigger:\n    platform: webhook\n    eve_mac: '{{trigger.json.eve_mac}}'\n"
-        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
-        notifier = FakeNotifier(approve=True)
-        ssh = FakeSSHClient()
-        ha_ssh = FakeSSHClient(
-            file_contents={
-                "/config/automations.yaml": old_yaml,
-                "/config/configuration.yaml": "homeassistant:\n  name: Home\n",
-            },
-            command_results={"ha backup new": (0, "Slug: test-slug-nax\n", "")},
-        )
-        healer = self._make_healer(
-            gate=gate, ssh_client=ssh, ha_ssh_client=ha_ssh, notifier=notifier
-        )
-        asyncio.run(healer.heal(self._make_diag("ha_integration")))
-
-        assert "/config/automations.yaml" in ha_ssh.written_files
-        written = ha_ssh.written_files["/config/automations.yaml"]
-        assert "eveMac" in written
-        assert "eve_mac" not in written
-
-    def test_ha_automation_no_changes_does_not_write(self):
-        """If automation already uses camelCase, no write happens."""
-        import asyncio
-
-        from utils.agent.autonomy import FakeAutonomyGate
-        from utils.hitl.notify import FakeNotifier
-        from utils.ha.ssh_client import FakeSSHClient
-
-        camel_yaml = (
-            "- trigger:\n    platform: webhook\n    eveMac: '{{trigger.json.eveMac}}'\n"
-        )
-        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
-        notifier = FakeNotifier(approve=True)
-        ha_ssh = FakeSSHClient(file_contents={"/config/automations.yaml": camel_yaml})
-        healer = self._make_healer(gate=gate, ha_ssh_client=ha_ssh, notifier=notifier)
-        asyncio.run(healer.heal(self._make_diag("ha_integration")))
-
-        # Already correct — no write
-        assert "/config/automations.yaml" not in ha_ssh.written_files
-
-    def test_rewrite_app_conf_creates_file_if_missing(self):
-        """app.conf write proceeds even when file doesn't exist yet."""
-        import asyncio
-
-        from utils.agent.autonomy import FakeAutonomyGate
-        from utils.ha.ssh_client import FakeSSHClient
-
-        gate = FakeAutonomyGate(auto_execute_result=True)
-        ssh = FakeSSHClient()  # no file contents → FileNotFoundError on read
-        ha_ssh = FakeSSHClient(
-            file_contents={
-                "/config/configuration.yaml": "homeassistant:\n  name: Home\n"
-            }
-        )
-        healer = self._make_healer(gate=gate, ssh_client=ssh, ha_ssh_client=ha_ssh)
-        asyncio.run(
-            healer.heal(
-                self._make_diag(
-                    "mqtt", recommended_fix="MQTT_BROKER=homeassistant.local"
-                )
-            )
-        )
-        assert "/data/app.conf" in ssh.written_files
-
     def test_restart_container_addon_mode(self, monkeypatch):
         """In add-on mode, _restart_container runs 'ha apps restart <slug>' on ha_ssh."""
         import asyncio
@@ -6173,38 +5443,6 @@ class TestNetAlertXHealer:
         ), ha_ssh.commands_run
         assert not any("docker restart" in cmd for cmd in nax_ssh.commands_run)
 
-    def test_rewrite_app_conf_addon_mode(self, monkeypatch):
-        """In add-on mode, app.conf is read/written at /app_configs/<slug>/config/app.conf via ha_ssh."""
-        import asyncio
-
-        from utils.agent.autonomy import FakeAutonomyGate
-        from utils.ha.ssh_client import FakeSSHClient
-
-        slug = "db21ed7f_netalertx_fa"
-        monkeypatch.setattr(
-            "netalertx.installer.resolve_addon_slug", lambda db_path=None: slug
-        )
-        conf_path = f"/app_configs/{slug}/config/app.conf"
-        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
-        nax_ssh = FakeSSHClient()
-        ha_ssh = FakeSSHClient(
-            file_contents={
-                conf_path: "MQTT_BROKER=oldhost\n",
-                "/config/configuration.yaml": "homeassistant:\n  name: Home\n",
-            }
-        )
-        healer = self._make_healer(gate=gate, ssh_client=nax_ssh, ha_ssh_client=ha_ssh)
-        asyncio.run(
-            healer.heal(
-                self._make_diag(
-                    "mqtt", recommended_fix="MQTT_BROKER=homeassistant.local"
-                )
-            )
-        )
-
-        assert conf_path in ha_ssh.written_files
-        assert nax_ssh.written_files == {}
-
     def test_database_category_uses_require_approval(self):
         """database/version categories send notification and don't write files."""
         import asyncio
@@ -6222,66 +5460,9 @@ class TestNetAlertXHealer:
         assert len(gate.require_approval_calls) >= 1
         assert ssh.written_files == {}
 
-    def test_mqtt_ha_config_no_mqtt_key_skips_write(self):
-        """When HA configuration.yaml has no mqtt: key, _remove_ha_mqtt_key does nothing."""
-        import asyncio
-
-        from utils.agent.autonomy import FakeAutonomyGate
-        from utils.hitl.notify import FakeNotifier
-        from utils.ha.ssh_client import FakeSSHClient
-
-        gate = FakeAutonomyGate(auto_execute_result=True, approval_result=True)
-        notifier = FakeNotifier(approve=True)
-        ssh = FakeSSHClient(file_contents={"/data/app.conf": "MQTT_BROKER=x\n"})
-        ha_ssh = FakeSSHClient(
-            file_contents={
-                "/config/configuration.yaml": "homeassistant:\n  name: Home\n"
-            }
-        )
-        healer = self._make_healer(
-            gate=gate, ssh_client=ssh, ha_ssh_client=ha_ssh, notifier=notifier
-        )
-        asyncio.run(healer.heal(self._make_diag("mqtt")))
-
-        # HA config had no mqtt: key, so only app.conf was written
-        assert "/config/configuration.yaml" not in ha_ssh.written_files
-
     # -----------------------------------------------------------------------
     # run_heal (item 58) — dashboard-triggered named action dispatch
     # -----------------------------------------------------------------------
-
-    def test_run_heal_fix_webhook_fields_calls_automation_fix(
-        self, tmp_path, monkeypatch
-    ):
-        """run_heal('fix_webhook_fields') calls _fix_ha_automation_fields."""
-        from agents import ha_agent_sandbox_engine
-        from utils.agent.autonomy import FakeAutonomyGate
-
-        db = str(tmp_path / "healer_test.db")
-        monkeypatch.setattr(ha_agent_sandbox_engine, "DB_PATH", db)
-        ha_agent_sandbox_engine.init_local_database()
-
-        called = []
-
-        from netalertx.healer import NetAlertXHealer
-        from utils.ha.ssh_client import FakeSSHClient
-        from utils.hitl.notify import FakeNotifier
-
-        healer = NetAlertXHealer(
-            gate=FakeAutonomyGate(),
-            ssh_client=FakeSSHClient(),
-            ha_ssh_client=FakeSSHClient(),
-            api_client=_FakeAPIClient(),
-            notifier=FakeNotifier(approve=True),
-            db_path=db,
-        )
-
-        async def _fake_fix(self_inner):  # noqa: N805
-            called.append("fix_ha_automation_fields")
-
-        monkeypatch.setattr(NetAlertXHealer, "_fix_ha_automation_fields", _fake_fix)
-        asyncio.run(healer.run_heal("fix_webhook_fields"))
-        assert called == ["fix_ha_automation_fields"]
 
     def test_run_heal_unknown_action_raises(self, tmp_path):
         """run_heal with an unknown action raises ValueError."""
@@ -6351,130 +5532,7 @@ class _FakeHealer:
 
 
 class TestNetAlertXMaintenanceValidator:
-    """Tests for the three new validators in config_validator.py (item 19)."""
-
-    # ── validate_ha_automation_files ─────────────────────────────────────────
-
-    def test_netalertx_webhook_snake_case_detected(self):
-        from netalertx.config_validator import validate_ha_automation_files
-
-        files = {
-            "automations.yaml": (
-                "- trigger:\n"
-                "  - platform: webhook\n"
-                "    webhook_id: netalertx_event\n"
-                "  action:\n"
-                "  - data:\n"
-                "      mac: '{{ trigger.json.eve_mac }}'\n"
-            )
-        }
-        issues = validate_ha_automation_files(files)
-        assert any(i.field == "eve_mac" for i in issues)
-
-    def test_non_netalertx_automation_ignored(self):
-        from netalertx.config_validator import validate_ha_automation_files
-
-        files = {
-            "automations.yaml": (
-                "- trigger:\n"
-                "  - platform: webhook\n"
-                "    webhook_id: some_other_event\n"
-                "  action:\n"
-                "  - data:\n"
-                "      mac: '{{ trigger.json.eve_mac }}'\n"
-            )
-        }
-        # No 'netalertx' in the content → ignored
-        assert validate_ha_automation_files(files) == []
-
-    def test_camelcase_fields_return_no_issues(self):
-        from netalertx.config_validator import validate_ha_automation_files
-
-        files = {
-            "automations.yaml": (
-                "- trigger:\n"
-                "  - platform: webhook\n"
-                "    webhook_id: netalertx_event\n"
-                "  action:\n"
-                "  - data:\n"
-                "      mac: '{{ trigger.json.eveMac }}'\n"
-                "      ip: '{{ trigger.json.eveIp }}'\n"
-            )
-        }
-        assert validate_ha_automation_files(files) == []
-
-    def test_multiple_files_only_netalertx_checked(self):
-        from netalertx.config_validator import validate_ha_automation_files
-
-        files = {
-            "light_auto.yaml": "- trigger:\n  - platform: webhook\n    webhook_id: lights\n  action:\n  - data:\n      eve_mac: x\n",
-            "nax_auto.yaml": "- trigger:\n  - platform: webhook\n    webhook_id: netalertx_event\n  action:\n  - data:\n      eve_mac: '{{ trigger.json.eve_mac }}'\n",
-        }
-        issues = validate_ha_automation_files(files)
-        # Only nax_auto.yaml is a NetAlertX automation
-        assert all("nax_auto.yaml" in i.message for i in issues)
-        assert len(issues) == 1
-
-    def test_filename_appears_in_issue_message(self):
-        from netalertx.config_validator import validate_ha_automation_files
-
-        files = {
-            "my_netalertx_automation.yaml": "trigger:\n- platform: webhook\n  webhook_id: netalertx_hook\naction:\n- data:\n    mac: '{{ trigger.json.eve_mac }}'\n"
-        }
-        issues = validate_ha_automation_files(files)
-        assert any("my_netalertx_automation.yaml" in i.message for i in issues)
-
-    # ── validate_mqtt_entity_coverage ────────────────────────────────────────
-
-    def test_device_absent_from_ha_returns_warning(self):
-        from netalertx.config_validator import validate_mqtt_entity_coverage
-
-        devices = [{"devMac": "AA:BB:CC:DD:EE:FF", "devName": "router"}]
-        ha_states: list[dict] = []
-        issues = validate_mqtt_entity_coverage(devices, ha_states)
-        assert len(issues) == 1
-        assert issues[0].field == "mqtt_entity_divergence"
-        assert issues[0].severity == "WARNING"
-        assert "AA:BB:CC:DD:EE:FF" in issues[0].message
-
-    def test_device_present_in_ha_returns_no_issue(self):
-        from netalertx.config_validator import validate_mqtt_entity_coverage
-
-        devices = [{"devMac": "AA:BB:CC:DD:EE:FF", "devName": "router"}]
-        ha_states = [
-            {
-                "entity_id": "device_tracker.router",
-                "attributes": {"mac_address": "AA:BB:CC:DD:EE:FF"},
-            }
-        ]
-        assert validate_mqtt_entity_coverage(devices, ha_states) == []
-
-    def test_mac_normalization_matches_different_formats(self):
-        from netalertx.config_validator import validate_mqtt_entity_coverage
-
-        devices = [{"devMac": "aabbccddeeff", "devName": "switch"}]
-        ha_states = [
-            {
-                "entity_id": "device_tracker.switch",
-                "attributes": {"mac_address": "AA:BB:CC:DD:EE:FF"},
-            }
-        ]
-        # Both normalize to AA:BB:CC:DD:EE:FF → no divergence
-        assert validate_mqtt_entity_coverage(devices, ha_states) == []
-
-    def test_empty_mac_skipped(self):
-        from netalertx.config_validator import validate_mqtt_entity_coverage
-
-        devices = [{"devMac": "", "devName": "unknown"}]
-        assert validate_mqtt_entity_coverage(devices, []) == []
-
-    def test_ha_state_without_mac_attribute_ignored(self):
-        from netalertx.config_validator import validate_mqtt_entity_coverage
-
-        devices = [{"devMac": "AA:BB:CC:DD:EE:FF", "devName": "router"}]
-        ha_states = [{"entity_id": "device_tracker.router", "attributes": {}}]
-        issues = validate_mqtt_entity_coverage(devices, ha_states)
-        assert len(issues) == 1
+    """Tests for the validators in config_validator.py."""
 
     # ── validate_db_row_counts ────────────────────────────────────────────────
 
@@ -6579,118 +5637,6 @@ class TestNetAlertXMaintenanceHealer:
             notifier=notifier,
             db_path=db_path,
         )
-
-    # ── webhook field fix ────────────────────────────────────────────────────
-
-    def test_webhook_snake_case_level_4_auto_fixes(self):
-        import asyncio
-
-        from utils.agent.autonomy import FakeAutonomyGate
-        from utils.ha.ssh_client import FakeSSHClient
-
-        gate = FakeAutonomyGate(auto_execute_result=True)
-        ha_ssh = FakeSSHClient(
-            file_contents={
-                "/config/automations.yaml": (
-                    "- trigger:\n  - platform: webhook\n    webhook_id: netalertx_event\n"
-                    "  action:\n  - data:\n      mac: eve_mac\n"
-                )
-            },
-            command_results={"ha backup new": (0, "Slug: test-slug-nax\n", "")},
-        )
-        healer = self._make_healer(gate=gate, ha_ssh_client=ha_ssh)
-        issue = self._make_issue("eve_mac", severity="MEDIUM")
-        asyncio.run(healer.heal_maintenance_issues([issue]))
-
-        # automations.yaml was written (snake_case replaced)
-        assert "/config/automations.yaml" in ha_ssh.written_files
-        # No HITL call needed at level 4
-        assert len(gate.require_approval_calls) == 0
-
-    def test_webhook_snake_case_level_3_requires_approval(self):
-        import asyncio
-
-        from utils.agent.autonomy import FakeAutonomyGate
-        from utils.hitl.notify import FakeNotifier
-        from utils.ha.ssh_client import FakeSSHClient
-
-        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
-        notifier = FakeNotifier(approve=False)
-        ha_ssh = FakeSSHClient(
-            file_contents={
-                "/config/automations.yaml": "- trigger:\n  - platform: webhook\n    webhook_id: netalertx_event\n"
-            }
-        )
-        healer = self._make_healer(gate=gate, ha_ssh_client=ha_ssh, notifier=notifier)
-        issue = self._make_issue("eve_mac", severity="MEDIUM")
-        asyncio.run(healer.heal_maintenance_issues([issue]))
-
-        # Approval was requested but rejected → no write
-        assert len(gate.require_approval_calls) == 1
-        assert ha_ssh.written_files == {}
-
-    def test_webhook_snake_case_level_3_approval_writes(self):
-        import asyncio
-
-        from utils.agent.autonomy import FakeAutonomyGate
-        from utils.hitl.notify import FakeNotifier
-        from utils.ha.ssh_client import FakeSSHClient
-
-        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
-        notifier = FakeNotifier(approve=True)
-        ha_ssh = FakeSSHClient(
-            file_contents={
-                "/config/automations.yaml": (
-                    "- trigger:\n  - platform: webhook\n    webhook_id: netalertx_event\n"
-                    "  action:\n  - data:\n      mac: eve_mac\n"
-                )
-            },
-            command_results={"ha backup new": (0, "Slug: test-slug-nax\n", "")},
-        )
-        healer = self._make_healer(gate=gate, ha_ssh_client=ha_ssh, notifier=notifier)
-        issue = self._make_issue("eve_mac", severity="MEDIUM")
-        asyncio.run(healer.heal_maintenance_issues([issue]))
-
-        assert "/config/automations.yaml" in ha_ssh.written_files
-
-    # ── MQTT divergence: notify only at all levels ───────────────────────────
-
-    def test_mqtt_divergence_sends_notifier_event_no_writes(self):
-        import asyncio
-
-        from utils.agent.autonomy import FakeAutonomyGate
-        from utils.hitl.notify import FakeNotifier
-        from utils.ha.ssh_client import FakeSSHClient
-
-        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
-        notifier = FakeNotifier(approve=False)
-        ssh = FakeSSHClient()
-        healer = self._make_healer(gate=gate, ssh_client=ssh, notifier=notifier)
-        issue = self._make_issue(
-            "mqtt_entity_divergence",
-            message="Device AA:BB:CC:DD:EE:FF not found as MQTT entity",
-            severity="WARNING",
-        )
-        asyncio.run(healer.heal_maintenance_issues([issue]))
-
-        assert len(notifier.sent) == 1
-        assert "mqtt_entity_divergence" in notifier.sent[0]["payload"]["field"]
-        assert ssh.written_files == {}
-        assert ssh.commands_run == []
-
-    def test_mqtt_divergence_no_hitl_gate_called(self):
-        import asyncio
-
-        from utils.agent.autonomy import FakeAutonomyGate
-        from utils.hitl.notify import FakeNotifier
-
-        gate = FakeAutonomyGate(auto_execute_result=True)
-        notifier = FakeNotifier(approve=True)
-        healer = self._make_healer(gate=gate, notifier=notifier)
-        issue = self._make_issue("mqtt_entity_divergence", severity="WARNING")
-        asyncio.run(healer.heal_maintenance_issues([issue]))
-
-        assert len(gate.require_approval_calls) == 0
 
     # ── DB row count: DBCLNP cleanup at level 4 only ─────────────────────────
 
@@ -6860,13 +5806,9 @@ class TestNetAlertXOneShotDiagnose:
 
     def _valid_app_conf(self) -> str:
         return (
-            "MQTT_BROKER='localhost'\n"
-            "MQTT_PORT=1883\n"
-            "HA_URL='http://homeassistant.local:8123'\n"
-            "HA_BEARER_TOKEN='token'\n"
             "SCAN_SUBNETS=['192.168.1.0/24   eth0']\n"
             "TIMEZONE='UTC'\n"
-            "LOADED_PLUGINS=['MQTT', 'ARPSCAN']\n"
+            "LOADED_PLUGINS=['ARPSCAN']\n"
         )
 
     # ── tests ─────────────────────────────────────────────────────────────────
@@ -7012,10 +5954,10 @@ class TestNetAlertXOneShotDiagnose:
         from netalertx.one_shot_diagnose import run_diagnose
 
         diag = NetAlertXDiagnostic(
-            issue="MQTT_BROKER missing from app.conf",
+            issue="SCAN_SUBNETS missing from app.conf",
             severity="HIGH",
-            category="mqtt",
-            recommended_fix="Add MQTT_BROKER to app.conf.",
+            category="networking",
+            recommended_fix="Add SCAN_SUBNETS to app.conf.",
             affected_netalertx_version="v26.7.1",
         )
         llm = FakeToolCallingLLMClient(
@@ -7036,7 +5978,7 @@ class TestNetAlertXOneShotDiagnose:
             ]
         )
         healer = self._FakeHealer()
-        # app.conf with only TIMEZONE → MQTT_BROKER and other required keys missing
+        # app.conf with only TIMEZONE → SCAN_SUBNETS and LOADED_PLUGINS missing
 
         asyncio.run(
             run_diagnose(
@@ -7051,7 +5993,7 @@ class TestNetAlertXOneShotDiagnose:
 
         assert len(llm.calls) == 1, "LLM should be called when config issues are found"
         call_prompt = llm.calls[0]["messages"][1]["content"]
-        assert "MQTT_BROKER" in call_prompt, "Config issue should appear in LLM prompt"
+        assert "SCAN_SUBNETS" in call_prompt, "Config issue should appear in LLM prompt"
 
     def test_critical_log_line_triggers_triage(self):
         import asyncio
@@ -7246,9 +6188,7 @@ class TestNetAlertXOneShotDiagnose:
                 }
             ]
         )
-        ha_ssh = FakeSSHClient(
-            command_results={"ha apps info core_mosquitto": (0, "state: started\n", "")}
-        )
+        ha_ssh = FakeSSHClient()
 
         asyncio.run(
             run_diagnose(
@@ -7521,7 +6461,7 @@ class TestStep8SlugWriteback:
 
         return FileNotifier(str(watch_dir) if watch_dir else "/tmp/test_hitl_phase8")
 
-    def _http_with_mqtt(self):
+    def _http_client(self):
         import httpx
 
         return httpx.AsyncClient(
@@ -7536,7 +6476,7 @@ class TestStep8SlugWriteback:
         conf_path = f"{data_path}/config/app.conf"
         return FakeSSHClient(
             file_contents={
-                conf_path: "MQTT_BROKER = 'localhost'\n",
+                conf_path: "LOADED_PLUGINS = ['ARPSCAN']\n",
                 "/config/configuration.yaml": "homeassistant:\n  time_zone: UTC\n",
                 "/config/automations.yaml": automations,
             },
@@ -7580,7 +6520,7 @@ class TestStep8SlugWriteback:
                 self._gate_auto(),
                 self._notifier(tmp_path / "hitl"),
                 db_path=db,
-                http_client=self._http_with_mqtt(),
+                http_client=self._http_client(),
             )
         )
 
@@ -7622,7 +6562,7 @@ class TestStep8SlugWriteback:
                 self._gate_auto(),
                 self._notifier(tmp_path / "hitl"),
                 db_path=db,
-                http_client=self._http_with_mqtt(),
+                http_client=self._http_client(),
             )
         )
 
@@ -9879,7 +8819,6 @@ class TestNetalertxDiagnosisQueueWiring:
         return HealthReport(
             last_scan_age_minutes=25,
             device_counts={"total": 0, "online": 0},
-            mqtt_active=False,
             anomalies=["No devices discovered"],
             netalertx_version="v26.7.1",
         )

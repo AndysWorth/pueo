@@ -1,11 +1,12 @@
-"""NetAlertX idempotent installer — 8-step state machine (items 11–12).
+"""NetAlertX idempotent installer — 6-step state machine (items 11–12).
 
 State machine (persisted to netalertx_install_state after each completed step):
 
-  NOT_INSTALLED → MQTT_INSTALLED → MQTT_RUNNING → ADDON_REPO_ADDED
+  NOT_INSTALLED → [MQTT_INSTALLED → MQTT_RUNNING] → ADDON_REPO_ADDED
     → ADDON_INSTALLED → ADDON_RUNNING → NETALERTX_CONFIGURED
-    → HA_MQTT_INTEGRATION_VERIFIED → HA_AUTOMATION_CREATED → FULLY_OPERATIONAL
+    → [HA_MQTT_INTEGRATION_VERIFIED] → HA_AUTOMATION_CREATED → FULLY_OPERATIONAL
 
+States in brackets are legacy upgrade states that are auto-advanced on entry.
 Steps 3 and 4 share the MQTT_RUNNING → ADDON_REPO_ADDED transition:
   - Step 3 detects the scan interface and persists it to details_json (state stays
     MQTT_RUNNING) so it can be skipped on re-entry.
@@ -36,8 +37,6 @@ from paths import get_dirs as _get_dirs
 from config import (
     CONFIG_REMOTE_PATH,
     DB_PATH,
-    HA_API_TOKEN,
-    HA_HOST,
     NETALERTX_ADDON_REPOSITORY_URL,
     NETALERTX_ADDON_SLUG,
     NETALERTX_API_PORT,
@@ -363,104 +362,6 @@ async def _step1_detect_deployment(
     details["mode"] = mode
     _write_install_state(db_path, "MQTT_INSTALLED", details, cid)
     log.info("step1_complete", mode=mode, correlation_id=cid)
-    return True
-
-
-async def _step2_install_mosquitto(
-    ssh_client: "SSHClientProtocol",
-    gate: "AutonomyGate",
-    notifier: "NotifierProtocol",
-    details: dict,
-    cid: str,
-    db_path: str,
-    llm_client: "LLMClientProtocol | None" = None,
-) -> bool:
-    """Install and start the Mosquitto MQTT add-on if needed.
-
-    Advances state to MQTT_RUNNING on success.
-    """
-    log.info("step2_start", step="install_mosquitto", correlation_id=cid)
-
-    _, stdout, _ = await ssh_client.run("ha apps info core_mosquitto")
-    state_match = re.search(r"state:\s*(\S+)", stdout, re.IGNORECASE)
-    current_addon_state = (
-        _normalize_addon_state(state_match.group(1)) if state_match else "unknown"
-    )
-
-    if current_addon_state in ("unknown",) or "not found" in stdout.lower():
-        approved = await gate.require_approval(
-            subject="NetAlertX installer: install Mosquitto",
-            body=(
-                "Mosquitto MQTT broker (core_mosquitto) is not installed. "
-                "Installing it will affect all HA MQTT integrations — approve?"
-            ),
-            payload={"notification_id": f"{cid}_step2_install", "step": 2},
-            notifier=notifier,
-            risk=RiskLevel.HIGH,
-        )
-        if not approved:
-            log.warning("step2_mosquitto_install_rejected", correlation_id=cid)
-            return False
-        log.info(
-            "running_command", cmd="ha apps install core_mosquitto", correlation_id=cid
-        )
-        await ssh_client.run("ha apps install core_mosquitto", check=True)
-        log.info(
-            "running_command", cmd="ha apps start core_mosquitto", correlation_id=cid
-        )
-        await ssh_client.run("ha apps start core_mosquitto", check=True)
-    elif current_addon_state != "running":
-        log.info(
-            "running_command", cmd="ha apps start core_mosquitto", correlation_id=cid
-        )
-        await ssh_client.run("ha apps start core_mosquitto", check=True)
-
-    running = await _poll_addon_state(ssh_client, "core_mosquitto", "running")
-    if not running:
-        diagnostic, llm_trace, evidence = await diagnose_installer_failure(
-            "mosquitto_start", ssh_client, llm_client
-        )
-        log.error(
-            "step2_mosquitto_not_running",
-            hypothesis=diagnostic.primary_hypothesis,
-            confidence=diagnostic.confidence,
-            correlation_id=cid,
-        )
-        approved = await gate.require_approval(
-            subject="NetAlertX installer: Mosquitto failed to start",
-            body=format_diagnostic_for_hitl(diagnostic),
-            payload={
-                "notification_id": f"{cid}_step2_abort",
-                "step": 2,
-                "can_auto_fix": diagnostic.can_auto_fix,
-                "auto_fix_command": diagnostic.auto_fix_command,
-                "diagnosis": diagnostic.model_dump(),
-                "evidence_raw": evidence,
-                "llm_trace": llm_trace.as_dict(),
-            },
-            notifier=notifier,
-            risk=RiskLevel.HIGH,
-        )
-        if approved and diagnostic.can_auto_fix and diagnostic.auto_fix_command:
-            ec, _, _ = await ssh_client.run(diagnostic.auto_fix_command, check=False)
-            log.info(
-                "step2_auto_fix_attempted",
-                command=diagnostic.auto_fix_command,
-                ec=ec,
-                correlation_id=cid,
-            )
-            if ec == 0:
-                running = await _poll_addon_state(
-                    ssh_client, "core_mosquitto", "running"
-                )
-                if running:
-                    _write_install_state(db_path, "MQTT_RUNNING", details, cid)
-                    log.info("step2_complete_after_fix", correlation_id=cid)
-                    return True
-        return False
-
-    _write_install_state(db_path, "MQTT_RUNNING", details, cid)
-    log.info("step2_complete", correlation_id=cid)
     return True
 
 
@@ -999,13 +900,9 @@ async def _step6_configure_app_conf(
     # Merge LOADED_PLUGINS — preserve existing plugins
     plugins_m = re.search(r"LOADED_PLUGINS\s*=\s*(\[.*?\])", original_conf, re.DOTALL)
     plugins_val = plugins_m.group(1) if plugins_m else "[]"
-    merged_plugins = _merge_plugins(plugins_val, ["MQTT", "ARPSCAN"])
+    merged_plugins = _merge_plugins(plugins_val, ["ARPSCAN"])
 
     updates: dict[str, str] = {
-        "MQTT_BROKER": f"'{NETALERTX_HOST}'",
-        "MQTT_PORT": "1883",
-        "HA_URL": f"'http://{HA_HOST}:8123'",
-        "HA_BEARER_TOKEN": f"'{HA_API_TOKEN}'",
         "SCAN_SUBNETS": scan_subnets_val,
         "TIMEZONE": f"'{timezone}'",
         "LOADED_PLUGINS": merged_plugins,
@@ -1073,99 +970,6 @@ async def _step6_configure_app_conf(
 
     _write_install_state(db_path, "NETALERTX_CONFIGURED", details, cid)
     log.info("step6_complete", correlation_id=cid)
-    return True
-
-
-# ── step 7: verify HA MQTT integration ───────────────────────────────────────
-
-
-async def _step7_verify_mqtt_integration(
-    ssh_client: "SSHClientProtocol",
-    gate: "AutonomyGate",
-    notifier: "NotifierProtocol",
-    details: dict,
-    cid: str,
-    db_path: str,
-    http_client: httpx.AsyncClient,
-) -> bool:
-    """Check that the HA MQTT integration is configured (UI-only step).
-
-    If not configured, requests approval with manual instructions.
-    Advances state to HA_MQTT_INTEGRATION_VERIFIED.
-    """
-    log.info("step7_start", step="verify_mqtt_integration", correlation_id=cid)
-
-    entries_url = f"http://{HA_HOST}:8123/api/config/config_entries/entry"
-
-    async def _mqtt_configured() -> bool:
-        # Primary: HTTP API (requires HA_API_TOKEN to be set)
-        if HA_API_TOKEN:
-            try:
-                resp = await http_client.get(
-                    entries_url,
-                    headers={"Authorization": f"Bearer {HA_API_TOKEN}"},
-                    timeout=10,
-                )
-                if resp.status_code == 200:
-                    entries = resp.json()
-                    if isinstance(entries, list) and any(
-                        e.get("domain") == "mqtt" for e in entries
-                    ):
-                        return True
-            except Exception:  # nosec B110
-                pass
-
-        # Fallback: read config entries file directly over SSH.
-        # The JSON uses "domain":"mqtt" (no spaces) in all known HA versions.
-        try:
-            _, out, _ = await ssh_client.run(
-                'grep -c \'"domain":"mqtt"\' '
-                "/config/.storage/core.config_entries 2>/dev/null || true"
-            )
-            if out.strip() and int(out.strip()) > 0:
-                return True
-        except Exception:  # nosec B110
-            pass
-
-        return False
-
-    if await _mqtt_configured():
-        log.info("step7_mqtt_found", correlation_id=cid)
-        _write_install_state(db_path, "HA_MQTT_INTEGRATION_VERIFIED", details, cid)
-        return True
-
-    # Not found — send approval card with manual setup instructions
-    approved = await gate.require_approval(
-        subject="NetAlertX installer: configure MQTT integration in HA",
-        body=(
-            "HA MQTT integration is not yet configured. Set it up manually:\n"
-            "  1. Settings → Devices & Services → Add Integration\n"
-            "  2. Search for 'MQTT'\n"
-            f"  3. Broker: {HA_HOST}, Port: 1883\n"
-            "  4. Save, then signal approval to continue.\n\n"
-            "Note: do NOT add `mqtt:` to configuration.yaml — "
-            "that key disables MQTT auto-discovery on current HA."
-        ),
-        payload={"notification_id": f"{cid}_step7_mqtt", "step": 7},
-        notifier=notifier,
-        risk=RiskLevel.LOW,
-    )
-    if not approved:
-        log.warning("step7_mqtt_rejected", correlation_id=cid)
-        return False
-
-    # Recheck after user approval
-    if await _mqtt_configured():
-        log.info("step7_mqtt_verified_after_approval", correlation_id=cid)
-    else:
-        # User approved but API not yet reflecting — proceed (user confirmed manually)
-        log.warning(
-            "step7_mqtt_not_detected_after_approval",
-            note="proceeding on user approval",
-            correlation_id=cid,
-        )
-
-    _write_install_state(db_path, "HA_MQTT_INTEGRATION_VERIFIED", details, cid)
     return True
 
 
@@ -1296,13 +1100,10 @@ async def run_steps_5_to_8(
             return _read_install_state(db_path)[0]
         current_state, details = _read_install_state(db_path)
 
-    # Step 7: NETALERTX_CONFIGURED → HA_MQTT_INTEGRATION_VERIFIED
+    # Step 7 (MQTT verification) removed — auto-advance legacy NETALERTX_CONFIGURED state
     if _STATE_RANK[current_state] < _STATE_RANK["HA_MQTT_INTEGRATION_VERIFIED"]:
-        ok = await _step7_verify_mqtt_integration(
-            ssh_client, gate, notifier, details, cid, db_path, _http
-        )
-        if not ok:
-            return _read_install_state(db_path)[0]
+        _write_install_state(db_path, "HA_MQTT_INTEGRATION_VERIFIED", details, cid)
+        log.info("step7_legacy_advance", correlation_id=cid)
         current_state, details = _read_install_state(db_path)
 
     # Step 8: HA_MQTT_INTEGRATION_VERIFIED / HA_AUTOMATION_CREATED → FULLY_OPERATIONAL
@@ -1392,13 +1193,10 @@ async def run_steps_1_to_4(
             return _read_install_state(db_path)[0]
         current_state, details = _read_install_state(db_path)
 
-    # Step 2: MQTT_INSTALLED → MQTT_RUNNING
+    # Step 2 (Mosquitto install) removed — auto-advance legacy MQTT_INSTALLED state
     if _STATE_RANK[current_state] < _STATE_RANK["MQTT_RUNNING"]:
-        ok = await _step2_install_mosquitto(
-            ssh_client, gate, notifier, details, cid, db_path, llm_client
-        )
-        if not ok:
-            return _read_install_state(db_path)[0]
+        _write_install_state(db_path, "MQTT_RUNNING", details, cid)
+        log.info("step2_legacy_advance", correlation_id=cid)
         current_state, details = _read_install_state(db_path)
 
     # Step 3: detect interface (state stays MQTT_RUNNING; stored in details_json)
