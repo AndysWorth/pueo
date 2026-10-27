@@ -1658,14 +1658,16 @@ async def supervisor_main(config_path: Path) -> None:
         from netalertx.event_router import NetAlertXEventRouter
 
         _nax_router = NetAlertXEventRouter(
-            notifier=notifier, gate=AutonomyGate(cfg.AUTONOMY_LEVEL)
+            notifier=notifier,
+            gate=AutonomyGate(cfg.AUTONOMY_LEVEL),
+            db_path=cfg.DB_PATH,
+            api_client=_nax_api,
         )
-        _nax_api_cap = _nax_api
         _nax_poll_interval = cfg.NETALERTX_EVENT_POLL_INTERVAL_MINUTES
         supervisor.start(
             "netalertx_event_poll",
             lambda: run_event_poll(
-                _nax_api_cap,
+                _nax_api,
                 _nax_router,
                 cfg.DB_PATH,
                 _nax_poll_interval,
@@ -1761,6 +1763,22 @@ async def supervisor_main(config_path: Path) -> None:
                                 _otc(_cfg_tok.DB_PATH)
                             except Exception:  # nosec B110
                                 pass
+                            if _nax_api is not None and _nax_ssh is not None:
+                                try:
+                                    from netalertx.reconcile import (
+                                        reconcile_existing_install as _reconcile_tok,
+                                    )
+
+                                    await _reconcile_tok(
+                                        _nax_api,
+                                        _nax_ssh,
+                                        notifier,
+                                        AutonomyGate(_cfg_tok.AUTONOMY_LEVEL),
+                                        _cfg_tok.DB_PATH,
+                                        _cfg_tok.NETALERTX_ADDON_SLUG,
+                                    )
+                                except Exception:  # nosec B110
+                                    pass
                         else:
                             _log_tok.warning("netalertx_startup_token_persist_failed")
                 except Exception as _exc:  # nosec B110
@@ -1770,7 +1788,8 @@ async def supervisor_main(config_path: Path) -> None:
 
             asyncio.ensure_future(_netalertx_startup_token_refresh())
 
-    # Case (d): token already set at startup + install in a done state → clear stale cards.
+    # Case (d): token already set at startup + install in a done state → clear stale cards
+    # and run reconcile (subnet drift fix + name sync).
     if (
         cfg.NETALERTX_ENABLED
         and cfg.NETALERTX_HOST
@@ -1787,6 +1806,33 @@ async def supervisor_main(config_path: Path) -> None:
                 _otc_d(cfg.DB_PATH)
             except Exception:  # nosec B110
                 pass
+
+            if _nax_api is not None and _nax_ssh is not None:
+                from netalertx.reconcile import (
+                    reconcile_existing_install as _reconcile_d,
+                )
+
+                _reconcile_d_api = _nax_api
+                _reconcile_d_ssh = _nax_ssh
+                _reconcile_d_notifier = notifier
+                _reconcile_d_gate = AutonomyGate(cfg.AUTONOMY_LEVEL)
+                _reconcile_d_db = cfg.DB_PATH
+                _reconcile_d_slug = cfg.NETALERTX_ADDON_SLUG
+
+                async def _do_reconcile_d() -> None:
+                    try:
+                        await _reconcile_d(
+                            _reconcile_d_api,
+                            _reconcile_d_ssh,
+                            _reconcile_d_notifier,
+                            _reconcile_d_gate,
+                            _reconcile_d_db,
+                            _reconcile_d_slug,
+                        )
+                    except Exception:  # nosec B110
+                        pass
+
+                asyncio.ensure_future(_do_reconcile_d())
 
     # Start the serialized work queue (must be called inside the running event loop).
     work_queue.start()

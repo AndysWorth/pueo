@@ -75,6 +75,10 @@ async def poll_once(
 ) -> int:
     """Fetch events newer than the stored high-water mark and route them.
 
+    On the very first run (HWM == 0.0), seeds the mark to the newest event
+    timestamp without routing anything, to prevent flooding cards for all
+    historical events.
+
     Returns the number of events routed.
     """
     if not api_client.has_token:
@@ -82,6 +86,14 @@ async def poll_once(
         return 0
     hwm = await asyncio.to_thread(_read_hwm, db_path)
     events = await api_client.get_events()
+
+    # First-run seeding: set the HWM to the newest event and route nothing.
+    if hwm == 0.0 and events:
+        newest = max((_parse_event_ts(e) for e in events), default=0.0)
+        if newest > 0.0:
+            await asyncio.to_thread(_write_hwm, db_path, newest)
+            log.info("netalertx_event_poll_first_run_seeded", newest_ts=newest)
+        return 0
 
     new_hwm = hwm
     routed = 0

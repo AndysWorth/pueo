@@ -195,11 +195,18 @@ class HaNameSync:
         return ""
 
     async def _process_one(
-        self, mac: str, dev: dict, ha_names: dict[str, str], report: SyncReport
+        self,
+        mac: str,
+        dev: dict,
+        ha_names: dict[str, str],
+        report: SyncReport,
+        extra_ip_names: dict[str, str] | None = None,
     ) -> None:
         """Apply Cases 1, 2, 4A, 4B for one device; collect Cases 3 and 4C into report."""
         dev_name: str = str(dev.get("devName") or "")
         ha_name = ha_names.get(mac, "")
+        if not ha_name and extra_ip_names:
+            ha_name = extra_ip_names.get(dev.get("devLastIP", ""), "")
 
         if ha_name:
             if _matches_auto_pattern(dev_name, self._patterns):
@@ -297,13 +304,23 @@ class HaNameSync:
             risk=RiskLevel.LOW,
         )
 
-    async def sync_names(self) -> SyncReport:
-        """Sync HA names into NetAlertX — all four Cases."""
+    async def sync_names(
+        self,
+        notify_unnamed: bool = True,
+        extra_ip_names: dict[str, str] | None = None,
+    ) -> SyncReport:
+        """Sync HA names into NetAlertX — all four Cases.
+
+        notify_unnamed=False skips the unnamed-devices approval card and
+        only logs them instead.  extra_ip_names provides a weak-evidence
+        {ip: name} fallback for devices without a MAC in HA (built from
+        config-entry host mappings by the caller).
+        """
         from utils.agent.autonomy import RiskLevel
 
         ha_names = await self.read_ha_names()
 
-        if not ha_names:
+        if not ha_names and notify_unnamed:
             await self._gate.require_approval(
                 subject="Pueo: HA has no MAC→name mappings",
                 body=(
@@ -324,13 +341,20 @@ class HaNameSync:
             if not mac:
                 log.warning("name_sync_skip_no_mac", dev_name=dev.get("devName", ""))
                 continue
-            await self._process_one(mac, dev, ha_names, report)
+            await self._process_one(mac, dev, ha_names, report, extra_ip_names)
 
         if report.conflicted:
             await self._resolve_conflicts(report)
 
         if report.unnamed:
-            await self._notify_unnamed(report)
+            if notify_unnamed:
+                await self._notify_unnamed(report)
+            else:
+                log.info(
+                    "name_sync_unnamed_suppressed",
+                    count=len(report.unnamed),
+                    macs=[e.mac for e in report.unnamed],
+                )
 
         log.info(
             "sync_names_complete",
