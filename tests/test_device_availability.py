@@ -2077,7 +2077,7 @@ class TestGetNetworkPresence:
         assert data["present"] is False
         assert data["ip_changed"] is None
 
-    def test_not_found_returns_present_false(self):
+    def test_not_found_returns_present_null(self):
         import asyncio, json
         from utils.agent.tool_registry import ToolCall
 
@@ -2093,8 +2093,9 @@ class TestGetNetworkPresence:
         )
         assert result.success
         data = json.loads(result.output)
-        assert data["netalertx_status"] == "ok"
-        assert data["present"] is False
+        # Device not in NAX inventory → not_in_netalertx, present=null (not false)
+        assert data["netalertx_status"] == "not_in_netalertx"
+        assert data["present"] is None
         assert data["ip"] is None
 
     def test_api_error_returns_failure(self):
@@ -2488,7 +2489,9 @@ class TestBuildPresenceContext:
         result = asyncio.run(
             build_presence_context(self._devices(), _FakeNAX(), _FakeWS())
         )
-        assert "no MAC mapping" in result
+        # Unmapped device: no MAC/IP candidates → reported as "unknown"
+        assert "unknown" in result
+        assert "no MAC/IP mapping" in result
 
     def test_not_found_in_netalertx(self):
         import asyncio
@@ -2554,11 +2557,11 @@ class TestBuildPresenceContext:
             async def get_device_registry(self):
                 raise RuntimeError("ws error")
 
-        # ws error → no MAC mapping → "no MAC mapping" line per device
+        # ws error → registry empty → candidates empty → "unknown"
         result = asyncio.run(
             build_presence_context(self._devices(), _FakeNAX(), _FailWS())
         )
-        assert "no MAC mapping" in result
+        assert "unknown" in result
 
     def test_no_ws_client_fallback(self):
         import asyncio
@@ -2570,8 +2573,9 @@ class TestBuildPresenceContext:
             async def get_devices(self):
                 return []
 
+        # no ws_client → registry empty → candidates empty → "unknown"
         result = asyncio.run(build_presence_context(self._devices(), _FakeNAX(), None))
-        assert "no MAC mapping" in result
+        assert "unknown" in result
 
     def test_header_present_in_block(self):
         import asyncio

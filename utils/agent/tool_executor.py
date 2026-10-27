@@ -3468,6 +3468,13 @@ class ToolExecutor:
             lookup_ip = identifier
         elif self._ws_client is not None:
             try:
+                from utils.ha.network_identity import (
+                    candidates_for_device,
+                    load_config_entry_hosts,
+                    load_manual_links,
+                    match_netalertx,
+                )
+
                 dev_reg = await self._ws_client.get_device_registry()
                 ent_reg: list[dict] = []
                 # Resolve entity ID → device_id first
@@ -3482,20 +3489,50 @@ class ToolExecutor:
                             target_device_id = ent.get("device_id", identifier)
                             break
 
+                device_entry: dict = {}
                 for dev in dev_reg:
-                    if dev.get("id") != target_device_id:
-                        continue
-                    for conn_type, conn_val in dev.get("connections", []):
-                        if conn_type == "mac":
-                            lookup_mac = conn_val.lower()
-                            break
-                        if conn_type == "ip":
-                            lookup_ip = conn_val
-                    if lookup_mac is None and lookup_ip is None:
-                        # Try config-entry data for host/ip keys
-                        for ce_id in dev.get("config_entries", []):
-                            pass  # config-entry host lookup not available here
-                    break
+                    if dev.get("id") == target_device_id:
+                        device_entry = dev
+                        break
+
+                host_by_entry = await load_config_entry_hosts(self._ha_ssh)
+                manual_links = await asyncio.to_thread(load_manual_links, self._db_path)
+                candidates = candidates_for_device(
+                    device_entry, host_by_entry, manual_links
+                )
+                nax_all = await self._api.get_devices()
+                result["netalertx_status"] = "ok"
+                nax_match, method = match_netalertx(candidates, nax_all)
+                if nax_match is not None:
+                    result["present"] = bool(nax_match.get("devPresentLastScan"))
+                    result["last_seen"] = nax_match.get("devLastSeen") or nax_match.get(
+                        "devLastConnection"
+                    )
+                    result["ip"] = nax_match.get("devLastIP")
+                    result["mac"] = (nax_match.get("devMac") or "").lower() or None
+                    result["name"] = nax_match.get("devName") or nax_match.get(
+                        "devAlias"
+                    )
+                    result["vendor"] = nax_match.get("devVendor")
+                    prev_ip = nax_match.get("devScanIPv4") or nax_match.get(
+                        "devFirstIP"
+                    )
+                    result["ip_changed"] = (
+                        bool(prev_ip and prev_ip != result["ip"]) if prev_ip else None
+                    )
+                    result["match_method"] = method
+                elif method == "unmapped":
+                    result["present"] = None
+                    result["netalertx_status"] = "unmapped"
+                else:
+                    result["present"] = None
+                    result["netalertx_status"] = "not_in_netalertx"
+
+                return ToolResult(
+                    tool_name="get_network_presence",
+                    success=True,
+                    output=json.dumps(result, default=str),
+                )
             except Exception:  # nosec B110
                 pass
 
@@ -3527,7 +3564,8 @@ class ToolExecutor:
                     bool(prev_ip and prev_ip != result["ip"]) if prev_ip else None
                 )
             else:
-                result["present"] = False
+                result["present"] = None
+                result["netalertx_status"] = "not_in_netalertx"
 
         except Exception as exc:  # nosec B110
             result["netalertx_status"] = "error"

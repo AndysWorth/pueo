@@ -114,45 +114,72 @@ async def build_presence_context(
     devices: list,  # list[dict] from OfflineFinding.devices
     netalertx_api_client: Optional[Any],  # Optional[NetAlertXAPIClient]
     ws_client: Optional[Any],  # Optional[HAWebSocketClientProtocol]
+    ssh_client: Optional[Any] = None,  # Optional[SSHClientProtocol]
+    db_path: Optional[str] = None,
 ) -> str:
     """Return a NetAlertX presence summary block for pre-injection into initial_context.
 
     Returns an empty string when NetAlertX is not configured, has no token, or
-    when any fetch fails.  Never raises.
+    when any fetch fails.  Never raises.  Unmapped devices are reported as
+    "unknown" rather than "absent" so the agent does not draw a wrong conclusion.
     """
     if netalertx_api_client is None or not getattr(
         netalertx_api_client, "has_token", False
     ):
         return ""
 
+    from utils.ha.network_identity import (
+        candidates_for_device,
+        load_config_entry_hosts,
+        load_manual_links,
+        match_netalertx,
+    )
+
     try:
-        mac_by_device_id: dict = {}
+        reg_by_id: dict[str, dict] = {}
         if ws_client is not None:
             try:
                 dev_reg = await ws_client.get_device_registry()
                 for dev in dev_reg:
-                    for conn_type, conn_val in dev.get("connections", []):
-                        if conn_type == "mac":
-                            mac_by_device_id[dev["id"]] = conn_val.lower()
-                            break
+                    reg_by_id[dev["id"]] = dev
             except Exception:  # nosec B110
                 pass
 
+        host_by_entry: dict[str, str] = {}
+        if ssh_client is not None:
+            host_by_entry = await load_config_entry_hosts(ssh_client)
+
+        manual_links: dict[str, str] = {}
+        if db_path:
+            import asyncio as _asyncio
+
+            manual_links = await _asyncio.to_thread(load_manual_links, db_path)
+
         nax_devices = await netalertx_api_client.get_devices()
-        mac_to_nax: dict = {(d.get("devMac") or "").lower(): d for d in nax_devices}
 
         lines: list = []
         for dev in devices:
             device_id = dev.get("device_id", "")
             name = dev.get("name", device_id)
-            mac = mac_by_device_id.get(device_id)
-            if mac is None:
-                lines.append(f"  - {name}: not found in NetAlertX (no MAC mapping)")
-                continue
-            nax_dev = mac_to_nax.get(mac)
+            registry_entry = reg_by_id.get(device_id, {})
+            candidates = candidates_for_device(
+                registry_entry, host_by_entry, manual_links
+            )
+            nax_dev, method = match_netalertx(candidates, nax_devices)
+
             if nax_dev is None:
-                lines.append(f"  - {name}: not found in NetAlertX (MAC {mac})")
+                if method == "unmapped":
+                    lines.append(
+                        f"  - {name}: unknown (no MAC/IP mapping for this device)"
+                    )
+                else:
+                    # not_in_netalertx — we had candidates but none matched
+                    best = next((v for k, v in candidates if k == "mac"), None) or next(
+                        (v for _, v in candidates), "no identifier"
+                    )
+                    lines.append(f"  - {name}: not found in NetAlertX ({best})")
                 continue
+
             present = bool(nax_dev.get("devPresentLastScan"))
             last_seen = (
                 nax_dev.get("devLastSeen")
@@ -160,9 +187,11 @@ async def build_presence_context(
                 or "unknown"
             )
             current_ip = nax_dev.get("devLastIP") or "unknown"
+            nax_mac = (nax_dev.get("devMac") or "").lower()
+            method_note = "" if method in ("mac", "manual") else f" matched by {method}"
             lines.append(
                 f"  - {name}: {'present on LAN' if present else 'absent from LAN'}"
-                f" (MAC {mac}, IP {current_ip}, last_seen {last_seen})"
+                f" (MAC {nax_mac}, IP {current_ip}, last_seen {last_seen}{method_note})"
             )
 
         if not lines:
@@ -264,7 +293,11 @@ async def run_device_availability_investigation(
         prior_keys = [subject_key]
 
     presence_block = await build_presence_context(
-        finding.devices, netalertx_api_client, ws_client
+        finding.devices,
+        netalertx_api_client,
+        ws_client,
+        ssh_client=_ssh_real,
+        db_path=db_path,
     )
     if presence_block:
         initial_context += presence_block

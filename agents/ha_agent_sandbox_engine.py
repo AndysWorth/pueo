@@ -6,7 +6,7 @@ import hashlib
 import sqlite3
 import time
 import uuid
-from typing import Optional
+from typing import Any, Optional
 
 import config as _config
 from config import (
@@ -30,6 +30,9 @@ from config import (
     CLOUD_MAX_COST_PER_INCIDENT_USD,
     CLOUD_MAX_DAILY_SPEND_USD,
     DEVELOPMENT_MODE,
+    NETALERTX_HOST,
+    NETALERTX_API_PORT,
+    NETALERTX_API_TOKEN,
 )
 from interfaces import (
     KnowledgeStoreClientProtocol,
@@ -821,6 +824,7 @@ async def main(
     notifier: Optional[NotifierProtocol] = None,
     gate: Optional[AutonomyGate] = None,
     knowledge_store: Optional[KnowledgeStoreClientProtocol] = None,
+    netalertx_api_client: Optional[Any] = None,
 ) -> None:
     setup_logging()
     if not get_correlation_id():
@@ -859,12 +863,23 @@ async def main(
             ollama_endpoint=OLLAMA_ENDPOINT,
             hybrid_weight=RAG_HYBRID_WEIGHT,
         )
+    _nax_api = netalertx_api_client
+    if _nax_api is None and NETALERTX_HOST:
+        from netalertx.api_client import (
+            NetAlertXAPIClient as _NAXAPI,
+        )  # pragma: no cover
+
+        _nax_api = _NAXAPI(  # pragma: no cover
+            f"http://{NETALERTX_HOST}:{NETALERTX_API_PORT}",
+            NETALERTX_API_TOKEN,
+        )
     executor = ToolExecutor(
         ha_ssh_client=_ssh,
         gate=_gate,
         notifier=_notifier,
         knowledge_store=_knowledge_store,
         llm_client=_llm,
+        netalertx_api_client=_nax_api,
     )
     registry = build_ha_tool_registry()
 
