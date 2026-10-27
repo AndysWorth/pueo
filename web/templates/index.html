@@ -687,6 +687,9 @@ trigger: {{ r.payload.get("trigger", []) | tojson(indent=2) }}
         <button type="submit" title="These devices are off on purpose. Pueo stops alerting on them until they come back online and records that you turned them off." style="background:#fff;color:#333;border:1px solid #888;padding:0.3rem 0.85rem;border-radius:4px;cursor:pointer;font-size:0.82rem;">I turned these off</button>
       </form>
       {% endif %}
+      {% if ct == "device_offline" and r.payload.get("unmapped_device_ids") %}
+      <a href="/network-links" style="display:inline-block;margin-top:0.4rem;padding:0.3rem 0.85rem;background:#fff;color:#6366f1;border:1px solid #6366f1;border-radius:4px;font-size:0.82rem;font-weight:600;text-decoration:none;">Link network device</a>
+      {% endif %}
       {% endif %}
     </div>
     {% endif %}

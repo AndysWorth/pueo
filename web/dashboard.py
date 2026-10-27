@@ -11,7 +11,7 @@ from typing import Any
 
 from paths import get_dirs as _get_dirs
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, Form, HTTPException, Query, Request
 from fastapi.responses import (
     HTMLResponse,
     JSONResponse,
@@ -3897,6 +3897,196 @@ async def netalertx_diagnose() -> JSONResponse:
     _netalertx_diagnose_task = asyncio.create_task(
         run_diagnose(knowledge_store=knowledge_store)
     )
+    return JSONResponse({"ok": True})
+
+
+# ── Network links ─────────────────────────────────────────────────────────────
+
+
+async def _load_network_links_full(db_path: str) -> dict:
+    """Fetch HA device registry + NetAlertX devices and build the page context."""
+    import config as _config
+    from utils.ha.network_identity import (
+        candidates_for_device,
+        load_config_entry_hosts,
+        load_manual_links,
+        match_netalertx,
+    )
+
+    nax_enabled: bool = bool(_config.NETALERTX_ENABLED)
+    ctx: dict = {
+        "netalertx_enabled": nax_enabled,
+        "nax_ready": False,
+        "devices": [],
+        "nax_devices": [],
+    }
+    if not nax_enabled:
+        return ctx
+
+    token = _config.NETALERTX_API_TOKEN
+    if not token:
+        return ctx
+    ctx["nax_ready"] = True
+
+    from netalertx.api_client import NetAlertXAPIClient  # type: ignore[import-not-found]
+
+    _nax = NetAlertXAPIClient(_config.NETALERTX_HOST, str(_config.NETALERTX_API_PORT))
+    _nax.set_token(token)
+
+    try:
+        nax_raw = await _nax.get_devices()
+    except Exception:  # nosec B110
+        nax_raw = []
+
+    nax_devices_for_picker = [
+        {
+            "mac": (d.get("devMac") or "").lower(),
+            "label": (
+                f"{d.get('devName') or d.get('devAlias') or '(unnamed)'}"
+                f" — {d.get('devLastIP') or '?'}"
+                f" — {(d.get('devMac') or '').upper()}"
+            ),
+        }
+        for d in nax_raw
+        if d.get("devMac")
+    ]
+    nax_devices_for_picker.sort(key=lambda x: x["label"])
+    ctx["nax_devices"] = nax_devices_for_picker
+
+    manual_links = await asyncio.to_thread(load_manual_links, db_path)
+
+    # Build HA device registry via WS.
+    dev_reg: list[dict] = []
+    host_by_entry: dict[str, str] = {}
+    try:
+        from utils.ha.ha_ws_client import HAWebSocketClient
+
+        _ws = HAWebSocketClient(
+            _config.HA_HOST, _config.HA_API_PORT, _config.HA_API_TOKEN
+        )
+        dev_reg = await _ws.get_device_registry()
+        config_entries = await _ws.get_all_config_entries()
+        entry_domain: dict[str, str] = {
+            e["entry_id"]: e.get("domain", "") for e in config_entries
+        }
+    except Exception:  # nosec B110
+        entry_domain = {}
+
+    try:
+        from utils.ha.ssh_client import AsyncSSHClient
+
+        _ssh = AsyncSSHClient(_config.HA_HOST, _config.HA_USER, _config.SSH_KEY_PATH)
+        host_by_entry = await load_config_entry_hosts(_ssh)
+    except Exception:  # nosec B110
+        pass
+
+    rows = []
+    for dev in dev_reg:
+        device_id = dev.get("id", "")
+        if not device_id:
+            continue
+        cands = candidates_for_device(dev, host_by_entry, manual_links)
+        if not cands and not manual_links.get(device_id):
+            # Skip devices with no connections and no manual link — not network-based
+            connections = dev.get("connections", [])
+            if not connections:
+                entry_ids = dev.get("config_entries", [])
+                has_host = any(entry_id in host_by_entry for entry_id in entry_ids)
+                if not has_host:
+                    continue
+
+        nax_match, method = match_netalertx(cands, nax_raw)
+
+        integration = ""
+        for entry_id in dev.get("config_entries") or []:
+            dom = entry_domain.get(entry_id, "")
+            if dom:
+                integration = dom
+                break
+
+        rows.append(
+            {
+                "device_id": device_id,
+                "name": dev.get("name_by_user") or dev.get("name") or device_id,
+                "model": dev.get("model") or "",
+                "integration": integration,
+                "method": (
+                    method
+                    if nax_match
+                    else ("manual" if device_id in manual_links else "none")
+                ),
+                "nax_mac": (nax_match.get("devMac") or "").lower() if nax_match else "",
+                "nax_name": (
+                    nax_match.get("devName") or nax_match.get("devAlias") or ""
+                    if nax_match
+                    else ""
+                ),
+            }
+        )
+
+    rows.sort(key=lambda r: (r["method"] == "none", r["name"].lower()))
+    ctx["devices"] = rows
+    return ctx
+
+
+@app.get("/network-links", response_class=HTMLResponse)
+async def network_links_page(request: Request) -> HTMLResponse:
+    import config as _config
+
+    ctx = await _load_network_links_full(_config.DB_PATH)
+    return templates.TemplateResponse(request, "network_links.html", ctx)
+
+
+@app.post("/network-links/save")
+async def network_links_save(
+    device_id: str = Form(...),
+    mac: str = Form(...),
+) -> JSONResponse:
+    import config as _config
+
+    mac = mac.strip().lower()
+    if not device_id or not mac:
+        return JSONResponse(
+            {"ok": False, "error": "missing parameters"}, status_code=400
+        )
+
+    def _save(did: str = device_id, m: str = mac) -> None:
+        import sqlite3 as _sqlite3
+
+        with _sqlite3.connect(_config.DB_PATH) as conn:
+            conn.execute(
+                "INSERT INTO user_prefs(key, value) VALUES(?, ?)"
+                " ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (f"netalertx:link:{did}", m),
+            )
+
+    await asyncio.to_thread(_save)
+    log.info("network_link_saved", device_id=device_id, mac=mac)
+    return JSONResponse({"ok": True})
+
+
+@app.post("/network-links/unlink")
+async def network_links_unlink(
+    device_id: str = Form(...),
+) -> JSONResponse:
+    import config as _config
+
+    if not device_id:
+        return JSONResponse(
+            {"ok": False, "error": "missing device_id"}, status_code=400
+        )
+
+    def _delete(did: str = device_id) -> None:
+        import sqlite3 as _sqlite3
+
+        with _sqlite3.connect(_config.DB_PATH) as conn:
+            conn.execute(
+                "DELETE FROM user_prefs WHERE key=?",
+                (f"netalertx:link:{did}",),
+            )
+
+    await asyncio.to_thread(_delete)
+    log.info("network_link_removed", device_id=device_id)
     return JSONResponse({"ok": True})
 
 

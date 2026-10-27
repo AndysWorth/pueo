@@ -454,7 +454,7 @@ class TestBuildPresenceContextNewPaths:
                     }
                 )
 
-        result = asyncio.run(
+        result, unmapped = asyncio.run(
             build_presence_context(
                 self._devices(), _FakeNAX(), _FakeWS(), ssh_client=_FakeSSH()
             )
@@ -462,6 +462,7 @@ class TestBuildPresenceContextNewPaths:
         assert "present on LAN" in result
         assert "Apple TV" in result
         assert "matched by config_entry" in result
+        assert unmapped == []
 
     def test_unmapped_reports_unknown_not_absent(self):
         """Matter/Tuya with no MAC, no IP → 'unknown', never 'absent'."""
@@ -479,8 +480,9 @@ class TestBuildPresenceContextNewPaths:
                 # Device has no connections and no config entries
                 return [{"id": "dev-atv", "connections": [], "config_entries": []}]
 
-        result = asyncio.run(
+        result, unmapped = asyncio.run(
             build_presence_context(self._devices(), _FakeNAX(), _FakeWS())
         )
         assert "unknown" in result
         assert "absent" not in result
+        assert "dev-atv" in unmapped

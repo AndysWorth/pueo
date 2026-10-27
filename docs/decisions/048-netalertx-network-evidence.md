@@ -50,17 +50,35 @@ fast enough for on-demand use.
 ### Device-offline integration (S2b)
 
 `build_presence_context()` in `utils/ha/device_availability_investigation.py`:
-1. Resolves each offline device's HA `device_id` to a MAC address via the HA WebSocket
-   device registry.
+1. Resolves each offline device's HA `device_id` to a candidate list via
+   `candidates_for_device()` in `utils/ha/network_identity.py`.
 2. Calls `NetAlertXAPIClient.get_devices()` once per investigation (not per device).
-3. Returns a formatted presence block that is prepended to `initial_context` before the
-   AgentLoop starts.
+3. Returns `(presence_text, unmapped_device_ids)` — the presence block prepended to
+   `initial_context` and a list of device IDs that had no MAC/IP mapping.
+
+**Mapping order** (best-evidence first):
+1. Manual link from `user_prefs` (`netalertx:link:<device_id>` = MAC)
+2. Every MAC address in the HA device registry connections
+3. IP connections in the HA device registry
+4. Config-entry host/address/ip_address (read from `/config/.storage/core.config_entries`
+   via `load_config_entry_hosts(ssh_client)`)
+
+Unmapped devices — those with no candidates from any of the four sources — are reported as
+`"unknown (no MAC/IP mapping)"` in the presence block rather than `"absent from LAN"`.
+`run_device_availability_investigation` calls `executor.set_unmapped_device_ids()` so the
+`finish_device_availability` tool includes `unmapped_device_ids` in the card payload.
+
+**Manual links (`/network-links` dashboard page):** Users can permanently associate any HA
+device with a NetAlertX device (by MAC) via `POST /network-links/save`. Links are stored in
+`user_prefs` as `netalertx:link:<ha_device_id>` = MAC (lowercase). A device-offline card
+with `unmapped_device_ids` in its payload shows a "Link network device" button that opens
+this page. Unlink via `POST /network-links/unlink`.
 
 The seed `seed_device_offline.md` owns the decision rule:
 - `present on LAN` → integration or cloud fault → proceed with thread-death / reload path
 - `absent from LAN` → physical layer fault → `outcome="needs_action"`, tell user to check
   power and Wi-Fi
-- Not found or NetAlertX unavailable → fall back to log analysis
+- Unknown mapping or not found → fall back to log analysis
 
 The ws_client is passed from `poll_device_availability` → `_run_device_availability_investigation` → `run_device_availability_investigation` → `build_presence_context` so the MAC resolution uses the live device registry.
 

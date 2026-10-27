@@ -116,17 +116,19 @@ async def build_presence_context(
     ws_client: Optional[Any],  # Optional[HAWebSocketClientProtocol]
     ssh_client: Optional[Any] = None,  # Optional[SSHClientProtocol]
     db_path: Optional[str] = None,
-) -> str:
-    """Return a NetAlertX presence summary block for pre-injection into initial_context.
+) -> tuple:
+    """Return (presence_text, unmapped_device_ids) for pre-injection into initial_context.
 
-    Returns an empty string when NetAlertX is not configured, has no token, or
-    when any fetch fails.  Never raises.  Unmapped devices are reported as
-    "unknown" rather than "absent" so the agent does not draw a wrong conclusion.
+    presence_text is empty string when NetAlertX is not configured, has no token, or
+    when any fetch fails.  unmapped_device_ids lists HA device IDs that could not be
+    matched because they have no MAC/IP/host candidates.  Never raises.  Unmapped
+    devices are reported as "unknown" rather than "absent" so the agent does not draw
+    a wrong conclusion.
     """
     if netalertx_api_client is None or not getattr(
         netalertx_api_client, "has_token", False
     ):
-        return ""
+        return "", []
 
     from utils.ha.network_identity import (
         candidates_for_device,
@@ -158,6 +160,7 @@ async def build_presence_context(
         nax_devices = await netalertx_api_client.get_devices()
 
         lines: list = []
+        unmapped_ids: list = []
         for dev in devices:
             device_id = dev.get("device_id", "")
             name = dev.get("name", device_id)
@@ -169,6 +172,7 @@ async def build_presence_context(
 
             if nax_dev is None:
                 if method == "unmapped":
+                    unmapped_ids.append(device_id)
                     lines.append(
                         f"  - {name}: unknown (no MAC/IP mapping for this device)"
                     )
@@ -195,13 +199,13 @@ async def build_presence_context(
             )
 
         if not lines:
-            return ""
+            return "", unmapped_ids
 
-        return "\n\nNetAlertX network presence:\n" + "\n".join(lines)
+        return "\n\nNetAlertX network presence:\n" + "\n".join(lines), unmapped_ids
 
     except Exception as exc:  # nosec B110
         log.debug("presence_context_fetch_failed", error=str(exc))
-        return ""
+        return "", []
 
 
 async def run_device_availability_investigation(
@@ -292,7 +296,7 @@ async def run_device_availability_investigation(
         subject_key = f"{finding.config_entry_id}:{finding.domain}"
         prior_keys = [subject_key]
 
-    presence_block = await build_presence_context(
+    presence_block, _unmapped_ids = await build_presence_context(
         finding.devices,
         netalertx_api_client,
         ws_client,
@@ -301,6 +305,8 @@ async def run_device_availability_investigation(
     )
     if presence_block:
         initial_context += presence_block
+    if _unmapped_ids:
+        executor.set_unmapped_device_ids(_unmapped_ids)
 
     from utils.agent.supervisor import (
         decrement_active_agent,
