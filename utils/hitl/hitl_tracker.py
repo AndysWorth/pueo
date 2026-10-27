@@ -3,6 +3,7 @@
 import hashlib
 import sqlite3
 import time
+from pathlib import Path
 from typing import Any, Optional
 
 
@@ -225,6 +226,47 @@ def mark_card_resolved(conn: sqlite3.Connection, card_key: str) -> None:
         (now, card_key),
     )
     conn.commit()
+
+
+def resolve_card(
+    watch_dir: str,
+    nid: str,
+    *,
+    db_path: Optional[str] = None,
+    card_key: Optional[str] = None,
+) -> bool:
+    """Touch <nid>.resolved in watch_dir and optionally update the suppression row.
+
+    The .resolved sentinel is always written (the dashboard uses it to close
+    pending cards and it is harmless when no card is present).  Returns True
+    when the .json card file was also found, False when it was absent.
+    """
+    card_path = Path(watch_dir) / f"{nid}.json"
+    card_present = card_path.exists()
+    resolved_path = Path(watch_dir) / f"{nid}.resolved"
+    try:
+        resolved_path.touch()
+    except Exception:  # nosec B110
+        pass
+    if db_path is not None and card_key is not None:
+        try:
+            with sqlite3.connect(db_path) as _conn:
+                mark_card_resolved(_conn, card_key)
+        except Exception:  # nosec B110
+            pass
+    if card_present:
+        try:
+            from utils.core.timeline import write_timeline_event
+
+            write_timeline_event(
+                "INFO",
+                "hitl",
+                f"Card auto-resolved: {card_key or nid}",
+                {"nid": nid},
+            )
+        except Exception:  # nosec B110
+            pass
+    return card_present
 
 
 def get_rejection_count(conn: sqlite3.Connection, card_key: str) -> int:

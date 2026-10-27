@@ -1651,8 +1651,9 @@ async def supervisor_main(config_path: Path) -> None:
             lambda: tail_netalertx_log_stream(notifier=notifier),
         )
 
-    # NetAlertX REST event poll (only when enabled + API token is set)
-    if cfg.NETALERTX_ENABLED and _nax_api is not None and _nax_api.has_token:
+    # NetAlertX REST event poll (enabled + host configured; poll_once skips gracefully when
+    # no token is set yet and waits for on_token_confirmed to promote the install state).
+    if cfg.NETALERTX_ENABLED and _nax_api is not None:
         from netalertx.event_poll import run_event_poll
         from netalertx.event_router import NetAlertXEventRouter
 
@@ -1752,6 +1753,14 @@ async def supervisor_main(config_path: Path) -> None:
                             if _nax_api is not None:
                                 _nax_api.set_token(token)
                             _log_tok.info("netalertx_startup_token_refreshed")
+                            try:
+                                from netalertx.token import (
+                                    on_token_confirmed as _otc,
+                                )
+
+                                _otc(_cfg_tok.DB_PATH)
+                            except Exception:  # nosec B110
+                                pass
                         else:
                             _log_tok.warning("netalertx_startup_token_persist_failed")
                 except Exception as _exc:  # nosec B110
@@ -1760,6 +1769,24 @@ async def supervisor_main(config_path: Path) -> None:
                     )
 
             asyncio.ensure_future(_netalertx_startup_token_refresh())
+
+    # Case (d): token already set at startup + install in a done state → clear stale cards.
+    if (
+        cfg.NETALERTX_ENABLED
+        and cfg.NETALERTX_HOST
+        and cfg.NETALERTX_API_TOKEN
+        and cfg.HA_HOST
+    ):
+        import netalertx.installer as _nax_installer_d
+
+        _NETALERTX_DONE_STATES_D = {"FULLY_OPERATIONAL", "OPERATIONAL_NO_API"}
+        if _nax_installer_d.get_install_state(cfg.DB_PATH) in _NETALERTX_DONE_STATES_D:
+            try:
+                from netalertx.token import on_token_confirmed as _otc_d
+
+                _otc_d(cfg.DB_PATH)
+            except Exception:  # nosec B110
+                pass
 
     # Start the serialized work queue (must be called inside the running event loop).
     work_queue.start()

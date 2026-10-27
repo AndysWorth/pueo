@@ -37,7 +37,13 @@ class FileNotifier:
 
     async def send(self, subject: str, body: str, payload: dict) -> None:
         nid = payload.get("notification_id", str(uuid.uuid4()))
-        for suffix in (".approved", ".rejected", ".deferred", ".in_progress"):
+        for suffix in (
+            ".approved",
+            ".rejected",
+            ".deferred",
+            ".in_progress",
+            ".resolved",
+        ):
             (self._dir / f"{nid}{suffix}").unlink(missing_ok=True)
         record = {
             "notification_id": nid,
