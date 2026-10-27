@@ -44,6 +44,21 @@ if TYPE_CHECKING:
     from netalertx.diagnosis import NetAlertXDiagnostic
     from netalertx.healer import NetAlertXHealer
 
+
+def _stream_command() -> str:
+    """Return the SSH command to stream NetAlertX logs.
+
+    Add-on mode (addon_slug set): ha apps logs -f <slug> — runs on the HAOS host.
+    Docker mode: docker exec <container> tail -F /data/app.log.
+    """
+    from netalertx.installer import resolve_addon_slug
+
+    slug = resolve_addon_slug()
+    if slug:
+        return f"ha apps logs -f {slug}"
+    return f"docker exec {NETALERTX_LOG_CONTAINER_NAME} tail -F /data/app.log"
+
+
 log = get_logger("netalertx.log_monitor")
 
 _debouncer = Debouncer(DEBOUNCE_WINDOW_SECONDS)
@@ -403,12 +418,11 @@ async def tail_netalertx_log_stream(
     _notifier = notifier or get_notifier(NOTIFIER, NOTIFY_URL, NOTIFY_WATCH_DIR)
     _init_sparkline_db()
 
-    log_path = "/data/app.log"
-    tail_command = f"docker exec {NETALERTX_LOG_CONTAINER_NAME} tail -F {log_path}"
+    tail_command = _stream_command()
     log.info(
         "netalertx_log_stream_start",
         host=NETALERTX_SSH_HOST,
-        log_path=log_path,
+        command=tail_command,
     )
 
     try:
@@ -496,6 +510,9 @@ async def tail_netalertx_log_stream(
                     else:
                         asyncio.create_task(_healer_coro())
 
+        raise RuntimeError("netalertx_log_stream_ended")
+    except RuntimeError:
+        raise
     except Exception as e:
         log.error("netalertx_log_stream_failed", error=str(e))
         log.info("netalertx_log_stream_reconnect")

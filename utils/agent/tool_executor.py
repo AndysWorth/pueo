@@ -3853,11 +3853,17 @@ class ToolExecutor:
             )
 
     async def _restart_netalertx(self) -> ToolResult:
-        ssh = self._nax_ssh or self._ha_ssh
+        from netalertx.installer import resolve_addon_slug
+
+        slug = resolve_addon_slug()
+        if slug:
+            cmd = f"ha apps restart {slug}"
+            ssh = self._ha_ssh
+        else:
+            cmd = f"docker restart {self._container}"
+            ssh = self._nax_ssh or self._ha_ssh
         try:
-            _, stdout, stderr = await ssh.run(
-                f"docker restart {self._container}", check=False
-            )
+            _, stdout, stderr = await ssh.run(cmd, check=False)
             if self._api is not None:
                 try:
                     await self._api.trigger_scan()
@@ -3875,12 +3881,18 @@ class ToolExecutor:
 
     async def _rewrite_netalertx_conf(self, overrides: dict) -> ToolResult:
         from netalertx.config_validator import validate_app_conf
-        from netalertx.healer import _merge_conf
+        from netalertx.healer import _addon_conf_path, _merge_conf
+        from netalertx.installer import resolve_addon_slug
 
-        _CONF_PATH = "/data/app.conf"
-        ssh = self._nax_ssh or self._ha_ssh
+        slug = resolve_addon_slug()
+        if slug:
+            conf_path = _addon_conf_path(slug)
+            ssh = self._ha_ssh
+        else:
+            conf_path = "/data/app.conf"
+            ssh = self._nax_ssh or self._ha_ssh
         try:
-            current = await ssh.read_file(_CONF_PATH)
+            current = await ssh.read_file(conf_path)
         except (FileNotFoundError, OSError):
             current = ""
 
@@ -3897,7 +3909,7 @@ class ToolExecutor:
             )
 
         try:
-            await ssh.write_file(_CONF_PATH, fixed)
+            await ssh.write_file(conf_path, fixed)
             return ToolResult(
                 tool_name="rewrite_netalertx_conf",
                 success=True,
