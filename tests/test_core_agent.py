@@ -11124,6 +11124,74 @@ class TestToolExecutor:
         result = asyncio.run(executor.execute(ToolCall(name="restart_netalertx")))
         assert result.success
 
+    # -- restart_netalertx add-on mode ------------------------------------------
+
+    def test_restart_netalertx_addon_mode(self, monkeypatch):
+        """In add-on mode, restart uses 'ha apps restart <slug>' on ha_ssh."""
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import ToolCall
+
+        slug = "db21ed7f_netalertx_fa"
+        monkeypatch.setattr(
+            "netalertx.installer.resolve_addon_slug", lambda db_path=None: slug
+        )
+        ha_ssh = FakeSSHClient(
+            command_results={f"ha apps restart {slug}": (0, "ok", "")}
+        )
+        executor = ToolExecutor(
+            ha_ssh_client=ha_ssh,
+            gate=FakeAutonomyGate(auto_execute_result=True, approval_result=True),
+            notifier=FakeNotifier(approve=True),
+        )
+        result = asyncio.run(executor.execute(ToolCall(name="restart_netalertx")))
+        assert result.success
+        assert any(f"ha apps restart {slug}" in cmd for cmd in ha_ssh.commands_run)
+
+    # -- rewrite_netalertx_conf add-on mode -------------------------------------
+
+    def test_rewrite_netalertx_conf_addon_mode(self, monkeypatch):
+        """In add-on mode, conf is read/written at /app_configs/<slug>/config/app.conf."""
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import ToolCall
+
+        slug = "db21ed7f_netalertx_fa"
+        conf_path = f"/app_configs/{slug}/config/app.conf"
+        monkeypatch.setattr(
+            "netalertx.installer.resolve_addon_slug", lambda db_path=None: slug
+        )
+        initial_conf = (
+            "MQTT_BROKER='homeassistant.local'\n"
+            "MQTT_PORT=1883\n"
+            "HA_URL='http://homeassistant.local:8123'\n"
+            "HA_BEARER_TOKEN='mytoken'\n"
+            "SCAN_SUBNETS=['192.168.1.0/24']\n"
+            "TIMEZONE='UTC'\n"
+            "LOADED_PLUGINS='MQTT,ARPSCAN'\n"
+            "MQTT_ACTIVE=0\n"
+        )
+        ha_ssh = FakeSSHClient(file_contents={conf_path: initial_conf})
+        executor = ToolExecutor(
+            ha_ssh_client=ha_ssh,
+            gate=FakeAutonomyGate(auto_execute_result=True, approval_result=True),
+            notifier=FakeNotifier(approve=True),
+        )
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="rewrite_netalertx_conf",
+                    arguments={"overrides": {"MQTT_ACTIVE": "1"}},
+                )
+            )
+        )
+        assert result.success
+        assert conf_path in ha_ssh.written_files
+
     # -- rewrite_netalertx_conf with no existing config file --------------------
 
     def test_rewrite_netalertx_conf_missing_file_starts_fresh(self):

@@ -44,8 +44,12 @@ if TYPE_CHECKING:
 
 log = get_logger("netalertx.healer")
 
-_CONF_PATH = "/data/app.conf"
+_CONF_PATH_DOCKER = "/data/app.conf"
 _AUTOMATIONS_PATH = "/config/automations.yaml"
+
+
+def _addon_conf_path(slug: str) -> str:
+    return f"/app_configs/{slug}/config/app.conf"
 
 
 def _merge_conf(current: str, overrides: dict[str, str]) -> str:
@@ -382,9 +386,18 @@ class NetAlertXHealer:
     # ------------------------------------------------------------------
 
     async def _rewrite_app_conf(self, diagnostic: "NetAlertXDiagnostic") -> None:
+        from netalertx.installer import resolve_addon_slug
+
         log.info("netalertx_app_conf_rewrite_start")
+        slug = resolve_addon_slug()
+        if slug:
+            conf_path = _addon_conf_path(slug)
+            ssh = self._ha_ssh
+        else:
+            conf_path = _CONF_PATH_DOCKER
+            ssh = self._ssh
         try:
-            current = await self._ssh.read_file(_CONF_PATH)
+            current = await ssh.read_file(conf_path)
         except (FileNotFoundError, OSError):
             current = ""
 
@@ -400,7 +413,7 @@ class NetAlertXHealer:
             )
             return
 
-        await self._ssh.write_file(_CONF_PATH, fixed)
+        await ssh.write_file(conf_path, fixed)
         log.info("netalertx_app_conf_rewrite_done")
 
     async def _remove_ha_mqtt_key(self) -> None:
@@ -471,8 +484,17 @@ class NetAlertXHealer:
         log.info("netalertx_ha_automation_fields_fixed")
 
     async def _restart_container(self) -> None:
-        log.info("netalertx_container_restart_start", container=self._container)
-        await self._ssh.run(f"docker restart {self._container}")
+        from netalertx.installer import resolve_addon_slug
+
+        slug = resolve_addon_slug()
+        if slug:
+            cmd = f"ha apps restart {slug}"
+            ssh = self._ha_ssh
+        else:
+            cmd = f"docker restart {self._container}"
+            ssh = self._ssh
+        log.info("netalertx_container_restart_start", command=cmd)
+        await ssh.run(cmd)
         log.info("netalertx_container_restart_done")
 
     # ------------------------------------------------------------------

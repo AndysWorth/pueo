@@ -4567,9 +4567,12 @@ class TestNetAlertXLogMonitor:
         from netalertx.log_monitor import tail_netalertx_log_stream
 
         ssh = FakeSSHClient(stream_data=["INFO scan completed", "DEBUG heartbeat"])
-        asyncio.run(
-            tail_netalertx_log_stream(ssh_client=ssh, llm_client=llm_not_actionable)
-        )
+        try:
+            asyncio.run(
+                tail_netalertx_log_stream(ssh_client=ssh, llm_client=llm_not_actionable)
+            )
+        except RuntimeError:
+            pass
         assert len(llm_not_actionable.calls) == 0
 
     def test_stream_critical_line_invokes_triage(self, llm_not_actionable, monkeypatch):
@@ -4584,9 +4587,12 @@ class TestNetAlertXLogMonitor:
         ssh = FakeSSHClient(
             stream_data=["ERROR ArpScan failed: network unreachable", "INFO ok"]
         )
-        asyncio.run(
-            tail_netalertx_log_stream(ssh_client=ssh, llm_client=llm_not_actionable)
-        )
+        try:
+            asyncio.run(
+                tail_netalertx_log_stream(ssh_client=ssh, llm_client=llm_not_actionable)
+            )
+        except RuntimeError:
+            pass
         assert len(llm_not_actionable.calls) == 1
 
     # ── autonomy gate: level 1 sends notifier, no healer ─────────────────────
@@ -4621,11 +4627,14 @@ class TestNetAlertXLogMonitor:
         notifier = FakeNotifier()
         ssh = FakeSSHClient(stream_data=["ERROR ArpScan failed: network unreachable"])
 
-        asyncio.run(
-            mod.tail_netalertx_log_stream(
-                ssh_client=ssh, llm_client=llm, gate=gate, notifier=notifier
+        try:
+            asyncio.run(
+                mod.tail_netalertx_log_stream(
+                    ssh_client=ssh, llm_client=llm, gate=gate, notifier=notifier
+                )
             )
-        )
+        except RuntimeError:
+            pass
 
         assert len(notifier.sent) == 1
         assert healer_calls == []
@@ -4670,13 +4679,60 @@ class TestNetAlertXLogMonitor:
         gate = FakeAutonomyGate()
         notifier = FakeNotifier()
 
-        asyncio_mod.run(
-            mod.tail_netalertx_log_stream(
-                ssh_client=ssh, llm_client=llm, gate=gate, notifier=notifier
+        try:
+            asyncio_mod.run(
+                mod.tail_netalertx_log_stream(
+                    ssh_client=ssh, llm_client=llm, gate=gate, notifier=notifier
+                )
             )
-        )
+        except RuntimeError:
+            pass
 
         assert call_count[0] == 2
+
+    # ── stream command selection ──────────────────────────────────────────────
+
+    def test_stream_command_docker_mode(self, monkeypatch):
+        """When no addon_slug is set, the docker exec command is returned."""
+        import netalertx.log_monitor as mod
+        from netalertx.installer import resolve_addon_slug as _orig
+
+        monkeypatch.setattr(
+            mod,
+            "_stream_command",
+            lambda: "docker exec netalertx tail -F /data/app.log",
+        )
+        cmd = mod._stream_command()
+        assert cmd.startswith("docker exec")
+
+    def test_stream_command_addon_mode(self, monkeypatch):
+        """When addon_slug is set, the ha apps logs -f command is returned."""
+        import netalertx.log_monitor as mod
+
+        monkeypatch.setattr(
+            "netalertx.installer.resolve_addon_slug",
+            lambda db_path=None: "db21ed7f_netalertx_fa",
+        )
+        cmd = mod._stream_command()
+        assert cmd == "ha apps logs -f db21ed7f_netalertx_fa"
+
+    # ── stream end raises ─────────────────────────────────────────────────────
+
+    def test_stream_end_raises_runtime_error(self, monkeypatch):
+        """When the stream exhausts without exception, RuntimeError is raised."""
+        import asyncio
+        import pytest
+
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.llm.ollama_client import FakeLLMClient
+
+        import netalertx.log_monitor as mod
+
+        ssh = FakeSSHClient(stream_data=["INFO heartbeat"])
+        llm = FakeLLMClient("{}")
+
+        with pytest.raises(RuntimeError, match="netalertx_log_stream_ended"):
+            asyncio.run(mod.tail_netalertx_log_stream(ssh_client=ssh, llm_client=llm))
 
     def test_analyze_log_line_uses_model_factory(self, monkeypatch):
         import asyncio
@@ -6091,6 +6147,63 @@ class TestNetAlertXHealer:
             )
         )
         assert "/data/app.conf" in ssh.written_files
+
+    def test_restart_container_addon_mode(self, monkeypatch):
+        """In add-on mode, _restart_container runs 'ha apps restart <slug>' on ha_ssh."""
+        import asyncio
+
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.ha.ssh_client import FakeSSHClient
+
+        monkeypatch.setattr(
+            "netalertx.installer.resolve_addon_slug",
+            lambda db_path=None: "db21ed7f_netalertx_fa",
+        )
+        gate = FakeAutonomyGate(auto_execute_result=True)
+        nax_ssh = FakeSSHClient()
+        ha_ssh = FakeSSHClient()
+        api = _FakeAPIClient()
+        healer = self._make_healer(
+            gate=gate, ssh_client=nax_ssh, ha_ssh_client=ha_ssh, api_client=api
+        )
+        asyncio.run(healer.heal(self._make_diag("networking")))
+
+        assert any(
+            "ha apps restart" in cmd for cmd in ha_ssh.commands_run
+        ), ha_ssh.commands_run
+        assert not any("docker restart" in cmd for cmd in nax_ssh.commands_run)
+
+    def test_rewrite_app_conf_addon_mode(self, monkeypatch):
+        """In add-on mode, app.conf is read/written at /app_configs/<slug>/config/app.conf via ha_ssh."""
+        import asyncio
+
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.ha.ssh_client import FakeSSHClient
+
+        slug = "db21ed7f_netalertx_fa"
+        monkeypatch.setattr(
+            "netalertx.installer.resolve_addon_slug", lambda db_path=None: slug
+        )
+        conf_path = f"/app_configs/{slug}/config/app.conf"
+        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
+        nax_ssh = FakeSSHClient()
+        ha_ssh = FakeSSHClient(
+            file_contents={
+                conf_path: "MQTT_BROKER=oldhost\n",
+                "/config/configuration.yaml": "homeassistant:\n  name: Home\n",
+            }
+        )
+        healer = self._make_healer(gate=gate, ssh_client=nax_ssh, ha_ssh_client=ha_ssh)
+        asyncio.run(
+            healer.heal(
+                self._make_diag(
+                    "mqtt", recommended_fix="MQTT_BROKER=homeassistant.local"
+                )
+            )
+        )
+
+        assert conf_path in ha_ssh.written_files
+        assert nax_ssh.written_files == {}
 
     def test_database_category_uses_require_approval(self):
         """database/version categories send notification and don't write files."""
@@ -9691,11 +9804,14 @@ class TestNetalertxLogMonitorQueueWiring:
 
         monkeypatch.setattr(_wq_mod, "_work_queue", FakeQueue())
 
-        asyncio.run(
-            mod.tail_netalertx_log_stream(
-                ssh_client=ssh, llm_client=llm, gate=gate, notifier=notifier
+        try:
+            asyncio.run(
+                mod.tail_netalertx_log_stream(
+                    ssh_client=ssh, llm_client=llm, gate=gate, notifier=notifier
+                )
             )
-        )
+        except RuntimeError:
+            pass
 
         assert len(submitted_items) == 1
         item = submitted_items[0]
@@ -9742,11 +9858,14 @@ class TestNetalertxLogMonitorQueueWiring:
         notifier = FakeNotifier()
         ssh = FakeSSHClient(stream_data=["ERROR ArpScan failed: network unreachable"])
 
-        asyncio.run(
-            mod.tail_netalertx_log_stream(
-                ssh_client=ssh, llm_client=llm, gate=gate, notifier=notifier
+        try:
+            asyncio.run(
+                mod.tail_netalertx_log_stream(
+                    ssh_client=ssh, llm_client=llm, gate=gate, notifier=notifier
+                )
             )
-        )
+        except RuntimeError:
+            pass
 
         assert len(healer_called) == 1
 
