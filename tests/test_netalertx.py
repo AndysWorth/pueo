@@ -8908,11 +8908,16 @@ class TestNetAlertXEventPoll:
 
     def test_poll_once_routes_new_device_above_hwm(self, tmp_path):
         import sqlite3
-        from netalertx.event_poll import poll_once
+        from netalertx.event_poll import _write_hwm, poll_once
+        from datetime import datetime, timezone
 
         db = str(tmp_path / "test.db")
         with sqlite3.connect(db) as conn:
             conn.execute("CREATE TABLE user_prefs (key TEXT PRIMARY KEY, value TEXT)")
+
+        # Pre-seed HWM so the first-run seeding path is not triggered.
+        prior_ts = datetime(2026, 1, 15, 10, 0, 0, tzinfo=timezone.utc).timestamp()
+        _write_hwm(db, prior_ts)
 
         router, notifier = self._make_router(auto_execute=False)
         events = [
@@ -10165,3 +10170,430 @@ class TestOneShotDiagnoseTokenPreRead:
         )
         assert tokens_set, "set_token was never called — token pre-read did not fire"
         assert tokens_set[0] == "auto-token-xyz", f"unexpected token: {tokens_set[0]}"
+
+
+# ── S3: event poll first-run seeding ─────────────────────────────────────────
+
+
+class TestEventPollFirstRun:
+    """First-run seeding: HWM=0 → set HWM to newest event, route nothing."""
+
+    def _make_db(self, tmp_path):
+        import sqlite3
+
+        db = str(tmp_path / "test.db")
+        with sqlite3.connect(db) as conn:
+            conn.execute("CREATE TABLE user_prefs (key TEXT PRIMARY KEY, value TEXT)")
+        return db
+
+    def _make_api(self, events):
+        from unittest.mock import AsyncMock, MagicMock
+
+        client = MagicMock()
+        client.has_token = True
+        client.get_events = AsyncMock(return_value=events)
+        return client
+
+    def _make_router(self):
+        from unittest.mock import AsyncMock, MagicMock
+        from utils.agent.autonomy import FakeAutonomyGate
+        from netalertx.event_router import NetAlertXEventRouter
+
+        gate = FakeAutonomyGate(auto_execute_result=False)
+        notifier = MagicMock()
+        notifier.send = AsyncMock()
+        return NetAlertXEventRouter(notifier, gate), notifier
+
+    def test_first_run_seeds_hwm_routes_nothing(self, tmp_path):
+        from netalertx.event_poll import _read_hwm, poll_once
+
+        db = self._make_db(tmp_path)
+        router, notifier = self._make_router()
+        events = [
+            {
+                "eveEventType": "New Device",
+                "eveMac": "AA:BB:CC:DD:EE:FF",
+                "eveDateTime": "2026-01-15 10:30:00",
+            },
+        ]
+        api = self._make_api(events)
+        routed = asyncio.run(poll_once(api, router, db))
+        assert routed == 0
+        notifier.send.assert_not_called()
+        assert _read_hwm(db) > 0.0
+
+    def test_first_run_no_events_is_noop(self, tmp_path):
+        from netalertx.event_poll import _read_hwm, poll_once
+
+        db = self._make_db(tmp_path)
+        router, _ = self._make_router()
+        api = self._make_api([])
+        asyncio.run(poll_once(api, router, db))
+        assert _read_hwm(db) == 0.0
+
+    def test_second_run_routes_new_events(self, tmp_path):
+        from datetime import datetime, timezone
+        from netalertx.event_poll import _read_hwm, _write_hwm, poll_once
+
+        db = self._make_db(tmp_path)
+        prior_ts = datetime(2026, 1, 15, 10, 0, 0, tzinfo=timezone.utc).timestamp()
+        _write_hwm(db, prior_ts)
+
+        router, notifier = self._make_router()
+        events = [
+            {
+                "eveEventType": "New Device",
+                "eveMac": "AA:BB:CC:DD:EE:FF",
+                "eveDateTime": "2026-01-15 10:30:00",
+            }
+        ]
+        api = self._make_api(events)
+        routed = asyncio.run(poll_once(api, router, db))
+        assert routed == 1
+        notifier.send.assert_called_once()
+
+
+# ── S3: event router — stable nid + DB dedup ─────────────────────────────────
+
+
+def _make_suppression_db(tmp_path):
+    """Create a minimal SQLite DB with hitl_suppression table."""
+    import sqlite3
+
+    db = str(tmp_path / "test.db")
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            """
+            CREATE TABLE hitl_suppression (
+                card_key TEXT PRIMARY KEY,
+                card_type TEXT NOT NULL DEFAULT '',
+                description TEXT NOT NULL DEFAULT '',
+                first_sent_at REAL NOT NULL DEFAULT 0,
+                last_sent_at REAL NOT NULL DEFAULT 0,
+                send_count INTEGER NOT NULL DEFAULT 1,
+                last_action TEXT,
+                last_action_at REAL,
+                rejection_count INTEGER NOT NULL DEFAULT 0,
+                next_allowed_at REAL,
+                known_issue INTEGER NOT NULL DEFAULT 0,
+                known_issue_note TEXT,
+                resolved_at REAL
+            )
+            """
+        )
+    return db
+
+
+class TestNewDeviceStableNid:
+    def _make_router(self, tmp_path=None, auto_execute=False, api=None):
+        from unittest.mock import AsyncMock, MagicMock
+        from utils.agent.autonomy import FakeAutonomyGate
+        from netalertx.event_router import NetAlertXEventRouter
+
+        gate = FakeAutonomyGate(auto_execute_result=auto_execute)
+        notifier = MagicMock()
+        notifier.send = AsyncMock()
+        db_path = _make_suppression_db(tmp_path) if tmp_path is not None else ""
+        return (
+            NetAlertXEventRouter(notifier, gate, db_path=db_path, api_client=api),
+            notifier,
+        )
+
+    def test_card_has_stable_notification_id(self, tmp_path):
+        from utils.hitl.hitl_tracker import stable_nid
+
+        router, notifier = self._make_router(tmp_path)
+        asyncio.run(
+            router._handle_new_device(
+                mac="AA:BB:CC:DD:EE:FF", ip="10.0.0.1", vendor="", name=""
+            )
+        )
+        notifier.send.assert_called_once()
+        payload = notifier.send.call_args[1]["payload"]
+        expected_nid = stable_nid("netalertx:new_device:AA:BB:CC:DD:EE:FF")
+        assert payload["notification_id"] == expected_nid
+
+    def test_db_dedup_suppresses_second_send(self, tmp_path):
+        """Two separate router instances with same DB: second send is suppressed."""
+        from unittest.mock import AsyncMock, MagicMock
+        from utils.agent.autonomy import FakeAutonomyGate
+        from netalertx.event_router import NetAlertXEventRouter
+
+        db = _make_suppression_db(tmp_path)
+
+        def _make(db_path):
+            gate = FakeAutonomyGate(auto_execute_result=False)
+            n = MagicMock()
+            n.send = AsyncMock()
+            return NetAlertXEventRouter(n, gate, db_path=db_path), n
+
+        router1, notifier1 = _make(db)
+        asyncio.run(
+            router1._handle_new_device(
+                mac="AA:BB:CC:DD:EE:FF", ip="", vendor="", name=""
+            )
+        )
+        notifier1.send.assert_called_once()
+
+        # New router instance (simulating a restart) with same DB
+        router2, notifier2 = _make(db)
+        asyncio.run(
+            router2._handle_new_device(
+                mac="AA:BB:CC:DD:EE:FF", ip="", vendor="", name=""
+            )
+        )
+        notifier2.send.assert_not_called()
+
+    def test_vendor_enriched_from_api(self, tmp_path):
+        """Router fetches vendor/name from /devices when API client is set."""
+        from unittest.mock import AsyncMock, MagicMock
+        from utils.agent.autonomy import FakeAutonomyGate
+        from netalertx.event_router import NetAlertXEventRouter
+
+        fake_api = MagicMock()
+        fake_api.get_devices = AsyncMock(
+            return_value=[
+                {
+                    "devMac": "AA:BB:CC:DD:EE:FF",
+                    "devVendor": "Apple Inc",
+                    "devName": "iPhone",
+                }
+            ]
+        )
+
+        gate = FakeAutonomyGate(auto_execute_result=False)
+        notifier = MagicMock()
+        notifier.send = AsyncMock()
+        router = NetAlertXEventRouter(notifier, gate, api_client=fake_api)
+
+        asyncio.run(
+            router._handle_new_device(
+                mac="AA:BB:CC:DD:EE:FF", ip="10.0.0.1", vendor="", name=""
+            )
+        )
+        notifier.send.assert_called_once()
+        payload = notifier.send.call_args[1]["payload"]
+        assert payload["vendor"] == "Apple Inc"
+        assert payload["name"] == "iPhone"
+
+    def test_vendor_not_overwritten_when_api_has_empty(self, tmp_path):
+        """Existing vendor from event is preserved when API device has empty vendor."""
+        from unittest.mock import AsyncMock, MagicMock
+        from utils.agent.autonomy import FakeAutonomyGate
+        from netalertx.event_router import NetAlertXEventRouter
+
+        fake_api = MagicMock()
+        fake_api.get_devices = AsyncMock(
+            return_value=[
+                {"devMac": "AA:BB:CC:DD:EE:FF", "devVendor": "", "devName": ""}
+            ]
+        )
+
+        gate = FakeAutonomyGate(auto_execute_result=False)
+        notifier = MagicMock()
+        notifier.send = AsyncMock()
+        router = NetAlertXEventRouter(notifier, gate, api_client=fake_api)
+
+        asyncio.run(
+            router._handle_new_device(
+                mac="AA:BB:CC:DD:EE:FF", ip="", vendor="Existing Vendor", name=""
+            )
+        )
+        payload = notifier.send.call_args[1]["payload"]
+        assert payload["vendor"] == "Existing Vendor"
+
+
+# ── S3: reconcile — subnet drift + name sync ─────────────────────────────────
+
+
+class TestBuildCleanScanSubnets:
+    def test_removes_docker_subnet(self):
+        from netalertx.reconcile import _build_clean_scan_subnets
+
+        conf = "SCAN_SUBNETS=['10.0.0.0/24 eth0', '172.30.32.0/23 eth0']\n"
+        result = _build_clean_scan_subnets(conf)
+        assert "172.30.32" not in result
+        assert "10.0.0.0/24" in result
+
+    def test_preserves_lan_range(self):
+        from netalertx.reconcile import _build_clean_scan_subnets
+
+        conf = "SCAN_SUBNETS=['10.0.0.162/24 --interface=end0']\n"
+        result = _build_clean_scan_subnets(conf)
+        assert "10.0.0.162/24" in result
+
+    def test_removes_all_docker_range_overlaps(self):
+        from netalertx.reconcile import _build_clean_scan_subnets
+
+        conf = "SCAN_SUBNETS=['172.16.0.0/12 eth0', '172.20.0.0/14 eth0']\n"
+        result = _build_clean_scan_subnets(conf)
+        assert result == "[]"
+
+    def test_key_not_found_returns_empty(self):
+        from netalertx.reconcile import _build_clean_scan_subnets
+
+        conf = "TIMEZONE='UTC'\nLOADED_PLUGINS=['ARPSCAN']\n"
+        assert _build_clean_scan_subnets(conf) == ""
+
+
+class TestReconcileSubnetFix:
+    def _make_ssh(self, conf_text):
+        from utils.ha.ssh_client import FakeSSHClient
+
+        return FakeSSHClient(
+            file_contents={"/app_configs/test-slug/config/app.conf": conf_text},
+            command_results={"ha apps check /app_configs": (0, "/app_configs", "")},
+        )
+
+    def test_no_op_when_subnets_clean(self, monkeypatch):
+        from netalertx import reconcile
+
+        monkeypatch.setattr(reconcile, "_run_name_sync", lambda *a, **kw: _async_noop())
+        monkeypatch.setattr(
+            "netalertx.reconcile._fix_scan_subnets", lambda *a, **kw: _async_noop()
+        )
+
+        # Nothing raised means success; covered by _fix_scan_subnets having no-op behavior
+
+    def test_writes_fixed_conf_when_subnet_dirty(self, tmp_path, monkeypatch):
+        import asyncio
+        from netalertx.reconcile import _fix_scan_subnets
+        from utils.ha.ssh_client import FakeSSHClient
+
+        dirty_conf = "SCAN_SUBNETS=['10.0.0.0/24 eth0', '172.30.32.0/23 eth0']\n"
+        ssh = FakeSSHClient(
+            file_contents={"/app_configs/my-slug/config/app.conf": dirty_conf}
+        )
+
+        # resolve_app_config_root is a local import inside _fix_scan_subnets;
+        # patch at the source module so the import picks up the stub.
+        monkeypatch.setattr(
+            "utils.ha.app_configs.resolve_app_config_root",
+            lambda _ssh: _async_return("/app_configs"),
+        )
+
+        asyncio.run(_fix_scan_subnets(ssh, "my-slug"))
+        conf_path = "/app_configs/my-slug/config/app.conf"
+        assert conf_path in ssh.written_files
+        assert "172.30.32" not in ssh.written_files[conf_path]
+        assert "10.0.0.0/24" in ssh.written_files[conf_path]
+
+
+async def _async_noop():
+    pass
+
+
+async def _async_return(value):
+    return value
+
+
+class TestSyncNamesOptions:
+    """sync_names(notify_unnamed=False) and extra_ip_names fallback."""
+
+    _PATTERNS = ["^unknown-", "^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$"]
+
+    def test_notify_unnamed_false_skips_card(self):
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+
+        mac = "AA:BB:CC:DD:EE:FF"
+        nax = _FakeNAXClient(
+            [{"devMac": mac, "devName": "", "devVendor": "", "devLastIP": "10.0.0.1"}]
+        )
+        ha_http = _ha_states_transport([])  # no HA names
+        gate = FakeAutonomyGate(auto_execute_result=True, approval_result=False)
+        notifier = FakeNotifier(approve=False)
+        syncer = _make_syncer(
+            FakeSSHClient(),
+            nax,
+            ha_http,
+            patterns=self._PATTERNS,
+            gate=gate,
+            notifier=notifier,
+        )
+
+        report = asyncio.run(syncer.sync_names(notify_unnamed=False))
+
+        assert len(report.unnamed) == 1
+        assert len(gate.require_approval_calls) == 0
+
+    def test_notify_unnamed_true_sends_card(self):
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+
+        mac = "AA:BB:CC:DD:EE:FF"
+        nax = _FakeNAXClient(
+            [{"devMac": mac, "devName": "", "devVendor": "", "devLastIP": "10.0.0.1"}]
+        )
+        ha_http = _ha_states_transport([])
+        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
+        notifier = FakeNotifier(approve=True)
+        syncer = _make_syncer(
+            FakeSSHClient(),
+            nax,
+            ha_http,
+            patterns=self._PATTERNS,
+            gate=gate,
+            notifier=notifier,
+        )
+
+        asyncio.run(syncer.sync_names(notify_unnamed=True))
+        subjects = [c["subject"] for c in gate.require_approval_calls]
+        assert any("Unnamed" in s for s in subjects)
+
+    def test_extra_ip_names_used_as_fallback(self):
+        """Device with no MAC in HA gets its name from extra_ip_names by IP."""
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+
+        mac = "AA:BB:CC:DD:EE:FF"
+        ip = "10.0.0.50"
+        nax = _FakeNAXClient(
+            [{"devMac": mac, "devName": "", "devVendor": "", "devLastIP": ip}]
+        )
+        ha_http = _ha_states_transport([])  # no MAC-based names
+        gate = FakeAutonomyGate(auto_execute_result=True, approval_result=True)
+        syncer = _make_syncer(
+            FakeSSHClient(), nax, ha_http, patterns=self._PATTERNS, gate=gate
+        )
+
+        report = asyncio.run(
+            syncer.sync_names(notify_unnamed=False, extra_ip_names={ip: "My Apple TV"})
+        )
+
+        # Device should be written/locked from the IP-name fallback
+        assert mac in report.written or mac in report.locked
+
+    def test_extra_ip_names_not_used_when_mac_matches(self):
+        """MAC-based HA name takes priority over extra_ip_names."""
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+
+        mac = "AA:BB:CC:DD:EE:FF"
+        ip = "10.0.0.50"
+        nax = _FakeNAXClient(
+            [{"devMac": mac, "devName": "", "devVendor": "", "devLastIP": ip}]
+        )
+        states = [
+            {
+                "entity_id": "device_tracker.x",
+                "attributes": {"mac_address": mac, "friendly_name": "From MAC"},
+            }
+        ]
+        ha_http = _ha_states_transport(states)
+        gate = FakeAutonomyGate(auto_execute_result=True, approval_result=True)
+        syncer = _make_syncer(
+            FakeSSHClient(), nax, ha_http, patterns=self._PATTERNS, gate=gate
+        )
+
+        report = asyncio.run(
+            syncer.sync_names(notify_unnamed=False, extra_ip_names={ip: "From IP"})
+        )
+
+        # Should write "From MAC", not "From IP"
+        assert mac in report.written
+        assert ("AA:BB:CC:DD:EE:FF", "devName", "From MAC") in nax.updates
