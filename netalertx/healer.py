@@ -194,6 +194,8 @@ class NetAlertXHealer:
             nax_ssh_client=self._ssh,
             netalertx_api_client=self._api,
             netalertx_container_name=self._container,
+            knowledge_store=self._knowledge_store,
+            db_path=self._db_path,
         )
         registry = build_netalertx_tool_registry()
         try:
@@ -236,6 +238,20 @@ class NetAlertXHealer:
             ),
         )
 
+        from netalertx.installer import resolve_addon_slug
+
+        _slug = resolve_addon_slug()
+        _slug_line = (
+            f"  Add-on slug: {_slug}"
+            if _slug
+            else "  Add-on slug: unknown (Docker mode)"
+        )
+        _conf_line = (
+            f"  App conf path: /app_configs/{_slug}/config/app.conf"
+            if _slug
+            else "  App conf path: /data/app.conf (Docker)"
+        )
+
         initial_context = (
             "You are diagnosing and repairing a NetAlertX network monitoring issue.\n\n"
             f"Diagnosis:\n"
@@ -244,6 +260,9 @@ class NetAlertXHealer:
             f"  Category: {diagnostic.category}\n"
             f"  Recommended fix: {diagnostic.recommended_fix}\n"
             f"  Affected version: {diagnostic.affected_netalertx_version}\n\n"
+            f"NetAlertX instance:\n"
+            f"{_slug_line}\n"
+            f"{_conf_line}\n\n"
             "Investigate using query_netalertx and read_logs, then apply the appropriate fix. "
             "Call finish_repair when done."
         )
@@ -265,6 +284,11 @@ class NetAlertXHealer:
             steps=len(result.steps),
         )
 
+        # Send a card for every outcome except clean success (outcome == "success"
+        # with no further action needed).  Failures and needs_action are always
+        # reported; success is reported as informational so the user can see what changed.
+        await self._send_heal_outcome_card(diagnostic, result)
+
         # Autonomous gap detection (item 84): mirror the HA loop behaviour.
         if result.capability_gap and result.gap_description:
             from agents.ha_agent_sandbox_engine import _run_code_proposal_loop
@@ -283,6 +307,71 @@ class NetAlertXHealer:
             )
 
     # ------------------------------------------------------------------
+    # Heal outcome card
+    # ------------------------------------------------------------------
+
+    async def _send_heal_outcome_card(
+        self,
+        diagnostic: "NetAlertXDiagnostic",
+        result: "object",
+    ) -> None:
+        """Send a CARD_TYPE_NETALERTX_HEAL card summarising the heal outcome."""
+        import sqlite3
+
+        from utils.hitl.card_types import CARD_TYPE_NETALERTX_HEAL
+        from utils.hitl.hitl_tracker import mark_card_sent, should_send_card, stable_nid
+
+        outcome = getattr(result, "outcome", "unknown")
+        steps = len(getattr(result, "steps", []))
+        episode_id = getattr(result, "episode_id", "")
+
+        card_key = (
+            f"netalertx_heal:{diagnostic.category}:{diagnostic.severity}:{outcome}"
+        )
+        nid = stable_nid(card_key)
+
+        if outcome == "success":
+            subject = f"Pueo: NetAlertX heal succeeded — {diagnostic.issue[:60]}"
+            body = (
+                f"Category: {diagnostic.category}  Severity: {diagnostic.severity}\n"
+                f"Steps taken: {steps}\n"
+                f"Outcome: success"
+            )
+        else:
+            subject = f"Pueo: NetAlertX heal {outcome} — {diagnostic.issue[:60]}"
+            body = (
+                f"Category: {diagnostic.category}  Severity: {diagnostic.severity}\n"
+                f"Steps taken: {steps}\n"
+                f"Outcome: {outcome}\n\n"
+                "Manual review may be needed."
+            )
+
+        try:
+            with sqlite3.connect(self._db_path) as conn:
+                if should_send_card(conn, card_key):
+                    await self._notifier.send(
+                        subject=subject,
+                        body=body,
+                        payload={
+                            "notification_id": nid,
+                            "card_type": CARD_TYPE_NETALERTX_HEAL,
+                            "category": diagnostic.category,
+                            "severity": diagnostic.severity,
+                            "outcome": outcome,
+                            "issue": diagnostic.issue,
+                            "episode_id": episode_id,
+                        },
+                    )
+                    mark_card_sent(conn, card_key, CARD_TYPE_NETALERTX_HEAL, subject)
+                    log.info(
+                        "netalertx_heal_outcome_card_sent",
+                        outcome=outcome,
+                        card_key=card_key,
+                    )
+        except Exception as exc:  # nosec B110
+            log.error("netalertx_heal_outcome_card_failed", error=str(exc))
+
+    # ------------------------------------------------------------------
     # Main entry point (linear pipeline — backward-compatible)
     # ------------------------------------------------------------------
 
@@ -297,7 +386,7 @@ class NetAlertXHealer:
         if category == "networking":
             await self._heal_networking(diagnostic)
         else:
-            # database, version, mqtt, ha_integration, or unknown: notify and report only
+            # config, database, version, ha_integration, availability: notify and report only
             await self._gate.require_approval(
                 subject=f"Pueo: NetAlertX {diagnostic.severity} — {diagnostic.issue}",
                 body=diagnostic.recommended_fix,

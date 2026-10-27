@@ -97,6 +97,11 @@ _HA_COMMAND_RISK: dict[str, str] = {
     "ha resolution healthcheck": "LOW",
 }
 
+# Seconds between get_about() polls after a NetAlertX restart (patchable in tests).
+_RESTART_VERIFY_POLL_INTERVAL_S: float = 10.0
+# Maximum number of poll attempts before declaring the restart failed.
+_RESTART_VERIFY_MAX_ATTEMPTS: int = 12  # 2 minutes total
+
 # Validates HA app slugs (e.g. "mosquitto", "z-wave-js", "code_server").
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_\-]*$")
 # Validates Supervisor UUIDs: compact 32-char hex or standard dashed UUID4.
@@ -3853,17 +3858,71 @@ class ToolExecutor:
             )
 
     async def _restart_netalertx(self) -> ToolResult:
+        import uuid as _uuid
+
         from netalertx.installer import resolve_addon_slug
+        from utils.agent.autonomy import RiskLevel
+        from utils.hitl.card_types import CARD_TYPE_HA_COMMAND
 
         slug = resolve_addon_slug()
         if slug:
             cmd = f"ha apps restart {slug}"
-            ssh = self._ha_ssh
-        else:
-            cmd = f"docker restart {self._container}"
-            ssh = self._nax_ssh or self._ha_ssh
+            # Gate at MEDIUM — same risk tier as ha apps restart <slug> in ADR 041.
+            if not self._gate.should_auto_execute(RiskLevel.MEDIUM):
+                nid = get_correlation_id() or str(_uuid.uuid4())
+                approved = await self._gate.queue_for_approval(
+                    subject=f"Pueo: restart NetAlertX ({slug})",
+                    body=f"Command: {cmd}\nRisk: MEDIUM",
+                    payload={
+                        "notification_id": nid,
+                        "card_type": CARD_TYPE_HA_COMMAND,
+                        "command": cmd,
+                        "risk": "MEDIUM",
+                        "reason": "restart_netalertx tool",
+                        "episode_id": self._episode_id,
+                    },
+                    notifier=self._notifier,
+                    risk=RiskLevel.MEDIUM,
+                )
+                if not approved:
+                    self._mark_card_queued(nid)
+                    log.info("restart_netalertx_queued_for_hitl", nid=nid, slug=slug)
+                    return ToolResult(
+                        tool_name="restart_netalertx",
+                        success=False,
+                        output=f"Restart queued for approval (id={nid}); agent loop exiting",
+                        awaiting_approval=True,
+                    )
+            try:
+                exit_code, stdout, stderr = await self._ha_ssh.run(cmd, check=False)
+            except Exception as exc:
+                return ToolResult(
+                    tool_name="restart_netalertx",
+                    success=False,
+                    output="",
+                    error=str(exc),
+                )
+            if exit_code != 0:
+                return ToolResult(
+                    tool_name="restart_netalertx",
+                    success=False,
+                    output=stdout,
+                    error=f"exit {exit_code}: {(stderr.strip() or stdout.strip() or '(no output)')[:500]}",
+                )
+            # Post-restart verification — skip when no API client is wired.
+            if self._api is not None:
+                return await self._verify_restart_netalertx(slug)
+            return ToolResult(
+                tool_name="restart_netalertx",
+                success=True,
+                output=stdout or stderr or "container restarted",
+            )
+
+        # Docker mode: no gate, no structured verification.
+        cmd_docker = f"docker restart {self._container}"
+        ssh = self._nax_ssh or self._ha_ssh
         try:
-            _, stdout, stderr = await ssh.run(cmd, check=False)
+            _, stdout, stderr = await ssh.run(cmd_docker, check=False)
             if self._api is not None:
                 try:
                     await self._api.trigger_scan()
@@ -3879,7 +3938,110 @@ class ToolExecutor:
                 tool_name="restart_netalertx", success=False, output="", error=str(exc)
             )
 
+    async def _verify_restart_netalertx(self, slug: str) -> ToolResult:
+        """Poll get_about() after a restart; on persistent failure restore LKG and send a HIGH card."""
+        import asyncio as _asyncio
+        import sqlite3 as _sqlite3
+
+        from netalertx.app_conf import conf_path_for_slug
+        from utils.ha.app_configs import resolve_app_config_root
+        from utils.hitl.card_types import CARD_TYPE_NETALERTX_HEAL
+        from utils.hitl.hitl_tracker import mark_card_sent, should_send_card, stable_nid
+
+        import utils.agent.tool_executor as _te_mod
+
+        poll_interval = _te_mod._RESTART_VERIFY_POLL_INTERVAL_S
+        max_attempts = _te_mod._RESTART_VERIFY_MAX_ATTEMPTS
+
+        for attempt in range(max_attempts):
+            await _asyncio.sleep(poll_interval)
+            try:
+                await self._api.get_about()  # type: ignore[union-attr]
+                # Verified — best-effort scan trigger.
+                try:
+                    await self._api.trigger_scan()  # type: ignore[union-attr]
+                except Exception:  # nosec B110
+                    pass
+                return ToolResult(
+                    tool_name="restart_netalertx",
+                    success=True,
+                    output=(
+                        f"NetAlertX restarted and verified up after "
+                        f"{int((attempt + 1) * poll_interval)}s"
+                    ),
+                )
+            except Exception:
+                if attempt < max_attempts - 1:
+                    continue
+
+        # All verification polls failed — attempt LKG rollback.
+        rollback_ok = False
+        rollback_error = ""
+        try:
+            root = await resolve_app_config_root(self._ha_ssh)
+            path = conf_path_for_slug(slug, root)
+            lkg_path = path + ".pueo-lkg"
+            lkg_text = await self._ha_ssh.read_file(lkg_path)
+            await self._ha_ssh.write_file(path, lkg_text)
+            await self._ha_ssh.run(f"ha apps restart {slug}", check=False)
+            for _ in range(max_attempts):
+                await _asyncio.sleep(poll_interval)
+                try:
+                    await self._api.get_about()  # type: ignore[union-attr]
+                    rollback_ok = True
+                    break
+                except Exception:  # nosec B112 — poll loop; exhaustion handled above
+                    continue
+        except (FileNotFoundError, OSError) as exc:
+            rollback_error = f"no LKG backup: {exc}"
+        except Exception as exc:
+            rollback_error = str(exc)
+
+        # Send HIGH card regardless of rollback outcome.
+        try:
+            card_key = f"netalertx_restart_failed:{slug}"
+            nid = stable_nid(card_key)
+            rollback_note = (
+                "LKG rollback succeeded — verify NetAlertX is operational."
+                if rollback_ok
+                else f"LKG rollback failed ({rollback_error}) — manual recovery needed."
+            )
+            subject = "Pueo: NetAlertX did not recover after restart"
+            body = f"{rollback_note}\n\nSlug: {slug}"
+            with _sqlite3.connect(self._db_path) as conn:
+                if should_send_card(conn, card_key):
+                    await self._notifier.send(
+                        subject=subject,
+                        body=body,
+                        payload={
+                            "notification_id": nid,
+                            "card_type": CARD_TYPE_NETALERTX_HEAL,
+                            "severity": "HIGH",
+                            "slug": slug,
+                            "rollback_ok": rollback_ok,
+                            "rollback_error": rollback_error,
+                            "episode_id": self._episode_id,
+                        },
+                    )
+                    mark_card_sent(conn, card_key, CARD_TYPE_NETALERTX_HEAL, subject)
+        except Exception as exc:  # nosec B110
+            log.error("netalertx_restart_card_failed", error=str(exc))
+
+        status = (
+            "LKG rollback succeeded"
+            if rollback_ok
+            else f"LKG rollback failed: {rollback_error}"
+        )
+        return ToolResult(
+            tool_name="restart_netalertx",
+            success=False,
+            output="",
+            error=f"NetAlertX did not recover after restart. {status}. HIGH card sent.",
+        )
+
     async def _rewrite_netalertx_conf(self, overrides: dict) -> ToolResult:
+        import uuid as _uuid2
+
         from netalertx.app_conf import (
             AppConfSyntaxError,
             format_value,
@@ -3888,12 +4050,42 @@ class ToolExecutor:
             write_app_conf,
         )
         from netalertx.installer import resolve_addon_slug
+        from utils.agent.autonomy import RiskLevel
+        from utils.hitl.card_types import CARD_TYPE_NETALERTX_HEAL
 
         slug = resolve_addon_slug()
         formatted = {k: format_value(v) for k, v in overrides.items()}
 
         if slug:
-            # HA add-on mode: use the safe writer (backup → LKG → write)
+            # HA add-on mode: gate at MEDIUM then use the safe writer (backup → LKG → write)
+            if not self._gate.should_auto_execute(RiskLevel.MEDIUM):
+                nid = get_correlation_id() or str(_uuid2.uuid4())
+                keys_preview = ", ".join(formatted.keys()) or "(none)"
+                approved = await self._gate.queue_for_approval(
+                    subject=f"Pueo: rewrite NetAlertX app.conf ({slug})",
+                    body=f"Keys to update: {keys_preview}\nRisk: MEDIUM",
+                    payload={
+                        "notification_id": nid,
+                        "card_type": CARD_TYPE_NETALERTX_HEAL,
+                        "slug": slug,
+                        "overrides": formatted,
+                        "risk": "MEDIUM",
+                        "episode_id": self._episode_id,
+                    },
+                    notifier=self._notifier,
+                    risk=RiskLevel.MEDIUM,
+                )
+                if not approved:
+                    self._mark_card_queued(nid)
+                    log.info(
+                        "rewrite_netalertx_conf_queued_for_hitl", nid=nid, slug=slug
+                    )
+                    return ToolResult(
+                        tool_name="rewrite_netalertx_conf",
+                        success=False,
+                        output=f"Conf rewrite queued for approval (id={nid}); agent loop exiting",
+                        awaiting_approval=True,
+                    )
             try:
                 diff = await write_app_conf(
                     self._ha_ssh,

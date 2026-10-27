@@ -4752,6 +4752,40 @@ class TestNetAlertXDiagnostic:
         )
         assert NetAlertXDiagnostic.model_validate_json(d.model_dump_json()) == d
 
+    def test_invalid_category_raises(self):
+        from pydantic import ValidationError
+
+        from netalertx.diagnosis import NetAlertXDiagnostic
+
+        with pytest.raises(ValidationError):
+            NetAlertXDiagnostic(
+                issue="x",
+                severity="LOW",
+                category="mqtt",  # type: ignore[arg-type]
+                recommended_fix="y",
+                affected_netalertx_version="v1",
+            )
+
+    def test_all_valid_categories_accepted(self):
+        from netalertx.diagnosis import NetAlertXDiagnostic
+
+        for cat in (
+            "networking",
+            "config",
+            "database",
+            "version",
+            "ha_integration",
+            "availability",
+        ):
+            d = NetAlertXDiagnostic(
+                issue="x",
+                severity="LOW",
+                category=cat,  # type: ignore[arg-type]
+                recommended_fix="y",
+                affected_netalertx_version="v1",
+            )
+            assert d.category == cat
+
     # ── diagnose_health_report ────────────────────────────────────────────────
 
     def _zero_devices_report(self):
@@ -4775,7 +4809,7 @@ class TestNetAlertXDiagnostic:
         diag = NetAlertXDiagnostic(
             issue="No devices discovered",
             severity="HIGH",
-            category=category,
+            category=category,  # type: ignore[arg-type]
             recommended_fix="Add --network=host to the Docker run command.",
             affected_netalertx_version="v26.7.1",
         )
@@ -5027,7 +5061,7 @@ class TestNetAlertXHealer:
         return NetAlertXDiagnostic(
             issue="scan failure",
             severity=severity,
-            category=category,
+            category=category,  # type: ignore[arg-type]
             recommended_fix=recommended_fix,
             affected_netalertx_version="v26.7.1",
         )
@@ -5118,7 +5152,7 @@ class TestNetAlertXHealer:
         notifier = FakeNotifier(approve=False)
         ssh = FakeSSHClient()
         healer = self._make_healer(gate=gate, ssh_client=ssh, notifier=notifier)
-        asyncio.run(healer.heal(self._make_diag("mqtt")))
+        asyncio.run(healer.heal(self._make_diag("config")))
 
         assert len(gate.require_approval_calls) >= 1
         assert ssh.written_files == {}
@@ -5305,7 +5339,7 @@ class TestNetAlertXHealer:
         # Should not raise even without a healer
         asyncio.run(_dispatch_to_healer(evaluation, healer=None))
 
-    def test_evaluation_to_diagnostic_mqtt_category(self):
+    def test_evaluation_to_diagnostic_config_category_for_mqtt(self):
         from netalertx.log_monitor import LogEvaluation, _evaluation_to_diagnostic
 
         ev = LogEvaluation(
@@ -5314,7 +5348,7 @@ class TestNetAlertXHealer:
             confidence_score=0.85,
         )
         diag = _evaluation_to_diagnostic(ev)
-        assert diag.category == "mqtt"
+        assert diag.category == "config"
         assert diag.severity == "MEDIUM"
 
     def test_evaluation_to_diagnostic_networking_category(self):
@@ -5459,6 +5493,51 @@ class TestNetAlertXHealer:
 
         assert len(gate.require_approval_calls) >= 1
         assert ssh.written_files == {}
+
+    # -----------------------------------------------------------------------
+    # _send_heal_outcome_card — sends HITL card after every heal loop
+    # -----------------------------------------------------------------------
+
+    def test_heal_with_loop_sends_outcome_card(self, tmp_path):
+        """_send_heal_outcome_card sends a card for non-success outcomes."""
+        import asyncio
+        import sqlite3
+
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from netalertx.healer import NetAlertXHealer
+        from utils.ha.ssh_client import FakeSSHClient
+
+        db_path = str(tmp_path / "healer_card.db")
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "CREATE TABLE hitl_suppression "
+                "(card_key TEXT PRIMARY KEY, card_type TEXT, description TEXT, "
+                "first_sent_at REAL, last_sent_at REAL, send_count INTEGER DEFAULT 0, "
+                "known_issue INTEGER DEFAULT 0, next_allowed_at REAL, "
+                "resolved_at REAL, last_action TEXT)"
+            )
+
+        notifier = FakeNotifier(approve=True)
+        healer = NetAlertXHealer(
+            gate=FakeAutonomyGate(),
+            ssh_client=FakeSSHClient(),
+            ha_ssh_client=FakeSSHClient(),
+            api_client=_FakeAPIClient(),
+            notifier=notifier,
+            db_path=db_path,
+        )
+
+        class _FakeResult:
+            outcome = "failed"
+            steps: list = []
+            episode_id = "ep-123"
+
+        asyncio.run(
+            healer._send_heal_outcome_card(self._make_diag("config"), _FakeResult())
+        )
+        assert len(notifier.sent) == 1
+        assert "failed" in notifier.sent[0]["subject"]
 
     # -----------------------------------------------------------------------
     # run_heal (item 58) — dashboard-triggered named action dispatch
@@ -6038,7 +6117,7 @@ class TestNetAlertXOneShotDiagnose:
         diag = NetAlertXDiagnostic(
             issue="app.conf not found",
             severity="HIGH",
-            category="mqtt",
+            category="availability",
             recommended_fix="Re-run netalertx-setup.",
             affected_netalertx_version="unknown",
         )
