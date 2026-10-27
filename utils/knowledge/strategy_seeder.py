@@ -199,6 +199,11 @@ _SEED_PROMPTS: list[tuple[str, str, str]] = [
         "Spook repair digest — method",
         "Spook repair issues, dead_entity, missing_entity, Spook first load, many repairs at once",
     ),
+    (
+        "seed_netalertx.md",
+        "NetAlertX investigation — method",
+        "netalertx unreachable, netalertx API down, SCAN_SUBNETS drift, app.conf SyntaxError, NetAlertX restart, NetAlertX config, read_netalertx_conf, slug path, availability",
+    ),
 ]
 
 # Signature family (first signature segment) of seeds that have no ``signature:``
@@ -213,6 +218,7 @@ SEED_FAMILIES: dict[str, str] = {
     "seed_notification_analysis.md": "notification",
     "seed_update_analysis.md": "update",
     "seed_automation_authoring.md": "chat",
+    "seed_netalertx.md": "netalertx",
 }
 
 

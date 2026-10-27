@@ -5892,32 +5892,39 @@ class TestNetAlertXOneShotDiagnose:
 
     # ── tests ─────────────────────────────────────────────────────────────────
 
-    def test_api_unreachable_exits_early(self):
+    def test_api_unreachable_runs_availability_diagnosis(self, monkeypatch):
+        """When the API is unreachable, _diagnose_unreachable is called for an
+        availability diagnosis; the LLM is invoked but the healer is not."""
         import asyncio
 
-        from utils.llm.ollama_client import FakeLLMClient
-        from utils.ha.ssh_client import FakeSSHClient
+        from unittest.mock import AsyncMock, patch
 
         from netalertx.one_shot_diagnose import run_diagnose
 
         healer = self._FakeHealer()
-        llm = FakeLLMClient("{}")
+        called = []
 
-        asyncio.run(
-            run_diagnose(
-                ssh_client=FakeSSHClient(),
-                ha_ssh_client=FakeSSHClient(),
-                api_client=self._FakeAPIClient(raise_on_about=True),
-                llm_client=llm,
-                healer=healer,
-                addon_slug="test_slug",
+        async def _fake_diagnose_unreachable(*args, **kwargs):
+            called.append(args)
+
+        with patch(
+            "netalertx.one_shot_diagnose._diagnose_unreachable",
+            side_effect=_fake_diagnose_unreachable,
+        ):
+            asyncio.run(
+                run_diagnose(
+                    ssh_client=None,
+                    ha_ssh_client=None,
+                    api_client=self._FakeAPIClient(raise_on_about=True),
+                    healer=healer,
+                    addon_slug="test_slug",
+                )
             )
-        )
 
-        assert llm.calls == [], "LLM should not be called when API is unreachable"
+        assert called, "_diagnose_unreachable should have been called"
         assert (
             healer.heal_calls == []
-        ), "Healer should not be called when API is unreachable"
+        ), "Healer should not be called from run_diagnose on unreachable"
 
     def _ha_ssh_client(self, app_conf=None, log_output=""):
         """Build a FakeSSHClient covering all ha_ssh interactions in run_diagnose.
@@ -10017,3 +10024,338 @@ class TestFixScanSubnetsSlugResolution:
             asyncio.run(_fix_scan_subnets(ssh, ""))
         _rec_mod.log._logger.propagate = False
         assert any("reconcile_subnet_skip_no_slug" in r.message for r in caplog.records)
+
+
+# ── S3 tests ──────────────────────────────────────────────────────────────────
+
+
+class TestOneShotDiagnoseRouting:
+    """S3: deterministic routing and HIGH+-only heal trigger."""
+
+    class _FakeAPIClient:
+        has_token = True
+
+        def set_token(self, t: str) -> None:
+            pass
+
+        async def get_about(self):
+            return {"version": "v26.7.1"}
+
+        async def get_devices(self):
+            return []
+
+    def _make_ssh(
+        self,
+        conf: str = "SCAN_SUBNETS=['192.168.1.0/24 eth0']\nTIMEZONE='UTC'\nLOADED_PLUGINS=['ARPSCAN']\n",
+    ) -> "object":
+        from utils.ha.ssh_client import FakeSSHClient
+
+        return FakeSSHClient(
+            file_contents={
+                "/app_configs/test_slug/config/app.conf": conf,
+            },
+            command_results={
+                "ha store addons": (0, "", ""),
+                "ha apps info ": (0, "", ""),
+                "ha network info": (0, "default_interface: eth0", ""),
+            },
+        )
+
+    def test_scan_subnets_only_skips_llm(self, monkeypatch):
+        """If the only config issues are SCAN_SUBNETS, the LLM is not called."""
+        import asyncio
+        from unittest.mock import patch, AsyncMock
+        import netalertx.one_shot_diagnose as _mod
+        from utils.llm.ollama_client import FakeLLMClient
+        from netalertx.health import HealthReport
+
+        monkeypatch.setattr(_mod, "NETALERTX_ADDON_SLUG", "test_slug")
+        monkeypatch.setattr(_mod, "NETALERTX_API_TOKEN", "tok")
+
+        conf = (
+            "SCAN_SUBNETS=['192.168.1.0/24 eth0', '172.30.32.0/23 eth0']\n"
+            "TIMEZONE='UTC'\n"
+            "LOADED_PLUGINS=['ARPSCAN']\n"
+        )
+        ssh = self._make_ssh(conf)
+
+        llm = FakeLLMClient("{}")
+        diagnose_calls = []
+
+        async def _fake_diagnose(*args, **kwargs):
+            diagnose_calls.append(True)
+            return (None, None)
+
+        with (
+            patch("netalertx.one_shot_diagnose.NetAlertXHealthMonitor") as _mock_mon,
+            patch(
+                "netalertx.one_shot_diagnose.diagnose_health_report",
+                side_effect=_fake_diagnose,
+            ),
+            patch(
+                "netalertx.one_shot_diagnose._fetch_log_snapshot",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch("netalertx.one_shot_diagnose._check_sidebar_status", new=AsyncMock()),
+            patch(
+                "netalertx.one_shot_diagnose._check_and_refresh_token", new=AsyncMock()
+            ),
+            patch(
+                "utils.ha.app_configs.resolve_app_config_root",
+                new=AsyncMock(return_value="/app_configs"),
+            ),
+        ):
+            _mock_mon.return_value.poll_once = AsyncMock(
+                return_value=HealthReport(
+                    last_scan_age_minutes=5,
+                    device_counts={"total": 10, "online": 10},
+                    anomalies=[],
+                    netalertx_version="v26.7.1",
+                )
+            )
+            asyncio.run(
+                _mod.run_diagnose(
+                    ha_ssh_client=ssh,
+                    api_client=self._FakeAPIClient(),
+                    llm_client=llm,
+                    addon_slug="test_slug",
+                )
+            )
+
+        assert (
+            diagnose_calls == []
+        ), "diagnose_health_report should not be called for SCAN_SUBNETS-only issues"
+
+    def test_medium_severity_does_not_trigger_heal(self, monkeypatch):
+        """If the LLM returns a MEDIUM diagnostic, the healer is not called."""
+        import asyncio
+        from unittest.mock import patch, AsyncMock
+        import netalertx.one_shot_diagnose as _mod
+        from netalertx.diagnosis import NetAlertXDiagnostic
+        from netalertx.health import HealthReport
+
+        monkeypatch.setattr(_mod, "NETALERTX_ADDON_SLUG", "test_slug")
+        monkeypatch.setattr(_mod, "NETALERTX_API_TOKEN", "tok")
+
+        heal_calls = []
+
+        async def _fake_heal_with_loop(diag, llm_client=None):
+            heal_calls.append(diag)
+
+        class _FakeHealer:
+            async def heal_with_loop(self, diag, llm_client=None):
+                heal_calls.append(diag)
+
+        medium_diag = NetAlertXDiagnostic(
+            issue="SCAN_SUBNETS overlaps supervisor range",
+            severity="MEDIUM",
+            category="config",
+            recommended_fix="Remove 172.30.x.x subnet",
+            affected_netalertx_version="v26.7.1",
+        )
+
+        with (
+            patch("netalertx.one_shot_diagnose.NetAlertXHealthMonitor") as _mock_mon,
+            patch(
+                "netalertx.one_shot_diagnose.diagnose_health_report",
+                new=AsyncMock(return_value=(medium_diag, None)),
+            ),
+            patch(
+                "netalertx.one_shot_diagnose._fetch_log_snapshot",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch("netalertx.one_shot_diagnose._check_sidebar_status", new=AsyncMock()),
+            patch(
+                "netalertx.one_shot_diagnose._check_and_refresh_token", new=AsyncMock()
+            ),
+            patch(
+                "utils.ha.app_configs.resolve_app_config_root",
+                new=AsyncMock(return_value="/app_configs"),
+            ),
+        ):
+            _mock_mon.return_value.poll_once = AsyncMock(
+                return_value=HealthReport(
+                    last_scan_age_minutes=5,
+                    device_counts={"total": 10, "online": 9},
+                    anomalies=["version mismatch"],
+                    netalertx_version="v26.7.1",
+                )
+            )
+            asyncio.run(
+                _mod.run_diagnose(
+                    ha_ssh_client=self._make_ssh(),
+                    api_client=self._FakeAPIClient(),
+                    healer=_FakeHealer(),
+                    addon_slug="test_slug",
+                )
+            )
+
+        assert heal_calls == [], "Healer should not be called for MEDIUM severity"
+
+
+class TestEventPollOutageCard:
+    """S3: event poll sends outage card and auto-resolves on recovery."""
+
+    def _make_db(self, tmp_path):
+        import sqlite3
+
+        db = str(tmp_path / "test.db")
+        with sqlite3.connect(db) as conn:
+            conn.execute("CREATE TABLE user_prefs (key TEXT PRIMARY KEY, value TEXT)")
+            conn.execute(
+                """CREATE TABLE hitl_suppression (
+                card_key TEXT PRIMARY KEY,
+                card_type TEXT NOT NULL DEFAULT '',
+                description TEXT NOT NULL DEFAULT '',
+                first_sent_at REAL NOT NULL DEFAULT 0,
+                last_sent_at REAL NOT NULL DEFAULT 0,
+                send_count INTEGER NOT NULL DEFAULT 1,
+                last_action TEXT,
+                last_action_at REAL,
+                rejection_count INTEGER NOT NULL DEFAULT 0,
+                next_allowed_at REAL,
+                known_issue INTEGER NOT NULL DEFAULT 0,
+                known_issue_note TEXT,
+                resolved_at REAL
+            )"""
+            )
+        return db
+
+    def _make_failing_api(self):
+        from unittest.mock import AsyncMock, MagicMock
+
+        api = MagicMock()
+        api.has_token = True
+        api.get_events = AsyncMock(side_effect=OSError("connection refused"))
+        return api
+
+    def _make_router(self):
+        from unittest.mock import AsyncMock, MagicMock
+        from utils.agent.autonomy import FakeAutonomyGate
+        from netalertx.event_router import NetAlertXEventRouter
+
+        gate = FakeAutonomyGate(auto_execute_result=True)
+        notifier = MagicMock()
+        notifier.send = AsyncMock()
+        return NetAlertXEventRouter(notifier, gate), notifier
+
+    def test_outage_card_sent_after_threshold_failures(self, tmp_path):
+        """After failure_threshold consecutive failures, a card is sent exactly once."""
+        import asyncio
+        import sqlite3
+        from unittest.mock import AsyncMock, MagicMock
+
+        from netalertx.event_poll import run_event_poll
+
+        db = self._make_db(tmp_path)
+        router, _ = self._make_router()
+        api = self._make_failing_api()
+
+        notifier = MagicMock()
+        notifier.send = AsyncMock()
+
+        call_count = 0
+
+        async def _run():
+            async def _patched_sleep(t):
+                nonlocal call_count
+                call_count += 1
+                if call_count >= 4:
+                    raise asyncio.CancelledError
+
+            import netalertx.event_poll as _ep_mod
+            import asyncio as _asyncio
+
+            orig_sleep = _asyncio.sleep
+            _asyncio.sleep = _patched_sleep
+            try:
+                await run_event_poll(
+                    api,
+                    router,
+                    db,
+                    1,
+                    failure_threshold=3,
+                    notifier=notifier,
+                )
+            except asyncio.CancelledError:
+                pass
+            finally:
+                _asyncio.sleep = orig_sleep
+
+        asyncio.run(_run())
+        assert notifier.send.call_count == 1, "Card should be sent exactly once"
+
+    def test_outage_card_resolves_on_recovery(self, tmp_path):
+        """After outage card is sent, it is auto-resolved when API recovers."""
+        import asyncio
+        import sqlite3
+        from unittest.mock import AsyncMock, MagicMock
+
+        from netalertx.event_poll import _resolve_outage_card, _send_outage_card
+
+        db = self._make_db(tmp_path)
+        notifier = MagicMock()
+        notifier.send = AsyncMock()
+
+        asyncio.run(_send_outage_card(db, notifier, "connection refused"))
+        assert notifier.send.call_count == 1
+
+        # Recovery — card should be marked resolved
+        asyncio.run(_resolve_outage_card(db))
+        with sqlite3.connect(db) as conn:
+            row = conn.execute(
+                "SELECT resolved_at FROM hitl_suppression WHERE card_key = ?",
+                ("netalertx_unreachable",),
+            ).fetchone()
+        assert row is not None and row[0] is not None, "Card should be resolved"
+
+    def test_outage_card_not_resent_while_pending(self, tmp_path):
+        """If the card is already sent and not resolved, it is not sent again."""
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+
+        from netalertx.event_poll import _send_outage_card
+
+        db = self._make_db(tmp_path)
+        notifier = MagicMock()
+        notifier.send = AsyncMock()
+
+        asyncio.run(_send_outage_card(db, notifier, "err1"))
+        asyncio.run(_send_outage_card(db, notifier, "err2"))
+        assert (
+            notifier.send.call_count == 1
+        ), "Card should only be sent once while pending"
+
+
+class TestCoerceInt:
+    """_coerce_int tolerates float-shaped integer args from LLMs."""
+
+    def test_coerce_int_from_plain_int(self):
+        from utils.agent.tool_executor import _coerce_int
+
+        assert _coerce_int(100, 50) == 100
+
+    def test_coerce_int_from_float(self):
+        from utils.agent.tool_executor import _coerce_int
+
+        assert _coerce_int(100.0, 50) == 100
+
+    def test_coerce_int_from_float_string(self):
+        from utils.agent.tool_executor import _coerce_int
+
+        assert _coerce_int("100.0", 50) == 100
+
+    def test_coerce_int_from_int_string(self):
+        from utils.agent.tool_executor import _coerce_int
+
+        assert _coerce_int("200", 50) == 200
+
+    def test_coerce_int_falls_back_on_none(self):
+        from utils.agent.tool_executor import _coerce_int
+
+        assert _coerce_int(None, 50) == 50
+
+    def test_coerce_int_falls_back_on_invalid(self):
+        from utils.agent.tool_executor import _coerce_int
+
+        assert _coerce_int("bad", 50) == 50

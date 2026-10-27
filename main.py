@@ -1664,6 +1664,12 @@ async def supervisor_main(config_path: Path) -> None:
             api_client=_nax_api,
         )
         _nax_poll_interval = cfg.NETALERTX_EVENT_POLL_INTERVAL_MINUTES
+        _nax_fail_threshold = cfg.NETALERTX_EVENT_POLL_FAILURE_THRESHOLD
+        _nax_poll_slug = cfg.NETALERTX_ADDON_SLUG
+        _nax_poll_ha_ssh = AsyncSSHClient(cfg.HA_HOST, cfg.HA_USER, cfg.SSH_KEY_PATH)
+        _nax_poll_notifier = notifier
+        _nax_poll_gate = AutonomyGate(cfg.AUTONOMY_LEVEL)
+        _nax_poll_ks = knowledge_store
         supervisor.start(
             "netalertx_event_poll",
             lambda: run_event_poll(
@@ -1671,6 +1677,12 @@ async def supervisor_main(config_path: Path) -> None:
                 _nax_router,
                 cfg.DB_PATH,
                 _nax_poll_interval,
+                failure_threshold=_nax_fail_threshold,
+                notifier=_nax_poll_notifier,
+                ha_ssh_client=_nax_poll_ha_ssh,
+                gate=_nax_poll_gate,
+                knowledge_store=_nax_poll_ks,
+                slug=_nax_poll_slug,
             ),
         )
 

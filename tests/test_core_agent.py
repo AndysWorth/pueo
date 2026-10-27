@@ -19546,3 +19546,77 @@ class TestMigrationV41Backfill:
                 ).fetchall()
             )
         assert rows == {"done": "2026-10-19T09:30:00Z", "open": None}
+
+
+class TestReadNetAlertXConf:
+    """Tests for the read_netalertx_conf tool method."""
+
+    def _make_executor(self, ssh):
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.hitl.notify import FakeNotifier
+
+        return ToolExecutor(
+            ha_ssh_client=ssh,
+            gate=FakeAutonomyGate(auto_execute_result=True),
+            notifier=FakeNotifier(),
+        )
+
+    def test_read_netalertx_conf_returns_redacted_text(self, tmp_path, monkeypatch):
+        """read_netalertx_conf returns app.conf with sensitive keys masked."""
+        import asyncio
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.hitl.notify import FakeNotifier
+
+        conf_text = (
+            "SCAN_SUBNETS=['192.168.1.0/24 eth0']\n"
+            "TIMEZONE='UTC'\n"
+            "API_TOKEN='my-secret-token'\n"
+            "SMTP_PASS='smtp-pass123'\n"
+        )
+        ssh = FakeSSHClient(
+            file_contents={"/app_configs/test_slug/config/app.conf": conf_text}
+        )
+
+        monkeypatch.setattr(
+            "netalertx.installer.resolve_addon_slug", lambda *a, **kw: "test_slug"
+        )
+
+        async def _resolve(*a, **kw):
+            return "/app_configs"
+
+        monkeypatch.setattr("utils.ha.app_configs.resolve_app_config_root", _resolve)
+
+        executor = ToolExecutor(
+            ha_ssh_client=ssh,
+            gate=FakeAutonomyGate(auto_execute_result=True),
+            notifier=FakeNotifier(),
+        )
+        result = asyncio.run(executor._read_netalertx_conf())
+        assert result.success, f"Expected success: {result.error}"
+        assert "my-secret-token" not in result.output
+        assert "smtp-pass123" not in result.output
+        assert "***REDACTED***" in result.output
+        assert "SCAN_SUBNETS" in result.output
+
+    def test_read_netalertx_conf_no_slug(self, monkeypatch):
+        """Returns failure when addon slug is not configured."""
+        import asyncio
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.hitl.notify import FakeNotifier
+
+        monkeypatch.setattr(
+            "netalertx.installer.resolve_addon_slug", lambda *a, **kw: ""
+        )
+        executor = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(auto_execute_result=True),
+            notifier=FakeNotifier(),
+        )
+        result = asyncio.run(executor._read_netalertx_conf())
+        assert not result.success
+        assert "slug" in result.error.lower()
