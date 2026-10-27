@@ -3384,14 +3384,6 @@ def _build_companion_status(profile: Any, cfg: Any) -> list[Any]:
             "install_hint": "Install via HACS",
         },
         {
-            "name": "MQTT",
-            "slug": "mqtt",
-            "status": _flag("mqtt_configured"),
-            "description": "MQTT broker integration — enables MQTT-driven device investigation",
-            "install_url": None,
-            "install_hint": "Settings → Apps → Mosquitto Broker",
-        },
-        {
             "name": "NetAlertX",
             "slug": "netalertx",
             "status": (

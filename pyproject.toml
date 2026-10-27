@@ -4,7 +4,6 @@ version = "0.1.0"
 description = "Local, privacy-first agentic AI system that monitors and self-heals a Home Assistant instance"
 requires-python = ">=3.12"
 dependencies = [
-    "aiomqtt",
     "anthropic",
     "asyncssh",
     "chromadb",

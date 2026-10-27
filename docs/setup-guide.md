@@ -278,23 +278,6 @@ Config key: `netalertx.api_token`
 
 ---
 
-**MQTT (Mosquitto broker) — automatic check, then up to two prompts.**
-
-Setup checks whether the Mosquitto broker add-on is running on HA (requires the SSH connection to succeed). If Mosquitto isn't found, setup warns and suggests installing it from the HA App Store.
-
-**Prompt: MQTT username** (blank = anonymous access)
-
-To set up a dedicated Mosquitto user:
-1. `Settings → People → Users → Add User` (enable "Local access only")
-2. `Settings → Apps → Mosquitto broker → Configuration` — add the user to the `logins:` list
-
-**Prompt: MQTT password** *(input hidden — not echoed to terminal)*
-Only asked when you provide a username.
-
-Config keys: `netalertx.mqtt_user`, `netalertx.mqtt_password`
-
----
-
 ## Section 4.5 — Docker Compose Setup
 
 > **macOS mode: this section is skipped.**

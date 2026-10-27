@@ -15,16 +15,12 @@ import re
 import sqlite3
 from typing import TYPE_CHECKING, Optional
 
-import yaml
-
 import config as _config
 from config import (
-    CONFIG_REMOTE_PATH,
     DB_PATH,
     NETALERTX_LOG_CONTAINER_NAME,
 )
 from netalertx.config_validator import (
-    _SNAKE_TO_CAMEL,
     validate_app_conf,
 )
 from utils.agent.autonomy import RiskLevel
@@ -45,7 +41,6 @@ if TYPE_CHECKING:
 log = get_logger("netalertx.healer")
 
 _CONF_PATH_DOCKER = "/data/app.conf"
-_AUTOMATIONS_PATH = "/config/automations.yaml"
 
 
 def _addon_conf_path(slug: str) -> str:
@@ -301,12 +296,8 @@ class NetAlertXHealer:
         category = diagnostic.category
         if category == "networking":
             await self._heal_networking(diagnostic)
-        elif category == "mqtt":
-            await self._heal_mqtt(diagnostic)
-        elif category == "ha_integration":
-            await self._heal_ha_integration(diagnostic)
         else:
-            # database, version, or unknown: notify and report only
+            # database, version, mqtt, ha_integration, or unknown: notify and report only
             await self._gate.require_approval(
                 subject=f"Pueo: NetAlertX {diagnostic.severity} — {diagnostic.issue}",
                 body=diagnostic.recommended_fix,
@@ -338,48 +329,6 @@ class NetAlertXHealer:
             await self._restart_container()
             await self._api.trigger_scan()
             log.info("netalertx_restart_rescan_done")
-
-    async def _heal_mqtt(self, diagnostic: "NetAlertXDiagnostic") -> None:
-        """app.conf rewrite (MEDIUM, auto at level 3+); HA mqtt: conflict (HIGH)."""
-        if self._gate.should_auto_execute(RiskLevel.MEDIUM):
-            await self._rewrite_app_conf(diagnostic)
-        else:
-            approved = await self._gate.require_approval(
-                subject="Pueo: NetAlertX MQTT — rewrite app.conf",
-                body=diagnostic.recommended_fix,
-                payload={"category": "mqtt", "action": "rewrite_app_conf"},
-                notifier=self._notifier,
-                risk=RiskLevel.MEDIUM,
-            )
-            if not approved:
-                return
-            await self._rewrite_app_conf(diagnostic)
-
-        # HA configuration.yaml mqtt: key removal (HIGH risk)
-        approved_ha = await self._gate.require_approval(
-            subject="Pueo: NetAlertX — remove conflicting 'mqtt:' key from HA config",
-            body=(
-                "HA configuration.yaml has a top-level 'mqtt:' key that blocks "
-                "MQTT auto-discovery. Remove it and reconfigure via UI."
-            ),
-            payload={"category": "mqtt", "action": "remove_ha_mqtt_key"},
-            notifier=self._notifier,
-            risk=RiskLevel.HIGH,
-        )
-        if approved_ha:
-            await self._remove_ha_mqtt_key()
-
-    async def _heal_ha_integration(self, diagnostic: "NetAlertXDiagnostic") -> None:
-        """Fix HA automation webhook field names to camelCase (HIGH risk)."""
-        approved = await self._gate.require_approval(
-            subject="Pueo: NetAlertX — fix HA automation webhook fields to camelCase",
-            body=diagnostic.recommended_fix,
-            payload={"category": "ha_integration"},
-            notifier=self._notifier,
-            risk=RiskLevel.HIGH,
-        )
-        if approved:
-            await self._fix_ha_automation_fields()
 
     # ------------------------------------------------------------------
     # Execution helpers
@@ -416,73 +365,6 @@ class NetAlertXHealer:
         await ssh.write_file(conf_path, fixed)
         log.info("netalertx_app_conf_rewrite_done")
 
-    async def _remove_ha_mqtt_key(self) -> None:
-        """Remove top-level 'mqtt:' key from HA configuration.yaml via sandbox engine."""
-        from agents.ha_agent_sandbox_engine import (
-            commit_atomic_swap,
-            deploy_and_test_in_sandbox,
-            execute_remote_backup,
-            record_backup_slug,
-        )
-
-        log.info("netalertx_remove_ha_mqtt_key_start")
-        try:
-            ha_config = await self._ha_ssh.read_file(CONFIG_REMOTE_PATH)
-        except (FileNotFoundError, OSError) as exc:
-            log.error("netalertx_ha_config_read_failed", error=str(exc))
-            return
-
-        try:
-            parsed = yaml.safe_load(ha_config) or {}
-        except yaml.YAMLError as exc:
-            log.error("netalertx_ha_config_parse_failed", error=str(exc))
-            return
-
-        if "mqtt" not in parsed:
-            log.info("netalertx_ha_mqtt_key_absent")
-            return
-
-        parsed.pop("mqtt")
-        fixed_yaml = yaml.dump(parsed, default_flow_style=False, allow_unicode=True)
-
-        slug = await execute_remote_backup(ssh_client=self._ha_ssh)
-        record_backup_slug(slug)
-
-        if await deploy_and_test_in_sandbox(fixed_yaml, ssh_client=self._ha_ssh):
-            await commit_atomic_swap(fixed_yaml, ssh_client=self._ha_ssh)
-            log.info("netalertx_ha_mqtt_key_removed")
-        else:
-            log.error("netalertx_ha_sandbox_failed")
-
-    async def _fix_ha_automation_fields(self) -> None:
-        """Replace snake_case webhook fields with camelCase in HA automations."""
-        from agents.ha_agent_sandbox_engine import (
-            execute_remote_backup,
-            record_backup_slug,
-        )
-
-        log.info("netalertx_fix_ha_automation_start")
-        try:
-            content = await self._ha_ssh.read_file(_AUTOMATIONS_PATH)
-        except (FileNotFoundError, OSError) as exc:
-            log.error("netalertx_ha_automations_read_failed", error=str(exc))
-            return
-
-        fixed = content
-        for snake, camel in _SNAKE_TO_CAMEL.items():
-            fixed = re.sub(rf"\b{re.escape(snake)}\b", camel, fixed)
-
-        if fixed == content:
-            log.info("netalertx_ha_automation_no_changes")
-            return
-
-        slug = await execute_remote_backup(ssh_client=self._ha_ssh)
-        record_backup_slug(slug)
-
-        await self._ha_ssh.write_file(_AUTOMATIONS_PATH, fixed)
-        await self._ha_ssh.run("ha core restart")
-        log.info("netalertx_ha_automation_fields_fixed")
-
     async def _restart_container(self) -> None:
         from netalertx.installer import resolve_addon_slug
 
@@ -503,10 +385,7 @@ class NetAlertXHealer:
 
     async def run_heal(self, action: str) -> None:
         """Execute a named heal action approved via the dashboard."""
-        if action == "fix_webhook_fields":
-            await self._fix_ha_automation_fields()
-        else:
-            raise ValueError(f"Unknown NetAlertX heal action: {action!r}")
+        raise ValueError(f"Unknown NetAlertX heal action: {action!r}")
 
     # ------------------------------------------------------------------
     # Item 19: maintenance issue healing
@@ -515,56 +394,11 @@ class NetAlertXHealer:
     async def heal_maintenance_issues(self, config_issues: list["ConfigIssue"]) -> None:
         """Process ConfigIssues from item 19 maintenance checks.
 
-        - Webhook field snake_case → camelCase fix (HIGH risk gate)
-        - MQTT entity divergence → notify only at all levels
         - DB row count excess → DBCLNP cleanup at level 4 only
         """
-        _webhook_fields = set(_SNAKE_TO_CAMEL.keys())
         _db_metrics = {"Plugins_History", "Events"}
-
-        webhook_issues = [i for i in config_issues if i.field in _webhook_fields]
-        divergence_issues = [
-            i for i in config_issues if i.field == "mqtt_entity_divergence"
-        ]
         db_issues = [i for i in config_issues if i.field in _db_metrics]
-
-        if webhook_issues:
-            await self._heal_webhook_fields(webhook_issues)
-
-        for issue in divergence_issues:
-            log.info("netalertx_mqtt_divergence_notified", detail=issue.message)
-            await self._notifier.send(
-                subject="Pueo: NetAlertX MQTT entity divergence",
-                body=issue.message,
-                payload={"field": issue.field, "severity": issue.severity},
-            )
 
         if db_issues and self._gate.should_auto_execute(RiskLevel.HIGH):
             await self._api.trigger_scan("DBCLNP")
             log.info("netalertx_dbclnp_triggered", issue_count=len(db_issues))
-
-    async def _heal_webhook_fields(self, issues: list["ConfigIssue"]) -> None:
-        """Fix webhook automation snake_case fields to camelCase (HIGH risk)."""
-        if self._gate.should_auto_execute(RiskLevel.HIGH):
-            await self._fix_ha_automation_fields()
-            return
-
-        fields_str = ", ".join(i.field for i in issues)
-        from utils.hitl.card_types import CARD_TYPE_NETALERTX_HEAL
-
-        approved = await self._gate.require_approval(
-            subject="Pueo: NetAlertX — fix HA automation webhook fields to camelCase",
-            body=(
-                f"Snake_case webhook fields detected: {fields_str}. "
-                "Rewrite to camelCase via HA sandbox engine."
-            ),
-            payload={
-                "card_type": CARD_TYPE_NETALERTX_HEAL,
-                "heal_action": "fix_webhook_fields",
-                "fields": [i.field for i in issues],
-            },
-            notifier=self._notifier,
-            risk=RiskLevel.HIGH,
-        )
-        if approved:
-            await self._fix_ha_automation_fields()
