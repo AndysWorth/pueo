@@ -1038,44 +1038,22 @@ async def _execute_netalertx_heal(
     json_path: Path,
     watch_dir: Path,
 ) -> None:
-    """Run the NetAlertX heal action for an approved card."""
-    import config as _config
-    from netalertx.api_client import NetAlertXAPIClient
-    from netalertx.healer import NetAlertXHealer
-    from utils.agent.autonomy import AutonomyGate
-    from utils.hitl.notify import get_notifier
-    from utils.ha.ssh_client import AsyncSSHClient
+    """Acknowledge a NetAlertX heal outcome card and verify the session for distillation.
 
+    The heal AgentLoop already ran before this card was sent. Approving the card
+    records the session outcome so distillation can fire for successful heals.
+    """
     (watch_dir / f"{nid}.in_progress").touch()
     try:
         payload = data.get("payload", {})
-        heal_action = payload.get("heal_action", "")
-        nax_ssh = AsyncSSHClient(
-            _config.NETALERTX_SSH_HOST,
-            _config.NETALERTX_SSH_USER,
-            _config.NETALERTX_SSH_KEY_PATH,
-        )
-        ha_ssh = AsyncSSHClient(_config.HA_HOST, _config.HA_USER, _config.SSH_KEY_PATH)
-        api = NetAlertXAPIClient(
-            base_url=f"http://{_config.NETALERTX_HOST}:{_config.NETALERTX_API_PORT}",
-            api_token=_config.NETALERTX_API_TOKEN,
-        )
-        gate = AutonomyGate(_config.AUTONOMY_LEVEL)
-        notifier = get_notifier(
-            _config.NOTIFIER, _config.NOTIFY_URL, _config.NOTIFY_WATCH_DIR
-        )
-        healer = NetAlertXHealer(
-            gate=gate,
-            ssh_client=nax_ssh,
-            ha_ssh_client=ha_ssh,
-            api_client=api,
-            notifier=notifier,
-            container_name=_config.NETALERTX_LOG_CONTAINER_NAME,
-        )
-        await healer.run_heal(heal_action)
+        outcome = payload.get("outcome", "")
+        heal_action = payload.get("heal_action", outcome)
         data["fix_applied"] = True
         json_path.write_text(json.dumps(data, indent=2))
         (watch_dir / f"{nid}.approved").touch()
+        await _verify_card_execution(
+            payload, "success" if outcome == "success" else "failure"
+        )
         try:
             from utils.core.timeline import write_timeline_event
 
@@ -1083,8 +1061,8 @@ async def _execute_netalertx_heal(
                 write_timeline_event,
                 "INFO",
                 "netalertx_heal",
-                f"NetAlertX heal executed: {heal_action}",
-                {"heal_action": heal_action},
+                f"NetAlertX heal acknowledged: {heal_action} — {outcome}",
+                {"heal_action": heal_action, "outcome": outcome},
             )
         except Exception:  # nosec B110  # pragma: no cover
             pass
@@ -1092,18 +1070,6 @@ async def _execute_netalertx_heal(
         data["fix_error"] = str(exc)
         json_path.write_text(json.dumps(data, indent=2))
         (watch_dir / f"{nid}.rejected").touch()
-        try:
-            from utils.core.timeline import write_timeline_event
-
-            await asyncio.to_thread(
-                write_timeline_event,
-                "ERROR",
-                "netalertx_heal",
-                f"NetAlertX heal failed: {heal_action} — {exc}",
-                {"heal_action": heal_action},
-            )
-        except Exception:  # nosec B110  # pragma: no cover
-            pass
     finally:
         (watch_dir / f"{nid}.in_progress").unlink(missing_ok=True)
 
@@ -3884,10 +3850,19 @@ async def netalertx_diagnose() -> JSONResponse:
 
     from netalertx.one_shot_diagnose import run_diagnose
 
-    knowledge_store = getattr(sv._tool_executor, "_knowledge_store", None)
+    _exec = sv._tool_executor
+    knowledge_store = getattr(_exec, "_knowledge_store", None)
+    rest_client = getattr(_exec, "_rest_client", None)
+    ws_client = getattr(_exec, "_ws_client", None)
+    ha_profile = getattr(_exec, "_ha_profile", None)
 
     _netalertx_diagnose_task = asyncio.create_task(
-        run_diagnose(knowledge_store=knowledge_store)
+        run_diagnose(
+            knowledge_store=knowledge_store,
+            rest_client=rest_client,
+            ws_client=ws_client,
+            ha_profile=ha_profile,
+        )
     )
     return JSONResponse({"ok": True})
 

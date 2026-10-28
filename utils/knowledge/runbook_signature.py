@@ -97,6 +97,12 @@ def sig_device_post_restart() -> str:
     return "device:offline:post_restart"
 
 
+def sig_netalertx(category: str, issue_key: str = "*") -> str:
+    """netalertx:<category>:<issue_key>  (issue_key defaults to wildcard '*')"""
+    key = issue_key if issue_key == "*" else _part(issue_key)
+    return f"netalertx:{_part(category)}:{key}"
+
+
 # Signatures written before ``_part`` mapped "-" to "_" (#945).  Rewritten in place
 # at startup by strategy_seeder.normalize_legacy_signatures().
 LEGACY_SIGNATURE_RENAMES: dict[str, str] = {

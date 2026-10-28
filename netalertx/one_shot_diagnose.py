@@ -44,8 +44,14 @@ if TYPE_CHECKING:
     from netalertx.health import HealthReport
     from netalertx.healer import NetAlertXHealer
     from netalertx.log_monitor import LogEvaluation
-    from interfaces import LLMClientProtocol, SSHClientProtocol
+    from interfaces import (
+        HARestClientProtocol,
+        HAWebSocketClientProtocol,
+        LLMClientProtocol,
+        SSHClientProtocol,
+    )
     from utils.agent.autonomy import AutonomyGate
+    from utils.ha.ha_environment import HAEnvironmentProfile
     from utils.hitl.notify import NotifierProtocol
     from utils.knowledge.knowledge_store import ChromaKnowledgeStore
 
@@ -223,6 +229,10 @@ async def _diagnose_unreachable(
     knowledge_store: "Optional[ChromaKnowledgeStore]",
     gate: "AutonomyGate",
     notifier: "NotifierProtocol",
+    rest_client: "Optional[HARestClientProtocol]" = None,
+    ws_client: "Optional[HAWebSocketClientProtocol]" = None,
+    ha_profile: "Optional[HAEnvironmentProfile]" = None,
+    db_path: Optional[str] = None,
 ) -> None:
     """Collect evidence and run an availability diagnosis when the API is unreachable.
 
@@ -276,6 +286,10 @@ async def _diagnose_unreachable(
         knowledge_store=knowledge_store,
         gate=gate,
         notifier=notifier,
+        rest_client=rest_client,
+        ws_client=ws_client,
+        ha_profile=ha_profile,
+        db_path=db_path,
     )
 
     if diagnostic is not None:
@@ -314,12 +328,16 @@ async def run_diagnose(
     healer: "NetAlertXHealer | None" = None,
     addon_slug: str | None = None,
     knowledge_store: "ChromaKnowledgeStore | None" = None,
+    rest_client: "HARestClientProtocol | None" = None,
+    ws_client: "HAWebSocketClientProtocol | None" = None,
+    ha_profile: "HAEnvironmentProfile | None" = None,
+    db_path: str | None = None,
 ) -> None:
     """One-shot NetAlertX diagnosis and optional healing.
 
     Entry point for ``--mode netalertx-diagnose`` and the dashboard /netalertx/diagnose
-    route.  Pass ``knowledge_store`` when calling from the dashboard so the diagnosis
-    loop can query the shared ChromaDB instance instead of opening a second one.
+    route.  Pass ``knowledge_store``, ``rest_client``, ``ws_client``, and ``ha_profile``
+    when calling from the dashboard so the diagnosis loop shares the supervisor's clients.
     """
     from netalertx.api_client import NetAlertXAPIClient
     from utils.agent.autonomy import AutonomyGate
@@ -369,6 +387,10 @@ async def run_diagnose(
             knowledge_store,
             _gate,
             _notifier,
+            rest_client=rest_client,
+            ws_client=ws_client,
+            ha_profile=ha_profile,
+            db_path=db_path,
         )
         return
 
@@ -471,6 +493,10 @@ async def run_diagnose(
         knowledge_store=knowledge_store,
         gate=_gate,
         notifier=_notifier,
+        rest_client=rest_client,
+        ws_client=ws_client,
+        ha_profile=ha_profile,
+        db_path=db_path,
     )
 
     # 6. Print summary
@@ -505,6 +531,10 @@ async def run_diagnose(
                 ha_ssh_client=_ha_ssh,
                 api_client=_api,
                 notifier=_notifier,
+                knowledge_store=knowledge_store,
+                rest_client=rest_client,
+                ws_client=ws_client,
+                ha_profile=ha_profile,
             )
         # Use the AgentLoop-based repair path (item 46).
         from utils.llm.llm_factory import make_llm_client

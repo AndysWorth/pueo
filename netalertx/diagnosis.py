@@ -20,6 +20,8 @@ from utils.core.prompts import load_prompt
 
 if TYPE_CHECKING:
     from interfaces import (
+        HARestClientProtocol,
+        HAWebSocketClientProtocol,
         KnowledgeStoreClientProtocol,
         LLMClientProtocol,
         SSHClientProtocol,
@@ -28,6 +30,7 @@ if TYPE_CHECKING:
     from netalertx.health import HealthReport
     from utils.agent.autonomy import AutonomyGate
     from utils.agent.tool_registry import AgentLoopResult
+    from utils.ha.ha_environment import HAEnvironmentProfile
     from utils.hitl.notify import NotifierProtocol
 
 log = get_logger("netalertx.diagnosis")
@@ -106,6 +109,10 @@ async def diagnose_health_report(
     knowledge_store: Optional["KnowledgeStoreClientProtocol"] = None,
     gate: Optional["AutonomyGate"] = None,
     notifier: Optional["NotifierProtocol"] = None,
+    rest_client: Optional["HARestClientProtocol"] = None,
+    ws_client: Optional["HAWebSocketClientProtocol"] = None,
+    ha_profile: Optional["HAEnvironmentProfile"] = None,
+    db_path: Optional[str] = None,
 ) -> tuple[Optional[NetAlertXDiagnostic], Optional[LLMTrace]]:
     """Return a (NetAlertXDiagnostic, LLMTrace) tuple, or (None, None) if nothing to diagnose.
 
@@ -134,6 +141,8 @@ async def diagnose_health_report(
             _ctx_snap, _c_snap, _m_snap = context, client, model
             _ssh_snap, _ks_snap = ssh_client, knowledge_store
             _gate_snap, _notifier_snap = gate, notifier
+            _rest_snap, _ws_snap = rest_client, ws_client
+            _prof_snap, _dp_snap = ha_profile, db_path
 
             async def _diag_coro(
                 _ctx: str = _ctx_snap,
@@ -143,10 +152,14 @@ async def diagnose_health_report(
                 _ks: Optional["KnowledgeStoreClientProtocol"] = _ks_snap,
                 _g: Optional["AutonomyGate"] = _gate_snap,
                 _n: Optional["NotifierProtocol"] = _notifier_snap,
+                _rc: Optional["HARestClientProtocol"] = _rest_snap,
+                _wc: Optional["HAWebSocketClientProtocol"] = _ws_snap,
+                _hp: Optional["HAEnvironmentProfile"] = _prof_snap,
+                _dp: Optional[str] = _dp_snap,
             ) -> None:
                 try:
                     _r = await _diagnose_with_agent_loop(
-                        _ctx, _c, _m, _ssh, _ks, _g, _n
+                        _ctx, _c, _m, _ssh, _ks, _g, _n, _rc, _wc, _hp, _dp
                     )
                     if not _result_future.done():
                         _result_future.set_result(_r)
@@ -166,7 +179,17 @@ async def diagnose_health_report(
             )
             return await _result_future
         return await _diagnose_with_agent_loop(
-            context, client, model, ssh_client, knowledge_store, gate, notifier
+            context,
+            client,
+            model,
+            ssh_client,
+            knowledge_store,
+            gate,
+            notifier,
+            rest_client,
+            ws_client,
+            ha_profile,
+            db_path,
         )
     return await _diagnose_one_shot(context, client, model)
 
@@ -179,6 +202,10 @@ async def _diagnose_with_agent_loop(
     knowledge_store: Optional["KnowledgeStoreClientProtocol"] = None,
     gate: Optional["AutonomyGate"] = None,
     notifier: Optional["NotifierProtocol"] = None,
+    rest_client: Optional["HARestClientProtocol"] = None,
+    ws_client: Optional["HAWebSocketClientProtocol"] = None,
+    ha_profile: Optional["HAEnvironmentProfile"] = None,
+    db_path: Optional[str] = None,
 ) -> tuple[Optional[NetAlertXDiagnostic], Optional[LLMTrace]]:
     """Run an AgentLoop to diagnose NetAlertX health anomalies adaptively."""
     from utils.agent.agent_loop import AgentLoop
@@ -190,6 +217,7 @@ async def _diagnose_with_agent_loop(
 
     _gate = gate or AutonomyGate(_config.AUTONOMY_LEVEL)
     _notifier = notifier or FakeNotifier()
+    _db = db_path or _config.DB_PATH
 
     initial_message = (
         "Diagnose the following NetAlertX health issues:\n\n"
@@ -203,7 +231,12 @@ async def _diagnose_with_agent_loop(
         gate=_gate,
         notifier=_notifier,
         knowledge_store=knowledge_store,
+        ha_ws_client=ws_client,
+        ha_rest_client=rest_client,
+        db_path=_db,
     )
+    if ha_profile is not None:
+        executor.set_ha_profile(ha_profile)
     registry = build_health_diagnosis_registry()
     try:
         from utils.agent.supervisor import (
@@ -237,6 +270,7 @@ async def _diagnose_with_agent_loop(
         trigger="health_diagnosis",
         activity_type="netalertx_investigation",
         knowledge_store=knowledge_store,
+        db_path=_db,
         on_llm_call_start=_on_diag_start,
         on_llm_call_done=_on_diag_done,
         capture_llm=True,
@@ -245,9 +279,13 @@ async def _diagnose_with_agent_loop(
         ),
     )
 
+    from utils.knowledge.runbook_signature import sig_netalertx
+
     increment_active_agent()
     try:
-        loop_result = await loop.run(initial_message)
+        loop_result = await loop.run(
+            initial_message, signature=sig_netalertx("availability")
+        )
         publish_activity_done("netalertx_investigation", loop_result.outcome)
         result = _extract_health_diagnostic(loop_result)
         if result is not None:

@@ -1,7 +1,5 @@
 ---
-# No signature: netalertx sessions use semantic RAG retrieval.
-# Add signature: netalertx:<category> and sig_netalertx() in runbook_signature.py
-# when netalertx AgentLoops start passing typed signatures.
+signature: netalertx:*:*
 ---
 
 # NetAlertX investigation — method
