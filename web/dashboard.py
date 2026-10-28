@@ -2789,6 +2789,123 @@ async def turned_off(nid: str, request: Request) -> RedirectResponse:
     return RedirectResponse(url=_verdict_return_url(form), status_code=303)
 
 
+@app.post("/chat/right/{episode_id}")
+async def chat_right(episode_id: str, request: Request) -> JSONResponse:
+    """Mark a chat session outcome as success and trigger distillation (S4b).
+
+    The caller may pass ``signature`` in the JSON body to override the session
+    signature (used when the user picks a family from the picker).  Pass
+    ``signature=none`` to skip distillation entirely ("none — don't learn").
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    override_sig = str(body.get("signature", "")).strip()
+    if override_sig.lower() == "none":
+        return JSONResponse({"status": "skipped"})
+    await asyncio.to_thread(_resolve_chat_outcome, episode_id, "success", override_sig)
+    await _trigger_chat_distillation(episode_id, "success", override_sig)
+    return JSONResponse({"status": "ok"})
+
+
+@app.post("/chat/wrong/{episode_id}")
+async def chat_wrong(episode_id: str, request: Request) -> JSONResponse:
+    """Mark a chat session outcome as failure and trigger distillation (S4b).
+
+    Pass ``correction`` in the JSON body to record what the right answer was.
+    Pass ``signature=none`` to skip distillation.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    override_sig = str(body.get("signature", "")).strip()
+    correction = str(body.get("correction", "")).strip()
+    if override_sig.lower() == "none":
+        return JSONResponse({"status": "skipped"})
+    await asyncio.to_thread(
+        _resolve_chat_outcome, episode_id, "failure", override_sig, correction
+    )
+    await _trigger_chat_distillation(episode_id, "failure", override_sig, correction)
+    return JSONResponse({"status": "ok"})
+
+
+def _resolve_chat_outcome(
+    episode_id: str,
+    verification: str,
+    override_sig: str = "",
+    correction: str = "",
+) -> None:
+    """Sync: resolve session_outcomes for a chat episode and optionally update signature."""
+    from agents.ha_agent_advanced import resolve_session_outcome_by_episode_id
+
+    if override_sig:
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                conn.execute(
+                    "UPDATE session_outcomes SET signature = ? WHERE episode_id = ?",
+                    (override_sig, episode_id),
+                )
+                conn.commit()
+        except Exception as exc:  # nosec B110
+            log.warning("chat_sig_update_failed", error=str(exc))
+    resolve_session_outcome_by_episode_id(
+        episode_id,
+        verification,
+        "user",
+        correction or None,
+        _get_strategy_store(),
+    )
+
+
+async def _trigger_chat_distillation(
+    episode_id: str,
+    verification: str,
+    override_sig: str = "",
+    correction: str = "",
+) -> None:
+    """Enqueue verdict distillation for a chat episode (S4b)."""
+    import config as _cfg
+    from utils.knowledge.runbook_distiller import (
+        enqueue_distillation_after_verification,
+    )
+    from utils.agent.supervisor import get_supervisor_instance
+
+    sv = get_supervisor_instance()
+    if sv is None:
+        return
+    ks = getattr(getattr(sv, "_tool_executor", None), "_knowledge_store", None)
+    if ks is None:
+        return
+    # Determine effective signature: prefer the override, then the stored signature.
+    eff_sig = override_sig
+    if not eff_sig:
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                row = conn.execute(
+                    "SELECT signature FROM session_outcomes WHERE episode_id = ?",
+                    (episode_id,),
+                ).fetchone()
+            eff_sig = (row[0] or "") if row else ""
+        except Exception:  # nosec B110
+            eff_sig = ""
+    # Strip the "chat:" prefix for the distillation signature.
+    if eff_sig.startswith("chat:"):
+        eff_sig = eff_sig[len("chat:") :]
+    if not eff_sig or eff_sig == "unclassified":
+        log.info("chat_distillation_skipped_no_sig", episode_id=episode_id)
+        return
+    await enqueue_distillation_after_verification(
+        episode_id=episode_id,
+        verification=verification,
+        correction=correction or None,
+        db_path=_cfg.DB_PATH,
+        knowledge_store=ks,
+        model=_cfg.OLLAMA_MODEL,
+    )
+
+
 @app.get("/known-issues")
 async def known_issues() -> JSONResponse:
     """Return all active Known Issues as JSON."""
@@ -4645,6 +4762,8 @@ async def _run_chat_loop(
                 "event_type": "chat_done",
                 "session_id": session_id,
                 "content": summary,
+                "episode_id": result.episode_id or "",
+                "top_sig": result.top_retrieved_signature or "",
             }
         )
     except Exception as exc:

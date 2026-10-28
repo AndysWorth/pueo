@@ -284,6 +284,81 @@
     animation: pulse 1.4s ease-in-out infinite;
   }
 
+  /* Chat feedback (S4b) */
+  .msg-feedback {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin-top: 0.2rem;
+    padding: 0 0.1rem;
+    min-height: 1.6rem;
+  }
+  .btn-feedback {
+    font-size: 0.7rem;
+    padding: 0.15rem 0.5rem;
+    border-radius: 3px;
+    border: 1px solid #ddd;
+    background: #f5f5f5;
+    color: #555;
+    cursor: pointer;
+    line-height: 1.4;
+  }
+  .btn-feedback:hover { background: #e8e8e8; }
+  .btn-feedback.right:hover { border-color: #22c55e; color: #16a34a; background: #f0fdf4; }
+  .btn-feedback.wrong:hover { border-color: #ef4444; color: #dc2626; background: #fef2f2; }
+  .btn-feedback.done { color: #aaa; cursor: default; background: none; border-color: transparent; }
+  .feedback-form {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    margin-top: 0.2rem;
+    padding: 0.4rem 0.5rem;
+    background: #fafafa;
+    border: 1px solid #eee;
+    border-radius: 5px;
+    font-size: 0.78rem;
+    max-width: 420px;
+  }
+  .feedback-form textarea {
+    font-size: 0.78rem;
+    font-family: inherit;
+    resize: vertical;
+    border: 1px solid #ddd;
+    border-radius: 3px;
+    padding: 0.3rem 0.4rem;
+    min-height: 2.5rem;
+  }
+  .feedback-form select {
+    font-size: 0.78rem;
+    border: 1px solid #ddd;
+    border-radius: 3px;
+    padding: 0.2rem 0.3rem;
+  }
+  .feedback-form-row {
+    display: flex;
+    gap: 0.4rem;
+    align-items: center;
+  }
+  .btn-feedback-submit {
+    font-size: 0.75rem;
+    padding: 0.2rem 0.6rem;
+    background: #1a73e8;
+    color: #fff;
+    border: none;
+    border-radius: 3px;
+    cursor: pointer;
+  }
+  .btn-feedback-submit:hover { background: #1557b0; }
+  .btn-feedback-cancel {
+    font-size: 0.75rem;
+    padding: 0.2rem 0.5rem;
+    background: none;
+    color: #888;
+    border: 1px solid #ddd;
+    border-radius: 3px;
+    cursor: pointer;
+  }
+
   @media (max-width: 600px) {
     .chat-layout { flex-direction: column; height: auto; }
     .chat-sidebar { width: 100%; height: 150px; }
@@ -422,7 +497,7 @@
     scrollThread();
   }
 
-  function appendMessage(role, content, ts, toolCallsJson) {
+  function appendMessage(role, content, ts, toolCallsJson, episodeId, topSig) {
     // Intermediate tool-call rows (assistant, no content, object-format tool_calls_json)
     if (role === 'assistant' && toolCallsJson && !content) {
       let calls;
@@ -460,6 +535,26 @@
       meta.className = 'msg-meta';
       meta.textContent = new Date(ts * 1000).toLocaleTimeString();
       row.appendChild(meta);
+    }
+
+    // Feedback buttons for live assistant messages with an episode id (S4b)
+    if (role === 'assistant' && episodeId) {
+      const fb = document.createElement('div');
+      fb.className = 'msg-feedback';
+
+      const btnRight = document.createElement('button');
+      btnRight.className = 'btn-feedback right';
+      btnRight.textContent = 'Pueo was right';
+      btnRight.onclick = function() { window.chatFeedbackRight(fb, episodeId, topSig || ''); };
+
+      const btnWrong = document.createElement('button');
+      btnWrong.className = 'btn-feedback wrong';
+      btnWrong.textContent = 'Pueo got this wrong';
+      btnWrong.onclick = function() { window.chatFeedbackWrong(fb, episodeId, topSig || ''); };
+
+      fb.appendChild(btnRight);
+      fb.appendChild(btnWrong);
+      row.appendChild(fb);
     }
 
     thread.appendChild(row);
@@ -632,7 +727,8 @@
       } else if (data.event_type === 'chat_done') {
         removeThinking();
         // Trace cards already rendered inline; final message has no tool list
-        appendMessage('assistant', data.content, data.ts || (Date.now() / 1000), null);
+        appendMessage('assistant', data.content, data.ts || (Date.now() / 1000), null,
+          data.episode_id || '', data.top_sig || '');
         _pendingSteps = [];
         scrollThread();
         setSending(false);
@@ -788,6 +884,107 @@
 
     document.querySelectorAll('.session-item').forEach(e => e.classList.remove('active'));
     list.insertBefore(item, list.firstChild);
+  }
+
+  // ── Chat feedback (S4b) ──────────────────────────────────────────────────────
+
+  const _SIG_FAMILIES = ['repair','update','device','notification','host','lovelace','log','netalertx'];
+
+  function _fbDone(fb, label) {
+    fb.innerHTML = '<span class="btn-feedback done">' + label + '</span>';
+  }
+
+  function _stripChatPrefix(sig) {
+    return (sig || '').startsWith('chat:') ? sig.slice(5) : (sig || '');
+  }
+
+  async function _postFeedback(route, episodeId, body) {
+    try {
+      await fetch('/chat/' + route + '/' + encodeURIComponent(episodeId), {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body),
+      });
+    } catch (e) {
+      console.error('chat feedback error', e);
+    }
+  }
+
+  window.chatFeedbackRight = function(fb, episodeId, topSig) {
+    const sig = _stripChatPrefix(topSig);
+    if (!sig || sig === 'unclassified') {
+      _showSigPicker(fb, function(chosen) {
+        if (!chosen) { _fbDone(fb, '(skipped)'); return; }
+        _postFeedback('right', episodeId, {signature: chosen});
+        _fbDone(fb, '✓ Noted');
+      });
+      return;
+    }
+    _postFeedback('right', episodeId, {signature: sig});
+    _fbDone(fb, '✓ Noted');
+  };
+
+  window.chatFeedbackWrong = function(fb, episodeId, topSig) {
+    const sig = _stripChatPrefix(topSig);
+    _showWrongForm(fb, sig, function(correction, chosen) {
+      if (chosen === 'none') { _fbDone(fb, '(skipped)'); return; }
+      _postFeedback('wrong', episodeId, {signature: chosen || sig, correction: correction});
+      _fbDone(fb, '✗ Recorded');
+    });
+  };
+
+  function _showSigPicker(fb, callback) {
+    const form = document.createElement('div');
+    form.className = 'feedback-form';
+    form.innerHTML =
+      '<div style="margin-bottom:0.2rem;color:#555;">Which topic should Pueo learn from this?</div>' +
+      '<select id="fb-sig-pick">' +
+        _SIG_FAMILIES.map(f => '<option value="' + f + ':*">' + f + '</option>').join('') +
+        '<option value="none">none — don\'t learn</option>' +
+      '</select>' +
+      '<div class="feedback-form-row">' +
+        '<button class="btn-feedback-submit" id="fb-sig-ok">Confirm</button>' +
+        '<button class="btn-feedback-cancel" id="fb-sig-cancel">Cancel</button>' +
+      '</div>';
+    fb.appendChild(form);
+    document.getElementById('fb-sig-ok').onclick = function() {
+      const v = document.getElementById('fb-sig-pick').value;
+      form.remove();
+      callback(v === 'none' ? null : v);
+    };
+    document.getElementById('fb-sig-cancel').onclick = function() {
+      form.remove();
+    };
+  }
+
+  function _showWrongForm(fb, sig, callback) {
+    const needPicker = !sig || sig === 'unclassified';
+    const form = document.createElement('div');
+    form.className = 'feedback-form';
+    form.innerHTML =
+      '<textarea id="fb-correction" placeholder="What was the right answer? (optional)" rows="2"></textarea>' +
+      (needPicker
+        ? '<select id="fb-wrong-sig">' +
+            _SIG_FAMILIES.map(f => '<option value="' + f + ':*">' + f + '</option>').join('') +
+            '<option value="none" selected>none — don\'t learn</option>' +
+          '</select>'
+        : '') +
+      '<div class="feedback-form-row">' +
+        '<button class="btn-feedback-submit" id="fb-wrong-ok">Submit</button>' +
+        '<button class="btn-feedback-cancel" id="fb-wrong-cancel">Cancel</button>' +
+      '</div>';
+    fb.appendChild(form);
+    document.getElementById('fb-wrong-ok').onclick = function() {
+      const correction = (document.getElementById('fb-correction') || {}).value || '';
+      const chosen = needPicker
+        ? (document.getElementById('fb-wrong-sig') || {}).value || 'none'
+        : sig;
+      form.remove();
+      callback(correction, chosen);
+    };
+    document.getElementById('fb-wrong-cancel').onclick = function() {
+      form.remove();
+    };
   }
 
   // ── Init ─────────────────────────────────────────────────────────────────────

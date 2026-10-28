@@ -9991,3 +9991,302 @@ class TestSetUnmappedDeviceIds:
             )
         )
         assert sent_payload.get("unmapped_device_ids") == ["dev-cast", "dev-matter"]
+
+
+# ── TestChatLearningRoutes ────────────────────────────────────────────────────
+
+
+class TestChatLearningRoutes:
+    """S4b: /chat/right and /chat/wrong resolve session_outcomes and trigger distillation."""
+
+    SESSION_OUTCOMES_DDL = (
+        "CREATE TABLE IF NOT EXISTS session_outcomes ("
+        "episode_id TEXT PRIMARY KEY, signature TEXT, session_type TEXT,"
+        " subject_key TEXT, conclusion_json TEXT, distill_payload_json TEXT,"
+        " created_at TEXT, verification TEXT, verified_at TEXT,"
+        " verified_by TEXT, correction TEXT, card_id TEXT)"
+    )
+    RUNBOOK_USAGE_DDL = (
+        "CREATE TABLE IF NOT EXISTS runbook_usage ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " episode_id TEXT, strategy_id TEXT, verification TEXT, outcome TEXT,"
+        " verified_at TEXT)"
+    )
+
+    def _setup_db(
+        self, db_path: str, episode_id: str, signature: str = "repair:*:restart"
+    ) -> None:
+        import sqlite3 as _sq
+        import time as _time
+
+        now = _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime())
+        with _sq.connect(db_path) as conn:
+            conn.execute(self.SESSION_OUTCOMES_DDL)
+            conn.execute(self.RUNBOOK_USAGE_DDL)
+            conn.execute(
+                "INSERT INTO session_outcomes"
+                " (episode_id, signature, session_type, subject_key,"
+                "  conclusion_json, distill_payload_json, created_at, verification)"
+                " VALUES (?, ?, 'chat', '', '{}', '{}', ?, 'pending')",
+                (episode_id, f"chat:{signature}", now),
+            )
+            conn.commit()
+
+    def _get_verification(self, db_path: str, episode_id: str):
+        import sqlite3 as _sq
+
+        with _sq.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT verification, verified_by, correction, signature"
+                " FROM session_outcomes WHERE episode_id = ?",
+                (episode_id,),
+            ).fetchone()
+        return row  # (verification, verified_by, correction, signature)
+
+    def test_right_marks_success(self, tmp_path, monkeypatch):
+        import web.dashboard as dashboard
+        import agents.ha_agent_advanced as adv
+
+        db_path = str(tmp_path / "db.sqlite")
+        ep = "ep-chat-right-1"
+        self._setup_db(db_path, ep)
+
+        monkeypatch.setattr(dashboard, "DB_PATH", db_path)
+        monkeypatch.setattr(adv, "DB_PATH", db_path)
+
+        distill_calls: list = []
+
+        async def _fake_trigger(*a, **kw):
+            distill_calls.append((a, kw))
+
+        monkeypatch.setattr(dashboard, "_trigger_chat_distillation", _fake_trigger)
+
+        from fastapi.testclient import TestClient
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.post(
+            f"/chat/right/{ep}",
+            json={"signature": "repair:*:restart"},
+        )
+        assert resp.status_code == 200
+        row = self._get_verification(db_path, ep)
+        assert row is not None
+        assert row[0] == "success"
+        assert row[1] == "user"
+        assert len(distill_calls) == 1
+
+    def test_wrong_marks_failure_with_correction(self, tmp_path, monkeypatch):
+        import web.dashboard as dashboard
+        import agents.ha_agent_advanced as adv
+
+        db_path = str(tmp_path / "db.sqlite")
+        ep = "ep-chat-wrong-1"
+        self._setup_db(db_path, ep)
+
+        monkeypatch.setattr(dashboard, "DB_PATH", db_path)
+        monkeypatch.setattr(adv, "DB_PATH", db_path)
+
+        distill_calls: list = []
+
+        async def _fake_trigger(*a, **kw):
+            distill_calls.append((a, kw))
+
+        monkeypatch.setattr(dashboard, "_trigger_chat_distillation", _fake_trigger)
+
+        from fastapi.testclient import TestClient
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.post(
+            f"/chat/wrong/{ep}",
+            json={
+                "signature": "repair:*:restart",
+                "correction": "The restart was needed.",
+            },
+        )
+        assert resp.status_code == 200
+        row = self._get_verification(db_path, ep)
+        assert row is not None
+        assert row[0] == "failure"
+        assert row[2] == "The restart was needed."
+        assert len(distill_calls) == 1
+
+    def test_right_none_signature_skips_distill(self, tmp_path, monkeypatch):
+        import web.dashboard as dashboard
+        import agents.ha_agent_advanced as adv
+
+        db_path = str(tmp_path / "db.sqlite")
+        ep = "ep-chat-none-1"
+        self._setup_db(db_path, ep)
+
+        monkeypatch.setattr(dashboard, "DB_PATH", db_path)
+        monkeypatch.setattr(adv, "DB_PATH", db_path)
+
+        distill_calls: list = []
+
+        async def _fake_trigger(*a, **kw):
+            distill_calls.append((a, kw))
+
+        monkeypatch.setattr(dashboard, "_trigger_chat_distillation", _fake_trigger)
+
+        from fastapi.testclient import TestClient
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.post(
+            f"/chat/right/{ep}",
+            json={"signature": "none"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "skipped"
+        # No distillation triggered and row remains pending
+        assert len(distill_calls) == 0
+
+    def test_override_sig_updates_db_before_resolve(self, tmp_path, monkeypatch):
+        import web.dashboard as dashboard
+        import agents.ha_agent_advanced as adv
+
+        db_path = str(tmp_path / "db.sqlite")
+        ep = "ep-chat-sig-override"
+        self._setup_db(db_path, ep, signature="unclassified")
+
+        monkeypatch.setattr(dashboard, "DB_PATH", db_path)
+        monkeypatch.setattr(adv, "DB_PATH", db_path)
+
+        async def _fake_trigger(*a, **kw):
+            pass
+
+        monkeypatch.setattr(dashboard, "_trigger_chat_distillation", _fake_trigger)
+
+        from fastapi.testclient import TestClient
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.post(
+            f"/chat/right/{ep}",
+            json={"signature": "update:*"},
+        )
+        assert resp.status_code == 200
+        row = self._get_verification(db_path, ep)
+        # The signature in session_outcomes should now be the override value.
+        assert row[3] == "update:*"
+
+    def test_right_signature_with_chat_prefix_stored_correctly(
+        self, tmp_path, monkeypatch
+    ):
+        """Override sig without 'chat:' prefix is stored as-is in session_outcomes."""
+        import web.dashboard as dashboard
+        import agents.ha_agent_advanced as adv
+        import utils.agent.supervisor as sv_mod
+
+        db_path = str(tmp_path / "db.sqlite")
+        ep = "ep-chat-strip-prefix"
+        self._setup_db(db_path, ep, signature="repair:*:restart")
+
+        monkeypatch.setattr(dashboard, "DB_PATH", db_path)
+        monkeypatch.setattr(adv, "DB_PATH", db_path)
+        monkeypatch.setattr(sv_mod, "_supervisor_instance", None)
+
+        from fastapi.testclient import TestClient
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.post(
+            f"/chat/right/{ep}",
+            json={"signature": "repair:*:restart"},
+        )
+        assert resp.status_code == 200
+        row = self._get_verification(db_path, ep)
+        assert row[3] == "repair:*:restart"
+
+
+class TestTopRetrievedSignature:
+    """S4b: AgentLoop tracks the top retrieved strategy signature from pre-injection."""
+
+    def test_top_retrieved_signature_set_from_strategy_chunk(self):
+        """When a strategies chunk with a signature is injected, _top_retrieved_signature is set."""
+        import asyncio
+        from unittest.mock import MagicMock
+        from utils.agent.agent_loop import AgentLoop
+        from utils.llm.ollama_client import FakeLLMClient
+
+        class _FakeKnowledgeStore:
+            def query(
+                self, query_text, top_k, collections=None, where=None, min_score=0.0
+            ):
+                chunk = MagicMock()
+                chunk.chunk_id = "strat-1"
+                chunk.collection = "strategies"
+                chunk.metadata = {
+                    "signature": "repair:*:restart_required",
+                    "strategy_id": "strat-1",
+                }
+                chunk.score = 0.9
+                chunk.authority_score = 0.85
+                return [chunk]
+
+        from utils.agent.tool_registry import ToolRegistry
+
+        loop = AgentLoop(
+            llm_client=FakeLLMClient("{}"),
+            tool_executor=MagicMock(),
+            tool_registry=ToolRegistry(),
+            terminal_tool_name="finish_chat",
+            knowledge_store=_FakeKnowledgeStore(),
+        )
+        loop._executor = MagicMock()
+        loop._executor._query_knowledge_had_results = False
+        loop._executor._pre_injected_chunk_ids = set()
+        loop._executor._injected_strategy_ids = set()
+
+        asyncio.run(
+            loop._pre_inject_knowledge("what is wrong", query_text="what is wrong")
+        )
+        assert loop._top_retrieved_signature == "repair:*:restart_required"
+
+    def test_top_retrieved_signature_empty_when_no_strategy_chunk(self):
+        """When no strategies chunks are returned, _top_retrieved_signature stays empty."""
+        import asyncio
+        from unittest.mock import MagicMock
+        from utils.agent.agent_loop import AgentLoop
+        from utils.llm.ollama_client import FakeLLMClient
+
+        class _FakeKnowledgeStore:
+            def query(
+                self, query_text, top_k, collections=None, where=None, min_score=0.0
+            ):
+                chunk = MagicMock()
+                chunk.chunk_id = "hist-1"
+                chunk.collection = "repair_history"
+                chunk.metadata = {}
+                chunk.score = 0.8
+                chunk.authority_score = 0.5
+                return [chunk]
+
+        from utils.agent.tool_registry import ToolRegistry
+
+        loop = AgentLoop(
+            llm_client=FakeLLMClient("{}"),
+            tool_executor=MagicMock(),
+            tool_registry=ToolRegistry(),
+            terminal_tool_name="finish_chat",
+            knowledge_store=_FakeKnowledgeStore(),
+        )
+        loop._executor = MagicMock()
+        loop._executor._query_knowledge_had_results = False
+        loop._executor._pre_injected_chunk_ids = set()
+        loop._executor._injected_strategy_ids = set()
+
+        asyncio.run(loop._pre_inject_knowledge("what is wrong"))
+        assert loop._top_retrieved_signature == ""
+
+    def test_top_retrieved_signature_in_agent_loop_result(self):
+        """AgentLoopResult carries top_retrieved_signature."""
+        from utils.agent.tool_registry import AgentLoopResult
+
+        r = AgentLoopResult(
+            outcome="success", top_retrieved_signature="repair:*:restart"
+        )
+        assert r.top_retrieved_signature == "repair:*:restart"
+
+    def test_top_retrieved_signature_defaults_empty(self):
+        from utils.agent.tool_registry import AgentLoopResult
+
+        r = AgentLoopResult(outcome="success")
+        assert r.top_retrieved_signature == ""
