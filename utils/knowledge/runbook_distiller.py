@@ -1,20 +1,27 @@
 """Post-session runbook distillation.
 
-Turns a completed AgentLoop session into a structured candidate runbook or gap.
+Turns a completed AgentLoop session into atomic runbook entries or a gap.
+
+Learned knowledge lives in ``runbook_entries`` (ADR 051): one row per decision
+rule, pitfall or procedure note, with provenance and success/failure counts.
+Entries are added or reinforced, never rewritten, and the learned runbook's
+``approach`` is rendered from the live ones (``render_learned_runbook``).
 
 Two distillation lanes:
 - **Procedural**: enqueued after any session that reached a conclusion (success,
-  needs_action, monitoring, awaiting_approval).  Learns tool-use lessons from the
-  trace without requiring user verification.  Lessons are merged into the candidate
-  runbook's ``## Procedure notes`` section.
+  needs_action, monitoring, awaiting_approval).  The deterministic extractor
+  records failed, corrected, repeated and empty tool calls as ``procedure``
+  entries, with no LLM and no verification.
 - **Verdict**: enqueued after explicit verification (success confirmed or failure +
-  correction).  Learns decision rules and fix summaries.  Non-success sessions still
-  write gaps immediately.
+  correction).  The LLM proposes decision rules and pitfalls beyond the seed;
+  code gates (grounding, seed overlap, version scrub, known tools) decide which
+  become entries.  Non-success sessions still write gaps immediately.
 """
 
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
 import json
 import re
@@ -110,25 +117,29 @@ class InstanceFact(BaseModel):
     )
 
 
-class DistilledRunbook(BaseModel):
-    """Structured runbook produced by post-session distillation."""
+class DeltaItem(BaseModel):
+    """One decision rule or pitfall the session adds beyond the seed."""
 
-    title: str = Field(description="Short descriptive title (max 80 chars)")
-    when_to_use: str = Field(
-        description="One sentence describing when this runbook applies"
+    text: str = Field(description="One sentence, reusing words from the cited step")
+    evidence_step: int = Field(
+        description="Step number in the tool trace whose args or output shows this"
     )
-    recommended_tools: list[str] = Field(
-        description="Ordered list of tool names called (evidence phase first)"
-    )
-    hypotheses: list[str] = Field(
-        description="Hypotheses formed and confirmed or ruled out during the session"
-    )
-    fix_summary: str = Field(
-        description="What worked or what conclusion was reached (empty string for gap)"
-    )
-    pitfalls: list[str] = Field(
+
+
+class DistilledDelta(BaseModel):
+    """What a verified session adds beyond its seed (ADR 051).
+
+    Only new items — never a restated seed, a title or a tool list.  Empty lists
+    are the expected answer when the session confirms the seed.
+    """
+
+    decision_rules: list[DeltaItem] = Field(
         default_factory=list,
-        description="Pitfalls, surprises, or things that did not work",
+        description="Decisive factors that determined the right action, not in the seed",
+    )
+    pitfalls: list[DeltaItem] = Field(
+        default_factory=list,
+        description="Things that misled or did not work, not in the seed",
     )
     instance_facts: list[InstanceFact] = Field(
         default_factory=list,
@@ -138,43 +149,14 @@ class DistilledRunbook(BaseModel):
             "output shows it; facts not visible in a tool output are discarded."
         ),
     )
-    decision_rule: str = Field(
-        default="",
-        description=(
-            "One sentence rule-of-thumb for future agents: "
-            "the decisive factor that determined the right action"
-        ),
-    )
-    no_new_knowledge: bool = Field(
-        default=False,
-        description=(
-            "True when the session adds no runbook knowledge beyond the seed: "
-            "no novel decision rule, no pitfall not already listed. "
-            "instance_facts are still saved when this is true."
-        ),
-    )
 
 
 class ProceduralLesson(BaseModel):
-    """One tool-use lesson from a session trace, citing the step that shows it."""
+    """One tool-use note from a session trace, citing the step that shows it."""
 
-    lesson: str = Field(
-        description=(
-            "What worked, failed, or was redundant — stated using words from the "
-            "cited step's output.  No verdict or root-cause claim."
-        )
-    )
+    lesson: str = Field(description="What failed, was repeated or returned nothing")
     evidence_step: int = Field(
-        description="Step number in the tool trace whose args or output shows this lesson"
-    )
-
-
-class ProceduralLessons(BaseModel):
-    """Tool-use lessons distilled from a session trace (no verdicts)."""
-
-    lessons: list[ProceduralLesson] = Field(
-        default_factory=list,
-        description="Up to 4 lessons about which tools worked, failed, or were redundant",
+        description="Step number in the tool trace whose args or output shows this"
     )
 
 
@@ -271,82 +253,13 @@ def _grounded_facts(
     return kept
 
 
-# Tools whose output is log content.  A lesson about them may cite how the call
-# was made, never what the log said (that is evidence, not a tool lesson).
+# Tools whose output is log content: an empty log search is evidence, not a
+# tool problem.
 _LOG_READER_TOOLS = frozenset(
     {"read_logs", "search_log", "read_pueo_log", "summarize_log_window"}
 )
 # finish_* tools end the session; a lesson about them teaches nothing.
 _TERMINAL_TOOL_PREFIX = "finish_"
-_STEP_REF_RE = re.compile(r"\bsteps?\s+(\d+(?:\s*(?:,|and|&|-)\s*\d+)*)", re.I)
-_REPEAT_COUNT_RE = re.compile(r"^(?:\d+[x×]|x\d+)$")
-
-
-def _step_evidence(step: AgentStep) -> str:
-    text = f"{step.tool_call.name}({json.dumps(step.tool_call.arguments)})"
-    if step.tool_call.name in _LOG_READER_TOOLS:
-        return text
-    return f"{text}\n{step.tool_result.output or ''}\n{step.tool_result.error or ''}"
-
-
-def _lesson_is_grounded(lesson: str, step: AgentStep, steps: list[AgentStep]) -> bool:
-    """Relaxed grounding for tool-use lessons (#991).
-
-    The lesson must name a tool from the trace.  Every distinctive token (has a
-    digit or ``._:/-``) must appear in the args or output of the cited step or of
-    any step the lesson mentions as "step N".  Tool names, step numbers and
-    repeat counts ("2x") count as present.  There is no content-word rule: a
-    meta-lesson ("redundant", "FAILED") never appears in tool output.  Log-reader
-    steps contribute only their call, so restating log content is rejected.
-    """
-    text = lesson.strip()
-    if not text:
-        return False
-    tool_names = {s.tool_call.name.lower() for s in steps}
-    low = text.lower()
-    if not any(
-        re.search(rf"\b{re.escape(n)}\b", low)
-        for n in tool_names
-        if not n.startswith(_TERMINAL_TOOL_PREFIX)
-    ):
-        return False
-    by_num = {s.step_number: s for s in steps}
-    cited = {step.step_number}
-    for m in _STEP_REF_RE.finditer(text):
-        cited.update(int(n) for n in re.findall(r"\d+", m.group(1)))
-    evidence = "\n".join(_step_evidence(by_num[n]) for n in cited if n in by_num)
-    ev = evidence.lower()
-    for tok in _FACT_TOKEN_RE.findall(text):
-        t = tok.lower()
-        if not (any(c.isdigit() for c in t) or any(c in "._:/-" for c in t)):
-            continue
-        if t in tool_names or _REPEAT_COUNT_RE.match(t):
-            continue
-        if t.isdigit() and int(t) in cited:
-            continue
-        if t not in ev:
-            return False
-    return True
-
-
-def _grounded_lessons(
-    lessons: list[ProceduralLesson], steps: list[AgentStep]
-) -> list[ProceduralLesson]:
-    """Filter lessons to those whose cited step exists and whose text is grounded."""
-    by_num = {s.step_number: s for s in steps}
-    kept: list[ProceduralLesson] = []
-    for lesson in lessons:
-        step = by_num.get(lesson.evidence_step)
-        if step is not None and _lesson_is_grounded(lesson.lesson, step, steps):
-            kept.append(lesson)
-        else:
-            log.info(
-                "procedure_lesson_rejected",
-                lesson=lesson.lesson[:200],
-                evidence_step=lesson.evidence_step,
-                reason="no_such_step" if step is None else "ungrounded",
-            )
-    return kept
 
 
 # ---------------------------------------------------------------------------
@@ -581,83 +494,6 @@ def _split_procedure_notes(approach: str) -> tuple[str, str]:
     return main, notes
 
 
-def _merge_notes_text(existing_notes: str, new_lessons: list[ProceduralLesson]) -> str:
-    """Merge new lessons into existing procedure-note lines, dedup, cap at _PROCEDURE_MAX_NOTES.
-
-    Each note is stored as a ``- <lesson>`` bullet.  Deduplication normalises whitespace
-    and lowercases before comparing.  Returns the merged bullet-list string (no header).
-    """
-    existing_bullets: list[str] = []
-    for line in existing_notes.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("- "):
-            existing_bullets.append(stripped[2:])
-        elif stripped:
-            existing_bullets.append(stripped)
-
-    seen: set[str] = {" ".join(b.lower().split()) for b in existing_bullets}
-    merged = list(existing_bullets)
-    for lesson in new_lessons:
-        norm = " ".join(lesson.lesson.lower().split())
-        if norm not in seen:
-            seen.add(norm)
-            merged.append(lesson.lesson)
-    return "\n".join(f"- {b}" for b in merged[:_PROCEDURE_MAX_NOTES])
-
-
-def _build_procedure_prompt(
-    *,
-    signature: str,
-    outcome: str,
-    step_trace: str,
-    known_notes: Optional[list[str]] = None,
-) -> str:
-    """Build the prompt for procedural-lesson distillation.
-
-    Asks for tool-use lessons only — no root-cause verdict or fix summary.
-    *known_notes* are the deterministic extractor's notes, listed so the model
-    does not restate them.
-    """
-    known = (
-        [
-            "",
-            "Already recorded (do not repeat these):",
-            *(f"- {n}" for n in known_notes),
-        ]
-        if known_notes
-        else []
-    )
-    return "\n".join(
-        [
-            "You are reviewing a Home Assistant diagnostic session for tool-use lessons.",
-            "",
-            f"Session signature: {signature}",
-            f"Outcome: {outcome}",
-            "",
-            "Tool trace (FAILED = tool error, EMPTY = no output returned):",
-            step_trace,
-            *known,
-            "",
-            "List up to 4 lessons about tool mechanics only:",
-            "- Which tool call returned the key evidence (state which step)",
-            "- Which calls failed or returned empty output (cite the FAILED/EMPTY step)",
-            "- Which calls were redundant (called twice with the same arguments)",
-            "- The correct command shape or URL when a call failed with a wrong input",
-            "",
-            "Rules:",
-            "- Do NOT state a root cause, fix, or verdict.",
-            "- Name the tool in every lesson (e.g. get_integration_diagnostics) and "
-            "cite the step number.",
-            "- Any id, domain, entity_id or number in a lesson must appear in that "
-            "step's args, output or error.",
-            "- Do NOT restate what a log or tool output said (e.g. 'read_logs "
-            "contained a traceback from X') — lessons are about how to call tools.",
-            "- Skip lessons that add nothing beyond 'tool X was called' — only note "
-            "failures, redundancies, or surprising successes.",
-        ]
-    )
-
-
 def _write_instance_facts(
     db_path: str, signature: str, episode_id: str, facts: list[InstanceFact]
 ) -> int:
@@ -706,33 +542,14 @@ def _mark_distilled(db_path: str, episode_id: str) -> None:
         log.warning("distillation_mark_failed", episode_id=episode_id, error=str(exc))
 
 
-def _get_existing_by_signature(
-    db_path: str, signature: str
-) -> Optional[tuple[str, int, str, str]]:
-    """Return (id, version, episode_refs_json, approach) for a live runbook."""
-    try:
-        with sqlite3.connect(db_path) as conn:
-            row = conn.execute(
-                "SELECT id, version, episode_refs, approach FROM agent_strategies"
-                " WHERE signature = ? AND runbook_state NOT IN ('gap', 'discarded', 'resolved')"
-                " ORDER BY version DESC LIMIT 1",
-                (signature,),
-            ).fetchone()
-        if row:
-            return (row[0], row[1] or 1, row[2] or "[]", row[3] or "")
-    except Exception:  # nosec B110
-        pass
-    return None
+def _fetch_seed_for_signature(db_path: str, signature: str) -> tuple[str, str]:
+    """Return (seed_signature, seed_text) of the most specific seed for *signature*.
 
-
-def _fetch_seed_text_for_signature(db_path: str, signature: str) -> str:
-    """Return the approach text of the most specific matching seed for *signature*.
-
-    Uses the same wildcard matching as _sig_specificity.  Returns empty string when
-    no matching seed is found or the DB is unavailable.
+    Uses the same wildcard matching as _sig_specificity.  Returns ``("", "")``
+    when no matching seed is found or the DB is unavailable.
     """
     if not db_path or not signature or ":" not in signature:
-        return ""
+        return "", ""
     try:
         with sqlite3.connect(db_path) as conn:
             conn.row_factory = sqlite3.Row
@@ -741,7 +558,7 @@ def _fetch_seed_text_for_signature(db_path: str, signature: str) -> str:
                 " WHERE signature IS NOT NULL AND runbook_state = 'seed'"
             ).fetchall()
     except Exception:  # nosec B110
-        return ""
+        return "", ""
 
     best: Optional[tuple[int, sqlite3.Row]] = None
     for row in rows:
@@ -753,11 +570,16 @@ def _fetch_seed_text_for_signature(db_path: str, signature: str) -> str:
             best = (spec, row)
 
     if best is None:
-        return ""
+        return "", ""
     _, row = best
     title = row["title"] or signature
     approach = row["approach"] or ""
-    return f"# {title}\n\n{approach}".strip()
+    return row["signature"], f"# {title}\n\n{approach}".strip()
+
+
+def _fetch_seed_text_for_signature(db_path: str, signature: str) -> str:
+    """Return the text of the most specific matching seed for *signature*, or ''."""
+    return _fetch_seed_for_signature(db_path, signature)[1]
 
 
 def _read_distillation_payload(db_path: str, episode_id: str) -> Optional[dict]:
@@ -783,51 +605,6 @@ def _read_distillation_payload(db_path: str, episode_id: str) -> Optional[dict]:
         return payload
     except Exception:  # nosec B110
         return None
-
-
-def _merge_in_sqlite(
-    db_path: str,
-    strategy_id: str,
-    new_version: int,
-    episode_refs_json: str,
-    approach: str,
-    title: str,
-) -> None:
-    with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            "UPDATE agent_strategies"
-            " SET version=?, episode_refs=?, approach=?, title=? WHERE id=?",
-            (new_version, episode_refs_json, approach, title, strategy_id),
-        )
-        conn.commit()
-
-
-def _insert_in_sqlite(
-    db_path: str,
-    strategy_id: str,
-    title: str,
-    signature: str,
-    trigger_pattern: str,
-    approach: str,
-    episode_id: str,
-) -> None:
-    episode_refs_json = json.dumps([episode_id]) if episode_id else "[]"
-    with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            "INSERT OR IGNORE INTO agent_strategies"
-            " (id, title, trigger_pattern, approach, runbook_state, created_at,"
-            "  signature, version, episode_refs)"
-            " VALUES (?, ?, ?, ?, 'candidate', datetime('now'), ?, 1, ?)",
-            (
-                strategy_id,
-                title,
-                trigger_pattern,
-                approach,
-                signature,
-                episode_refs_json,
-            ),
-        )
-        conn.commit()
 
 
 def write_gap(
@@ -904,24 +681,6 @@ def resolve_gap(db_path: str, signature: str, episode_id: str) -> None:
         pass
 
 
-def _build_approach(runbook: DistilledRunbook) -> str:
-    hypotheses_block = "\n".join(f"- {h}" for h in runbook.hypotheses) or "None noted."
-    pitfalls_block = "\n".join(f"- {p}" for p in runbook.pitfalls) or "None noted."
-    instance_facts_block = (
-        "\n".join(f"- {f.fact}" for f in runbook.instance_facts) or "None noted."
-    )
-    decision_rule_block = runbook.decision_rule or "(none)"
-    return (
-        f"## When to use\n{runbook.when_to_use}\n\n"
-        f"## Recommended tools\n{', '.join(runbook.recommended_tools)}\n\n"
-        f"## Hypotheses\n{hypotheses_block}\n\n"
-        f"## Fix summary\n{runbook.fix_summary or '(none)'}\n\n"
-        f"## Instance facts\n{instance_facts_block}\n\n"
-        f"## Decision rule\n{decision_rule_block}\n\n"
-        f"## Pitfalls\n{pitfalls_block}"
-    )
-
-
 def _build_prompt(
     *,
     signature: str,
@@ -929,12 +688,13 @@ def _build_prompt(
     outcome: str,
     initial_context: str,
     episode_stub: Optional[dict],
-    existing_approach: str,
     step_trace: str,
     seed_text: str = "",
+    known_entries: Optional[list[str]] = None,
     verification: Optional[str] = None,
     correction: Optional[str] = None,
 ) -> str:
+    """Build the verdict-lane prompt: ask for the delta beyond the seed (ADR 051)."""
     ctx_trimmed = truncate_to_budget(
         initial_context, _INITIAL_CONTEXT_TOKENS, strategy="head"
     )
@@ -956,32 +716,13 @@ def _build_prompt(
         if parts:
             terminal_section = "Terminal tool conclusions:\n" + "\n".join(parts)
 
-    existing_section = ""
-    if existing_approach.strip():
-        existing_section = (
-            "Existing runbook for this signature (refine, don't replace):\n"
-            + existing_approach
-        )
-
-    seed_section = ""
-    if seed_text.strip():
-        seed_section = (
-            "Seed runbook for this symptom (baseline knowledge for this exact signature):\n"
-            + seed_text
-        )
-
-    correction_section = ""
-    if correction:
-        correction_section = (
-            f"User correction (ground truth — the correct action was):\n{correction}"
-        )
-
     outcome_line = outcome
     if verification:
         outcome_line = f"{outcome} (verified: {verification})"
 
     parts_prompt = [
-        "You are distilling a Home Assistant diagnostic session into a reusable runbook.",
+        "You are reviewing a verified Home Assistant diagnostic session for what it "
+        "teaches beyond the existing runbook.",
         "",
         f"Session signature: {signature}",
         f"Trigger: {trigger}",
@@ -992,42 +733,45 @@ def _build_prompt(
     ]
     if terminal_section:
         parts_prompt += ["", terminal_section]
-    if correction_section:
-        parts_prompt += ["", correction_section]
-    if seed_section:
-        parts_prompt += ["", seed_section]
-    if existing_section:
-        parts_prompt += ["", existing_section]
-    if seed_section:
-        task = (
-            "Write a runbook scoped to this exact symptom signature. "
-            "Focus on the delta from the seed: the decisive decision rule and any "
-            "pitfalls not already in the seed. "
-            "If the session adds no decision rule or pitfall beyond the seed, set "
-            "no_new_knowledge=true."
-        )
-    else:
-        task = (
-            "No seed runbook exists for this signature. Write a signature-level "
-            "runbook — the method and decision rule for this kind of symptom, not "
-            "for one specific version, release, or device — only if the decision "
-            "rule generalizes beyond this one session. Otherwise set "
-            "no_new_knowledge=true."
-        )
+    if correction:
+        parts_prompt += [
+            "",
+            f"User correction (ground truth — the correct action was):\n{correction}",
+        ]
+    if seed_text.strip():
+        parts_prompt += ["", "Seed runbook for this symptom:", seed_text]
+    if known_entries:
+        parts_prompt += [
+            "",
+            "Already learned for this signature:",
+            *(f"- {e}" for e in known_entries),
+        ]
     parts_prompt += [
         "",
         "Tool trace (FAILED = tool error, EMPTY = no output returned):",
         step_trace,
         "",
-        task,
+        "List only what this session adds beyond the seed and the already-learned "
+        "items:",
+        "- decision_rules: what determined the right action, one sentence each, "
+        "stated directly as 'When <evidence>, <conclusion or action>'.",
+        "- pitfalls: what misled the session or did not work, one sentence each.",
+        "",
+        "Rules:",
+        "- Never restate the seed or an already-learned item.  Empty lists are the "
+        "right answer when the session simply confirms the seed.",
+        "- Each item cites evidence_step, the trace step that shows it, and reuses "
+        "that step's own words.",
+        "- Write for this kind of symptom, never for one version or release: no "
+        "version numbers.",
+        "- Name only tools that appear in the trace.",
         "",
         "Separately, list instance_facts: facts about this specific Home Assistant "
         "instance (hardware, device quirks, entity naming, known-wrong states) that a "
         "future session on this symptom should know. Every fact must be visible in "
         "a tool output above; set evidence_step to that step's number and reuse the "
         "output's own words. Never include facts that come only from the seed, the "
-        "initial context, or your own inference. instance_facts are saved even when "
-        "no_new_knowledge=true.",
+        "initial context, or your own inference.",
     ]
     return "\n".join(parts_prompt)
 
@@ -1053,10 +797,11 @@ async def distill_and_persist(
     Two call paths:
     - Non-success with no verification: write a gap (called immediately after session ends).
     - Success or failure-with-correction after verification: make a structured LLM call
-      and merge or insert the candidate.  Set verification="success"/"failure" to trigger
-      the LLM path.  Unverified success sessions are skipped.  Grounded
-      instance_facts go to agent_memory even when no_new_knowledge is set, and
-      session_outcomes.distilled_at is stamped on every terminal path.
+      for the delta beyond the seed and write the gated items as runbook entries.
+      Set verification="success"/"failure" to trigger the LLM path.  Unverified
+      success sessions are skipped.  Grounded instance_facts go to agent_memory
+      even when no entry is written, and session_outcomes.distilled_at is
+      stamped on every terminal path.
     """
     if outcome != "success" and verification is None:
         # Immediate gap for non-success sessions (no verification needed).
@@ -1123,7 +868,7 @@ async def distill_and_persist(
             seed_text=seed_text,
         )
     finally:
-        # Every terminal path — inserted, merged, no_new_knowledge, LLM or write
+        # Every terminal path — entries written, nothing new, LLM or write
         # failure — counts as distilled so startup recovery never repeats it.
         await asyncio.to_thread(_mark_distilled, db_path, episode_id)
 
@@ -1145,24 +890,45 @@ async def _distill_verified(
     correction: Optional[str],
     seed_text: str,
 ) -> None:
-    """LLM distillation of a verified session: facts → agent_memory, runbook → strategies."""
+    """LLM distillation of a verified session (ADR 051).
+
+    Facts go to agent_memory.  Decision rules and pitfalls that pass the gates
+    become ``runbook_entries`` rows (or reinforce one), and the learned runbook
+    is re-rendered.  A failure verification first counts against the entries
+    the session was shown.
+    """
     # Resolve any existing gap for this signature first.
     await asyncio.to_thread(resolve_gap, db_path, signature, episode_id)
 
-    # Check for an existing candidate to merge into (also fetches approach text).
-    existing = await asyncio.to_thread(_get_existing_by_signature, db_path, signature)
-    existing_approach = existing[3] if existing else ""
+    retired = 0
+    if verification == "failure":
+        shown_before = await asyncio.to_thread(_session_created_at, db_path, episode_id)
+        try:
+            retired = await asyncio.to_thread(
+                _record_entry_failures, db_path, signature, shown_before
+            )
+        except sqlite3.Error as exc:
+            log.warning(
+                "distillation_failure_count_failed", signature=signature, error=str(exc)
+            )
+        if retired:
+            log.info("distillation_entries_retired", signature=signature, count=retired)
 
-    step_trace = _format_step_trace(steps)
+    existing = await asyncio.to_thread(_load_entries, db_path, signature)
+    seed_sig, db_seed_text = await asyncio.to_thread(
+        _fetch_seed_for_signature, db_path, signature
+    )
+    seed_text = seed_text or db_seed_text
+
     prompt = _build_prompt(
         signature=signature,
         trigger=trigger,
         outcome=outcome,
         initial_context=initial_context,
         episode_stub=episode_stub,
-        existing_approach=existing_approach,
-        step_trace=step_trace,
+        step_trace=_format_step_trace(steps),
         seed_text=seed_text,
+        known_entries=[e["text"] for e in existing if e["kind"] in _VERDICT_KINDS],
         verification=verification,
         correction=correction,
     )
@@ -1179,19 +945,20 @@ async def _distill_verified(
 
     _client = llm_client if llm_client is not None else make_llm_client()
 
+    delta: Optional[DistilledDelta] = None
     try:
         response = await asyncio.wait_for(
             _client.chat(
                 model=model,
                 messages=[{"role": "user", "content": prompt}],
                 options=_options,
-                format=DistilledRunbook.model_json_schema(),
+                format=DistilledDelta.model_json_schema(),
                 think=_think,
             ),
             timeout=timeout_secs,
         )
         content = response["message"]["content"]
-        runbook = DistilledRunbook.model_validate_json(content)
+        delta = DistilledDelta.model_validate_json(content)
     except Exception as exc:
         log.warning(
             "distillation_llm_failed",
@@ -1200,121 +967,89 @@ async def _distill_verified(
             error_type=type(exc).__name__,
             timeout_secs=round(timeout_secs, 1),
         )
-        return
 
-    facts = _grounded_facts(runbook.instance_facts, steps)
-    runbook.instance_facts = facts
-    if facts:
+    kept: list[tuple[str, str, Optional[str]]] = []
+    if delta is not None:
+        facts = _grounded_facts(delta.instance_facts, steps)
+        if facts:
+            try:
+                written = await asyncio.to_thread(
+                    _write_instance_facts, db_path, signature, episode_id, facts
+                )
+                log.info(
+                    "distillation_facts_written",
+                    signature=signature,
+                    episode_id=episode_id,
+                    count=written,
+                )
+            except Exception as exc:  # nosec B110
+                log.warning(
+                    "distillation_facts_write_failed",
+                    signature=signature,
+                    error=str(exc),
+                )
+
+        evidence = _trace_evidence(steps, correction)
+        known_tools = _known_tool_names()
+        for kind, items in (
+            ("decision_rule", delta.decision_rules),
+            ("pitfall", delta.pitfalls),
+        ):
+            for item in items:
+                text = " ".join(item.text.split())
+                reason = _gate_item(
+                    text,
+                    evidence=evidence,
+                    seed_text=seed_text,
+                    wildcard_seed=not seed_sig or "*" in seed_sig,
+                    known_tools=known_tools,
+                )
+                if reason is not None:
+                    log.info(
+                        "distillation_entry_rejected",
+                        signature=signature,
+                        kind=kind,
+                        reason=reason,
+                        text=text[:200],
+                    )
+                    continue
+                kept.append((kind, text, _first_tool(text, known_tools)))
+
+    if kept:
         try:
-            written = await asyncio.to_thread(
-                _write_instance_facts, db_path, signature, episode_id, facts
+            results = await asyncio.to_thread(
+                _write_entries, db_path, signature, episode_id, kept
             )
-            log.info(
-                "distillation_facts_written",
-                signature=signature,
-                episode_id=episode_id,
-                count=written,
-            )
-        except Exception as exc:  # nosec B110
+        except sqlite3.Error as exc:
             log.warning(
-                "distillation_facts_write_failed", signature=signature, error=str(exc)
+                "distillation_entry_write_failed", signature=signature, error=str(exc)
             )
-
-    if runbook.no_new_knowledge:
+            results = []
+        for (kind, _, _), (action, text) in zip(kept, results):
+            log.info(
+                "distillation_entry_written",
+                signature=signature,
+                kind=kind,
+                action=action,
+                text=text[:200],
+            )
+    elif delta is not None:
         log.info(
             "distillation_skipped",
             reason="no_new_knowledge",
             signature=signature,
             episode_id=episode_id,
         )
-        return
 
-    approach = _build_approach(runbook)
-    text = f"# {runbook.title}\n\nSignature: {signature}\n\nTrigger: {trigger}\n\n{approach}"
-    meta: dict = {
-        "source": "agent_learned",
-        "title": runbook.title,
-        "trigger_pattern": trigger,
-        "strategy_id": "",  # filled below
-        "signature": signature,
-        "runbook_type": "candidate",
-    }
-
-    if existing:
-        strategy_id, current_version, episode_refs_json, _ = existing
-        try:
-            refs: list = json.loads(episode_refs_json)
-        except Exception:  # nosec B110
-            refs = []
-        if episode_id and episode_id not in refs:
-            refs.append(episode_id)
-        new_version = current_version + 1
+    if kept or retired:
         try:
             await asyncio.to_thread(
-                _merge_in_sqlite,
-                db_path,
-                strategy_id,
-                new_version,
-                json.dumps(refs),
-                approach,
-                runbook.title,
+                render_learned_runbook, db_path, signature, knowledge_store
             )
-        except Exception as exc:  # nosec B110
+        except sqlite3.Error as exc:
             log.warning(
-                "distillation_merge_sqlite_failed", signature=signature, error=str(exc)
+                "learned_runbook_render_failed", signature=signature, error=str(exc)
             )
-            return
-        meta["strategy_id"] = strategy_id
-        try:
-            await asyncio.to_thread(
-                knowledge_store.upsert, "strategies", [strategy_id], [text], [meta]
-            )
-        except Exception as exc:  # nosec B110
-            log.warning(
-                "distillation_merge_chroma_failed", signature=signature, error=str(exc)
-            )
-        log.info(
-            "distillation_merged",
-            signature=signature,
-            version=new_version,
-            strategy_id=strategy_id,
-        )
-    else:
-        strategy_id = str(uuid.uuid4())
-        try:
-            await asyncio.to_thread(
-                _insert_in_sqlite,
-                db_path,
-                strategy_id,
-                runbook.title,
-                signature,
-                trigger,
-                approach,
-                episode_id,
-            )
-        except Exception as exc:  # nosec B110
-            log.warning(
-                "distillation_insert_sqlite_failed",
-                signature=signature,
-                error=str(exc),
-            )
-            return
-        meta["strategy_id"] = strategy_id
-        try:
-            await asyncio.to_thread(
-                knowledge_store.upsert, "strategies", [strategy_id], [text], [meta]
-            )
-        except Exception as exc:  # nosec B110
-            log.warning(
-                "distillation_insert_chroma_failed",
-                signature=signature,
-                error=str(exc),
-            )
-        log.info(
-            "distillation_inserted",
-            signature=signature,
-            strategy_id=strategy_id,
-        )
 
 
 async def enqueue_distillation_after_verification(
@@ -1419,122 +1154,383 @@ async def enqueue_distillation_after_verification(
 
 
 # ---------------------------------------------------------------------------
-# Procedural distillation lane (ADR 049)
+# Atomic runbook entries (ADR 051)
 # ---------------------------------------------------------------------------
 
+_VERDICT_KINDS = ("decision_rule", "pitfall")
+# Share of an item's content tokens already present in the seed (or an existing
+# entry) above which the item is a restatement, not new knowledge.
+_OVERLAP_THRESHOLD = 0.6
+_RENDER_MAX_PER_KIND = 8
+_VERSION_RE = re.compile(r"\b\d+\.\d+(?:\.\d+)?\b")
+# snake_case words not part of a dotted id (sensor.noaa_tides_2) or a longer word.
+_TOOL_TOKEN_RE = re.compile(r"(?<![\w.])([a-z][a-z0-9]*(?:_[a-z0-9]+)+)(?!\w|\.\w)")
+_LEARNED_TITLE_PREFIX = "Learned: "
 
-def _persist_procedure_notes(
+
+# Words that frame an item ("the decisive factor was…, which the session
+# treated as…") without carrying its content; they would dilute the overlap.
+_OVERLAP_FILLER = frozenset(
+    "decisive factor session treated rather showing shows showed issue because "
+    "likely initially concluded conclude".split()
+)
+
+
+def _content_tokens(text: str) -> set[str]:
+    return {
+        low
+        for t in _FACT_TOKEN_RE.findall(text)
+        if len(t) >= 3
+        and (low := t.lower()) not in _FACT_STOPWORDS
+        and low not in _OVERLAP_FILLER
+    }
+
+
+def _overlaps(text: str, corpus: str, threshold: float = _OVERLAP_THRESHOLD) -> bool:
+    """True when at least *threshold* of *text*'s content tokens appear in *corpus*.
+
+    Case-insensitive; stopwords and tokens under 3 chars are ignored.  Text with
+    no content tokens never overlaps.  Pure.
+    """
+    tokens = _content_tokens(text)
+    if not tokens:
+        return False
+    covered = tokens & _content_tokens(corpus)
+    return len(covered) >= threshold * len(tokens)
+
+
+@functools.lru_cache(maxsize=1)
+def _known_tool_names() -> frozenset[str]:
+    """Names of every tool an automated or chat session can call."""
+    from utils.agent.tool_registry import (
+        build_chat_tool_registry,
+        build_ha_tool_registry,
+        build_netalertx_tool_registry,
+    )
+
+    names: set[str] = set()
+    for build in (
+        build_ha_tool_registry,
+        build_chat_tool_registry,
+        build_netalertx_tool_registry,
+    ):
+        names.update(build().names())
+    return frozenset(names)
+
+
+def _unknown_tools(text: str, known: frozenset[str]) -> list[str]:
+    """Return tool-like names in *text* that are not registered tools.  Pure.
+
+    A snake_case word counts as a tool name when a call follows it (``x(``) or it
+    starts with a verb some registered tool starts with (``get_``, ``read_``…).
+    Slugs such as ``core_mosquitto`` and dotted entity ids are not tool names.
+    """
+    prefixes = {n.split("_", 1)[0] for n in known}
+    unknown: list[str] = []
+    for m in _TOOL_TOKEN_RE.finditer(text):
+        tok = m.group(1)
+        if tok in known:
+            continue
+        if text[m.end() : m.end() + 1] == "(" or tok.split("_", 1)[0] in prefixes:
+            unknown.append(tok)
+    return unknown
+
+
+def _first_tool(text: str, known: frozenset[str]) -> Optional[str]:
+    for m in _TOOL_TOKEN_RE.finditer(text):
+        if m.group(1) in known:
+            return m.group(1)
+    return None
+
+
+def _trace_evidence(steps: list[AgentStep], correction: Optional[str]) -> str:
+    """Every step's call, output and error, plus the user's correction."""
+    parts = [
+        f"{s.tool_call.name}({json.dumps(s.tool_call.arguments)})\n"
+        f"{s.tool_result.output or ''}\n{s.tool_result.error or ''}"
+        for s in steps
+    ]
+    if correction:
+        parts.append(correction)
+    return "\n".join(parts)
+
+
+def _gate_item(
+    text: str,
+    *,
+    evidence: str,
+    seed_text: str,
+    wildcard_seed: bool,
+    known_tools: frozenset[str],
+) -> Optional[str]:
+    """Return why *text* must not become an entry, or None when it passes.  Pure.
+
+    Gates, in order: grounded in the trace or correction; not a restatement of
+    the seed; no version string when the seed is a wildcard (or absent); every
+    tool it names is registered.
+    """
+    if not _fact_is_grounded(text, evidence):
+        return "ungrounded"
+    if seed_text and _overlaps(text, seed_text):
+        return "seed_overlap"
+    if wildcard_seed and _VERSION_RE.search(text):
+        return "version_pinned"
+    if _unknown_tools(text, known_tools):
+        return "unknown_tool"
+    return None
+
+
+def _now_iso() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _load_entries(db_path: str, signature: str) -> list[dict]:
+    """Return the live (not retired) entries for *signature*.  Synchronous."""
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT id, kind, text, tool, episode_refs, success_count,"
+                " failure_count, created_at FROM runbook_entries"
+                " WHERE signature = ? AND retired_at IS NULL"
+                " ORDER BY created_at, id",
+                (signature,),
+            ).fetchall()
+    except sqlite3.Error:
+        return []
+    entries = []
+    for r in rows:
+        e = dict(r)
+        try:
+            e["episode_refs"] = json.loads(e["episode_refs"] or "[]")
+        except ValueError:
+            e["episode_refs"] = []
+        entries.append(e)
+    return entries
+
+
+def _same_entry(kind: str, text: str, entry: dict) -> bool:
+    """Procedure notes are deterministic, so they match exactly; verdict items
+    match on token overlap."""
+    if entry["kind"] != kind:
+        return False
+    if kind == "procedure":
+        return " ".join(text.lower().split()) == " ".join(entry["text"].lower().split())
+    return _overlaps(text, entry["text"])
+
+
+def _write_entries(
     db_path: str,
     signature: str,
-    lessons: list[ProceduralLesson],
-    knowledge_store: "KnowledgeStoreClientProtocol",
-) -> bool:
-    """Merge lessons into the candidate runbook for *signature*, or create one.
+    episode_id: str,
+    items: list[tuple[str, str, Optional[str]]],
+) -> list[tuple[str, str]]:
+    """Insert each (kind, text, tool) item, or reinforce a near-duplicate entry.
 
-    If no live candidate/validated/seed runbook exists, inserts a procedure-only
-    candidate (``fix_summary`` / ``decision_rule`` empty).  Deduplicates notes and
-    caps at ``_PROCEDURE_MAX_NOTES``.  Returns True on success.
-    Synchronous — call via asyncio.to_thread.
+    Reinforcing adds one to ``success_count`` and appends *episode_id* to the
+    entry's refs, once per episode.  Returns ``(action, text)`` pairs, where
+    action is ``inserted``, ``reinforced`` or ``unchanged``.  Synchronous.
     """
-    existing = _get_existing_by_signature(db_path, signature)
-    notes_text = _merge_notes_text("", lessons)  # start from scratch; merge below
+    entries = _load_entries(db_path, signature)
+    now = _now_iso()
+    results: list[tuple[str, str]] = []
+    with sqlite3.connect(db_path) as conn:
+        for kind, text, tool in items:
+            match = next((e for e in entries if _same_entry(kind, text, e)), None)
+            if match is None:
+                entry = {
+                    "id": str(uuid.uuid4()),
+                    "kind": kind,
+                    "text": text,
+                    "tool": tool,
+                    "episode_refs": [episode_id] if episode_id else [],
+                    "success_count": 1,
+                    "failure_count": 0,
+                    "created_at": now,
+                }
+                conn.execute(
+                    "INSERT INTO runbook_entries (id, signature, kind, text, tool,"
+                    " episode_refs, success_count, failure_count, created_at,"
+                    " updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, 0, ?, ?)",
+                    (
+                        entry["id"],
+                        signature,
+                        kind,
+                        text,
+                        tool,
+                        json.dumps(entry["episode_refs"]),
+                        now,
+                        now,
+                    ),
+                )
+                entries.append(entry)
+                results.append(("inserted", text))
+            elif episode_id and episode_id not in match["episode_refs"]:
+                match["episode_refs"].append(episode_id)
+                match["success_count"] += 1
+                conn.execute(
+                    "UPDATE runbook_entries SET success_count = ?, episode_refs = ?,"
+                    " updated_at = ? WHERE id = ?",
+                    (
+                        match["success_count"],
+                        json.dumps(match["episode_refs"]),
+                        now,
+                        match["id"],
+                    ),
+                )
+                results.append(("reinforced", match["text"]))
+            else:
+                results.append(("unchanged", match["text"]))
+        conn.commit()
+    return results
 
-    if existing:
-        strategy_id, current_version, episode_refs_json, existing_approach = existing
-        main_approach, old_notes = _split_procedure_notes(existing_approach)
-        notes_text = _merge_notes_text(old_notes, lessons)
-        new_approach = (
-            main_approach.rstrip() + f"\n\n{_PROCEDURE_NOTES_HEADER}\n{notes_text}"
+
+def _session_created_at(db_path: str, episode_id: str) -> str:
+    """When the session ran (its session_outcomes row), or now when unknown."""
+    try:
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT created_at FROM session_outcomes WHERE episode_id = ?",
+                (episode_id,),
+            ).fetchone()
+        if row and row[0]:
+            return str(row[0])
+    except sqlite3.Error:  # nosec B110
+        pass
+    return _now_iso()
+
+
+def _record_entry_failures(db_path: str, signature: str, shown_before: str) -> int:
+    """Count a failed verification against the verdict entries the session saw.
+
+    Entries created at or before *shown_before* (the session's start) were in
+    its pre-injected runbook.  An entry is retired once its failures reach its
+    successes plus one.  Returns the number of entries retired.  Synchronous.
+    """
+    now = _now_iso()
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE runbook_entries SET failure_count = failure_count + 1,"
+            " updated_at = ? WHERE signature = ? AND kind IN (?, ?)"
+            " AND retired_at IS NULL AND created_at <= ?",
+            (now, signature, *_VERDICT_KINDS, shown_before),
         )
-        new_version = current_version + 1
-        try:
-            with sqlite3.connect(db_path) as conn:
+        cur = conn.execute(
+            "UPDATE runbook_entries SET retired_at = ?, updated_at = ?"
+            " WHERE signature = ? AND retired_at IS NULL"
+            " AND failure_count >= success_count + 1",
+            (now, now, signature),
+        )
+        conn.commit()
+        return cur.rowcount
+
+
+def _render_approach(entries: list[dict]) -> str:
+    """Render live entries as runbook sections, best-supported first.  Pure.
+
+    ``## Procedure notes`` comes last so ``_split_procedure_notes`` separates it.
+    Empty sections are omitted.
+    """
+    sections = []
+    for kind, header, cap in (
+        ("decision_rule", "## Decision rules", _RENDER_MAX_PER_KIND),
+        ("pitfall", "## Pitfalls", _RENDER_MAX_PER_KIND),
+        ("procedure", _PROCEDURE_NOTES_HEADER, _PROCEDURE_MAX_NOTES),
+    ):
+        items = sorted(
+            (e for e in entries if e["kind"] == kind),
+            key=lambda e: (e["failure_count"] - e["success_count"], e["created_at"]),
+        )[:cap]
+        if items:
+            sections.append(header + "\n" + "\n".join(f"- {e['text']}" for e in items))
+    return "\n\n".join(sections)
+
+
+def render_learned_runbook(
+    db_path: str,
+    signature: str,
+    knowledge_store: KnowledgeStoreClientProtocol,
+) -> Optional[str]:
+    """Rebuild the learned runbook for *signature* from its live entries.
+
+    Updates (or inserts) the signature's candidate/validated ``agent_strategies``
+    row, keeping its state, and syncs it to Chroma.  When no live entries remain
+    the row is discarded and removed from Chroma.  Pre-inject, kb_contributor and
+    ``/runbooks`` read ``approach`` as before.  Returns the strategy id, or None
+    when nothing is rendered.  Synchronous — call via asyncio.to_thread.
+    """
+    from utils.knowledge.strategy_seeder import sync_strategy_to_chroma
+
+    entries = _load_entries(db_path, signature)
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT id FROM agent_strategies WHERE signature = ?"
+            " AND runbook_state IN ('candidate', 'validated')"
+            " ORDER BY version DESC LIMIT 1",
+            (signature,),
+        ).fetchone()
+        if not entries:
+            if row is None:
+                return None
+            conn.execute(
+                "UPDATE agent_strategies SET runbook_state = 'discarded' WHERE id = ?",
+                (row[0],),
+            )
+            conn.commit()
+        else:
+            approach = _render_approach(entries)
+            refs: list[str] = []
+            for e in entries:
+                refs.extend(r for r in e["episode_refs"] if r not in refs)
+            title = _LEARNED_TITLE_PREFIX + signature
+            if row is not None:
+                strategy_id = row[0]
                 conn.execute(
-                    "UPDATE agent_strategies SET version=?, approach=? WHERE id=?",
-                    (new_version, new_approach, strategy_id),
+                    "UPDATE agent_strategies SET title = ?, approach = ?,"
+                    " episode_refs = ?, version = COALESCE(version, 1) + 1"
+                    " WHERE id = ?",
+                    (title, approach, json.dumps(refs), strategy_id),
                 )
-                conn.commit()
-        except Exception as exc:  # nosec B110
-            log.warning(
-                "procedure_notes_update_failed", signature=signature, error=str(exc)
-            )
-            return False
-        try:
-            row_title = ""
-            with sqlite3.connect(db_path) as conn:
-                t = conn.execute(
-                    "SELECT title FROM agent_strategies WHERE id=?", (strategy_id,)
-                ).fetchone()
-                if t:
-                    row_title = t[0] or signature
-            text = f"# {row_title}\n\nSignature: {signature}\n\n{new_approach}"
-            meta: dict = {
-                "source": "agent_learned",
-                "title": row_title,
-                "trigger_pattern": signature,
-                "strategy_id": strategy_id,
-                "signature": signature,
-                "runbook_type": "candidate",
-            }
-            knowledge_store.upsert("strategies", [strategy_id], [text], [meta])
-        except Exception as exc:  # nosec B110
-            log.warning(
-                "procedure_notes_chroma_failed", signature=signature, error=str(exc)
-            )
-        log.info(
-            "procedure_notes_merged",
-            signature=signature,
-            strategy_id=strategy_id,
-            note_count=notes_text.count("\n- ")
-            + (1 if notes_text.startswith("- ") else 0),
-        )
-    else:
-        # No live runbook: create a procedure-only candidate.
-        strategy_id = str(uuid.uuid4())
-        title = f"Procedure notes: {signature}"
-        approach = (
-            "## When to use\n(Procedure-only: verdict not yet learned)\n\n"
-            f"## Fix summary\n(pending verification)\n\n"
-            f"{_PROCEDURE_NOTES_HEADER}\n{notes_text}"
-        )
-        try:
-            with sqlite3.connect(db_path) as conn:
+            else:
+                strategy_id = str(uuid.uuid4())
                 conn.execute(
-                    "INSERT OR IGNORE INTO agent_strategies"
-                    " (id, title, trigger_pattern, approach, runbook_state, created_at,"
-                    "  signature, version, episode_refs)"
-                    " VALUES (?, ?, ?, ?, 'candidate', datetime('now'), ?, 1, '[]')",
-                    (strategy_id, title, signature, approach, signature),
+                    "INSERT INTO agent_strategies"
+                    " (id, title, trigger_pattern, approach, runbook_state,"
+                    "  created_at, signature, version, episode_refs)"
+                    " VALUES (?, ?, ?, ?, 'candidate', datetime('now'), ?, 1, ?)",
+                    (
+                        strategy_id,
+                        title,
+                        signature,
+                        approach,
+                        signature,
+                        json.dumps(refs),
+                    ),
                 )
-                conn.commit()
-        except Exception as exc:  # nosec B110
-            log.warning(
-                "procedure_candidate_insert_failed",
-                signature=signature,
-                error=str(exc),
-            )
-            return False
+            conn.commit()
+    if not entries:
         try:
-            text = f"# {title}\n\nSignature: {signature}\n\n{approach}"
-            meta = {
-                "source": "agent_learned",
-                "title": title,
-                "trigger_pattern": signature,
-                "strategy_id": strategy_id,
-                "signature": signature,
-                "runbook_type": "candidate",
-            }
-            knowledge_store.upsert("strategies", [strategy_id], [text], [meta])
+            knowledge_store.delete_ids("strategies", [row[0]])
         except Exception as exc:  # nosec B110
             log.warning(
-                "procedure_candidate_chroma_failed", signature=signature, error=str(exc)
+                "learned_runbook_chroma_failed", signature=signature, error=str(exc)
             )
-        log.info(
-            "procedure_candidate_created",
-            signature=signature,
-            strategy_id=strategy_id,
-        )
-    return True
+        log.info("learned_runbook_emptied", signature=signature, strategy_id=row[0])
+        return None
+    if not sync_strategy_to_chroma(strategy_id, db_path, knowledge_store):
+        log.warning("learned_runbook_chroma_failed", signature=signature)
+    log.info(
+        "learned_runbook_rendered",
+        signature=signature,
+        strategy_id=strategy_id,
+        entries=len(entries),
+    )
+    return strategy_id
+
+
+# ---------------------------------------------------------------------------
+# Procedural distillation lane (ADR 049, amended by ADR 051)
+# ---------------------------------------------------------------------------
 
 
 async def distill_procedure(
@@ -1544,66 +1540,20 @@ async def distill_procedure(
     episode_id: str,
     db_path: str,
     knowledge_store: "KnowledgeStoreClientProtocol",
-    model: str,
-    llm_client: Optional["LLMClientProtocol"] = None,
 ) -> None:
-    """Distil tool-use lessons from the session trace and merge into the runbook.
+    """Record the session's tool-use notes as ``procedure`` entries (ADR 049/051).
 
-    Called without waiting for user verification — only captures HOW to gather
-    evidence, never WHAT conclusion to draw.  No ``distilled_at`` stamp (that
-    belongs to verdict distillation so recovery never skips the verdict lane).
-    Deterministic notes (``extract_procedure_facts``) come first and are kept
-    even when the LLM call fails.
+    Runs without waiting for verification — it captures HOW evidence was
+    gathered, never WHAT was concluded.  Notes come only from the deterministic
+    extractor; there is no LLM call.  No ``distilled_at`` stamp (that belongs
+    to the verdict lane so recovery never skips it).
     """
     if not signature or not steps or not db_path:
         return
 
-    facts = extract_procedure_facts(steps)
+    notes = extract_procedure_facts(steps)
     await asyncio.to_thread(_record_tool_quirks, db_path, signature, steps)
-
-    step_trace = _format_step_trace(steps)
-    prompt = _build_procedure_prompt(
-        signature=signature,
-        outcome=outcome,
-        step_trace=step_trace,
-        known_notes=[f.lesson for f in facts],
-    )
-
-    timeout_secs = await asyncio.to_thread(
-        _distillation_timeout_seconds, db_path, model
-    )
-
-    from utils.llm.model_options import one_shot_options, one_shot_think
-
-    _options = await asyncio.to_thread(one_shot_options, model)
-    _think = await asyncio.to_thread(one_shot_think, model)
-    _client = llm_client if llm_client is not None else make_llm_client()
-
-    llm_lessons: list[ProceduralLesson] = []
-    try:
-        response = await asyncio.wait_for(
-            _client.chat(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                options=_options,
-                format=ProceduralLessons.model_json_schema(),
-                think=_think,
-            ),
-            timeout=timeout_secs,
-        )
-        content = response["message"]["content"]
-        result = ProceduralLessons.model_validate_json(content)
-        llm_lessons = _grounded_lessons(result.lessons, steps)
-    except Exception as exc:
-        log.warning(
-            "procedure_distillation_llm_failed",
-            signature=signature,
-            error=str(exc),
-            error_type=type(exc).__name__,
-        )
-
-    lessons = facts + llm_lessons
-    if not lessons:
+    if not notes:
         log.info(
             "procedure_distillation_no_lessons",
             signature=signature,
@@ -1611,33 +1561,38 @@ async def distill_procedure(
         )
         return
 
+    tool_by_step = {s.step_number: s.tool_call.name for s in steps}
+    items: list[tuple[str, str, Optional[str]]] = [
+        ("procedure", n.lesson, tool_by_step.get(n.evidence_step)) for n in notes
+    ]
     try:
-        ok = await asyncio.to_thread(
-            _persist_procedure_notes, db_path, signature, lessons, knowledge_store
+        results = await asyncio.to_thread(
+            _write_entries, db_path, signature, episode_id, items
         )
-        if ok:
-            log.info(
-                "procedure_distillation_done",
-                signature=signature,
-                episode_id=episode_id,
-                lessons=len(lessons),
-                extracted=len(facts),
-                llm=len(llm_lessons),
-            )
-    except Exception as exc:  # nosec B110
+        await asyncio.to_thread(
+            render_learned_runbook, db_path, signature, knowledge_store
+        )
+    except sqlite3.Error as exc:
         log.warning(
             "procedure_distillation_persist_failed",
             signature=signature,
             error=str(exc),
         )
+        return
+    log.info(
+        "procedure_distillation_done",
+        signature=signature,
+        episode_id=episode_id,
+        outcome=outcome,
+        notes=len(notes),
+        inserted=sum(1 for a, _ in results if a == "inserted"),
+    )
 
 
 async def enqueue_procedural_distillation(
     episode_id: str,
     db_path: str,
     knowledge_store: "KnowledgeStoreClientProtocol",
-    model: str,
-    llm_client: Optional["LLMClientProtocol"] = None,
 ) -> bool:
     """Read the stashed session payload and enqueue a procedural distillation WorkItem.
 
@@ -1678,8 +1633,6 @@ async def enqueue_procedural_distillation(
     _ep = episode_id
     _db = db_path
     _store = knowledge_store
-    _model = model
-    _llm = llm_client
     _outcome = outcome
 
     async def _run_procedure() -> None:
@@ -1690,8 +1643,6 @@ async def enqueue_procedural_distillation(
             episode_id=_ep,
             db_path=_db,
             knowledge_store=_store,
-            model=_model,
-            llm_client=_llm,
         )
 
     submitted = await queue.submit(

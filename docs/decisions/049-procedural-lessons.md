@@ -2,6 +2,7 @@
 
 **Status:** Accepted
 **Amends:** ADR 044, ADR 046
+**Amended by:** ADR 051 — the LLM lesson step is removed; notes are deterministic `procedure` rows in `runbook_entries`
 
 ---
 

@@ -525,6 +525,7 @@ def sync_strategy_to_chroma(
 
     Reads the row from SQLite and upserts into the 'strategies' collection with
     updated 'runbook_type' metadata so labels and authority scores stay current.
+    A signed row keeps its ``signature`` metadata, which family scoping reads.
     Returns True on success, False if the row was not found (caller should
     handle Chroma deletion separately if needed).
     """
@@ -534,27 +535,28 @@ def sync_strategy_to_chroma(
             with sqlite3.connect(db_path) as conn:
                 conn.row_factory = sqlite3.Row
                 row = conn.execute(
-                    "SELECT id, title, trigger_pattern, approach, runbook_state"
-                    " FROM agent_strategies WHERE id=?",
+                    "SELECT id, title, trigger_pattern, approach, runbook_state,"
+                    " signature FROM agent_strategies WHERE id=?",
                     (strategy_id,),
                 ).fetchone()
         except Exception:  # nosec B110
             pass
     if row is None:
         return False
+    meta = {
+        "source": "agent_strategies",
+        "title": str(row["title"] or ""),
+        "trigger_pattern": str(row["trigger_pattern"] or ""),
+        "runbook_type": str(row["runbook_state"] or "candidate"),
+    }
+    if row["signature"]:
+        meta["signature"] = str(row["signature"])
     try:
         store.upsert(
             collection="strategies",
             ids=[row["id"]],
             documents=[str(row["approach"] or "")],
-            metadatas=[
-                {
-                    "source": "agent_strategies",
-                    "title": str(row["title"] or ""),
-                    "trigger_pattern": str(row["trigger_pattern"] or ""),
-                    "runbook_type": str(row["runbook_state"] or "candidate"),
-                }
-            ],
+            metadatas=[meta],
         )
         return True
     except Exception:  # nosec B110
