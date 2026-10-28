@@ -75,6 +75,7 @@ _HA_COMMAND_ALLOWLIST: frozenset[str] = frozenset(
         "ha resolution healthcheck",
         "ha backups list",
         "ha apps list",
+        "ha apps list --raw-json",
         "ha os info",
         "ha os info --raw-json",
         "ha os boards rpi firmware",
@@ -1262,10 +1263,17 @@ class ToolExecutor:
 
         A Tuya device session must not be handed the host-health or add-on update
         runbook.  General (unscoped) runbooks and other collections pass through.
+
+        Within the same family, signed seeds/runbooks whose signature does not
+        match the session signature are also dropped (#1019): an update:addon:*
+        seed must not reach an update:os:* session even though both are "update".
+        Unsigned seeds (no signature metadata) and wildcard-only signatures pass.
         """
+        from utils.knowledge.runbook_distiller import _sig_specificity
         from utils.knowledge.strategy_seeder import strategy_family
 
         family = self._session_family()
+        sig = self._session_signature
         if not family:
             return chunks
         kept = []
@@ -1280,6 +1288,19 @@ class ToolExecutor:
                         session_family=family,
                     )
                     continue
+                # Within the same family, drop signed sibling symptoms.
+                if ":" in sig:
+                    stored_sig = str((c.metadata or {}).get("signature") or "")
+                    if stored_sig and stored_sig != "*" and ":" in stored_sig:
+                        matches, _ = _sig_specificity(stored_sig, sig)
+                        if not matches:
+                            log.debug(
+                                "query_knowledge_sibling_signature",
+                                chunk_id=getattr(c, "chunk_id", ""),
+                                stored_sig=stored_sig,
+                                session_sig=sig,
+                            )
+                            continue
             kept.append(c)
         return kept
 

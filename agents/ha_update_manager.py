@@ -336,6 +336,19 @@ _GITHUB_RELEASE_HTML_RE = re.compile(
     r"https?://github\.com/([^/]+/[^/]+)/releases/(?:tag/)?([^/?\s]+)"
 )
 
+# Strip <ha-alert>…</ha-alert> blocks (including multi-line) to reveal stub WS notes.
+_HA_ALERT_RE = re.compile(r"<ha-alert\b[^>]*>.*?</ha-alert>", re.DOTALL | re.IGNORECASE)
+
+# A WS release-notes body is a stub when, after removing <ha-alert> blocks, the
+# remaining text is under this many characters.
+_WS_STUB_THRESHOLD = 200
+
+
+def _is_stub_notes(notes: str) -> bool:
+    """Return True when *notes* is a WS stub (only ha-alert boilerplate, no real content)."""
+    stripped = _HA_ALERT_RE.sub("", notes).strip()
+    return len(stripped) < _WS_STUB_THRESHOLD
+
 
 def _rewrite_github_release_url(url: str) -> str:
     """Rewrite a github.com HTML release URL to its GitHub API counterpart."""
@@ -428,6 +441,20 @@ async def fetch_release_notes_cached(
             try:
                 ws_notes = await ws_fetcher(entity_id)
                 if ws_notes:
+                    # If the WS body is a stub (only <ha-alert> boilerplate) and a
+                    # GitHub release URL is available, try to fetch the real notes.
+                    if _is_stub_notes(ws_notes) and release_url:
+                        _allow_wan = getattr(_config, "ALLOW_DIAGNOSTIC_WAN", True)
+                        if _allow_wan and _GITHUB_RELEASE_HTML_RE.match(release_url):
+                            _api_url = _rewrite_github_release_url(release_url)
+                            try:
+                                gh_notes = await _fetch_release_notes_from_url(_api_url)
+                                if not _is_stub_notes(gh_notes):
+                                    cache_path.parent.mkdir(parents=True, exist_ok=True)
+                                    cache_path.write_text(gh_notes)
+                                    return gh_notes
+                            except Exception:  # nosec B110
+                                pass
                     cache_path.parent.mkdir(parents=True, exist_ok=True)
                     cache_path.write_text(ws_notes)
                     return ws_notes
@@ -919,10 +946,17 @@ async def _run_update_analysis(
         from utils.ha.context_sanitizer import sanitize_update_context
         from utils.ha.device_summarizer import device_context_summary
 
+        _update_type_early = classify_update_type(
+            update.component, update.entity_id, _profile
+        )
         initial_context = (
             f"Available update: {update.component} "
             f"{update.installed_version} → {update.latest_version}"
         )
+        # Expose the supervisor slug explicitly for add-on updates so the agent can
+        # use it in `ha apps info <slug>` without guessing.
+        if _update_type_early == "addon":
+            initial_context += f"\nSupervisor slug: {update.component}"
         if update.release_url:
             initial_context += f"\nRelease URL: {update.release_url}"
         if update.release_summary:
@@ -1010,9 +1044,7 @@ async def _run_update_analysis(
         )
         from utils.knowledge.runbook_signature import sig_update
 
-        _update_type = classify_update_type(
-            update.component, update.entity_id, _profile
-        )
+        _update_type = _update_type_early
         _result: "AgentLoopResult | None" = None
         increment_active_agent()
         try:

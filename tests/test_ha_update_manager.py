@@ -1186,6 +1186,99 @@ class TestUpdateAnalysisContextBuilding:
         ctx = self._run(tmp_path)
         assert "no config entry" not in ctx
 
+    def test_addon_supervisor_slug_in_context(self, tmp_path, pueo_dirs):
+        """Add-on updates include 'Supervisor slug: <component>' in initial_context (#1019)."""
+        import asyncio
+        from contextlib import ExitStack
+        from unittest import mock
+        from unittest.mock import MagicMock
+
+        from utils.agent.tool_registry import AgentLoopResult
+        from utils.hitl.notify import FakeNotifier
+
+        class _FakeAddonUpdate:
+            component = "core_mosquitto"
+            entity_id = "update.core_mosquitto_update"
+            installed_version = "2.0.14"
+            latest_version = "2.0.15"
+            release_url = None
+            release_summary = None
+
+        db_path = _make_db(tmp_path)
+        captured_context = []
+
+        with ExitStack() as stack:
+            patches = _base_patches(db_path)
+            mocks = [stack.enter_context(p) for p in patches]
+            MockLoop = mocks[0]
+            mock_instance = MagicMock()
+
+            async def _capture_run(ctx, **kwargs):
+                captured_context.append(ctx)
+                return AgentLoopResult(outcome="success")
+
+            mock_instance.run = _capture_run
+            MockLoop.return_value = mock_instance
+            mocks[4].return_value = MagicMock()
+
+            from agents.ha_update_manager import _run_update_analysis
+
+            asyncio.run(
+                _run_update_analysis(
+                    update=_FakeAddonUpdate(),
+                    notifier=FakeNotifier(),
+                )
+            )
+
+        ctx = captured_context[0] if captured_context else ""
+        assert "Supervisor slug: core_mosquitto" in ctx
+
+    def test_os_update_no_supervisor_slug(self, tmp_path, pueo_dirs):
+        """OS updates must NOT include a supervisor slug line (#1019)."""
+        import asyncio
+        from contextlib import ExitStack
+        from unittest.mock import MagicMock
+
+        from utils.agent.tool_registry import AgentLoopResult
+        from utils.hitl.notify import FakeNotifier
+
+        class _FakeOSUpdate:
+            component = "os"
+            entity_id = "update.home_assistant_operating_system_update"
+            installed_version = "18.3"
+            latest_version = "18.4"
+            release_url = None
+            release_summary = None
+
+        db_path = _make_db(tmp_path)
+        captured_context = []
+
+        with ExitStack() as stack:
+            patches = _base_patches(db_path)
+            mocks = [stack.enter_context(p) for p in patches]
+            MockLoop = mocks[0]
+            mock_instance = MagicMock()
+
+            async def _capture_run(ctx, **kwargs):
+                captured_context.append(ctx)
+                return AgentLoopResult(outcome="success")
+
+            mock_instance.run = _capture_run
+            MockLoop.return_value = mock_instance
+            mocks[4].return_value = MagicMock()
+
+            from agents.ha_update_manager import _run_update_analysis
+
+            asyncio.run(
+                _run_update_analysis(
+                    update=_FakeOSUpdate(),
+                    notifier=FakeNotifier(),
+                )
+            )
+
+        ctx = captured_context[0] if captured_context else ""
+        assert "Supervisor slug" not in ctx
+
 
 # ---------------------------------------------------------------------------
 # execute_core_update — post-upgrade advisor verification
@@ -1860,6 +1953,180 @@ class TestFetchReleaseNotesCachedWS:
         cache_files = list((tmp_path / "cache").glob("*.txt"))
         assert len(cache_files) == 1
         assert cache_files[0].name == "2026.9.2.txt"
+
+
+class TestIsStubNotes:
+    """_is_stub_notes detects WS stub bodies (#1019)."""
+
+    def test_ha_alert_only_is_stub(self):
+        from agents.ha_update_manager import _is_stub_notes
+
+        assert _is_stub_notes("<ha-alert type='info'>A reboot is required.</ha-alert>")
+
+    def test_ha_alert_multiline_is_stub(self):
+        from agents.ha_update_manager import _is_stub_notes
+
+        assert _is_stub_notes(
+            "<ha-alert type='warning'>\nA reboot is required to finish the update.\n</ha-alert>"
+        )
+
+    def test_real_release_notes_not_stub(self):
+        from agents.ha_update_manager import _is_stub_notes
+
+        notes = (
+            "## HAOS 18.4\n"
+            "- Fixed a bug in the HAOS bootloader that caused CM4 devices to fail to boot.\n"
+            "- Updated kernel from 6.1.88 to 6.1.92 with stability improvements.\n"
+            "- Improved eMMC handling for Yellow board users.\n"
+            "- Security: patched libssl CVE-2024-XXXX.\n"
+        )
+        assert not _is_stub_notes(notes)
+
+    def test_empty_string_is_stub(self):
+        from agents.ha_update_manager import _is_stub_notes
+
+        assert _is_stub_notes("")
+
+    def test_short_text_after_stripping_is_stub(self):
+        from agents.ha_update_manager import _is_stub_notes
+
+        assert _is_stub_notes("<ha-alert>foo</ha-alert>   ")
+
+
+class TestFetchReleaseNotesCachedWSStubFallback:
+    """WS stub body triggers GitHub API fallback when release_url is a GitHub tag (#1019)."""
+
+    def test_stub_ws_notes_fall_back_to_github(self, tmp_path):
+        """When WS returns a stub and release_url is a GitHub tag, fetch GitHub API."""
+        import asyncio
+        from unittest.mock import patch
+
+        stub_body = "<ha-alert type='info'>A reboot is required.</ha-alert>"
+        real_notes = (
+            "## HAOS 18.4\n"
+            "- Improved eMMC handling for Yellow board users.\n"
+            "- Updated kernel from 6.1.88 to 6.1.92 with major stability fixes.\n"
+            "- Fixed a bootloader race condition on CM4 boards under heavy I/O.\n"
+            "- Security: patched libssl CVE-2024-XXXX and libcurl CVE-2024-YYYY.\n"
+        )
+
+        async def _fake_ws(entity_id):
+            return stub_body
+
+        async def _fake_url(url):
+            assert "api.github.com" in url
+            return real_notes
+
+        async def _run():
+            from agents.ha_update_manager import fetch_release_notes_cached
+
+            return await fetch_release_notes_cached(
+                "18.4",
+                cache_dir=str(tmp_path / "cache"),
+                entity_id="update.home_assistant_operating_system_update",
+                release_url="https://github.com/home-assistant/operating-system/releases/tag/18.4",
+                ws_fetcher=_fake_ws,
+            )
+
+        with patch(
+            "agents.ha_update_manager._fetch_release_notes_from_url",
+            side_effect=_fake_url,
+        ):
+            result = asyncio.run(_run())
+
+        assert "eMMC" in result
+
+    def test_stub_ws_notes_cached_when_github_also_stub(self, tmp_path):
+        """When GitHub also returns a stub, the WS stub is cached (no infinite loop)."""
+        import asyncio
+        from unittest.mock import patch
+
+        stub_body = "<ha-alert>A reboot is required.</ha-alert>"
+
+        async def _fake_ws(entity_id):
+            return stub_body
+
+        async def _fake_url(url):
+            return "<ha-alert>Another reboot notice.</ha-alert>"
+
+        async def _run():
+            from agents.ha_update_manager import fetch_release_notes_cached
+
+            return await fetch_release_notes_cached(
+                "18.4",
+                cache_dir=str(tmp_path / "cache"),
+                entity_id="update.home_assistant_operating_system_update",
+                release_url="https://github.com/home-assistant/operating-system/releases/tag/18.4",
+                ws_fetcher=_fake_ws,
+            )
+
+        with patch(
+            "agents.ha_update_manager._fetch_release_notes_from_url",
+            side_effect=_fake_url,
+        ):
+            result = asyncio.run(_run())
+
+        # Should return WS stub body (nothing better found)
+        assert "reboot" in result.lower()
+
+    def test_non_github_release_url_skips_fallback(self, tmp_path):
+        """Non-GitHub release URL: stub WS notes are cached without a fallback attempt."""
+        import asyncio
+        from unittest.mock import patch
+
+        stub_body = "<ha-alert>A reboot is required.</ha-alert>"
+
+        async def _fake_ws(entity_id):
+            return stub_body
+
+        async def _run():
+            from agents.ha_update_manager import fetch_release_notes_cached
+
+            return await fetch_release_notes_cached(
+                "18.4",
+                cache_dir=str(tmp_path / "cache"),
+                entity_id="update.home_assistant_operating_system_update",
+                release_url="https://example.com/releases/18.4",
+                ws_fetcher=_fake_ws,
+            )
+
+        with patch(
+            "agents.ha_update_manager._fetch_release_notes_from_url"
+        ) as mock_url:
+            result = asyncio.run(_run())
+
+        mock_url.assert_not_called()
+        # The stub WS body is returned unchanged
+        assert "reboot" in result.lower()
+
+    def test_real_ws_notes_not_replaced(self, tmp_path):
+        """When WS returns real notes (not a stub), no GitHub fallback is attempted."""
+        import asyncio
+        from unittest.mock import patch
+
+        real_notes = "## HAOS 18.4\n" + "x" * 300  # well over 200 chars
+
+        async def _fake_ws(entity_id):
+            return real_notes
+
+        async def _run():
+            from agents.ha_update_manager import fetch_release_notes_cached
+
+            return await fetch_release_notes_cached(
+                "18.4",
+                cache_dir=str(tmp_path / "cache"),
+                entity_id="update.home_assistant_operating_system_update",
+                release_url="https://github.com/home-assistant/operating-system/releases/tag/18.4",
+                ws_fetcher=_fake_ws,
+            )
+
+        with patch(
+            "agents.ha_update_manager._fetch_release_notes_from_url"
+        ) as mock_url:
+            result = asyncio.run(_run())
+
+        mock_url.assert_not_called()
+        assert "HAOS 18.4" in result
 
 
 # ---------------------------------------------------------------------------

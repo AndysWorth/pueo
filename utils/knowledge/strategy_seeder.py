@@ -150,6 +150,16 @@ _SEED_PROMPTS: list[tuple[str, str, str]] = [
         "HACS update available, HACS integration update, custom integration update",
     ),
     (
+        "seed_update_os.md",
+        "HAOS OS update analysis",
+        "HAOS update, Home Assistant OS update, OS update reboot, OS release notes, HAOS board notes, OS stub release notes",
+    ),
+    (
+        "seed_update_supervisor.md",
+        "Supervisor update analysis",
+        "Supervisor update, Home Assistant Supervisor update, Supervisor restart, Supervisor API change, supervisor release notes",
+    ),
+    (
         "seed_supervisor_cli.md",
         "HA Supervisor CLI reference",
         "run_ha_command, ha apps, ha core, ha os, ha backups, ha supervisor, ha network, restart HA, list backups, check config, CLI command",
