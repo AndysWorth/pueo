@@ -6332,7 +6332,8 @@ class TestAgentLoopEpisodeRecording:
         result = asyncio.run(loop.run("Analyze HA config."))
 
         assert result.outcome == "success"
-        assert result.episode_id is None
+        # episode_id is always set now (S4b); repair episode DB record still absent
+        assert result.episode_id is not None
         assert len(load_episodes(db_path)) == 0
 
     def test_trigger_stored(self, db_path):
@@ -6475,7 +6476,8 @@ class TestAgentLoopEpisodeRecording:
         result = asyncio.run(loop.run("Analyze."))
 
         assert result.outcome == "exhausted"
-        assert result.episode_id is None
+        # episode_id is always set now (S4b); repair episode DB record still absent
+        assert result.episode_id is not None
         assert len(load_episodes(db_path)) == 0
 
 

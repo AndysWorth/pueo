@@ -519,6 +519,9 @@ class AgentLoop:
         self._raw_initial_context: str = (
             ""  # pre-injection context, set at start of run()
         )
+        self._top_retrieved_signature: str = (
+            ""  # first strategy chunk sig from pre-inject
+        )
 
     def inject_context(self, message: str) -> None:
         """Append a user message to the live conversation during a running loop.
@@ -749,6 +752,15 @@ class AgentLoop:
                     )
                     if _sid:
                         self._executor._injected_strategy_ids.add(_sid)
+        # Track the top strategy chunk's signature for chat opt-in learning (S4b).
+        # Only set it once — the first strategies chunk in rank order wins.
+        if not self._top_retrieved_signature:
+            for _c in chunks:
+                if getattr(_c, "collection", "") == "strategies":
+                    _csig = (getattr(_c, "metadata", {}) or {}).get("signature", "")
+                    if _csig and ":" in _csig:
+                        self._top_retrieved_signature = _csig
+                        break
         repair_chunks = [
             c for c in chunks if getattr(c, "collection", "") == "repair_history"
         ]
@@ -1125,14 +1137,13 @@ class AgentLoop:
             outcome=outcome,  # type: ignore[arg-type]
             steps=steps,
             episode_stub=episode_stub,
-            episode_id=(
-                self._episode_id if (outcome == "success" and self._db_path) else None
-            ),
+            episode_id=self._episode_id or None,
             capability_gap=bool((episode_stub or {}).get("capability_gap", False)),
             gap_description=(episode_stub or {}).get("gap_description", ""),
             llm_captures=list(self._llm_captures),
             tool_call_records=list(self._tool_call_records),
             debug_log_path=debug_log_path,
+            top_retrieved_signature=self._top_retrieved_signature,
         )
 
     async def _enqueue_distillation(
@@ -1163,7 +1174,13 @@ class AgentLoop:
         )
 
         queue = get_work_queue_or_none()
-        sig = self._signature
+        # For chat sessions, compose sig_chat with the top retrieved strategy signature.
+        if self._activity_type == "chat" and self._top_retrieved_signature:
+            from utils.knowledge.runbook_signature import sig_chat as _sig_chat
+
+            sig = _sig_chat(self._top_retrieved_signature)
+        else:
+            sig = self._signature
         _db = self._db_path
         _store = self._knowledge_store
         _model = self._model
@@ -1173,7 +1190,8 @@ class AgentLoop:
 
         # Write session_outcomes row with stashed distillation payload.
         # Distillation will be triggered after verification (S5).
-        if _ep and self._activity_type not in ("chat", ""):
+        # Chat sessions are included: the user verifies via "Pueo was right/wrong" (S4b).
+        if _ep and self._activity_type not in ("",):
             try:
                 import json as _json
 
