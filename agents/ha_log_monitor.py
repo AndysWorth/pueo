@@ -12,7 +12,7 @@ import sqlite3
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, AsyncIterator, Optional
 from pydantic import BaseModel, Field
 
 import config as _config
@@ -583,7 +583,7 @@ def _is_critical_line(line: str, prev_line: str) -> bool:
 _TRANSIENT_SSH_ERRNOS: frozenset[int] = frozenset({32, 54, 104})  # EPIPE, ECONNRESET
 
 # Log content patterns that indicate a transient external condition (network outage,
-# upstream API unavailable) rather than a fixable config error. When the log buffer
+# upstream API unavailable) rather than a fixable config error. When the error block
 # contains any of these, skip the LLM triage call and emit a WARNING timeline event.
 _TRANSIENT_LOG_PATTERNS = re.compile(
     r"(NameResolutionError|Failed to resolve"
@@ -594,6 +594,100 @@ _TRANSIENT_LOG_PATTERNS = re.compile(
     r"|urllib3\.exceptions)",
     re.IGNORECASE,
 )
+
+# Number of occurrences of the same (logger, first-line) fingerprint within
+# _LOG_RECURRENCE_WINDOW seconds before the error is forced through triage even
+# when its block matches _TRANSIENT_LOG_PATTERNS.
+LOG_RECURRENCE_THRESHOLD = 3
+_LOG_RECURRENCE_WINDOW = 24 * 3600  # seconds
+_LOG_BLOCK_MAX_LINES = 50
+_LOG_BLOCK_MAX_SECONDS = 2.0
+
+_HA_LOG_LOGGER_RE = re.compile(r"\[([A-Za-z][A-Za-z0-9_.]*)\]")
+_EXCEPTION_LINE_RE = re.compile(
+    r"^([A-Za-z][A-Za-z0-9_.]*(?:Error|Exception|Warning|Fault)):"
+)
+
+
+def _extract_logger(line: str) -> Optional[str]:
+    """Return the first bracketed logger name from a HA log line, or None."""
+    m = _HA_LOG_LOGGER_RE.search(_strip_ansi(line))
+    return m.group(1) if m else None
+
+
+def _extract_exception_class(block: list[str]) -> Optional[str]:
+    """Return the short exception class name from the last matching line of *block*."""
+    result = None
+    for line in block:
+        m = _EXCEPTION_LINE_RE.match(line.strip())
+        if m:
+            result = m.group(1).rsplit(".", 1)[-1]
+    return result
+
+
+def _strip_log_timestamp(line: str) -> str:
+    """Remove the 'YYYY-MM-DD HH:MM:SS ' prefix from a HA log line for stable hashing."""
+    m = _HA_LOG_TS.match(_strip_ansi(line))
+    return line[m.end() :] if m else line
+
+
+def _check_and_record_recurrence(logger: str, first_error_line: str, now: float) -> int:
+    """Record this error occurrence and return count within _LOG_RECURRENCE_WINDOW. Sync.
+
+    *first_error_line* should be the message without its timestamp prefix so
+    that repeated occurrences at different times share the same fingerprint.
+    """
+    fp = hashlib.sha256(f"{logger}|{first_error_line}".encode()).hexdigest()[:16]
+    key = f"log_recurrence:{fp}"
+    cutoff = now - _LOG_RECURRENCE_WINDOW
+    try:
+        with sqlite3.connect(_config.DB_PATH) as conn:
+            row = conn.execute(
+                "SELECT value FROM user_prefs WHERE key = ?", (key,)
+            ).fetchone()
+            timestamps: list[float] = json.loads(row[0]) if row else []
+            timestamps = [t for t in timestamps if t > cutoff]
+            timestamps.append(now)
+            conn.execute(
+                "INSERT INTO user_prefs (key, value) VALUES (?, ?)"
+                " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, json.dumps(timestamps)),
+            )
+    except Exception as e:  # nosec B110
+        log.warning("log_recurrence_record_failed", error=str(e))
+        return 1  # fail safe: treat as single occurrence
+    return len(timestamps)
+
+
+async def _collect_error_block(
+    aiter: AsyncIterator[str],
+    first_line: str,
+    log_buffer: collections.deque,
+) -> tuple[list[str], Optional[str]]:
+    """Collect traceback continuation lines that belong to the same log entry.
+
+    Reads from *aiter* until a timestamped line (start of a new entry) or
+    _LOG_BLOCK_MAX_SECONDS / _LOG_BLOCK_MAX_LINES is reached.  Continuation
+    lines are appended to *log_buffer*; the boundary raw line is NOT added
+    (the main loop handles it on the next iteration via its pending slot).
+    Returns (block_lines, boundary_raw | None).
+    """
+    block = [first_line]
+    deadline = asyncio.get_event_loop().time() + _LOG_BLOCK_MAX_SECONDS
+    while len(block) <= _LOG_BLOCK_MAX_LINES:
+        remaining = deadline - asyncio.get_event_loop().time()
+        if remaining <= 0:
+            break
+        try:
+            raw = await asyncio.wait_for(aiter.__anext__(), timeout=remaining)
+        except (StopAsyncIteration, asyncio.TimeoutError):
+            break
+        stripped = raw.strip()
+        if _parse_ha_log_ts(stripped) is not None:
+            return block, raw
+        log_buffer.append(stripped)
+        block.append(stripped)
+    return block, None
 
 
 # ==========================================
@@ -991,9 +1085,28 @@ async def tail_remote_log_stream(
     tail_command = _source_to_command(source)
     _log_buffer = state.log_buffer
 
+    # Explicit iterator so _collect_error_block can read ahead and return a
+    # boundary line that the main loop processes on its next iteration.
+    _stream_iter = client.stream_lines(tail_command).__aiter__()
+    _pending_line: Optional[str] = None
+
+    async def _next_raw() -> Optional[str]:
+        nonlocal _pending_line
+        if _pending_line is not None:
+            raw = _pending_line
+            _pending_line = None
+            return raw
+        try:
+            return await _stream_iter.__anext__()
+        except StopAsyncIteration:
+            return None
+
     try:
-        async for line in client.stream_lines(tail_command):
-            clean_line = line.strip()
+        while True:
+            _raw_line = await _next_raw()
+            if _raw_line is None:
+                break
+            clean_line = _raw_line.strip()
             _prev_line = _log_buffer[-1] if _log_buffer else ""
             _log_buffer.append(clean_line)
             _ts = _parse_ha_log_ts(clean_line)
@@ -1017,8 +1130,39 @@ async def tail_remote_log_stream(
                     )
                 log.warning("log_line_intercepted", line=clean_line)
 
-                context_snapshot = "\n".join(_log_buffer)
-                if _TRANSIENT_LOG_PATTERNS.search(context_snapshot):
+                # Collect the error's own block (traceback continuation lines up
+                # to the next timestamped line) before checking for transient patterns.
+                # This prevents false-positive transient skips caused by unrelated
+                # network errors that happen to appear in the rolling buffer before
+                # the actual error.
+                _error_block, _boundary_raw = await _collect_error_block(
+                    _stream_iter, clean_line, _log_buffer
+                )
+                if _boundary_raw is not None:
+                    _pending_line = _boundary_raw
+
+                _logger = _extract_logger(clean_line)
+                _recurrence_count = await asyncio.to_thread(
+                    _check_and_record_recurrence,
+                    _logger or "",
+                    _strip_log_timestamp(clean_line),
+                    time.time(),
+                )
+                _is_recurring = _recurrence_count >= LOG_RECURRENCE_THRESHOLD
+
+                if _is_recurring and _recurrence_count == LOG_RECURRENCE_THRESHOLD:
+                    _exc_class = _extract_exception_class(_error_block)
+                    from utils.knowledge.runbook_signature import sig_log
+
+                    log.info(
+                        "log_recurrence_threshold_reached",
+                        signature=sig_log(_logger or "", _exc_class),
+                        count=_recurrence_count,
+                    )
+
+                if not _is_recurring and _TRANSIENT_LOG_PATTERNS.search(
+                    "\n".join(_error_block)
+                ):
                     log.info(
                         "triage_transient_skip",
                         line=clean_line,

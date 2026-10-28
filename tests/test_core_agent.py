@@ -4007,11 +4007,13 @@ class TestLogMonitorTriage:
             return llm_not_actionable
 
         monkeypatch.setattr(ha_log_monitor, "make_llm_client", _factory)
+        # Timestamps are required so each ERROR line is treated as a new log entry
+        # boundary rather than a continuation of the previous one.
         ssh = FakeSSHClient(
             stream_data=[
-                "ERROR Component error: light.hue broke",
-                "ERROR Component error: switch.x broke",
-                "ERROR Component error: fan.y broke",
+                "2024-01-01 12:00:00 ERROR Component error: light.hue broke",
+                "2024-01-01 12:00:01 ERROR Component error: switch.x broke",
+                "2024-01-01 12:00:02 ERROR Component error: fan.y broke",
             ]
         )
         asyncio.run(ha_log_monitor.tail_remote_log_stream(ssh_client=ssh))
@@ -4101,6 +4103,290 @@ class TestLogMonitorTriage:
         asyncio.run(analyze_log_line_with_ai(["ERROR ..."], broken_llm))
         assert {"event_type": "triage_done"} in published
         assert decrements
+
+
+# ── Log error block collection (S5) ──────────────────────────────────────────────
+
+
+class TestLogErrorBlock:
+    """Tests for _collect_error_block, _extract_logger, _extract_exception_class."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_core_state(self, monkeypatch):
+        import agents.ha_log_monitor as _lm
+
+        # Prevent watermark from a previous streaming test from replay-skipping
+        # our timestamped lines.
+        monkeypatch.setattr(
+            _lm,
+            "_core_state",
+            _lm._LogStreamState(loop_name=_lm._LOOP_NAME),
+        )
+
+    def _make_aiter(self, lines: list[str]):
+        async def _gen():
+            for ln in lines:
+                yield ln
+
+        return _gen().__aiter__()
+
+    def test_extract_logger_from_ha_line(self):
+        from agents.ha_log_monitor import _extract_logger
+
+        line = "2024-01-01 12:00:00 ERROR (MainThread) [homeassistant.components.sensor.noaa_tides_2] Error doing job"
+        assert _extract_logger(line) == "homeassistant.components.sensor.noaa_tides_2"
+
+    def test_extract_logger_returns_none_when_absent(self):
+        from agents.ha_log_monitor import _extract_logger
+
+        assert _extract_logger("ERROR no brackets here") is None
+
+    def test_extract_logger_strips_ansi(self):
+        from agents.ha_log_monitor import _extract_logger
+
+        line = "\x1b[31mERROR\x1b[0m [mylogger] boom"
+        assert _extract_logger(line) == "mylogger"
+
+    def test_extract_exception_class_from_last_match(self):
+        from agents.ha_log_monitor import _extract_exception_class
+
+        block = [
+            "ERROR [homeassistant.components.noaa] Error doing job",
+            "Traceback (most recent call last):",
+            "  File 'foo.py', line 1, in bar",
+            "homeassistant.components.sensor.COOPSAPIError: Datum input is invalid",
+        ]
+        assert _extract_exception_class(block) == "COOPSAPIError"
+
+    def test_extract_exception_class_uses_last_match(self):
+        from agents.ha_log_monitor import _extract_exception_class
+
+        block = [
+            "requests.exceptions.ConnectionError: pool error",
+            "urllib3.exceptions.MaxRetryError: retry exceeded",
+        ]
+        assert _extract_exception_class(block) == "MaxRetryError"
+
+    def test_extract_exception_class_returns_none_for_no_match(self):
+        from agents.ha_log_monitor import _extract_exception_class
+
+        assert _extract_exception_class([]) is None
+        assert _extract_exception_class(["just a line", "no exception"]) is None
+
+    def test_collect_error_block_includes_continuation_lines(self):
+        import collections as _col
+
+        from agents.ha_log_monitor import _collect_error_block
+
+        buf: _col.deque = _col.deque(maxlen=50)
+        aiter = self._make_aiter(
+            [
+                "Traceback (most recent call last):",
+                "  File 'foo.py', line 1",
+                "ValueError: bad value",
+            ]
+        )
+        block, boundary = asyncio.run(_collect_error_block(aiter, "ERROR trigger", buf))
+        assert "Traceback (most recent call last):" in block
+        assert "ValueError: bad value" in block
+        assert boundary is None  # stream exhausted, no boundary
+        assert "Traceback (most recent call last):" in list(buf)
+
+    def test_collect_error_block_stops_at_timestamp(self):
+        import collections as _col
+
+        from agents.ha_log_monitor import _collect_error_block
+
+        buf: _col.deque = _col.deque(maxlen=50)
+        aiter = self._make_aiter(
+            [
+                "  File 'foo.py', line 1",
+                "ValueError: bad",
+                "2024-01-01 12:00:01 INFO next entry",  # boundary
+                "more info",
+            ]
+        )
+        block, boundary = asyncio.run(_collect_error_block(aiter, "ERROR trigger", buf))
+        assert "ValueError: bad" in block
+        assert "2024-01-01 12:00:01 INFO next entry" not in block
+        assert boundary is not None
+        assert boundary.strip() == "2024-01-01 12:00:01 INFO next entry"
+        # Boundary NOT in buffer yet (main loop adds it)
+        assert "2024-01-01 12:00:01 INFO next entry" not in list(buf)
+
+    def test_collect_error_block_first_line_always_in_block(self):
+        import collections as _col
+
+        from agents.ha_log_monitor import _collect_error_block
+
+        buf: _col.deque = _col.deque(maxlen=50)
+        aiter = self._make_aiter([])
+        block, boundary = asyncio.run(_collect_error_block(aiter, "ERROR solo", buf))
+        assert block == ["ERROR solo"]
+        assert boundary is None
+
+    def test_transient_check_uses_block_not_prior_buffer(self):
+        """Prior buffer has ConnectionError; error block does not → should NOT skip.
+
+        Old code matched _TRANSIENT_LOG_PATTERNS against the full rolling buffer,
+        so an unrelated ConnectionError in a prior log entry could falsely suppress
+        triage of a subsequent fixable error.  New code uses the error block only.
+        """
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.llm.ollama_client import FakeLLMClient
+        from agents.ha_log_monitor import (
+            LogEvaluation,
+            tail_remote_log_stream,
+        )
+
+        llm = FakeLLMClient(
+            LogEvaluation(
+                is_actionable=False,
+                root_cause_summary="benign",
+                confidence_score=0.1,
+            ).model_dump_json()
+        )
+        # A non-critical pychromecast line with ConnectionError goes into the buffer.
+        # The NOAA "Error doing job" is the critical trigger; its block contains
+        # only COOPSAPIError (not a transient pattern), so it should reach triage.
+        ssh = FakeSSHClient(
+            stream_data=[
+                "2024-01-01 12:00:00 INFO [pychromecast] ConnectionError: pool",
+                "2024-01-01 12:00:01 ERROR [homeassistant.components.noaa_tides_2] Error doing job",
+                "Traceback (most recent call last):",
+                "homeassistant.sensor.COOPSAPIError: Datum input is invalid",
+            ]
+        )
+        asyncio.run(tail_remote_log_stream(ssh_client=ssh, llm_client=llm))
+        # NOAA error should reach triage (1 call); ConnectionError in prior INFO line
+        # must not falsely suppress it.
+        assert len(llm.calls) == 1
+
+    def test_transient_check_matches_block_error(self):
+        """If the error block itself contains a transient pattern, triage is skipped."""
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.llm.ollama_client import FakeLLMClient
+        from agents.ha_log_monitor import tail_remote_log_stream
+
+        llm = FakeLLMClient("{}")
+        ssh = FakeSSHClient(
+            stream_data=[
+                "2024-01-01 12:00:00 ERROR [component] Error doing job",
+                "Traceback (most recent call last):",
+                "requests.exceptions.ConnectionError: Max retries exceeded",
+                "2024-01-01 12:00:01 INFO normal",
+            ]
+        )
+        asyncio.run(tail_remote_log_stream(ssh_client=ssh, llm_client=llm))
+        # Transient pattern in block → triage skipped
+        assert len(llm.calls) == 0
+
+
+class TestLogRecurrence:
+    """Tests for _check_and_record_recurrence."""
+
+    @pytest.fixture
+    def db_path(self, tmp_path, monkeypatch):
+        import agents.ha_agent_advanced as _adv
+        import config as _cfg
+        import agents.ha_log_monitor as _lm
+
+        db = str(tmp_path / "recurrence.db")
+        monkeypatch.setattr(_adv, "DB_PATH", db)
+        monkeypatch.setattr(_cfg, "DB_PATH", db)
+        monkeypatch.setattr(_lm, "_config", _cfg)
+        # Reset the module-level stream state so watermarks from other tests
+        # do not contaminate replay-gate decisions in streaming tests.
+        monkeypatch.setattr(
+            _lm,
+            "_core_state",
+            _lm._LogStreamState(loop_name=_lm._LOOP_NAME),
+        )
+        _adv.init_local_database()
+        return db
+
+    def test_first_occurrence_returns_one(self, db_path):
+        from agents.ha_log_monitor import _check_and_record_recurrence
+
+        count = _check_and_record_recurrence(
+            "homeassistant.sensor", "ERROR job", 1000.0
+        )
+        assert count == 1
+
+    def test_second_occurrence_returns_two(self, db_path):
+        from agents.ha_log_monitor import _check_and_record_recurrence
+
+        _check_and_record_recurrence("homeassistant.sensor", "ERROR job", 1000.0)
+        count = _check_and_record_recurrence(
+            "homeassistant.sensor", "ERROR job", 1001.0
+        )
+        assert count == 2
+
+    def test_third_occurrence_crosses_threshold(self, db_path):
+        from agents.ha_log_monitor import (
+            LOG_RECURRENCE_THRESHOLD,
+            _check_and_record_recurrence,
+        )
+
+        for i in range(LOG_RECURRENCE_THRESHOLD):
+            count = _check_and_record_recurrence(
+                "homeassistant.sensor", "ERROR job", float(1000 + i)
+            )
+        assert count >= LOG_RECURRENCE_THRESHOLD
+
+    def test_old_occurrences_pruned(self, db_path):
+        from agents.ha_log_monitor import (
+            _LOG_RECURRENCE_WINDOW,
+            _check_and_record_recurrence,
+        )
+
+        # Record 5 very old occurrences
+        for i in range(5):
+            _check_and_record_recurrence("homeassistant.sensor", "ERROR old", float(i))
+        # Record a fresh occurrence — old ones should be pruned
+        now = _LOG_RECURRENCE_WINDOW + 9999.0
+        count = _check_and_record_recurrence("homeassistant.sensor", "ERROR old", now)
+        assert count == 1  # only the current occurrence is within window
+
+    def test_different_errors_are_independent(self, db_path):
+        from agents.ha_log_monitor import _check_and_record_recurrence
+
+        _check_and_record_recurrence("logger.a", "ERROR foo", 1000.0)
+        _check_and_record_recurrence("logger.a", "ERROR foo", 1001.0)
+        count = _check_and_record_recurrence("logger.b", "ERROR bar", 1002.0)
+        assert count == 1
+
+    def test_recurring_error_bypasses_transient_skip(self, db_path, monkeypatch):
+        """After LOG_RECURRENCE_THRESHOLD hits, transient check is skipped."""
+        import agents.ha_log_monitor as _lm
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.llm.ollama_client import FakeLLMClient
+        from agents.ha_log_monitor import LogEvaluation, LOG_RECURRENCE_THRESHOLD
+
+        llm = FakeLLMClient(
+            LogEvaluation(
+                is_actionable=False,
+                root_cause_summary="recurring error",
+                confidence_score=0.1,
+            ).model_dump_json()
+        )
+        # Error line whose block contains a transient pattern
+        ts_base = "2024-01-01 12:00:0"
+        lines = []
+        for i in range(LOG_RECURRENCE_THRESHOLD):
+            lines += [
+                f"{ts_base}{i} ERROR [logger.noaa] Error doing job",
+                f"requests.exceptions.ConnectionError: pool",
+            ]
+        if LOG_RECURRENCE_THRESHOLD < 9:
+            # Add a non-transient follow-up so the stream doesn't end mid-block
+            lines.append(f"2024-01-01 12:00:09 INFO done")
+
+        ssh = FakeSSHClient(stream_data=lines)
+        asyncio.run(_lm.tail_remote_log_stream(ssh_client=ssh, llm_client=llm))
+        # First two hits: transient match → skipped.
+        # Third hit (threshold): NOT skipped even though block contains ConnectionError.
+        assert len(llm.calls) >= 1
 
 
 # ── Retention policy (item 32) ────────────────────────────────────────────────────
