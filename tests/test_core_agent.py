@@ -12160,19 +12160,21 @@ class TestAgentLoop:
         assert "Looks fine to me." in nudge_text
 
     def test_budget_exhaustion(self):
-        # 6 read_config calls but max_tool_calls=5 → exhausted after 5
+        # 6 read_config calls (different paths to avoid repeat guard cache)
+        # but max_tool_calls=5 → exhausted after 5
         call_sequence = [
             {
                 "tool_calls": [
                     {
                         "function": {
                             "name": "read_config",
-                            "arguments": {"path": "/config/configuration.yaml"},
+                            "arguments": {"path": f"/config/file{i}.yaml"},
                         }
                     }
                 ]
             }
-        ] * 6
+            for i in range(6)
+        ]
         loop = self._make_loop(call_sequence=call_sequence)
         result = asyncio.run(loop.run("Check config"))
         assert result.outcome == "exhausted"
@@ -12793,7 +12795,13 @@ class TestAgentLoop:
                 return {
                     "role": "assistant",
                     "tool_calls": [
-                        {"function": {"name": "read_config", "arguments": {}}}
+                        {
+                            "function": {
+                                "name": "read_config",
+                                # vary args per call so the repeat guard doesn't cache them
+                                "arguments": {"path": f"/file{self.tool_calls}.yaml"},
+                            }
+                        }
                     ],
                 }
 

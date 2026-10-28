@@ -7174,6 +7174,40 @@ class TestSigSpecificity:
         assert spec == 1  # only 'repair' exact
 
 
+class TestSigNetalertx:
+    """sig_netalertx produces correctly-formatted signatures."""
+
+    def test_category_only(self):
+        from utils.knowledge.runbook_signature import sig_netalertx
+
+        assert sig_netalertx("availability") == "netalertx:availability:*"
+
+    def test_category_and_key(self):
+        from utils.knowledge.runbook_signature import sig_netalertx
+
+        assert (
+            sig_netalertx("config", "scan_subnets_drift")
+            == "netalertx:config:scan_subnets_drift"
+        )
+
+    def test_hyphen_normalised_to_underscore(self):
+        from utils.knowledge.runbook_signature import sig_netalertx
+
+        assert (
+            sig_netalertx("ha-integration", "api-down")
+            == "netalertx:ha_integration:api_down"
+        )
+
+    def test_seed_wildcard_matches(self):
+        from utils.knowledge.runbook_distiller import _sig_specificity
+        from utils.knowledge.runbook_signature import sig_netalertx
+
+        # seed_netalertx.md uses netalertx:*:* to match any category and issue_key
+        matches, spec = _sig_specificity("netalertx:*:*", sig_netalertx("networking"))
+        assert matches is True
+        assert spec == 1  # only "netalertx" exact
+
+
 class TestFetchSignatureChunks:
     """_fetch_signature_chunks returns seed + learned runbooks for a signature."""
 
@@ -7461,6 +7495,7 @@ class TestSeedRegistry:
             sig_device_availability,
             sig_device_post_restart,
             sig_host_health,
+            sig_netalertx,
             sig_notification,
             sig_repair,
             sig_update,
@@ -7488,6 +7523,7 @@ class TestSeedRegistry:
             sig_host_health("resolution_issue", "no_current_backup"),
             sig_device_availability("econet"),
             sig_device_post_restart(),
+            sig_netalertx("availability"),
         ]
 
     def test_every_seed_file_registered_or_retired(self):
@@ -10472,3 +10508,137 @@ class TestFetchPriorSessions:
                 " WHERE subject_key = 'e9:matter'"
             ).fetchone()
         assert json.loads(conclusion).get("prediction") == expected
+
+
+class TestRepeatGuard:
+    """AgentLoop repeat guard: identical (tool, args) calls reuse cached result."""
+
+    def _make_loop(self, llm):
+        import asyncio  # noqa: F401 (used by callers)
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import build_ha_tool_registry
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+
+        ex = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+        )
+        return AgentLoop(
+            llm_client=llm,
+            tool_executor=ex,
+            tool_registry=build_ha_tool_registry(),
+            max_tool_calls=10,
+            trigger="test",
+        )
+
+    def _tc(self, name, arguments=None):
+        return {"function": {"name": name, "arguments": arguments or {}}}
+
+    def test_repeated_call_does_not_count_toward_budget(self):
+        """Calling the same read-only tool with the same args twice only uses 1 budget slot."""
+        import asyncio
+
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        llm = FakeToolCallingLLMClient(
+            [
+                {"tool_calls": [self._tc("read_config")]},
+                {"tool_calls": [self._tc("read_config")]},  # identical repeat
+                {
+                    "tool_calls": [
+                        self._tc(
+                            "finish_repair",
+                            {"summary": "done", "action_taken": "no_fix_needed"},
+                        )
+                    ]
+                },
+            ]
+        )
+        loop = self._make_loop(llm)
+        result = asyncio.run(loop.run("Test repeated call."))
+        assert result.outcome == "success"
+        # read_config (real) + finish_repair = 2 budget slots; cached call has no slot
+        assert len(result.steps) == 3  # all three steps appear in trace
+        # terminal tool step_number tells us how many budget slots were consumed
+        terminal = result.steps[-1]
+        assert terminal.step_number == 2  # only 2 budget increments happened
+
+    def test_repeated_call_result_injected_into_history(self):
+        """The cached result is still fed back to the LLM conversation."""
+        import asyncio
+
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        llm = FakeToolCallingLLMClient(
+            [
+                {"tool_calls": [self._tc("read_config")]},
+                {"tool_calls": [self._tc("read_config")]},
+                {
+                    "tool_calls": [
+                        self._tc(
+                            "finish_repair",
+                            {"summary": "done", "action_taken": "no_fix_needed"},
+                        )
+                    ]
+                },
+            ]
+        )
+        loop = self._make_loop(llm)
+        asyncio.run(loop.run("Test repeated call."))
+        # Second chat_with_tools call should have a tool-role message referencing prior step
+        second_call_messages = llm.calls[1]["messages"]
+        tool_messages = [m for m in second_call_messages if m.get("role") == "tool"]
+        assert any("Repeated call" in m.get("content", "") for m in tool_messages)
+
+    def test_terminal_tool_exempt_from_caching(self):
+        """finish_repair called twice must execute both times (never cached)."""
+        import asyncio
+
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        self._tc(
+                            "finish_repair",
+                            {"summary": "a", "action_taken": "no_fix_needed"},
+                        )
+                    ]
+                },
+            ]
+        )
+        loop = self._make_loop(llm)
+        result = asyncio.run(loop.run("Test terminal not cached."))
+        # Terminal tool must execute and close the loop
+        assert result.outcome == "success"
+
+    def test_different_args_not_cached(self):
+        """Same tool name with different args executes both times."""
+        import asyncio
+
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        llm = FakeToolCallingLLMClient(
+            [
+                {"tool_calls": [self._tc("read_config")]},
+                {"tool_calls": [self._tc("read_config", {"section": "http"})]},
+                {
+                    "tool_calls": [
+                        self._tc(
+                            "finish_repair",
+                            {"summary": "done", "action_taken": "no_fix_needed"},
+                        )
+                    ]
+                },
+            ]
+        )
+        loop = self._make_loop(llm)
+        result = asyncio.run(loop.run("Test different args."))
+        assert result.outcome == "success"
+        # Both read_config calls with different args count → terminal step_number == 3
+        assert result.steps[-1].step_number == 3

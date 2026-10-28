@@ -228,7 +228,6 @@ SEED_FAMILIES: dict[str, str] = {
     "seed_notification_analysis.md": "notification",
     "seed_update_analysis.md": "update",
     "seed_automation_authoring.md": "chat",
-    "seed_netalertx.md": "netalertx",
 }
 
 

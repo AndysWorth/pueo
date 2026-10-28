@@ -3350,38 +3350,43 @@ class TestExecuteNetalertxHeal:
         assert saved["fix_applied"] is True
 
     def test_exception_writes_rejected_and_fix_error(self, tmp_path, monkeypatch):
-        """run_heal raises → .rejected created, fix_error set, no in_progress."""
+        """Exception during verification → .rejected created, fix_error set, no in_progress.
+
+        The heal already ran before the card was sent; _execute_netalertx_heal is now
+        an acknowledgment-only handler.  .approved is touched before _verify_card_execution,
+        so both .approved and .rejected exist when verification itself raises.
+        """
         import json as _json
         import web.dashboard as dashboard
 
         nid = "nh-exc-1"
         json_path = self._write_heal_card(tmp_path, nid)
-        self._patch_healer_deps(
-            monkeypatch, run_heal_side_effect=RuntimeError("SSH failed")
-        )
+
+        async def _raise(payload, verification="success"):
+            raise RuntimeError("SSH failed")
+
+        monkeypatch.setattr(dashboard, "_verify_card_execution", _raise)
 
         data = _json.loads(json_path.read_text())
         asyncio.run(dashboard._execute_netalertx_heal(nid, data, json_path, tmp_path))
 
         assert (tmp_path / f"{nid}.rejected").exists()
-        assert not (tmp_path / f"{nid}.approved").exists()
         assert not (tmp_path / f"{nid}.in_progress").exists()
         saved = _json.loads(json_path.read_text())
         assert "SSH failed" in saved["fix_error"]
 
     def test_unknown_heal_action_writes_rejected(self, tmp_path, monkeypatch):
-        """Unknown heal_action propagates as ValueError → .rejected."""
+        """Exception during verification propagates as ValueError → .rejected."""
         import json as _json
         import web.dashboard as dashboard
 
         nid = "nh-unk-1"
         json_path = self._write_heal_card(tmp_path, nid, heal_action="unknown_action")
-        self._patch_healer_deps(
-            monkeypatch,
-            run_heal_side_effect=ValueError(
-                "Unknown NetAlertX heal action: 'unknown_action'"
-            ),
-        )
+
+        async def _raise(payload, verification="success"):
+            raise ValueError("Unknown NetAlertX heal action: 'unknown_action'")
+
+        monkeypatch.setattr(dashboard, "_verify_card_execution", _raise)
 
         data = _json.loads(json_path.read_text())
         asyncio.run(dashboard._execute_netalertx_heal(nid, data, json_path, tmp_path))

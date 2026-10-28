@@ -31,11 +31,14 @@ if TYPE_CHECKING:
     from netalertx.config_validator import ConfigIssue
     from netalertx.diagnosis import NetAlertXDiagnostic
     from interfaces import (
+        HARestClientProtocol,
+        HAWebSocketClientProtocol,
         KnowledgeStoreClientProtocol,
         LLMClientProtocol,
         SSHClientProtocol,
     )
     from utils.agent.autonomy import AutonomyGate
+    from utils.ha.ha_environment import HAEnvironmentProfile
     from utils.hitl.notify import NotifierProtocol
 
 log = get_logger("netalertx.healer")
@@ -99,6 +102,9 @@ class NetAlertXHealer:
         container_name: str = NETALERTX_LOG_CONTAINER_NAME,
         db_path: str = DB_PATH,
         knowledge_store: Optional["KnowledgeStoreClientProtocol"] = None,
+        rest_client: Optional["HARestClientProtocol"] = None,
+        ws_client: Optional["HAWebSocketClientProtocol"] = None,
+        ha_profile: Optional["HAEnvironmentProfile"] = None,
     ) -> None:
         self._gate = gate
         self._ssh = ssh_client
@@ -108,6 +114,9 @@ class NetAlertXHealer:
         self._container = container_name
         self._db_path = db_path
         self._knowledge_store = knowledge_store
+        self._rest_client = rest_client
+        self._ws_client = ws_client
+        self._ha_profile = ha_profile
 
     # ------------------------------------------------------------------
     # Version tracking
@@ -196,7 +205,11 @@ class NetAlertXHealer:
             netalertx_container_name=self._container,
             knowledge_store=self._knowledge_store,
             db_path=self._db_path,
+            ha_ws_client=self._ws_client,
+            ha_rest_client=self._rest_client,
         )
+        if self._ha_profile is not None:
+            executor.set_ha_profile(self._ha_profile)
         registry = build_netalertx_tool_registry()
         try:
             from utils.agent.supervisor import (
@@ -272,9 +285,12 @@ class NetAlertXHealer:
             category=diagnostic.category,
             severity=diagnostic.severity,
         )
+        from utils.knowledge.runbook_signature import sig_netalertx
+
+        _sig = sig_netalertx(diagnostic.category)
         increment_active_agent()
         try:
-            result = await loop.run(initial_context)
+            result = await loop.run(initial_context, signature=_sig)
             publish_activity_done("netalertx_repair", result.outcome)
         finally:
             decrement_active_agent()

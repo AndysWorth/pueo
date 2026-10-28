@@ -85,6 +85,11 @@ def _format_step_trace(steps: list["AgentStep"]) -> str:
     return "\n".join(lines) if lines else "  (no tool calls)"
 
 
+# Tools exempt from the repeat guard: side-effect tools and terminal tools.
+_REPEAT_GUARD_EXEMPT_TOOLS: frozenset[str] = frozenset(
+    {"discard_result", "request_escalation", "remember"}
+)
+
 # Per-chunk token budget for pre-injected knowledge (semantic chunks, top_k=3 → ~900 total).
 _PRE_INJECT_CHUNK_TOKENS = 300
 # Per-runbook budget for exact-signature matches (seed + learned). Each gets this budget
@@ -503,6 +508,7 @@ class AgentLoop:
         self._capture_llm = capture_llm
         self._llm_captures: list = []
         self._tool_call_records: list[ToolCallRecord] = []
+        self._seen_calls: dict[tuple[str, str], tuple[int, str]] = {}
         self._absolute_max = AGENT_MAX_TOTAL_CALLS
         self._messages: Optional[list] = None  # set during run(), cleared after
         self._episode_id: str = ""  # set at start of run()
@@ -908,6 +914,7 @@ class AgentLoop:
         self._executor.reset()
         self._llm_captures = []
         self._tool_call_records = []
+        self._seen_calls = {}
         self._episode_id = str(uuid.uuid4())
         if self._executor is not None:
             self._executor.set_episode_id(self._episode_id)
@@ -1381,6 +1388,7 @@ class AgentLoop:
         last_plain_text: str = ""  # most recent plain-text content (fallback summary)
         _pending_nudges: list[str] = []  # nudges injected before the next LLM call
         _call_seq = 0
+        _cache_only_streak = 0  # consecutive LLM iterations where every call was cached
 
         known_tool_names = {t["function"]["name"] for t in tools}
         guardrail = ToolResultGuardrail(
@@ -1639,6 +1647,7 @@ class AgentLoop:
             # Append the assistant message (with tool_calls) to history.
             messages.append(response)
 
+            _tc_count_before = tool_call_count
             for tc_raw in tool_calls_raw:
                 if tool_call_count >= self._max_tool_calls:
                     log.warning(
@@ -1662,9 +1671,81 @@ class AgentLoop:
                     arguments=fn.get("arguments", {}),
                 )
                 ts = time.time()
+
+                # Repeat guard: skip re-execution of identical (name, args) calls.
+                _call_sig = (
+                    tool_call.name,
+                    json.dumps(tool_call.arguments, sort_keys=True, default=str),
+                )
+                _is_repeat_exempt = (
+                    tool_call.name == self._terminal_tool_name
+                    or tool_call.name.startswith("finish_")
+                    or tool_call.name in _REPEAT_GUARD_EXEMPT_TOOLS
+                )
+                _cached = None if _is_repeat_exempt else self._seen_calls.get(_call_sig)
+
+                if _cached is not None:
+                    _prior_step, _cached_text = _cached
+                    log.info(
+                        "agent_loop_repeated_call",
+                        tool=tool_call.name,
+                        prior_step=_prior_step,
+                    )
+                    tool_result = ToolResult(
+                        tool_name=tool_call.name,
+                        success=True,
+                        output=_cached_text,
+                    )
+                    result_text = (
+                        f"[Repeated call — identical result from step {_prior_step}]"
+                        f" {_cached_text}"
+                    )
+                    _tc_duration_ms = round((time.time() - ts) * 1000, 1)
+                    if self._capture_llm:
+                        self._tool_call_records.append(
+                            ToolCallRecord(
+                                seq=tool_call_count,
+                                name=tool_call.name,
+                                args=dict(tool_call.arguments),
+                                output=_cached_text,
+                                error=None,
+                                success=True,
+                                discard_previous=False,
+                                duration_ms=_tc_duration_ms,
+                            )
+                        )
+                    step = AgentStep(
+                        step_number=tool_call_count,
+                        tool_call=tool_call,
+                        tool_result=tool_result,
+                        timestamp=ts,
+                    )
+                    steps.append(step)
+                    if self._step_callback is not None:
+                        self._step_callback(step)
+                    if self._timeline_callback is not None:
+                        _sl = f"step {tool_call_count} — {tool_call.name}: CACHED"
+                        await self._timeline_callback(tool_call.name, _sl)
+                    if LLM_PROVIDER != "local":
+                        result_text = sanitize_update_context(result_text)
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "content": result_text,
+                            "name": tool_call.name,
+                        }
+                    )
+                    log.info(
+                        "agent_loop_step",
+                        step=tool_call_count,
+                        tool=tool_call.name,
+                        success=True,
+                    )
+                    continue  # no budget increment for cached calls
+
                 if self._pre_step_callback is not None:
                     await self._pre_step_callback(tool_call)
-                tool_result: ToolResult = await self._executor.execute(tool_call)
+                tool_result = await self._executor.execute(tool_call)
                 _tc_duration_ms = round((time.time() - ts) * 1000, 1)
                 if self._capture_llm:
                     self._tool_call_records.append(
@@ -1711,6 +1792,8 @@ class AgentLoop:
                     success=tool_result.success,
                     remaining_budget=remaining_budget,
                 )
+                if not _is_repeat_exempt:
+                    self._seen_calls[_call_sig] = (tool_call_count, result_text)
                 if LLM_PROVIDER != "local":
                     result_text = sanitize_update_context(result_text)
                 messages.append(
@@ -1804,6 +1887,21 @@ class AgentLoop:
 
                 if tool_call.name == "apply_fix" and not tool_result.success:
                     return "fix_failed", episode_stub
+
+            # Guard: if every tool call in this batch was served from cache (no budget
+            # consumed), the LLM is stuck repeating the same calls. After 3 consecutive
+            # all-cached iterations, terminate rather than looping forever.
+            if tool_call_count == _tc_count_before:
+                _cache_only_streak += 1
+                if _cache_only_streak >= 3:
+                    log.warning(
+                        "agent_loop_cache_only_streak",
+                        count=_cache_only_streak,
+                        step=tool_call_count,
+                    )
+                    return "stuck", episode_stub
+            else:
+                _cache_only_streak = 0
 
             # All tool calls in this response processed; prompt the model to continue.
             messages.append(

@@ -10359,3 +10359,127 @@ class TestCoerceInt:
         from utils.agent.tool_executor import _coerce_int
 
         assert _coerce_int("bad", 50) == 50
+
+
+class TestNetalertxLearningLoop:
+    """NetAlertX sessions write session_outcomes rows and sign with netalertx: signatures."""
+
+    def _zero_devices_report(self):
+        from netalertx.health import HealthReport
+
+        return HealthReport(
+            last_scan_age_minutes=25,
+            device_counts={"total": 0, "online": 0},
+            anomalies=["No devices discovered"],
+            netalertx_version="v26.7.1",
+        )
+
+    def _diag_llm_response(self):
+        from netalertx.diagnosis import NetAlertXDiagnostic
+
+        diag = NetAlertXDiagnostic(
+            issue="No devices",
+            severity="HIGH",
+            category="availability",
+            recommended_fix="Check Docker network",
+            affected_netalertx_version="v26.7.1",
+        )
+        return {
+            "tool_calls": [
+                {
+                    "function": {
+                        "name": "finish_health_diagnosis",
+                        "arguments": {**diag.model_dump(), "summary": diag.issue},
+                    }
+                }
+            ]
+        }
+
+    def test_diagnosis_writes_session_outcomes_row(self, monkeypatch, tmp_path):
+        """diagnose_health_report writes a session_outcomes row when db_path + ks set."""
+        import asyncio
+        import sqlite3
+        from unittest import mock
+
+        import agents.ha_agent_advanced as haa
+        import utils.agent.work_queue as _wq_mod
+        from netalertx.diagnosis import diagnose_health_report
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        db = str(tmp_path / "state.db")
+        monkeypatch.setattr(haa, "DB_PATH", db)
+        haa.init_local_database()
+        monkeypatch.setattr(_wq_mod, "_work_queue", None)
+
+        ks = mock.Mock()
+        ks.query.return_value = []
+        llm = FakeToolCallingLLMClient([self._diag_llm_response()])
+        ssh = FakeSSHClient()
+
+        asyncio.run(
+            diagnose_health_report(
+                self._zero_devices_report(),
+                llm_client=llm,
+                ssh_client=ssh,
+                knowledge_store=ks,
+                db_path=db,
+            )
+        )
+
+        with sqlite3.connect(db) as conn:
+            rows = conn.execute(
+                "SELECT session_type, signature FROM session_outcomes"
+            ).fetchall()
+        assert len(rows) == 1
+        assert rows[0][0] == "netalertx_investigation"
+        assert rows[0][1].startswith("netalertx:")
+
+    def test_diagnosis_receives_knowledge_store(self, monkeypatch, tmp_path):
+        """ToolExecutor in diagnosis session is built with the injected knowledge_store."""
+        import asyncio
+        from unittest import mock
+
+        import utils.agent.work_queue as _wq_mod
+        from netalertx.diagnosis import diagnose_health_report
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        monkeypatch.setattr(_wq_mod, "_work_queue", None)
+
+        captured_executors: list = []
+        _orig_run = None
+
+        import utils.agent.agent_loop as _al_mod
+
+        _orig_run = _al_mod.AgentLoop.run
+
+        async def _capturing_run(self, *args, **kwargs):
+            captured_executors.append(self._executor)
+            return await _orig_run(self, *args, **kwargs)
+
+        monkeypatch.setattr(_al_mod.AgentLoop, "run", _capturing_run)
+
+        ks = mock.Mock()
+        ks.query.return_value = []
+        llm = FakeToolCallingLLMClient([self._diag_llm_response()])
+        ssh = FakeSSHClient()
+
+        asyncio.run(
+            diagnose_health_report(
+                self._zero_devices_report(),
+                llm_client=llm,
+                ssh_client=ssh,
+                knowledge_store=ks,
+            )
+        )
+
+        assert len(captured_executors) == 1
+        assert captured_executors[0]._knowledge_store is ks
+
+    def test_sig_netalertx_format(self):
+        """sig_netalertx produces the expected netalertx: prefix."""
+        from utils.knowledge.runbook_signature import sig_netalertx
+
+        assert sig_netalertx("availability") == "netalertx:availability:*"
+        assert sig_netalertx("config", "drift") == "netalertx:config:drift"
