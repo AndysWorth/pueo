@@ -1,6 +1,7 @@
 # ADR 044 — Verified learning: distill after verification, per-symptom seeds, card feedback
 
 **Status:** Accepted  
+**Amended by:** ADR 051 — verdict distillation writes gated atomic entries instead of rewriting the runbook  
 **Supersedes:** Runbook lifecycle sections of ADR 038
 
 ---
