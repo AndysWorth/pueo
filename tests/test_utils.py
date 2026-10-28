@@ -7220,6 +7220,24 @@ class TestFetchSignatureChunks:
         assert "seed:restart_required" in ids
         assert "cand_001" in ids
 
+    def test_procedure_only_learned_runbook_yields_notes_chunk_only(
+        self, tmp_path, monkeypatch
+    ):
+        """A rendered runbook with only procedure entries has no main-body chunk."""
+        from utils.agent.agent_loop import _fetch_signature_chunks
+
+        db = self._init_db(tmp_path, monkeypatch)
+        self._insert_row(
+            db,
+            "cand_proc",
+            "candidate",
+            "update:os:os",
+            "## Procedure notes\n- `read_logs(x)` returned no results",
+        )
+        chunks = _fetch_signature_chunks(db, "update:os:os")
+        assert [c.chunk_id for c in chunks] == ["proc:cand_proc"]
+        assert "read_logs(x)" in chunks[0].text
+
     def test_prefers_more_specific_seed(self, tmp_path, monkeypatch):
         """More specific pattern (2 exact parts) wins over less specific (1 exact part)."""
         from utils.agent.agent_loop import _fetch_signature_chunks
@@ -9570,7 +9588,7 @@ class TestHaSourceCache:
 class TestSyncStrategyToChroma:
     """Tests for strategy_seeder.sync_strategy_to_chroma."""
 
-    def _make_db(self, tmp_path, state: str = "candidate") -> str:
+    def _make_db(self, tmp_path, state: str = "candidate", signature=None) -> str:
         import sqlite3
 
         db = tmp_path / "state.db"
@@ -9578,14 +9596,35 @@ class TestSyncStrategyToChroma:
             conn.execute(
                 "CREATE TABLE agent_strategies"
                 " (id TEXT PRIMARY KEY, title TEXT, trigger_pattern TEXT,"
-                "  approach TEXT, runbook_state TEXT, created_at TEXT)"
+                "  approach TEXT, runbook_state TEXT, created_at TEXT,"
+                "  signature TEXT)"
             )
             conn.execute(
-                "INSERT INTO agent_strategies VALUES (?,?,?,?,?,datetime('now'))",
-                ("rb-1", "My runbook", "some trigger", "do this", state),
+                "INSERT INTO agent_strategies VALUES (?,?,?,?,?,datetime('now'),?)",
+                ("rb-1", "My runbook", "some trigger", "do this", state, signature),
             )
             conn.commit()
         return str(db)
+
+    def test_keeps_signature_metadata_when_signed(self, tmp_path):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.strategy_seeder import sync_strategy_to_chroma
+
+        store = FakeKnowledgeStore()
+        db = self._make_db(tmp_path, "candidate", signature="device:offline:zha")
+        sync_strategy_to_chroma("rb-1", db, store)
+        chunks = store.query("do this", top_k=5, collections=["strategies"])
+        assert chunks[0].metadata["signature"] == "device:offline:zha"
+
+    def test_unsigned_row_has_no_signature_metadata(self, tmp_path):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.strategy_seeder import sync_strategy_to_chroma
+
+        store = FakeKnowledgeStore()
+        db = self._make_db(tmp_path, "candidate")
+        sync_strategy_to_chroma("rb-1", db, store)
+        chunks = store.query("do this", top_k=5, collections=["strategies"])
+        assert "signature" not in chunks[0].metadata
 
     def test_upserts_chroma_with_runbook_type(self, tmp_path):
         from utils.knowledge.knowledge_store import FakeKnowledgeStore

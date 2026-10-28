@@ -196,21 +196,22 @@ def _fetch_signature_chunks(db_path: str, signature: str) -> "list[Any]":
         # Split procedure notes out so they get their own [PROCEDURE NOTES] label.
         main_approach, proc_notes = _split_procedure_notes(approach)
         text = f"# {title}\n\n{main_approach}".strip()
-        chunks.append(
-            KnowledgeChunk(
-                text=text,
-                source=f"sig:{row['id']}",
-                collection="strategies",
-                score=1.0,
-                metadata={
-                    "exact_match": True,
-                    "sig_match": True,
-                    "runbook_type": state,
-                },
-                authority_score=1.0,
-                chunk_id=row["id"],
+        if main_approach.strip():
+            chunks.append(
+                KnowledgeChunk(
+                    text=text,
+                    source=f"sig:{row['id']}",
+                    collection="strategies",
+                    score=1.0,
+                    metadata={
+                        "exact_match": True,
+                        "sig_match": True,
+                        "runbook_type": state,
+                    },
+                    authority_score=1.0,
+                    chunk_id=row["id"],
+                )
             )
-        )
         if proc_notes:
             chunks.append(
                 KnowledgeChunk(
@@ -1209,8 +1210,6 @@ class AgentLoop:
                         episode_id=_ep,
                         db_path=_db,
                         knowledge_store=_store,
-                        model=_model,
-                        llm_client=_llm,
                     )
                 except Exception as _pe:  # nosec B110
                     log.warning(

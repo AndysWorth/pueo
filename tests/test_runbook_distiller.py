@@ -10,13 +10,13 @@ import pytest
 from pydantic import ValidationError
 
 from utils.knowledge.runbook_distiller import (
-    DistilledRunbook,
+    DeltaItem,
+    DistilledDelta,
     InstanceFact,
     _build_prompt,
     _distillation_timeout_seconds,
     _fact_is_grounded,
     _format_step_trace,
-    _get_existing_by_signature,
     _grounded_facts,
     _mark_distilled,
     _read_distillation_payload,
@@ -98,6 +98,12 @@ def _make_db(tmp_path):
             "id INTEGER PRIMARY KEY, key TEXT NOT NULL, content TEXT NOT NULL, "
             "source TEXT NOT NULL, ts REAL NOT NULL, signature TEXT)"
         )
+        conn.execute(
+            "CREATE TABLE user_prefs (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+        )
+        from agents.ha_agent_advanced import _migrate_v42
+
+        _migrate_v42(conn.cursor())
         conn.commit()
     return db_path
 
@@ -126,145 +132,6 @@ def _memory_rows(db_path):
         return conn.execute(
             "SELECT key, content, source, signature FROM agent_memory ORDER BY id"
         ).fetchall()
-
-
-# ---------------------------------------------------------------------------
-# DistilledRunbook schema tests
-# ---------------------------------------------------------------------------
-
-
-class TestDistilledRunbookSchema:
-    def test_valid_construction(self):
-        rb = DistilledRunbook(
-            title="Fix ZHA coordinator crash",
-            when_to_use="When ZHA integration becomes unavailable after a USB event",
-            recommended_tools=["read_logs", "run_ha_command", "read_config"],
-            hypotheses=["USB coordinator disconnected", "HA lost USB path"],
-            fix_summary="Restarted ZHA integration via HA CLI",
-            pitfalls=["Do not unplug USB while HA is running"],
-        )
-        assert rb.title == "Fix ZHA coordinator crash"
-        assert len(rb.recommended_tools) == 3
-        assert len(rb.pitfalls) == 1
-
-    def test_pitfalls_default_empty(self):
-        rb = DistilledRunbook(
-            title="T",
-            when_to_use="When X",
-            recommended_tools=["read_logs"],
-            hypotheses=["H1"],
-            fix_summary="Fixed it",
-        )
-        assert rb.pitfalls == []
-
-    def test_invalid_missing_required_fields(self):
-        with pytest.raises(ValidationError):
-            DistilledRunbook(
-                when_to_use="When X",
-                recommended_tools=["read_logs"],
-                hypotheses=[],
-                fix_summary="ok",
-            )  # missing title
-
-    def test_json_round_trip(self):
-        rb = DistilledRunbook(
-            title="Diagnose update failure",
-            when_to_use="When a core update check returns an error",
-            recommended_tools=[
-                "get_update_release_notes",
-                "check_config_against_breaking_change",
-            ],
-            hypotheses=["Breaking change in recorder config"],
-            fix_summary="Renamed keep_days in recorder config",
-            pitfalls=["apply_filter=True causes a 400 error"],
-        )
-        as_json = rb.model_dump_json()
-        restored = DistilledRunbook.model_validate_json(as_json)
-        assert restored.title == rb.title
-        assert restored.pitfalls == rb.pitfalls
-
-
-# ---------------------------------------------------------------------------
-# _build_prompt
-# ---------------------------------------------------------------------------
-
-
-class TestBuildPrompt:
-    def test_includes_signature_and_outcome(self):
-        prompt = _build_prompt(
-            signature="repair:zha:device_offline",
-            trigger="repair_poll",
-            outcome="success",
-            initial_context="ZHA device offline",
-            episode_stub=None,
-            existing_approach="",
-            step_trace="  1. read_logs() → some log output",
-        )
-        assert "repair:zha:device_offline" in prompt
-        assert "success" in prompt
-        assert "ZHA device offline" in prompt
-
-    def test_includes_terminal_tool_conclusions(self):
-        stub = {
-            "summary": "ZHA coordinator crashed",
-            "recommendation": "Restart ZHA integration",
-            "action_taken": "Ran ha integration reload",
-        }
-        prompt = _build_prompt(
-            signature="sig",
-            trigger="t",
-            outcome="success",
-            initial_context="ctx",
-            episode_stub=stub,
-            existing_approach="",
-            step_trace="trace",
-        )
-        assert "ZHA coordinator crashed" in prompt
-        assert "Restart ZHA integration" in prompt
-        assert "Ran ha integration reload" in prompt
-
-    def test_includes_existing_runbook_when_present(self):
-        prompt = _build_prompt(
-            signature="sig",
-            trigger="t",
-            outcome="success",
-            initial_context="ctx",
-            episode_stub=None,
-            existing_approach="## When to use\nWhen ZHA crashes",
-            step_trace="trace",
-        )
-        assert "refine, don't replace" in prompt
-        assert "When ZHA crashes" in prompt
-
-    def test_excludes_existing_section_when_empty(self):
-        prompt = _build_prompt(
-            signature="sig",
-            trigger="t",
-            outcome="success",
-            initial_context="ctx",
-            episode_stub=None,
-            existing_approach="",
-            step_trace="trace",
-        )
-        assert "refine, don't replace" not in prompt
-
-    def test_initial_context_truncated_at_head(self):
-        # First 50 chars are distinctive START_TOKEN, rest is padding, last 50 are END_TOKEN
-        start = "START_TOKEN_AAAA"
-        end = "END_TOKEN_ZZZZ"
-        long_ctx = start + ("B" * 9_900) + end
-        prompt = _build_prompt(
-            signature="sig",
-            trigger="t",
-            outcome="success",
-            initial_context=long_ctx,
-            episode_stub=None,
-            existing_approach="",
-            step_trace="trace",
-        )
-        # Head strategy: start is present, tail end token is dropped
-        assert start in prompt
-        assert end not in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -388,357 +255,6 @@ class TestResolveGap:
 
 
 # ---------------------------------------------------------------------------
-# distill_and_persist
-# ---------------------------------------------------------------------------
-
-
-class _FakeLLMWithRunbook:
-    """LLM stub that always returns a valid DistilledRunbook JSON."""
-
-    def __init__(self):
-        self._runbook = DistilledRunbook(
-            title="Diagnosing core update risks",
-            when_to_use="When a core update has release notes with breaking changes",
-            recommended_tools=[
-                "get_update_release_notes",
-                "check_config_against_breaking_change",
-            ],
-            hypotheses=[
-                "Breaking change in recorder config",
-                "Template syntax deprecated",
-            ],
-            fix_summary="Config updated to new recorder syntax",
-            pitfalls=["apply_filter=True causes a 400 error"],
-        )
-
-    async def chat(self, model, messages, options, format, think=None):  # noqa: A002
-        return {"message": {"content": self._runbook.model_dump_json()}}
-
-    async def chat_with_tools(self, *a, **kw):  # pragma: no cover
-        raise NotImplementedError
-
-
-class TestDistillAndPersist:
-    def test_non_success_writes_gap_not_candidate(self, tmp_path, monkeypatch):
-        from utils.knowledge.knowledge_store import FakeKnowledgeStore
-
-        db_path = _make_db(tmp_path)
-        store = FakeKnowledgeStore()
-        steps = _make_steps("read_config", "read_logs", "run_ha_command")
-        asyncio.run(
-            distill_and_persist(
-                trigger="update_poll",
-                signature="update:core:ha",
-                steps=steps,
-                outcome="exhausted",
-                episode_id="ep1",
-                db_path=db_path,
-                knowledge_store=store,
-                model="qwen2.5:7b",
-            )
-        )
-
-        with sqlite3.connect(db_path) as conn:
-            row = conn.execute("SELECT runbook_state FROM agent_strategies").fetchone()
-        assert row is not None
-        assert row[0] == "gap"
-        # Nothing in strategies
-        assert store.collection_count("strategies") == 0
-
-    def test_thin_success_does_not_write(self, tmp_path, monkeypatch):
-        """Success with < 3 evidence calls → no gap, no candidate."""
-        from utils.knowledge.knowledge_store import FakeKnowledgeStore
-
-        db_path = _make_db(tmp_path)
-        store = FakeKnowledgeStore()
-        steps = _make_steps("query_knowledge", "finish_repair")
-        asyncio.run(
-            distill_and_persist(
-                trigger="repair",
-                signature="repair:zha:device_offline",
-                steps=steps,
-                outcome="success",
-                episode_id="ep2",
-                db_path=db_path,
-                knowledge_store=store,
-                model="qwen2.5:7b",
-                verification="success",
-            )
-        )
-
-        with sqlite3.connect(db_path) as conn:
-            count = conn.execute("SELECT COUNT(*) FROM agent_strategies").fetchone()[0]
-        assert count == 0
-
-    def test_success_with_evidence_inserts_candidate(self, tmp_path, monkeypatch):
-        from utils.knowledge.knowledge_store import FakeKnowledgeStore
-
-        db_path = _make_db(tmp_path)
-        store = FakeKnowledgeStore()
-        monkeypatch.setattr(
-            "utils.knowledge.runbook_distiller.make_llm_client",
-            lambda: _FakeLLMWithRunbook(),
-        )
-        steps = _make_steps(
-            "get_update_release_notes",
-            "check_config_against_breaking_change",
-            "read_config",
-        )
-        asyncio.run(
-            distill_and_persist(
-                trigger="update_poll",
-                signature="update:core:ha",
-                steps=steps,
-                outcome="success",
-                episode_id="ep3",
-                db_path=db_path,
-                knowledge_store=store,
-                model="qwen2.5:7b",
-                verification="success",
-            )
-        )
-
-        with sqlite3.connect(db_path) as conn:
-            row = conn.execute(
-                "SELECT runbook_state, signature, version FROM agent_strategies"
-            ).fetchone()
-        assert row is not None
-        assert row[0] == "candidate"
-        assert row[1] == "update:core:ha"
-        assert row[2] == 1
-
-        chunks = store.query("update", top_k=5, collections=["strategies"])
-        assert len(chunks) == 1
-
-    def test_second_success_merges_candidate(self, tmp_path, monkeypatch):
-        from utils.knowledge.knowledge_store import FakeKnowledgeStore
-
-        db_path = _make_db(tmp_path)
-        store = FakeKnowledgeStore()
-        monkeypatch.setattr(
-            "utils.knowledge.runbook_distiller.make_llm_client",
-            lambda: _FakeLLMWithRunbook(),
-        )
-        steps = _make_steps(
-            "get_update_release_notes",
-            "check_config_against_breaking_change",
-            "read_config",
-        )
-
-        # First distillation → insert
-        asyncio.run(
-            distill_and_persist(
-                trigger="update_poll",
-                signature="update:core:ha",
-                steps=steps,
-                outcome="success",
-                episode_id="ep4",
-                db_path=db_path,
-                knowledge_store=store,
-                model="qwen2.5:7b",
-                verification="success",
-            )
-        )
-        # Second distillation → merge (bumps version, updates approach + title)
-        asyncio.run(
-            distill_and_persist(
-                trigger="update_poll",
-                signature="update:core:ha",
-                steps=steps,
-                outcome="success",
-                episode_id="ep5",
-                db_path=db_path,
-                knowledge_store=store,
-                model="qwen2.5:7b",
-                verification="success",
-            )
-        )
-
-        with sqlite3.connect(db_path) as conn:
-            rows = conn.execute(
-                "SELECT version, episode_refs, approach, title FROM agent_strategies"
-            ).fetchall()
-        assert len(rows) == 1  # still one row, not two
-        assert rows[0][0] == 2  # version bumped
-        refs = json.loads(rows[0][1])
-        assert "ep4" in refs
-        assert "ep5" in refs
-        # approach and title should be updated to the latest distilled content
-        assert "When to use" in rows[0][2]
-        assert rows[0][3] == "Diagnosing core update risks"
-
-    def test_injected_llm_client_used_preferentially(self, tmp_path, monkeypatch):
-        """When llm_client is injected, make_llm_client must not be called."""
-        from utils.knowledge.knowledge_store import FakeKnowledgeStore
-
-        db_path = _make_db(tmp_path)
-        store = FakeKnowledgeStore()
-
-        fallback_called = []
-
-        def _bad_factory():
-            fallback_called.append(True)
-            raise RuntimeError("should not be called")
-
-        monkeypatch.setattr(
-            "utils.knowledge.runbook_distiller.make_llm_client",
-            _bad_factory,
-        )
-        steps = _make_steps(
-            "get_update_release_notes",
-            "check_config_against_breaking_change",
-            "read_config",
-        )
-        asyncio.run(
-            distill_and_persist(
-                trigger="update_poll",
-                signature="update:core:ha",
-                steps=steps,
-                outcome="success",
-                episode_id="ep8",
-                db_path=db_path,
-                knowledge_store=store,
-                model="qwen2.5:7b",
-                llm_client=_FakeLLMWithRunbook(),
-                verification="success",
-            )
-        )
-        assert not fallback_called
-        with sqlite3.connect(db_path) as conn:
-            count = conn.execute("SELECT COUNT(*) FROM agent_strategies").fetchone()[0]
-        assert count == 1
-
-    def test_episode_stub_included_in_prompt_sent_to_llm(self, tmp_path, monkeypatch):
-        """episode_stub fields appear in the prompt passed to the LLM."""
-        from utils.knowledge.knowledge_store import FakeKnowledgeStore
-
-        db_path = _make_db(tmp_path)
-        captured_prompts: list[str] = []
-
-        class _CapturingLLM:
-            def __init__(self):
-                self._rb = _FakeLLMWithRunbook()
-
-            async def chat(
-                self, model, messages, options, format, think=None
-            ):  # noqa: A002
-                for m in messages:
-                    if m.get("role") == "user":
-                        captured_prompts.append(m["content"])
-                return await self._rb.chat(
-                    model, messages, options, format, think=think
-                )
-
-            async def chat_with_tools(self, *a, **kw):  # pragma: no cover
-                raise NotImplementedError
-
-        steps = _make_steps(
-            "get_update_release_notes",
-            "check_config_against_breaking_change",
-            "read_config",
-        )
-        asyncio.run(
-            distill_and_persist(
-                trigger="update_poll",
-                signature="update:core:ha",
-                steps=steps,
-                outcome="success",
-                episode_id="ep9",
-                db_path=db_path,
-                knowledge_store=FakeKnowledgeStore(),
-                model="qwen2.5:7b",
-                initial_context="HA core update detected",
-                episode_stub={
-                    "summary": "Update applied cleanly",
-                    "recommendation": "Monitor logs",
-                },
-                llm_client=_CapturingLLM(),
-                verification="success",
-            )
-        )
-        assert captured_prompts, "LLM should have been called"
-        full_prompt = captured_prompts[0]
-        assert "HA core update detected" in full_prompt
-        assert "Update applied cleanly" in full_prompt
-        assert "Monitor logs" in full_prompt
-
-    def test_success_resolves_existing_gap(self, tmp_path, monkeypatch):
-        from utils.knowledge.knowledge_store import FakeKnowledgeStore
-
-        db_path = _make_db(tmp_path)
-        store = FakeKnowledgeStore()
-        monkeypatch.setattr(
-            "utils.knowledge.runbook_distiller.make_llm_client",
-            lambda: _FakeLLMWithRunbook(),
-        )
-        # Pre-insert a gap for the same signature
-        with sqlite3.connect(db_path) as conn:
-            conn.execute(
-                "INSERT INTO agent_strategies"
-                " (id, title, trigger_pattern, approach, runbook_state, created_at, signature)"
-                " VALUES ('gap1', 'Gap', 'update_poll', 'tried stuff', 'gap', datetime('now'), 'update:core:ha')"
-            )
-            conn.commit()
-
-        steps = _make_steps(
-            "get_update_release_notes",
-            "check_config_against_breaking_change",
-            "read_config",
-        )
-        asyncio.run(
-            distill_and_persist(
-                trigger="update_poll",
-                signature="update:core:ha",
-                steps=steps,
-                outcome="success",
-                episode_id="ep6",
-                db_path=db_path,
-                knowledge_store=store,
-                model="qwen2.5:7b",
-                verification="success",
-            )
-        )
-
-        with sqlite3.connect(db_path) as conn:
-            row = conn.execute(
-                "SELECT runbook_state FROM agent_strategies WHERE id='gap1'"
-            ).fetchone()
-        assert row[0] == "resolved"
-
-    def test_llm_failure_does_not_crash(self, tmp_path, monkeypatch):
-        from utils.knowledge.knowledge_store import FakeKnowledgeStore
-
-        db_path = _make_db(tmp_path)
-
-        class _BrokenLLM:
-            async def chat(self, **kw):  # pragma: no cover
-                raise RuntimeError("Ollama down")
-
-        monkeypatch.setattr(
-            "utils.knowledge.runbook_distiller.make_llm_client",
-            lambda: _BrokenLLM(),
-        )
-        steps = _make_steps("read_config", "read_logs", "run_ha_command")
-        asyncio.run(
-            distill_and_persist(
-                trigger="repair",
-                signature="repair:zha:device_offline",
-                steps=steps,
-                outcome="success",
-                episode_id="ep7",
-                db_path=db_path,
-                knowledge_store=FakeKnowledgeStore(),
-                model="qwen2.5:7b",
-                verification="success",
-            )
-        )
-        # No crash, no row inserted
-        with sqlite3.connect(db_path) as conn:
-            count = conn.execute("SELECT COUNT(*) FROM agent_strategies").fetchone()[0]
-        assert count == 0
-
-
-# ---------------------------------------------------------------------------
 # distill_and_persist — verification gating
 # ---------------------------------------------------------------------------
 
@@ -793,8 +309,8 @@ class TestDistillVerificationGating:
             count = conn.execute("SELECT COUNT(*) FROM agent_strategies").fetchone()[0]
         assert count == 0
 
-    def test_no_new_knowledge_skips_write(self, tmp_path, monkeypatch):
-        """LLM returns no_new_knowledge=True → no row inserted."""
+    def test_empty_delta_skips_write(self, tmp_path, monkeypatch):
+        """LLM returns no rules or pitfalls → no entry, no runbook row."""
         from utils.knowledge.knowledge_store import FakeKnowledgeStore
 
         db_path = _make_db(tmp_path)
@@ -804,15 +320,7 @@ class TestDistillVerificationGating:
             async def chat(
                 self, model, messages, options, format, think=None
             ):  # noqa: A002
-                rb = DistilledRunbook(
-                    title="T",
-                    when_to_use="W",
-                    recommended_tools=["read_logs"],
-                    hypotheses=["H"],
-                    fix_summary="F",
-                    no_new_knowledge=True,
-                )
-                return {"message": {"content": rb.model_dump_json()}}
+                return {"message": {"content": DistilledDelta().model_dump_json()}}
 
             async def chat_with_tools(self, *a, **kw):  # pragma: no cover
                 raise NotImplementedError
@@ -970,15 +478,10 @@ class TestInstanceFactSchema:
             InstanceFact(fact="Board is a CM4 Yellow")  # type: ignore[call-arg]
 
     def test_json_round_trip(self):
-        rb = DistilledRunbook(
-            title="T",
-            when_to_use="W",
-            recommended_tools=[],
-            hypotheses=[],
-            fix_summary="",
+        rb = DistilledDelta(
             instance_facts=[InstanceFact(fact="EEPROM 2021-12-02", evidence_step=1)],
         )
-        restored = DistilledRunbook.model_validate_json(rb.model_dump_json())
+        restored = DistilledDelta.model_validate_json(rb.model_dump_json())
         assert restored.instance_facts[0].fact == "EEPROM 2021-12-02"
         assert restored.instance_facts[0].evidence_step == 1
 
@@ -1094,27 +597,26 @@ class TestMarkDistilled:
 
 
 class _FactsLLM:
-    """Returns no_new_knowledge with one grounded and one invented fact."""
+    """Returns one grounded and one invented fact, plus a grounded rule if asked."""
 
-    def __init__(self, no_new_knowledge=True):
+    RULE = "Firmware update stays blocked when eeprom_update_unavailable"
+
+    def __init__(self, with_rule=False):
         self.prompts: list[str] = []
-        self._nnk = no_new_knowledge
+        self._with_rule = with_rule
 
     async def chat(self, model, messages, options, format, think=None):  # noqa: A002
         self.prompts.append(messages[0]["content"])
-        rb = DistilledRunbook(
-            title="Firmware update blocked",
-            when_to_use="W",
-            recommended_tools=["run_ha_command"],
-            hypotheses=[],
-            fix_summary="",
+        delta = DistilledDelta(
+            decision_rules=(
+                [DeltaItem(text=self.RULE, evidence_step=1)] if self._with_rule else []
+            ),
             instance_facts=[
                 InstanceFact(fact="CM4 EEPROM dated 2021-12-02", evidence_step=1),
                 InstanceFact(fact="Robbie owns this board", evidence_step=1),
             ],
-            no_new_knowledge=self._nnk,
         )
-        return {"message": {"content": rb.model_dump_json()}}
+        return {"message": {"content": delta.model_dump_json()}}
 
     async def chat_with_tools(self, *a, **kw):  # pragma: no cover
         raise NotImplementedError
@@ -1130,7 +632,8 @@ class TestDistillFactsAndDistilledAt:
             _make_step(
                 "run_ha_command",
                 1,
-                output="blocked_reason: eeprom_update_unavailable\n"
+                output="firmware update blocked\n"
+                "blocked_reason: eeprom_update_unavailable\n"
                 "current: 2021-12-02 (CM4 eeprom)",
             )
         ]
@@ -1149,10 +652,10 @@ class TestDistillFactsAndDistilledAt:
             )
         )
 
-    def test_no_new_knowledge_still_saves_grounded_facts(self, tmp_path):
+    def test_empty_delta_still_saves_grounded_facts(self, tmp_path):
         db_path = _make_db(tmp_path)
         _insert_session(db_path, "ep_rpi", self.SIG)
-        self._run(db_path, _FactsLLM(no_new_knowledge=True))
+        self._run(db_path, _FactsLLM(with_rule=False))
         rows = _memory_rows(db_path)
         assert [r[1] for r in rows] == ["CM4 EEPROM dated 2021-12-02"]
         assert rows[0][3] == self.SIG
@@ -1161,15 +664,17 @@ class TestDistillFactsAndDistilledAt:
         assert count == 0
         assert _distilled_at(db_path, "ep_rpi")
 
-    def test_candidate_approach_lists_only_grounded_facts(self, tmp_path):
+    def test_rule_rendered_and_facts_kept_out_of_approach(self, tmp_path):
         db_path = _make_db(tmp_path)
         _insert_session(db_path, "ep_rpi", self.SIG)
-        self._run(db_path, _FactsLLM(no_new_knowledge=False))
+        self._run(db_path, _FactsLLM(with_rule=True))
         with sqlite3.connect(db_path) as conn:
             approach = conn.execute("SELECT approach FROM agent_strategies").fetchone()[
                 0
             ]
-        assert "CM4 EEPROM dated 2021-12-02" in approach
+        assert _FactsLLM.RULE in approach
+        # Facts live in agent_memory ([INSTANCE FACT]), not in the runbook text.
+        assert "CM4 EEPROM" not in approach
         assert "Robbie" not in approach
         assert _distilled_at(db_path, "ep_rpi")
 
@@ -1183,7 +688,7 @@ class TestDistillFactsAndDistilledAt:
         monkeypatch.setattr(
             "utils.knowledge.runbook_distiller._write_instance_facts", _boom
         )
-        self._run(db_path, _FactsLLM(no_new_knowledge=False))
+        self._run(db_path, _FactsLLM(with_rule=True))
         with sqlite3.connect(db_path) as conn:
             count = conn.execute("SELECT COUNT(*) FROM agent_strategies").fetchone()[0]
         assert count == 1
@@ -1230,151 +735,55 @@ class TestTraceAndPromptVariants:
         assert "[FAILED] err" in trace
         assert "[EMPTY]" in trace
 
-    def _prompt(self, seed_text=""):
+    def _prompt(self, seed_text="", known_entries=None, correction=None):
         return _build_prompt(
             signature="update:addon:x",
             trigger="t",
             outcome="success",
             initial_context="ctx",
             episode_stub=None,
-            existing_approach="",
             step_trace="trace",
             seed_text=seed_text,
+            known_entries=known_entries,
+            correction=correction,
         )
 
-    def test_no_seed_prompt_asks_for_signature_level_runbook(self):
+    def test_prompt_without_seed_or_entries(self):
         prompt = self._prompt()
-        assert "No seed runbook exists" in prompt
-        assert "not\nfor one specific version" not in prompt
-        assert "delta from the seed" not in prompt
+        assert "Seed runbook for this symptom" not in prompt
+        assert "Already learned" not in prompt
+        assert "no\nversion numbers" not in prompt
+        assert "no version numbers" in prompt.replace("\n", " ")
         assert "evidence_step" in prompt
 
-    def test_seed_prompt_asks_for_delta(self):
-        prompt = self._prompt(seed_text="# Seed\nDo X")
-        assert "delta from the seed" in prompt
-        assert "No seed runbook exists" not in prompt
-        assert "evidence_step" in prompt
-
-
-# ---------------------------------------------------------------------------
-# ProceduralLesson / ProceduralLessons schema
-# ---------------------------------------------------------------------------
-
-
-class TestProceduralLessonSchema:
-    def test_valid_construction(self):
-        from utils.knowledge.runbook_distiller import (
-            ProceduralLesson,
-            ProceduralLessons,
+    def test_prompt_lists_seed_and_known_entries(self):
+        prompt = self._prompt(
+            seed_text="# Seed\nDo X", known_entries=["Rule A"], correction="Do Y"
         )
+        assert "Seed runbook for this symptom:\n# Seed\nDo X" in prompt
+        assert "Already learned for this signature:\n- Rule A" in prompt
+        assert "User correction" in prompt and "Do Y" in prompt
+        # No whole-runbook fields are requested any more.
+        assert "title" not in prompt.lower().split("tool trace")[1]
 
-        lesson = ProceduralLesson(
-            lesson="get_entity_history failed: REST client not available",
-            evidence_step=3,
+    def test_prompt_includes_terminal_conclusions_and_head_context(self):
+        start, end = "START_TOKEN_AAAA", "END_TOKEN_ZZZZ"
+        prompt = _build_prompt(
+            signature="sig",
+            trigger="t",
+            outcome="success",
+            initial_context=start + ("B" * 9_900) + end,
+            episode_stub={
+                "summary": "ZHA coordinator crashed",
+                "recommendation": "Restart ZHA integration",
+            },
+            step_trace="trace",
+            verification="success",
         )
-        assert lesson.evidence_step == 3
-        pl = ProceduralLessons(lessons=[lesson])
-        assert len(pl.lessons) == 1
-
-    def test_missing_evidence_step_rejected(self):
-        from pydantic import ValidationError
-
-        from utils.knowledge.runbook_distiller import ProceduralLesson
-
-        with pytest.raises(ValidationError):
-            ProceduralLesson(lesson="some lesson")  # type: ignore[call-arg]
-
-    def test_json_round_trip(self):
-        from utils.knowledge.runbook_distiller import (
-            ProceduralLesson,
-            ProceduralLessons,
-        )
-
-        pl = ProceduralLessons(
-            lessons=[
-                ProceduralLesson(
-                    lesson="call get_logbook after get_entity_history", evidence_step=2
-                )
-            ]
-        )
-        restored = ProceduralLessons.model_validate_json(pl.model_dump_json())
-        assert restored.lessons[0].lesson == pl.lessons[0].lesson
-        assert restored.lessons[0].evidence_step == 2
-
-    def test_empty_lessons_default(self):
-        from utils.knowledge.runbook_distiller import ProceduralLessons
-
-        pl = ProceduralLessons()
-        assert pl.lessons == []
-
-
-# ---------------------------------------------------------------------------
-# _grounded_lessons
-# ---------------------------------------------------------------------------
-
-
-class TestGroundedLessons:
-    def test_grounded_lesson_kept(self):
-        from utils.knowledge.runbook_distiller import (
-            ProceduralLesson,
-            _grounded_lessons,
-        )
-
-        step = _make_step("get_entity_history", 3, success=False, output="")
-        step.tool_result.error = "REST client not available"
-        lessons = [
-            ProceduralLesson(
-                lesson="get_entity_history failed: REST client not available",
-                evidence_step=3,
-            ),
-        ]
-        kept = _grounded_lessons(lessons, [step])
-        assert len(kept) == 1
-
-    def test_ungrounded_lesson_rejected(self):
-        from utils.knowledge.runbook_distiller import (
-            ProceduralLesson,
-            _grounded_lessons,
-        )
-
-        step = _make_step("get_entity_history", 3, success=True, output="state: on")
-        lessons = [
-            ProceduralLesson(
-                lesson="device was offline because Wi-Fi failed", evidence_step=3
-            ),
-        ]
-        kept = _grounded_lessons(lessons, [step])
-        assert len(kept) == 0
-
-    def test_missing_step_rejected(self):
-        from utils.knowledge.runbook_distiller import (
-            ProceduralLesson,
-            _grounded_lessons,
-        )
-
-        step = _make_step("read_logs", 1, output="some log")
-        lessons = [
-            ProceduralLesson(lesson="some lesson about step 99", evidence_step=99),
-        ]
-        kept = _grounded_lessons(lessons, [step])
-        assert len(kept) == 0
-
-    def test_grounded_against_args(self):
-        from utils.knowledge.runbook_distiller import (
-            ProceduralLesson,
-            _grounded_lessons,
-        )
-
-        step = _make_step("run_ha_command", 2, output="error: command not found")
-        # lesson cites a word that appears in args OR output
-        step.tool_call.arguments = {"cmd": "ha apps restart mosquitto"}
-        lessons = [
-            ProceduralLesson(
-                lesson="run_ha_command failed: command not found", evidence_step=2
-            ),
-        ]
-        kept = _grounded_lessons(lessons, [step])
-        assert len(kept) == 1
+        assert "ZHA coordinator crashed" in prompt
+        assert "Restart ZHA integration" in prompt
+        assert "success (verified: success)" in prompt
+        assert start in prompt and end not in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -1415,310 +824,6 @@ class TestSplitProcedureNotes:
         assert "Procedure notes" not in main
 
 
-class TestMergeNotesText:
-    def test_adds_new_lessons(self):
-        from utils.knowledge.runbook_distiller import (
-            ProceduralLesson,
-            _merge_notes_text,
-        )
-
-        lessons = [ProceduralLesson(lesson="call A before B", evidence_step=1)]
-        result = _merge_notes_text("", lessons)
-        assert "call A before B" in result
-
-    def test_deduplicates_case_insensitive(self):
-        from utils.knowledge.runbook_distiller import (
-            ProceduralLesson,
-            _merge_notes_text,
-        )
-
-        existing = "- Call A before B"
-        lessons = [ProceduralLesson(lesson="call A before B", evidence_step=2)]
-        result = _merge_notes_text(existing, lessons)
-        assert result.count("call A before B") + result.count("Call A before B") == 1
-
-    def test_caps_at_max(self):
-        from utils.knowledge.runbook_distiller import (
-            ProceduralLesson,
-            _PROCEDURE_MAX_NOTES,
-            _merge_notes_text,
-        )
-
-        existing = "\n".join(f"- note {i}" for i in range(_PROCEDURE_MAX_NOTES))
-        new_lessons = [ProceduralLesson(lesson="overflow note", evidence_step=1)]
-        result = _merge_notes_text(existing, new_lessons)
-        bullet_count = result.count("\n- ") + (1 if result.startswith("- ") else 0)
-        assert bullet_count <= _PROCEDURE_MAX_NOTES
-        assert "overflow note" not in result
-
-
-# ---------------------------------------------------------------------------
-# _build_procedure_prompt
-# ---------------------------------------------------------------------------
-
-
-class TestBuildProcedurePrompt:
-    def test_includes_signature_and_outcome(self):
-        from utils.knowledge.runbook_distiller import _build_procedure_prompt
-
-        prompt = _build_procedure_prompt(
-            signature="device:offline:lifx",
-            outcome="monitoring",
-            step_trace="  1. read_logs() → some output",
-        )
-        assert "device:offline:lifx" in prompt
-        assert "monitoring" in prompt
-
-    def test_no_verdict_language(self):
-        from utils.knowledge.runbook_distiller import _build_procedure_prompt
-
-        prompt = _build_procedure_prompt(
-            signature="sig",
-            outcome="success",
-            step_trace="trace",
-        )
-        assert "Do NOT state a root cause" in prompt
-        assert "verdict" in prompt.lower() or "root cause" in prompt.lower()
-
-    def test_asks_for_tool_mechanics(self):
-        from utils.knowledge.runbook_distiller import _build_procedure_prompt
-
-        prompt = _build_procedure_prompt(
-            signature="sig",
-            outcome="success",
-            step_trace="trace",
-        )
-        assert "failed" in prompt.lower()
-        assert "redundant" in prompt.lower()
-        assert "step" in prompt.lower()
-
-
-# ---------------------------------------------------------------------------
-# _persist_procedure_notes
-# ---------------------------------------------------------------------------
-
-
-class TestPersistProcedureNotes:
-    def test_creates_candidate_when_none_exists(self, tmp_path):
-        from utils.knowledge.knowledge_store import FakeKnowledgeStore
-        from utils.knowledge.runbook_distiller import (
-            ProceduralLesson,
-            _persist_procedure_notes,
-        )
-
-        db_path = _make_db(tmp_path)
-        store = FakeKnowledgeStore()
-        lessons = [
-            ProceduralLesson(lesson="REST client missing at step 3", evidence_step=1)
-        ]
-        ok = _persist_procedure_notes(db_path, "device:offline:lifx", lessons, store)
-        assert ok
-        with sqlite3.connect(db_path) as conn:
-            row = conn.execute(
-                "SELECT runbook_state, approach FROM agent_strategies"
-            ).fetchone()
-        assert row[0] == "candidate"
-        assert "REST client missing" in row[1]
-        assert "## Procedure notes" in row[1]
-
-    def test_merges_into_existing_candidate(self, tmp_path):
-        from utils.knowledge.knowledge_store import FakeKnowledgeStore
-        from utils.knowledge.runbook_distiller import (
-            ProceduralLesson,
-            _persist_procedure_notes,
-        )
-
-        db_path = _make_db(tmp_path)
-        store = FakeKnowledgeStore()
-        # Insert an existing candidate
-        with sqlite3.connect(db_path) as conn:
-            conn.execute(
-                "INSERT INTO agent_strategies"
-                " (id, title, trigger_pattern, approach, runbook_state, created_at, signature)"
-                " VALUES ('cand1', 'Test', 'trigger', '## When to use\nWhen X', 'candidate', datetime('now'), 'device:offline:lifx')"
-            )
-            conn.commit()
-        lessons = [
-            ProceduralLesson(
-                lesson="get_entity_history works for lifx", evidence_step=2
-            )
-        ]
-        ok = _persist_procedure_notes(db_path, "device:offline:lifx", lessons, store)
-        assert ok
-        with sqlite3.connect(db_path) as conn:
-            row = conn.execute(
-                "SELECT id, version, approach FROM agent_strategies WHERE id='cand1'"
-            ).fetchone()
-        assert row[0] == "cand1"
-        assert row[1] == 2  # version bumped
-        assert "get_entity_history works for lifx" in row[2]
-        assert "## Procedure notes" in row[2]
-
-    def test_deduplicates_notes_across_calls(self, tmp_path):
-        from utils.knowledge.knowledge_store import FakeKnowledgeStore
-        from utils.knowledge.runbook_distiller import (
-            ProceduralLesson,
-            _persist_procedure_notes,
-        )
-
-        db_path = _make_db(tmp_path)
-        store = FakeKnowledgeStore()
-        lessons = [ProceduralLesson(lesson="call read_logs first", evidence_step=1)]
-        _persist_procedure_notes(db_path, "test:sig:x", lessons, store)
-        _persist_procedure_notes(db_path, "test:sig:x", lessons, store)  # same lesson
-        with sqlite3.connect(db_path) as conn:
-            approach = conn.execute("SELECT approach FROM agent_strategies").fetchone()[
-                0
-            ]
-        assert approach.count("call read_logs first") == 1
-
-
-# ---------------------------------------------------------------------------
-# distill_procedure
-# ---------------------------------------------------------------------------
-
-
-class _FakeLLMWithLessons:
-    def __init__(self, lessons=None):
-        from utils.knowledge.runbook_distiller import (
-            ProceduralLesson,
-            ProceduralLessons,
-        )
-
-        self._result = ProceduralLessons(
-            lessons=lessons
-            or [
-                ProceduralLesson(
-                    lesson="get_entity_history failed: REST client not available",
-                    evidence_step=1,
-                )
-            ]
-        )
-
-    async def chat(self, model, messages, options, format, think=None):  # noqa: A002
-        return {"message": {"content": self._result.model_dump_json()}}
-
-    async def chat_with_tools(self, *a, **kw):  # pragma: no cover
-        raise NotImplementedError
-
-
-class TestDistillProcedure:
-    SIG = "device:offline:lifx"
-
-    def _make_step_rest_fail(self):
-        s = _make_step("get_entity_history", 1, success=False)
-        s.tool_result.error = "REST client not available"
-        return s
-
-    def test_grounded_lessons_written(self, tmp_path, monkeypatch):
-        from utils.knowledge.knowledge_store import FakeKnowledgeStore
-        from utils.knowledge.runbook_distiller import distill_procedure
-
-        db_path = _make_db(tmp_path)
-        store = FakeKnowledgeStore()
-        steps = [self._make_step_rest_fail()]
-
-        asyncio.run(
-            distill_procedure(
-                signature=self.SIG,
-                steps=steps,
-                outcome="monitoring",
-                episode_id="ep_proc1",
-                db_path=db_path,
-                knowledge_store=store,
-                model="qwen2.5:7b",
-                llm_client=_FakeLLMWithLessons(),
-            )
-        )
-
-        with sqlite3.connect(db_path) as conn:
-            row = conn.execute(
-                "SELECT runbook_state, approach FROM agent_strategies"
-            ).fetchone()
-        assert row is not None
-        assert row[0] == "candidate"
-        assert "REST client not available" in row[1]
-
-    def test_no_distilled_at_stamped(self, tmp_path):
-        from utils.knowledge.knowledge_store import FakeKnowledgeStore
-        from utils.knowledge.runbook_distiller import distill_procedure
-
-        db_path = _make_db(tmp_path)
-        _insert_session(db_path, "ep_proc2", self.SIG)
-
-        asyncio.run(
-            distill_procedure(
-                signature=self.SIG,
-                steps=[self._make_step_rest_fail()],
-                outcome="success",
-                episode_id="ep_proc2",
-                db_path=db_path,
-                knowledge_store=FakeKnowledgeStore(),
-                model="qwen2.5:7b",
-                llm_client=_FakeLLMWithLessons(),
-            )
-        )
-
-        # distilled_at must NOT be set — that's the verdict lane's job
-        assert _distilled_at(db_path, "ep_proc2") is None
-
-    def test_llm_failure_does_not_crash(self, tmp_path):
-        from utils.knowledge.knowledge_store import FakeKnowledgeStore
-        from utils.knowledge.runbook_distiller import distill_procedure
-
-        db_path = _make_db(tmp_path)
-
-        class _BrokenLLM:
-            async def chat(self, **kw):
-                raise RuntimeError("Ollama down")
-
-        asyncio.run(
-            distill_procedure(
-                signature=self.SIG,
-                steps=[self._make_step_rest_fail()],
-                outcome="success",
-                episode_id="ep_proc3",
-                db_path=db_path,
-                knowledge_store=FakeKnowledgeStore(),
-                model="qwen2.5:7b",
-                llm_client=_BrokenLLM(),
-            )
-        )
-        with sqlite3.connect(db_path) as conn:
-            count = conn.execute("SELECT COUNT(*) FROM agent_strategies").fetchone()[0]
-        assert count == 0  # nothing written, no crash
-
-    def test_ungrounded_lessons_skipped(self, tmp_path):
-        from utils.knowledge.knowledge_store import FakeKnowledgeStore
-        from utils.knowledge.runbook_distiller import (
-            ProceduralLesson,
-            distill_procedure,
-        )
-
-        db_path = _make_db(tmp_path)
-        # The LLM returns a lesson that cites an invented step
-        ungrounded_client = _FakeLLMWithLessons(
-            lessons=[
-                ProceduralLesson(lesson="invented ungrounded claim", evidence_step=99)
-            ]
-        )
-        asyncio.run(
-            distill_procedure(
-                signature=self.SIG,
-                steps=[_make_step("read_logs", 1, output="some log")],
-                outcome="success",
-                episode_id="ep_proc4",
-                db_path=db_path,
-                knowledge_store=FakeKnowledgeStore(),
-                model="qwen2.5:7b",
-                llm_client=ungrounded_client,
-            )
-        )
-        with sqlite3.connect(db_path) as conn:
-            count = conn.execute("SELECT COUNT(*) FROM agent_strategies").fetchone()[0]
-        assert count == 0  # no lessons survived grounding
-
-
 # ---------------------------------------------------------------------------
 # enqueue_procedural_distillation
 # ---------------------------------------------------------------------------
@@ -1740,7 +845,6 @@ class TestEnqueueProceduralDistillation:
                 episode_id="ep1",
                 db_path=db_path,
                 knowledge_store=FakeKnowledgeStore(),
-                model="qwen2.5:7b",
             )
         )
         assert result is False
@@ -1762,7 +866,6 @@ class TestEnqueueProceduralDistillation:
                 episode_id="ep_missing",
                 db_path=db_path,
                 knowledge_store=FakeKnowledgeStore(),
-                model="qwen2.5:7b",
             )
         )
         assert result is False
@@ -1798,7 +901,6 @@ class TestEnqueueProceduralDistillation:
                 episode_id="ep_ok",
                 db_path=db_path,
                 knowledge_store=FakeKnowledgeStore(),
-                model="qwen2.5:7b",
             )
         )
         assert result is True
@@ -1824,76 +926,6 @@ def _step(name, n, args=None, output="ok", success=True, error=None, awaiting=Fa
         ),
         timestamp=0.0,
     )
-
-
-class TestLessonIsGrounded:
-    def _steps(self):
-        return [
-            _step("read_logs", 1, {"lines": 40}, output="ERROR noaa_coops traceback"),
-            _step("get_entity_history", 2, {"entity_id": "light.top", "hours": 48}),
-            _step("get_entity_history", 3, {"entity_id": "light.top", "hours": 48}),
-            _step(
-                "get_integration_diagnostics",
-                4,
-                {"domain_or_entry_id": "cast"},
-                output="",
-                success=False,
-                error="cast does not provide diagnostics (HTTP 404)",
-            ),
-            _step("finish_device_availability", 5, output=""),
-        ]
-
-    def test_meta_lesson_accepted_without_content_words(self):
-        from utils.knowledge.runbook_distiller import _lesson_is_grounded
-
-        steps = self._steps()
-        lesson = "Step 2 and step 3 were redundant: get_entity_history called 2x"
-        assert _lesson_is_grounded(lesson, steps[1], steps)
-
-    def test_step_reference_widens_evidence(self):
-        from utils.knowledge.runbook_distiller import _lesson_is_grounded
-
-        steps = self._steps()
-        # light.top lives in step 2's args; the lesson cites step 4 but mentions step 2.
-        lesson = "get_integration_diagnostics failed (404) after step 2 used light.top"
-        assert _lesson_is_grounded(lesson, steps[3], steps)
-        assert not _lesson_is_grounded(
-            "get_integration_diagnostics failed (404) for light.top", steps[3], steps
-        )
-
-    def test_lesson_naming_no_tool_rejected(self):
-        from utils.knowledge.runbook_distiller import _lesson_is_grounded
-
-        steps = self._steps()
-        assert not _lesson_is_grounded("Step 4 failed with 404", steps[3], steps)
-        assert not _lesson_is_grounded("", steps[3], steps)
-
-    def test_terminal_tool_does_not_count_as_named_tool(self):
-        from utils.knowledge.runbook_distiller import _lesson_is_grounded
-
-        steps = self._steps()
-        assert not _lesson_is_grounded(
-            "finish_device_availability returned EMPTY output", steps[4], steps
-        )
-
-    def test_invented_token_rejected(self):
-        from utils.knowledge.runbook_distiller import _lesson_is_grounded
-
-        steps = self._steps()
-        assert not _lesson_is_grounded(
-            "get_integration_diagnostics needs entry 01ABC", steps[3], steps
-        )
-
-    def test_log_reader_content_rejected_but_args_accepted(self):
-        from utils.knowledge.runbook_distiller import _lesson_is_grounded
-
-        steps = self._steps()
-        assert not _lesson_is_grounded(
-            "read_logs output contained a noaa_coops traceback", steps[0], steps
-        )
-        assert _lesson_is_grounded(
-            "read_logs with lines 40 returned unrelated tracebacks", steps[0], steps
-        )
 
 
 class TestExtractProcedureFacts:
@@ -2104,84 +1136,765 @@ class TestRecordToolQuirks:
         assert _record_tool_quirks(str(tmp_path / "none.db"), "s", [_fail_step()]) == 0
 
 
-class TestDistillProcedureExtractor:
-    SIG = "device:offline:cast"
+# ---------------------------------------------------------------------------
+# Atomic runbook entries (ADR 051)
+# ---------------------------------------------------------------------------
 
-    def _db(self, tmp_path):
+_UPDATE_SIG = "update:core:ha"
+_RULE = "When configuration.yaml uses keep_days under recorder, rename it first"
+
+
+def _update_steps():
+    return [
+        _step(
+            "get_update_release_notes",
+            1,
+            {"version": "2026.11"},
+            output="Breaking: recorder option keep_days renamed to purge_keep_days",
+        ),
+        _step(
+            "check_config_against_breaking_change",
+            2,
+            output="configuration.yaml uses keep_days under recorder",
+        ),
+    ]
+
+
+class _DeltaLLM:
+    """Returns a fixed DistilledDelta and records each prompt."""
+
+    def __init__(self, rules=(), pitfalls=()):
+        self.prompts: list[str] = []
+        self._delta = DistilledDelta(
+            decision_rules=[DeltaItem(text=t, evidence_step=2) for t in rules],
+            pitfalls=[DeltaItem(text=t, evidence_step=2) for t in pitfalls],
+        )
+
+    async def chat(self, model, messages, options, format, think=None):  # noqa: A002
+        self.prompts.append(messages[0]["content"])
+        return {"message": {"content": self._delta.model_dump_json()}}
+
+    async def chat_with_tools(self, *a, **kw):  # pragma: no cover
+        raise NotImplementedError
+
+
+def _distill(
+    db_path,
+    store,
+    llm,
+    episode_id,
+    verification="success",
+    correction=None,
+    steps=None,
+    signature=_UPDATE_SIG,
+    **kw,
+):
+    asyncio.run(
+        distill_and_persist(
+            trigger=signature,
+            signature=signature,
+            steps=steps if steps is not None else _update_steps(),
+            outcome="success" if verification == "success" else "failure",
+            episode_id=episode_id,
+            db_path=db_path,
+            knowledge_store=store,
+            model="m",
+            llm_client=llm,
+            verification=verification,
+            correction=correction,
+            **kw,
+        )
+    )
+
+
+def _entries(db_path, signature=_UPDATE_SIG):
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        return [
+            dict(r)
+            for r in conn.execute(
+                "SELECT * FROM runbook_entries WHERE signature = ? ORDER BY created_at",
+                (signature,),
+            )
+        ]
+
+
+def _learned(db_path, signature=_UPDATE_SIG):
+    with sqlite3.connect(db_path) as conn:
+        return conn.execute(
+            "SELECT id, title, approach, runbook_state, version, episode_refs"
+            " FROM agent_strategies WHERE signature = ?"
+            " AND runbook_state IN ('candidate', 'validated', 'discarded')",
+            (signature,),
+        ).fetchone()
+
+
+def _insert_seed(db_path, signature, approach):
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO agent_strategies (id, title, trigger_pattern, approach,"
+            " runbook_state, created_at, signature)"
+            " VALUES ('seed:x', 'Seed', 't', ?, 'seed', datetime('now'), ?)",
+            (approach, signature),
+        )
+        conn.commit()
+
+
+class TestDistilledDeltaSchema:
+    def test_valid_construction(self):
+        d = DistilledDelta(
+            decision_rules=[DeltaItem(text="Rule", evidence_step=1)],
+            pitfalls=[DeltaItem(text="Pitfall", evidence_step=2)],
+        )
+        assert d.decision_rules[0].text == "Rule"
+        assert d.pitfalls[0].evidence_step == 2
+        assert d.instance_facts == []
+
+    def test_defaults_are_empty(self):
+        d = DistilledDelta()
+        assert d.decision_rules == [] and d.pitfalls == [] and d.instance_facts == []
+
+    def test_item_missing_evidence_step_rejected(self):
+        with pytest.raises(ValidationError):
+            DeltaItem(text="Rule")  # type: ignore[call-arg]
+
+    def test_json_round_trip(self):
+        d = DistilledDelta(
+            decision_rules=[DeltaItem(text="Rule", evidence_step=1)],
+            instance_facts=[InstanceFact(fact="F", evidence_step=1)],
+        )
+        restored = DistilledDelta.model_validate_json(d.model_dump_json())
+        assert restored == d
+
+    def test_has_no_whole_runbook_fields(self):
+        props = DistilledDelta.model_json_schema()["properties"]
+        assert set(props) == {"decision_rules", "pitfalls", "instance_facts"}
+
+
+class TestProceduralLessonSchema:
+    def test_valid_construction(self):
+        from utils.knowledge.runbook_distiller import ProceduralLesson
+
+        assert ProceduralLesson(lesson="x", evidence_step=3).evidence_step == 3
+
+    def test_missing_evidence_step_rejected(self):
+        from utils.knowledge.runbook_distiller import ProceduralLesson
+
+        with pytest.raises(ValidationError):
+            ProceduralLesson(lesson="some lesson")  # type: ignore[call-arg]
+
+    def test_json_round_trip(self):
+        from utils.knowledge.runbook_distiller import ProceduralLesson
+
+        p = ProceduralLesson(lesson="x", evidence_step=2)
+        assert ProceduralLesson.model_validate_json(p.model_dump_json()) == p
+
+
+class TestOverlaps:
+    def test_mostly_covered_overlaps(self):
+        from utils.knowledge.runbook_distiller import _overlaps
+
+        seed = "If the device is absent from the LAN it is a physical fault."
+        assert _overlaps("Device absent from LAN means physical fault", seed)
+
+    def test_novel_tokens_do_not_overlap(self):
+        from utils.knowledge.runbook_distiller import _overlaps
+
+        seed = "If the device is absent from the LAN it is a physical fault."
+        assert not _overlaps("Sonos speakers drop after router firmware upgrade", seed)
+
+    def test_framing_words_do_not_dilute_overlap(self):
+        """Replay of the Sonos session (528af01b): a seed restatement wrapped in
+        "the decisive factor … the session treated as …" must still overlap."""
+        from utils.knowledge.runbook_distiller import _overlaps
+
+        seed = (
+            "absent from LAN: power, Wi-Fi or physical presence. The device is "
+            "off, unplugged or absent from the LAN; a local network fault, not "
+            "the software integration."
+        )
+        text = (
+            "The decisive factor was NetAlertX showing the device absent from the "
+            "LAN, which the session treated as physical network fault rather than "
+            "a software integration issue."
+        )
+        assert _overlaps(text, seed)
+
+    def test_no_content_tokens_never_overlaps(self):
+        from utils.knowledge.runbook_distiller import _overlaps
+
+        assert not _overlaps("it is", "it is")
+
+    def test_threshold_boundary(self):
+        from utils.knowledge.runbook_distiller import _overlaps
+
+        # 3 of 5 tokens covered = 0.6 → overlaps; 2 of 5 → does not.
+        assert _overlaps("alpha bravo charlie delta echo", "alpha bravo charlie")
+        assert not _overlaps("alpha bravo charlie delta echo", "alpha bravo")
+
+
+class TestUnknownTools:
+    KNOWN = frozenset({"get_entity_history", "read_logs", "run_ha_command"})
+
+    def test_unregistered_verb_prefixed_name_flagged(self):
+        from utils.knowledge.runbook_distiller import _unknown_tools
+
+        text = "Call get_netalertx_presence first."
+        assert _unknown_tools(text, self.KNOWN) == ["get_netalertx_presence"]
+
+    def test_called_name_flagged_whatever_its_prefix(self):
+        from utils.knowledge.runbook_distiller import _unknown_tools
+
+        assert _unknown_tools("use probe_lan(ip)", self.KNOWN) == ["probe_lan"]
+
+    def test_slugs_entity_ids_and_known_tools_pass(self):
+        from utils.knowledge.runbook_distiller import _unknown_tools
+
+        text = (
+            "read_logs for core_mosquitto, then check sensor.noaa_tides_2 with "
+            "get_entity_history."
+        )
+        assert _unknown_tools(text, self.KNOWN) == []
+
+    def test_first_tool(self):
+        from utils.knowledge.runbook_distiller import _first_tool
+
+        assert _first_tool("core_mosquitto: use read_logs", self.KNOWN) == "read_logs"
+        assert _first_tool("nothing here", self.KNOWN) is None
+
+    def test_known_tool_names_covers_registries(self):
+        from utils.knowledge.runbook_distiller import _known_tool_names
+
+        names = _known_tool_names()
+        assert "run_ha_command" in names and "query_knowledge" in names
+
+
+class TestGateItem:
+    KNOWN = frozenset(
+        {"read_logs", "get_entity_history", "check_config_against_breaking_change"}
+    )
+    EVIDENCE = (
+        "check_config_against_breaking_change({})\n"
+        "configuration.yaml uses keep_days under recorder; mosquitto 7.1.3 notes"
+    )
+
+    def _gate(self, text, seed_text="", wildcard=True, evidence=EVIDENCE):
+        from utils.knowledge.runbook_distiller import _gate_item
+
+        return _gate_item(
+            text,
+            evidence=evidence,
+            seed_text=seed_text,
+            wildcard_seed=wildcard,
+            known_tools=self.KNOWN,
+        )
+
+    def test_passes(self):
+        assert self._gate(_RULE) is None
+
+    def test_ungrounded(self):
+        assert self._gate("Zigbee coordinator firmware lost the USB path") == (
+            "ungrounded"
+        )
+
+    def test_seed_overlap(self):
+        seed = "When configuration.yaml uses keep_days under recorder, rename it."
+        assert self._gate(_RULE, seed_text=seed) == "seed_overlap"
+
+    def test_version_pinned_only_for_wildcard_seed(self):
+        text = "mosquitto 7.1.3 notes show configuration.yaml uses keep_days"
+        assert self._gate(text, wildcard=True) == "version_pinned"
+        assert self._gate(text, wildcard=False) is None
+
+    def test_unknown_tool(self):
+        # The name is in the trace (a log line mentioned it) but is no Pueo tool.
+        text = "get_recorder_schema shows configuration.yaml uses keep_days"
+        evidence = self.EVIDENCE + "\nlog: get_recorder_schema() deprecated"
+        assert self._gate(text, evidence=evidence) == "unknown_tool"
+
+
+class TestWriteEntries:
+    def test_insert_then_reinforce_then_unchanged(self, tmp_path):
+        from utils.knowledge.runbook_distiller import _write_entries
+
+        db = _make_db(tmp_path)
+        item = [("decision_rule", _RULE, None)]
+        assert _write_entries(db, _UPDATE_SIG, "ep1", item)[0][0] == "inserted"
+        near_dup = [("decision_rule", _RULE.replace("first", "before update"), None)]
+        assert _write_entries(db, _UPDATE_SIG, "ep2", near_dup)[0][0] == "reinforced"
+        assert _write_entries(db, _UPDATE_SIG, "ep2", item)[0][0] == "unchanged"
+        rows = _entries(db)
+        assert len(rows) == 1
+        assert rows[0]["text"] == _RULE
+        assert rows[0]["success_count"] == 2
+        assert json.loads(rows[0]["episode_refs"]) == ["ep1", "ep2"]
+
+    def test_kinds_do_not_merge(self, tmp_path):
+        from utils.knowledge.runbook_distiller import _write_entries
+
+        db = _make_db(tmp_path)
+        _write_entries(db, _UPDATE_SIG, "ep1", [("decision_rule", _RULE, None)])
+        _write_entries(db, _UPDATE_SIG, "ep1", [("pitfall", _RULE, None)])
+        assert sorted(r["kind"] for r in _entries(db)) == ["decision_rule", "pitfall"]
+
+    def test_procedure_notes_match_exactly(self, tmp_path):
+        from utils.knowledge.runbook_distiller import _same_entry
+
+        entry = {"kind": "procedure", "text": "`read_logs(x)` returned no results"}
+        assert _same_entry("procedure", "`read_logs(x)`  returned no results", entry)
+        assert not _same_entry("procedure", "`read_logs(y)` returned no results", entry)
+        assert not _same_entry("pitfall", entry["text"], entry)
+
+
+class TestRecordEntryFailures:
+    def _seed_entry(self, db, created_at, kind="decision_rule", success=1):
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO runbook_entries (id, signature, kind, text, episode_refs,"
+                " success_count, failure_count, created_at, updated_at)"
+                " VALUES (?, ?, ?, 'r', '[]', ?, 0, ?, ?)",
+                (
+                    f"e-{kind}-{created_at}",
+                    _UPDATE_SIG,
+                    kind,
+                    success,
+                    created_at,
+                    created_at,
+                ),
+            )
+            conn.commit()
+
+    def test_retires_at_failure_above_success(self, tmp_path):
+        from utils.knowledge.runbook_distiller import _record_entry_failures
+
+        db = _make_db(tmp_path)
+        self._seed_entry(db, "2026-10-01T00:00:00Z")
+        assert _record_entry_failures(db, _UPDATE_SIG, "2026-10-02T00:00:00Z") == 0
+        assert _entries(db)[0]["failure_count"] == 1
+        assert _record_entry_failures(db, _UPDATE_SIG, "2026-10-03T00:00:00Z") == 1
+        assert _entries(db)[0]["retired_at"] is not None
+
+    def test_entries_newer_than_session_and_procedure_untouched(self, tmp_path):
+        from utils.knowledge.runbook_distiller import _record_entry_failures
+
+        db = _make_db(tmp_path)
+        self._seed_entry(db, "2026-10-05T00:00:00Z")
+        self._seed_entry(db, "2026-10-01T00:00:00Z", kind="procedure")
+        _record_entry_failures(db, _UPDATE_SIG, "2026-10-02T00:00:00Z")
+        assert all(r["failure_count"] == 0 for r in _entries(db))
+
+    def test_session_created_at(self, tmp_path):
+        from utils.knowledge.runbook_distiller import _session_created_at
+
         db = _make_db(tmp_path)
         with sqlite3.connect(db) as conn:
             conn.execute(
-                "CREATE TABLE IF NOT EXISTS user_prefs (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+                "INSERT INTO session_outcomes (episode_id, created_at)"
+                " VALUES ('ep', '2026-10-01T00:00:00Z')"
             )
-        return db
+            conn.commit()
+        assert _session_created_at(db, "ep") == "2026-10-01T00:00:00Z"
+        assert _session_created_at(db, "missing").startswith("20")
+        assert _session_created_at(str(tmp_path / "nope" / "x.db"), "ep")
 
-    def test_extracted_notes_kept_when_llm_fails(self, tmp_path):
+
+class TestRenderApproach:
+    def _e(self, kind, text, s=1, f=0, at="2026-10-01"):
+        return {
+            "kind": kind,
+            "text": text,
+            "success_count": s,
+            "failure_count": f,
+            "created_at": at,
+        }
+
+    def test_sections_order_and_ranking(self):
+        from utils.knowledge.runbook_distiller import _render_approach
+
+        out = _render_approach(
+            [
+                self._e("procedure", "note"),
+                self._e("decision_rule", "weak", s=1),
+                self._e("decision_rule", "strong", s=3),
+                self._e("pitfall", "trap"),
+            ]
+        )
+        assert out.index("## Decision rules") < out.index("## Pitfalls")
+        assert out.rstrip().endswith("## Procedure notes\n- note")
+        assert out.index("- strong") < out.index("- weak")
+
+    def test_empty_sections_omitted(self):
+        from utils.knowledge.runbook_distiller import _render_approach
+
+        out = _render_approach([self._e("procedure", "note")])
+        assert out == "## Procedure notes\n- note"
+        assert _render_approach([]) == ""
+
+
+class TestRenderLearnedRunbook:
+    def test_insert_update_keeps_state_and_signature(self, tmp_path):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.runbook_distiller import (
+            _write_entries,
+            render_learned_runbook,
+        )
+
+        db, store = _make_db(tmp_path), FakeKnowledgeStore()
+        assert render_learned_runbook(db, _UPDATE_SIG, store) is None
+        _write_entries(db, _UPDATE_SIG, "ep1", [("decision_rule", _RULE, None)])
+        sid = render_learned_runbook(db, _UPDATE_SIG, store)
+        row = _learned(db)
+        assert row[0] == sid and row[1] == "Learned: update:core:ha"
+        assert row[2] == f"## Decision rules\n- {_RULE}"
+        assert row[3] == "candidate" and row[4] == 1
+        assert json.loads(row[5]) == ["ep1"]
+        chunk = store.query("keep_days", top_k=5, collections=["strategies"])[0]
+        assert chunk.metadata["signature"] == _UPDATE_SIG
+
+        with sqlite3.connect(db) as conn:
+            conn.execute("UPDATE agent_strategies SET runbook_state='validated'")
+            conn.commit()
+        _write_entries(db, _UPDATE_SIG, "ep2", [("pitfall", "Other trap", None)])
+        assert render_learned_runbook(db, _UPDATE_SIG, store) == sid
+        row = _learned(db)
+        assert row[3] == "validated" and row[4] == 2
+        assert "## Pitfalls\n- Other trap" in row[2]
+
+    def test_all_entries_retired_discards_runbook(self, tmp_path):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.runbook_distiller import (
+            _write_entries,
+            render_learned_runbook,
+        )
+
+        db, store = _make_db(tmp_path), FakeKnowledgeStore()
+        _write_entries(db, _UPDATE_SIG, "ep1", [("decision_rule", _RULE, None)])
+        render_learned_runbook(db, _UPDATE_SIG, store)
+        with sqlite3.connect(db) as conn:
+            conn.execute("UPDATE runbook_entries SET retired_at = 'now'")
+            conn.commit()
+        assert render_learned_runbook(db, _UPDATE_SIG, store) is None
+        assert _learned(db)[3] == "discarded"
+        assert store.collection_count("strategies") == 0
+
+    def test_chroma_failures_are_logged_not_raised(self, tmp_path):
+        from utils.knowledge.runbook_distiller import (
+            _write_entries,
+            render_learned_runbook,
+        )
+
+        class _BrokenStore:
+            def upsert(self, *a, **kw):
+                raise RuntimeError("chroma down")
+
+            def delete_ids(self, *a, **kw):
+                raise RuntimeError("chroma down")
+
+        db = _make_db(tmp_path)
+        _write_entries(db, _UPDATE_SIG, "ep1", [("decision_rule", _RULE, None)])
+        assert render_learned_runbook(db, _UPDATE_SIG, _BrokenStore())
+        with sqlite3.connect(db) as conn:
+            conn.execute("UPDATE runbook_entries SET retired_at = 'now'")
+            conn.commit()
+        assert render_learned_runbook(db, _UPDATE_SIG, _BrokenStore()) is None
+
+
+class TestFetchSeedForSignature:
+    def test_returns_signature_and_text(self, tmp_path):
+        from utils.knowledge.runbook_distiller import (
+            _fetch_seed_for_signature,
+            _fetch_seed_text_for_signature,
+        )
+
+        db = _make_db(tmp_path)
+        _insert_seed(db, "update:core:*", "Do X")
+        assert _fetch_seed_for_signature(db, _UPDATE_SIG) == (
+            "update:core:*",
+            "# Seed\n\nDo X",
+        )
+        assert _fetch_seed_text_for_signature(db, _UPDATE_SIG) == "# Seed\n\nDo X"
+        assert _fetch_seed_for_signature(db, "device:offline:zha") == ("", "")
+        assert _fetch_seed_for_signature(db, "nocolon") == ("", "")
+        assert _fetch_seed_for_signature(str(tmp_path / "a" / "b.db"), _UPDATE_SIG) == (
+            "",
+            "",
+        )
+
+
+class TestVerdictLaneEntries:
+    def test_grounded_rule_becomes_entry_and_rendered(self, tmp_path):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        db, store = _make_db(tmp_path), FakeKnowledgeStore()
+        _distill(db, store, _DeltaLLM(rules=[_RULE]), "ep1")
+        rows = _entries(db)
+        assert [(r["kind"], r["text"], r["success_count"]) for r in rows] == [
+            ("decision_rule", _RULE, 1)
+        ]
+        assert _learned(db)[2] == f"## Decision rules\n- {_RULE}"
+        assert store.collection_count("strategies") == 1
+
+    def test_second_session_reinforces_and_lists_known_entries(self, tmp_path):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        db, store = _make_db(tmp_path), FakeKnowledgeStore()
+        _distill(db, store, _DeltaLLM(rules=[_RULE]), "ep1")
+        llm = _DeltaLLM(rules=[_RULE])
+        _distill(db, store, llm, "ep2")
+        rows = _entries(db)
+        assert len(rows) == 1 and rows[0]["success_count"] == 2
+        assert f"Already learned for this signature:\n- {_RULE}" in llm.prompts[0]
+        row = _learned(db)
+        assert row[4] == 2 and json.loads(row[5]) == ["ep1", "ep2"]
+
+    @pytest.mark.parametrize(
+        "rule, reason_seed",
+        [
+            ("Zigbee coordinator lost its USB path", None),  # ungrounded
+            ("get_update_release_notes 2026.11 shows keep_days renamed", None),
+            ("Use get_recorder_schema when configuration.yaml uses keep_days", None),
+            (_RULE, "When configuration.yaml uses keep_days under recorder rename it"),
+        ],
+    )
+    def test_gated_items_never_written(self, tmp_path, rule, reason_seed):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        db = _make_db(tmp_path)
+        if reason_seed:
+            _insert_seed(db, "update:core:*", reason_seed)
+        _distill(db, FakeKnowledgeStore(), _DeltaLLM(pitfalls=[rule]), "ep1")
+        assert _entries(db) == []
+        assert _learned(db) is None
+
+    def test_procedure_notes_survive_verdict_write(self, tmp_path):
+        """Regression (#2 in the 2026-10-28 review): a verdict merge erased notes."""
         from utils.knowledge.knowledge_store import FakeKnowledgeStore
         from utils.knowledge.runbook_distiller import distill_procedure
+
+        db, store = _make_db(tmp_path), FakeKnowledgeStore()
+        steps = [_fail_step(1, "hassio")] + _update_steps()
+        asyncio.run(
+            distill_procedure(
+                signature=_UPDATE_SIG,
+                steps=steps,
+                outcome="success",
+                episode_id="ep1",
+                db_path=db,
+                knowledge_store=store,
+            )
+        )
+        _distill(db, store, _DeltaLLM(rules=[_RULE]), "ep1", steps=steps)
+        approach = _learned(db)[2]
+        assert f"## Decision rules\n- {_RULE}" in approach
+        assert "## Procedure notes\n- `get_integration_diagnostics(hassio)` failed" in (
+            approach
+        )
+
+    def test_failure_with_correction_retires_shown_entry(self, tmp_path):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        db, store = _make_db(tmp_path), FakeKnowledgeStore()
+        _distill(db, store, _DeltaLLM(rules=[_RULE]), "ep1")
+        for ep in ("ep2", "ep3"):
+            with sqlite3.connect(db) as conn:
+                conn.execute(
+                    "INSERT INTO session_outcomes (episode_id, signature, created_at)"
+                    " VALUES (?, ?, '2999-01-01T00:00:00Z')",
+                    (ep, _UPDATE_SIG),
+                )
+                conn.commit()
+            _distill(
+                db, store, _DeltaLLM(), ep, verification="failure", correction="No"
+            )
+        rows = _entries(db)
+        assert rows[0]["failure_count"] == 2 and rows[0]["retired_at"] is not None
+        assert _learned(db)[3] == "discarded"
+
+    def test_llm_failure_still_renders_after_retirement(self, tmp_path, monkeypatch):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge import runbook_distiller as rd
+
+        db, store = _make_db(tmp_path), FakeKnowledgeStore()
+        calls = []
+        monkeypatch.setattr(rd, "_record_entry_failures", lambda *a: 1)
+        monkeypatch.setattr(
+            rd, "render_learned_runbook", lambda *a: calls.append(a) or None
+        )
 
         class _BrokenLLM:
             async def chat(self, **kw):
                 raise RuntimeError("Ollama down")
 
-        db = self._db(tmp_path)
-        asyncio.run(
-            distill_procedure(
-                signature=self.SIG,
-                steps=[_fail_step()],
-                outcome="monitoring",
-                episode_id="ep_x1",
-                db_path=db,
-                knowledge_store=FakeKnowledgeStore(),
-                model="m",
-                llm_client=_BrokenLLM(),
-            )
-        )
-        with sqlite3.connect(db) as conn:
-            approach = conn.execute("SELECT approach FROM agent_strategies").fetchone()[
-                0
-            ]
-            quirks = conn.execute(
-                "SELECT COUNT(*) FROM user_prefs WHERE key LIKE 'procedure_quirk:%'"
-            ).fetchone()[0]
-        assert "`get_integration_diagnostics(cast)` failed" in approach
-        assert quirks == 1
+        _distill(db, store, _BrokenLLM(), "ep1", verification="failure", correction="x")
+        assert len(calls) == 1
 
-    def test_prompt_lists_extracted_notes(self, tmp_path):
+    def test_sqlite_errors_are_logged_not_raised(self, tmp_path, monkeypatch):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge import runbook_distiller as rd
+
+        def _boom(*a, **kw):
+            raise sqlite3.OperationalError("locked")
+
+        db = _make_db(tmp_path)
+        monkeypatch.setattr(rd, "_record_entry_failures", _boom)
+        monkeypatch.setattr(rd, "_write_entries", _boom)
+        monkeypatch.setattr(rd, "render_learned_runbook", _boom)
+        _distill(
+            db,
+            FakeKnowledgeStore(),
+            _DeltaLLM(rules=[_RULE]),
+            "ep1",
+            verification="failure",
+            correction="x",
+        )
+        assert _entries(db) == []
+
+
+class TestProcedureLane:
+    SIG = "device:offline:cast"
+
+    def _run(self, db, steps, ep="ep_x1", store=None):
         from utils.knowledge.knowledge_store import FakeKnowledgeStore
         from utils.knowledge.runbook_distiller import distill_procedure
 
-        prompts: list[str] = []
-
-        class _Capture(_FakeLLMWithLessons):
-            async def chat(
-                self, model, messages, options, format, think=None
-            ):  # noqa: A002
-                prompts.append(messages[0]["content"])
-                return await super().chat(model, messages, options, format, think)
-
         asyncio.run(
             distill_procedure(
                 signature=self.SIG,
-                steps=[_fail_step()],
+                steps=steps,
                 outcome="monitoring",
-                episode_id="ep_x2",
-                db_path=self._db(tmp_path),
-                knowledge_store=FakeKnowledgeStore(),
-                model="m",
-                llm_client=_Capture(lessons=[]),
+                episode_id=ep,
+                db_path=db,
+                knowledge_store=store or FakeKnowledgeStore(),
             )
         )
-        assert "Already recorded (do not repeat these):" in prompts[0]
-        assert "`get_integration_diagnostics(cast)` failed" in prompts[0]
+
+    def test_extracted_notes_become_procedure_entries(self, tmp_path):
+        db = _make_db(tmp_path)
+        self._run(db, [_fail_step()])
+        rows = _entries(db, self.SIG)
+        assert [(r["kind"], r["tool"]) for r in rows] == [
+            ("procedure", "get_integration_diagnostics")
+        ]
+        approach = _learned(db, self.SIG)[2]
+        assert approach.startswith("## Procedure notes\n- `get_integration_diagnostics")
+        with sqlite3.connect(db) as conn:
+            quirks = conn.execute(
+                "SELECT COUNT(*) FROM user_prefs WHERE key LIKE 'procedure_quirk:%'"
+            ).fetchone()[0]
+        assert quirks == 1
+
+    def test_repeat_sessions_count_not_duplicate(self, tmp_path):
+        db = _make_db(tmp_path)
+        self._run(db, [_fail_step()], ep="a")
+        self._run(db, [_fail_step()], ep="b")
+        rows = _entries(db, self.SIG)
+        assert len(rows) == 1 and rows[0]["success_count"] == 2
+
+    def test_no_notes_writes_nothing_and_no_distilled_at(self, tmp_path):
+        db = _make_db(tmp_path)
+        _insert_session(db, "ep_x1", self.SIG)
+        self._run(db, [_step("read_logs", 1, output="fine")])
+        assert _entries(db, self.SIG) == []
+        assert _learned(db, self.SIG) is None
+        self._run(db, [_fail_step()])
+        assert _distilled_at(db, "ep_x1") is None
+
+    def test_missing_inputs_noop(self, tmp_path):
+        self._run("", [_fail_step()])  # no db path → no crash
+
+    def test_persist_failure_logged(self, tmp_path, monkeypatch):
+        from utils.knowledge import runbook_distiller as rd
+
+        def _boom(*a, **kw):
+            raise sqlite3.OperationalError("locked")
+
+        monkeypatch.setattr(rd, "_write_entries", _boom)
+        db = _make_db(tmp_path)
+        self._run(db, [_fail_step()])
+        assert _learned(db, self.SIG) is None
 
 
-class TestBuildProcedurePromptRules:
-    def test_forbids_log_restatement_and_requires_tool_name(self):
-        from utils.knowledge.runbook_distiller import _build_procedure_prompt
+class TestDistillAndPersistPaths:
+    def test_non_success_writes_gap_not_entry(self, tmp_path):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
 
-        prompt = _build_procedure_prompt(
-            signature="s", outcome="success", step_trace="t"
+        db, store = _make_db(tmp_path), FakeKnowledgeStore()
+        asyncio.run(
+            distill_and_persist(
+                trigger="update_poll",
+                signature=_UPDATE_SIG,
+                steps=_update_steps(),
+                outcome="exhausted",
+                episode_id="ep1",
+                db_path=db,
+                knowledge_store=store,
+                model="m",
+            )
         )
-        assert "Do NOT restate what a log or tool output said" in prompt
-        assert "Name the tool in every lesson" in prompt
-        assert "Already recorded" not in prompt
+        with sqlite3.connect(db) as conn:
+            row = conn.execute("SELECT runbook_state FROM agent_strategies").fetchone()
+        assert row[0] == "gap"
+        assert store.collection_count("strategies") == 0
+        assert _entries(db) == []
+
+    def test_unrecognised_verification_skips(self, tmp_path):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        db = _make_db(tmp_path)
+        llm = _DeltaLLM(rules=[_RULE])
+        _distill(db, FakeKnowledgeStore(), llm, "ep1", verification="maybe")
+        assert llm.prompts == [] and _entries(db) == []
+
+    def test_success_resolves_gap_and_prompt_carries_context(self, tmp_path):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        db = _make_db(tmp_path)
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO agent_strategies (id, title, trigger_pattern, approach,"
+                " runbook_state, created_at, signature) VALUES ('gap1', 'Gap', 't',"
+                " 'x', 'gap', datetime('now'), ?)",
+                (_UPDATE_SIG,),
+            )
+            conn.commit()
+        _insert_seed(db, "update:core:*", "Seed body")
+        llm = _DeltaLLM()
+        _distill(
+            db,
+            FakeKnowledgeStore(),
+            llm,
+            "ep1",
+            initial_context="HA core update detected",
+            episode_stub={"summary": "Update applied cleanly"},
+        )
+        with sqlite3.connect(db) as conn:
+            state = conn.execute(
+                "SELECT runbook_state FROM agent_strategies WHERE id='gap1'"
+            ).fetchone()[0]
+        assert state == "resolved"
+        assert "HA core update detected" in llm.prompts[0]
+        assert "Update applied cleanly" in llm.prompts[0]
+        assert "# Seed\n\nSeed body" in llm.prompts[0]
+
+
+class TestLoadEntries:
+    def test_missing_table_returns_empty(self, tmp_path):
+        from utils.knowledge.runbook_distiller import _load_entries
+
+        db = str(tmp_path / "empty.db")
+        sqlite3.connect(db).close()
+        assert _load_entries(db, _UPDATE_SIG) == []
+
+    def test_bad_episode_refs_json_becomes_empty_list(self, tmp_path):
+        from utils.knowledge.runbook_distiller import _load_entries
+
+        db = _make_db(tmp_path)
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO runbook_entries (id, signature, kind, text, episode_refs,"
+                " created_at, updated_at) VALUES ('e', ?, 'pitfall', 't', 'not json',"
+                " 'a', 'a')",
+                (_UPDATE_SIG,),
+            )
+            conn.commit()
+        assert _load_entries(db, _UPDATE_SIG)[0]["episode_refs"] == []

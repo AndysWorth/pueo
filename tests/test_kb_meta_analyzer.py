@@ -1166,3 +1166,53 @@ class TestToolQuirks:
         db = _quirk_db(tmp_path, [{"tool": "fetch_url", "detail": "404", "count": 1}])
         report = analyze_local_runbooks(db)
         assert [q.tool for q in report.tool_quirks] == ["fetch_url"]
+
+
+class TestSignatureStatsEntries:
+    def _db(self, tmp_path, with_entries=True):
+        db = str(tmp_path / "test.db")
+        _seed_session_outcomes(
+            db,
+            [
+                (
+                    "ep1",
+                    "update:core:ha",
+                    "update",
+                    "x",
+                    "{}",
+                    "",
+                    "2026-07-01T00:00:00Z",
+                    "pending",
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+            ],
+        )
+        if with_entries:
+            from agents.ha_agent_advanced import _migrate_v42
+
+            with sqlite3.connect(db) as conn:
+                _migrate_v42(conn.cursor())
+                conn.executemany(
+                    "INSERT INTO runbook_entries (id, signature, kind, text,"
+                    " created_at, updated_at, retired_at) VALUES (?, ?, ?, 't',"
+                    " 'a', 'a', ?)",
+                    [
+                        ("e1", "update:core:ha", "decision_rule", None),
+                        ("e2", "update:core:ha", "procedure", None),
+                        ("e3", "update:core:ha", "pitfall", "2026-10-01"),
+                    ],
+                )
+                conn.commit()
+        return db
+
+    def test_counts_live_and_retired_entries(self, tmp_path):
+        s = analyze_local_runbooks(self._db(tmp_path)).signature_stats[0]
+        assert (s.entries, s.retired_entries) == (2, 1)
+
+    def test_pre_v42_db_reports_zero(self, tmp_path):
+        s = analyze_local_runbooks(self._db(tmp_path, False)).signature_stats[0]
+        assert (s.entries, s.retired_entries) == (0, 0)

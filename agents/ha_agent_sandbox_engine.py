@@ -558,6 +558,31 @@ def _migrate_v41(cursor: sqlite3.Cursor) -> None:
     )
 
 
+def _migrate_v42(cursor: sqlite3.Cursor) -> None:
+    # Atomic learned-runbook entries (ADR 051): each decision rule, pitfall or
+    # procedure note is one row with provenance; agent_strategies.approach for a
+    # learned runbook is rendered from the live (retired_at IS NULL) rows.
+    cursor.execute(
+        "CREATE TABLE IF NOT EXISTS runbook_entries ("
+        "  id TEXT PRIMARY KEY,"
+        "  signature TEXT NOT NULL,"
+        "  kind TEXT NOT NULL,"
+        "  text TEXT NOT NULL,"
+        "  tool TEXT,"
+        "  episode_refs TEXT NOT NULL DEFAULT '[]',"
+        "  success_count INTEGER NOT NULL DEFAULT 0,"
+        "  failure_count INTEGER NOT NULL DEFAULT 0,"
+        "  created_at TEXT NOT NULL,"
+        "  updated_at TEXT NOT NULL,"
+        "  retired_at TEXT"
+        ")"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_runbook_entries_signature"
+        " ON runbook_entries(signature)"
+    )
+
+
 _MIGRATIONS: list[tuple[int, object]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
@@ -600,6 +625,7 @@ _MIGRATIONS: list[tuple[int, object]] = [
     (39, _migrate_v39),
     (40, _migrate_v40),
     (41, _migrate_v41),
+    (42, _migrate_v42),
 ]
 
 

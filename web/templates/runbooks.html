@@ -57,7 +57,7 @@
     <thead>
       <tr style="text-align:left;color:#555;border-bottom:1px solid #ddd;">
         <th>Signature</th><th>Sessions 30d</th><th>Verified</th><th>Seed</th>
-        <th>Learned</th><th>Proc. notes</th><th>Facts</th><th>Last session</th><th>Last used</th>
+        <th>Learned</th><th title="Live learned entries (retired in brackets)">Entries</th><th>Proc. notes</th><th>Facts</th><th>Last session</th><th>Last used</th>
       </tr>
     </thead>
     <tbody>
@@ -70,6 +70,7 @@
         <td>✓{{ s.verified_success }} / ✗{{ s.verified_failure }}{% if s.pending %} / {{ s.pending }} pending{% endif %}{% if s.unverified %} / {{ s.unverified }} unverified{% endif %}</td>
         <td>{{ s.matched_seed or "—" }}</td>
         <td>{% if s.learned_state %}<span class="badge rb-state-{{ s.learned_state }}">{{ s.learned_state }}</span>{% else %}none{% endif %}</td>
+        <td>{{ s.entries }}{% if s.retired_entries %} ({{ s.retired_entries }} retired){% endif %}</td>
         <td>{{ s.procedure_notes }}</td>
         <td>{{ s.instance_facts }}</td>
         <td>{{ s.last_session_at[:10] if s.last_session_at else "—" }}</td>

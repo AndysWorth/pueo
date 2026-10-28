@@ -76,6 +76,8 @@ class SignatureStats:
     procedure_notes: int = 0
     instance_facts: int = 0
     last_used_at: Optional[str] = None
+    entries: int = 0  # live runbook_entries rows (ADR 051)
+    retired_entries: int = 0
 
 
 @dataclass
@@ -382,6 +384,19 @@ def _load_signature_stats(
     except sqlite3.OperationalError:
         pass
 
+    # ── 4b. runbook_entries counts (V42) ─────────────────────────────────
+    entry_counts: dict[str, tuple[int, int]] = {}  # sig -> (live, retired)
+    try:
+        with sqlite3.connect(db_path) as conn:
+            rows = conn.execute(
+                "SELECT signature, SUM(retired_at IS NULL), SUM(retired_at IS NOT NULL)"
+                " FROM runbook_entries GROUP BY signature"
+            ).fetchall()
+        for r in rows:
+            entry_counts[r[0]] = (int(r[1] or 0), int(r[2] or 0))
+    except sqlite3.OperationalError:
+        pass
+
     # ── 5. Build SignatureStats rows ─────────────────────────────────────
     stats: list[SignatureStats] = []
     for sig, d in sig_data.items():
@@ -410,6 +425,8 @@ def _load_signature_stats(
                 procedure_notes=procedure_notes,
                 instance_facts=fact_counts.get(sig, 0),
                 last_used_at=used_at.get(sig),
+                entries=entry_counts.get(sig, (0, 0))[0],
+                retired_entries=entry_counts.get(sig, (0, 0))[1],
             )
         )
 
