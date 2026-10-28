@@ -1328,7 +1328,7 @@ class TestFinishHostHealth:
         assert payload["fact_if_yes"] == "Host eMMC aged to 85% — monitor monthly."
         assert "signature" in payload
 
-    def test_no_verification_fields_when_omitted(self, tmp_path):
+    def test_default_verification_question_when_omitted(self, tmp_path):
         import asyncio
 
         from utils.disk.host_health import HostHealthFinding
@@ -1350,9 +1350,45 @@ class TestFinishHostHealth:
         )
 
         payload = notifier.sent[0]["payload"]
-        assert "verification_question" not in payload
+        # outcome=monitoring with no actions sets informational=True, so the default
+        # question uses the informational branch.
+        assert (
+            payload["verification_question"]
+            == "Is it right that nothing needs doing here?"
+        )
         assert "fact_if_yes" not in payload
         assert "prediction" not in payload
+
+    def test_informational_outcome_gets_default_question(self, tmp_path):
+        """Informational host-health (e.g. rpi firmware) always gets a default question."""
+        import asyncio
+
+        from utils.disk.host_health import HostHealthFinding
+        from utils.hitl.notify import FakeNotifier
+
+        notifier = FakeNotifier()
+        db = _make_hitl_db(tmp_path)
+        executor = self._make_executor(db, notifier=notifier)
+        finding = HostHealthFinding(
+            key="rpi_firmware", kind="rpi_firmware", severity="INFO"
+        )
+        executor.set_host_health_finding(finding)
+
+        asyncio.run(
+            executor._finish_host_health(
+                summary="Firmware is current.",
+                root_cause="No update needed.",
+                outcome="informational",
+                recommended_actions=[],
+            )
+        )
+
+        payload = notifier.sent[0]["payload"]
+        assert payload.get("informational") is True
+        assert (
+            payload["verification_question"]
+            == "Is it right that nothing needs doing here?"
+        )
 
     def test_prediction_in_payload(self, tmp_path):
         import asyncio

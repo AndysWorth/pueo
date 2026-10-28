@@ -4453,3 +4453,96 @@ class TestCloseInstalledUpdateCard:
 
         assert result is False
         assert not (watch / f"{nid}.approved").exists()
+
+
+# ---------------------------------------------------------------------------
+# Default verification question in update analysis card
+# ---------------------------------------------------------------------------
+
+
+class TestFinishUpdateAnalysisVerificationQuestion:
+    """_finish_update_analysis always sets verification_question in the card payload."""
+
+    def _make_executor(self, gate=None):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+
+        notifier = MagicMock()
+        notifier.send = AsyncMock()
+        executor = ToolExecutor(
+            ha_ssh_client=MagicMock(),
+            gate=gate or FakeAutonomyGate(),
+            notifier=notifier,
+            db_path=":memory:",
+        )
+        return executor, notifier
+
+    def _make_update(self, component="noaa_it_all"):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            entity_id=f"update.{component}",
+            component=component,
+            installed_version="0.7.0",
+            latest_version="0.7.1",
+            release_url=None,
+            release_summary=None,
+        )
+
+    def test_default_question_in_card_payload(self, pueo_dirs):
+        """When LLM omits verification_question, a default is placed in the payload."""
+        import asyncio
+
+        executor, notifier = self._make_executor()
+        executor.set_update_status(self._make_update("mosquitto"))
+
+        with __import__("unittest.mock", fromlist=["patch"]).patch(
+            "agents.ha_log_monitor._update_mark_card_sent"
+        ):
+            asyncio.run(
+                executor._finish_update_analysis(
+                    safe_to_update=True,
+                    breaking_changes=[],
+                    affected_config_keys=[],
+                    pueo_command_risks=[],
+                    recommendation="Safe.",
+                    instance_impact="none",
+                    proposed_config_fixes=[],
+                    create_hitl_card=True,
+                )
+            )
+
+        assert notifier.send.called
+        payload = notifier.send.call_args.kwargs["payload"]
+        assert "verification_question" in payload
+        assert "mosquitto" in payload["verification_question"]
+
+    def test_llm_question_kept_when_provided(self, pueo_dirs):
+        """When the LLM provides a verification_question it is used as-is."""
+        import asyncio
+
+        executor, notifier = self._make_executor()
+        executor.set_update_status(self._make_update("noaa_it_all"))
+
+        with __import__("unittest.mock", fromlist=["patch"]).patch(
+            "agents.ha_log_monitor._update_mark_card_sent"
+        ):
+            asyncio.run(
+                executor._finish_update_analysis(
+                    safe_to_update=True,
+                    breaking_changes=[],
+                    affected_config_keys=[],
+                    pueo_command_risks=[],
+                    recommendation="Safe.",
+                    instance_impact="none",
+                    proposed_config_fixes=[],
+                    create_hitl_card=True,
+                    verification_question="Was the NOAA update safe?",
+                )
+            )
+
+        assert notifier.send.called
+        payload = notifier.send.call_args.kwargs["payload"]
+        assert payload["verification_question"] == "Was the NOAA update safe?"

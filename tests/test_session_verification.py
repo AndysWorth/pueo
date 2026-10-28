@@ -16,6 +16,7 @@ from utils.knowledge.session_verification import (
     PredictionVerdict,
     card_is_actionable,
     collect_digest_items,
+    default_verification_question,
     describe_prediction,
     digest_due,
     judge_prediction,
@@ -384,6 +385,54 @@ def _write_card(watch: Path, nid: str, payload: dict, sent_at: int = 1) -> None:
     )
 
 
+class TestDefaultVerificationQuestion:
+    def test_host_health_informational(self):
+        q = default_verification_question("host_health", {"informational": True})
+        assert q == "Is it right that nothing needs doing here?"
+
+    def test_host_health_needs_action(self):
+        q = default_verification_question("host_health", {"outcome": "needs_action"})
+        assert q == "Was Pueo's diagnosis and recommended action right?"
+
+    def test_host_health_other(self):
+        q = default_verification_question("host_health", {"outcome": "monitoring"})
+        assert q == "Was Pueo's assessment right?"
+
+    def test_update_with_component(self):
+        q = default_verification_question("update", {"component": "core"})
+        assert q == "Was the core update assessment right?"
+
+    def test_update_no_component(self):
+        q = default_verification_question("update", {})
+        assert "update" in q.lower()
+
+    def test_device_offline_with_name(self):
+        q = default_verification_question(
+            "device_offline", {"devices": [{"name": "Lamp"}]}
+        )
+        assert "Lamp" in q
+
+    def test_device_offline_no_devices(self):
+        q = default_verification_question("device_offline", {})
+        assert "device" in q.lower()
+
+    def test_ha_repair(self):
+        q = default_verification_question("ha_repair", {})
+        assert q == "Was Pueo's analysis of this repair issue right?"
+
+    def test_ha_config_issue(self):
+        q = default_verification_question("ha_config_issue", {})
+        assert q == "Was Pueo's config issue assessment right?"
+
+    def test_notification_card(self):
+        q = default_verification_question("unknown", {"is_notification_card": True})
+        assert "notification" in q.lower()
+
+    def test_unknown_type_fallback(self):
+        q = default_verification_question("some_other_type", {})
+        assert q  # non-empty
+
+
 class TestCardIsActionable:
     def test_rule(self):
         assert card_is_actionable({"card_type": "update"})
@@ -462,6 +511,27 @@ class TestCollectDigestItems:
         assert dev["acknowledge"] is True and dev["can_turn_off"] is True
         assert dev["question"] == "Did it recover?"
         assert dev["subject"] == "Subject dev"
+
+    def test_informational_host_health_card_with_default_question(self, tmp_path):
+        """An informational host_health card with the default question appears in the digest."""
+        db = _make_db(tmp_path)
+        watch = tmp_path / "hitl"
+        watch.mkdir()
+        _insert_session(db, "e1")
+        _write_card(
+            watch,
+            "rpi",
+            {
+                "card_type": "host_health",
+                "informational": True,
+                "episode_id": "e1",
+                "verification_question": "Is it right that nothing needs doing here?",
+            },
+        )
+        items = collect_digest_items(watch, db)
+        assert [i["nid"] for i in items] == ["rpi"]
+        assert items[0]["acknowledge"] is True
+        assert "nothing needs doing" in items[0]["question"]
 
     def test_missing_dir_and_db(self, tmp_path):
         db = _make_db(tmp_path)

@@ -861,6 +861,7 @@ class ToolExecutor:
                     new_features=args.get("new_features"),
                     risk_score=args.get("risk_score"),
                     confidence=args.get("confidence"),
+                    verification_question=args.get("verification_question"),
                 )
             if name == "finish_host_health":
                 self._capture_declared_runbook(args)
@@ -5303,8 +5304,15 @@ class ToolExecutor:
                 "initial_chat_message": initial_chat_message,
                 "episode_id": self._episode_id,
             }
-            if verification_question:
-                payload["verification_question"] = verification_question
+            from utils.knowledge.session_verification import (
+                default_verification_question,
+            )
+
+            _q = verification_question or default_verification_question(
+                "ha_config_issue", payload
+            )
+            if _q:
+                payload["verification_question"] = _q
                 payload["signature"] = self._session_signature
             if fact_if_yes:
                 payload["fact_if_yes"] = fact_if_yes
@@ -5502,8 +5510,13 @@ class ToolExecutor:
             "translation_key": getattr(issue, "translation_key", None),
             "episode_id": self._episode_id,
         }
-        if verification_question:
-            payload["verification_question"] = verification_question
+        from utils.knowledge.session_verification import default_verification_question
+
+        _q = verification_question or default_verification_question(
+            "ha_repair", payload
+        )
+        if _q:
+            payload["verification_question"] = _q
             payload["signature"] = self._session_signature
         if fact_if_yes:
             payload["fact_if_yes"] = fact_if_yes
@@ -5600,8 +5613,13 @@ class ToolExecutor:
             "ha_created_at": ha_created_at,
             "episode_id": self._episode_id,
         }
-        if verification_question:
-            payload["verification_question"] = verification_question
+        from utils.knowledge.session_verification import default_verification_question
+
+        _q = verification_question or default_verification_question(
+            "notification", payload
+        )
+        if _q:
+            payload["verification_question"] = _q
             payload["signature"] = self._session_signature
         if fact_if_yes:
             payload["fact_if_yes"] = fact_if_yes
@@ -5862,6 +5880,7 @@ class ToolExecutor:
         new_features: Optional[list] = None,
         risk_score: Optional[str] = None,
         confidence: Optional[float] = None,
+        verification_question: Optional[str] = None,
         **_extra: Any,
     ) -> ToolResult:
         """Create a HITL approval card for the pending HA update."""
@@ -6163,6 +6182,14 @@ class ToolExecutor:
             "risk_score": risk_score or "",
             "episode_id": self._episode_id,
         }
+        from utils.knowledge.session_verification import default_verification_question
+
+        _q = verification_question or default_verification_question(
+            CARD_TYPE_UPDATE, payload
+        )
+        if _q:
+            payload["verification_question"] = _q
+            payload["signature"] = self._session_signature
         await asyncio.to_thread(
             _update_mark_card_sent,
             suppression_key,
@@ -6232,6 +6259,7 @@ class ToolExecutor:
         import config as _cfg
         from utils.hitl.card_types import CARD_TYPE_HOST_HEALTH
         from utils.knowledge.session_verification import (
+            default_verification_question,
             describe_prediction,
             normalize_prediction,
         )
@@ -6296,8 +6324,11 @@ class ToolExecutor:
             _payload["fingerprint"] = _hashlib.sha256(
                 (finding.kind + json.dumps(finding.evidence, sort_keys=True)).encode()
             ).hexdigest()[:16]
-        if verification_question:
-            _payload["verification_question"] = verification_question
+        _q = verification_question or default_verification_question(
+            "host_health", _payload
+        )
+        if _q:
+            _payload["verification_question"] = _q
             _payload["signature"] = self._session_signature
         if fact_if_yes:
             _payload["fact_if_yes"] = fact_if_yes
@@ -6345,6 +6376,7 @@ class ToolExecutor:
         import config as _cfg
         from utils.hitl.card_types import CARD_TYPE_DEVICE_OFFLINE
         from utils.knowledge.session_verification import (
+            default_verification_question,
             describe_prediction,
             normalize_prediction,
         )
@@ -6387,8 +6419,11 @@ class ToolExecutor:
         if getattr(finding, "ha_start_ts", None) is not None:
             _payload["post_restart"] = True
             _payload["ha_start_ts"] = finding.ha_start_ts
-        if verification_question:
-            _payload["verification_question"] = verification_question
+        _q = verification_question or default_verification_question(
+            "device_offline", _payload
+        )
+        if _q:
+            _payload["verification_question"] = _q
             _payload["signature"] = self._session_signature
         if fact_if_yes:
             _payload["fact_if_yes"] = fact_if_yes
