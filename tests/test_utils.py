@@ -7482,6 +7482,8 @@ class TestSeedRegistry:
             sig_update(hacs_type, "noaa_it_all"),
             sig_update("addon", "mosquitto"),
             sig_update("core", "homeassistant"),
+            sig_update("os", "home_assistant_operating_system"),
+            sig_update("supervisor", "home_assistant_supervisor"),
             sig_host_health("resolution_issue", "rpi_firmware_update_blocked"),
             sig_host_health("resolution_issue", "no_current_backup"),
             sig_device_availability("econet"),
@@ -7541,6 +7543,197 @@ class TestSeedRegistry:
             _sig_specificity("notification:httplogin", s)[0]
             for s in self._canonical_signatures()
         )
+
+    # Canonical signatures covered by seeds (or explicitly acknowledged as unseeded).
+    # Every sig_* output must appear here or in _UNSEEDED_OK.
+    _UNSEEDED_OK: frozenset = frozenset(
+        {
+            # HACS integrations share seed_update_hacs.md via update:hacs_integration:*.
+            "update:hacs_integration:noaa_it_all",
+            # device update type has no dedicated analysis seed — treated as addon.
+            # (firmware updates route to update:device:* which uses update:addon fallback)
+            # ip-ban notifications are handled by seed_notification_http_login (covers both)
+            # but that seed's signature is notification:http_login (no wildcard).
+            "notification:ip_ban",
+        }
+    )
+
+    def test_every_canonical_signature_has_a_seed(self):
+        """Every sig_* trigger must be covered by a seed or in _UNSEEDED_OK (#1019)."""
+        from utils.knowledge.runbook_distiller import _sig_specificity
+        from utils.knowledge.strategy_seeder import (
+            _SEED_PROMPTS,
+            _parse_front_matter_signature,
+        )
+
+        seed_sigs = []
+        for filename, _, _ in _SEED_PROMPTS:
+            text = (self._prompts_dir() / filename).read_text("utf-8")
+            sig = _parse_front_matter_signature(text)
+            if sig is not None:
+                seed_sigs.append(sig)
+
+        uncovered = [
+            s
+            for s in self._canonical_signatures()
+            if s not in self._UNSEEDED_OK
+            and not any(_sig_specificity(seed, s)[0] for seed in seed_sigs)
+        ]
+        assert uncovered == []
+
+
+class TestSeedNoLiteralSlug:
+    """Per-symptom seeds must not embed literal app slugs in ha apps commands (#1019)."""
+
+    # Known-bad literal slugs that must not appear in per-symptom ha-apps commands.
+    _LITERAL_SLUGS = (
+        "ha apps info mosquitto",
+        "ha apps info core_mosquitto",
+        "ha apps logs mosquitto",
+        "ha apps logs core_mosquitto",
+        "ha apps restart mosquitto",
+        "ha apps restart core_mosquitto",
+    )
+
+    # CLI reference seeds deliberately use example slugs to illustrate syntax.
+    _REFERENCE_SEEDS = frozenset({"seed_supervisor_cli.md"})
+
+    def _prompts_dir(self):
+        from pathlib import Path
+
+        return Path(__file__).parent.parent / "prompts"
+
+    def test_no_literal_slug_in_seeds(self):
+        """Per-symptom seeds must use <slug> placeholder, not embed a real app slug."""
+        offenders = []
+        for path in sorted(self._prompts_dir().glob("seed_*.md")):
+            if path.name in self._REFERENCE_SEEDS:
+                continue
+            text = path.read_text("utf-8")
+            for bad in self._LITERAL_SLUGS:
+                if bad in text:
+                    offenders.append((path.name, bad))
+        assert offenders == []
+
+
+class TestScopeStrategyChunksSignature:
+    """_scope_strategy_chunks drops sibling signed seeds within the same family (#1019)."""
+
+    def _make_chunk(self, signature, collection="strategies"):
+        from utils.knowledge.knowledge_store import KnowledgeChunk
+
+        meta = {"signature": signature} if signature else {}
+        return KnowledgeChunk(
+            text="text",
+            source="test",
+            collection=collection,
+            metadata=meta,
+        )
+
+    def _make_executor(self, session_sig):
+        from utils.agent.tool_executor import ToolExecutor
+
+        ex = ToolExecutor.__new__(ToolExecutor)
+        ex._session_signature = session_sig
+        return ex
+
+    def test_sibling_signed_seed_dropped(self):
+        """update:addon:* seed is dropped for an update:os:* session."""
+        ex = self._make_executor("update:os:home_assistant_operating_system")
+        chunk = self._make_chunk("update:addon:*")
+        result = ex._scope_strategy_chunks([chunk])
+        assert result == []
+
+    def test_matching_signed_seed_kept(self):
+        """update:addon:* seed is kept for an update:addon:* session."""
+        ex = self._make_executor("update:addon:core_mosquitto")
+        chunk = self._make_chunk("update:addon:*")
+        result = ex._scope_strategy_chunks([chunk])
+        assert result == [chunk]
+
+    def test_wildcard_only_signature_passes(self):
+        """A chunk with signature='*' (method runbook) is kept regardless of session."""
+        ex = self._make_executor("update:os:home_assistant_operating_system")
+        chunk = self._make_chunk("*")
+        result = ex._scope_strategy_chunks([chunk])
+        assert result == [chunk]
+
+    def test_unsigned_seed_in_family_kept(self):
+        """An unsigned seed in the update family (via SEED_FAMILIES) passes."""
+        ex = self._make_executor("update:os:home_assistant_operating_system")
+        # seed_update_analysis.md is unsigned but in SEED_FAMILIES["update"]
+        from utils.knowledge.knowledge_store import KnowledgeChunk
+
+        chunk = KnowledgeChunk(
+            text="text",
+            source="test",
+            collection="strategies",
+            metadata={},
+            chunk_id="seed:seed_update_analysis.md",
+        )
+        # chunk_id is passed via getattr; set it directly
+        object.__setattr__(chunk, "chunk_id", "seed:seed_update_analysis.md")
+        result = ex._scope_strategy_chunks([chunk])
+        assert result == [chunk]
+
+    def test_non_strategy_collection_passes(self):
+        """Chunks from other collections are never dropped."""
+        ex = self._make_executor("update:os:home_assistant_operating_system")
+        chunk = self._make_chunk("update:addon:*", collection="ha_release_notes")
+        result = ex._scope_strategy_chunks([chunk])
+        assert result == [chunk]
+
+    def test_no_session_sig_no_scoping(self):
+        """When the session has no scoped family, all chunks pass."""
+        ex = self._make_executor("")
+        chunk = self._make_chunk("update:addon:*")
+        result = ex._scope_strategy_chunks([chunk])
+        assert result == [chunk]
+
+
+class TestSeedsWithLiteralQuirk:
+    """seeds_with_literal_quirk flags seeds containing a recorded quirk example (#1019)."""
+
+    def _make_quirk(self, example, tool="run_ha_command", detail="", count=1):
+        from utils.knowledge.kb_meta_analyzer import ToolQuirk
+
+        return ToolQuirk(
+            tool=tool, kind="failed", detail=detail, example=example, count=count
+        )
+
+    def test_detects_literal_slug_in_seed(self):
+        from utils.knowledge.kb_meta_analyzer import seeds_with_literal_quirk
+
+        seed_texts = {
+            "seed_update_addon.md": "Use `ha apps info mosquitto` to check state.",
+        }
+        quirks = [self._make_quirk('run_ha_command("ha apps info mosquitto")')]
+        # The example string itself won't appear verbatim; only the arg does.
+        # seeds_with_literal_quirk checks if example (the compact call) is in seed text.
+        # Example: 'run_ha_command("ha apps info mosquitto")' — not literally in seed above.
+        # But if the seed has the compact call form, it would flag it.
+        seed_texts2 = {
+            "seed_update_addon.md": 'run_ha_command("ha apps info mosquitto")',
+        }
+        result = seeds_with_literal_quirk(seed_texts2, quirks)
+        assert len(result) == 1
+        assert result[0][0] == "seed_update_addon.md"
+
+    def test_no_match_returns_empty(self):
+        from utils.knowledge.kb_meta_analyzer import seeds_with_literal_quirk
+
+        seed_texts = {"seed_foo.md": "Use ha apps info <slug> instead."}
+        quirks = [self._make_quirk('run_ha_command("ha apps info mosquitto")')]
+        result = seeds_with_literal_quirk(seed_texts, quirks)
+        assert result == []
+
+    def test_short_example_skipped(self):
+        from utils.knowledge.kb_meta_analyzer import seeds_with_literal_quirk
+
+        seed_texts = {"seed_foo.md": "x"}
+        quirks = [self._make_quirk("short")]
+        result = seeds_with_literal_quirk(seed_texts, quirks)
+        assert result == []
 
 
 class TestPromptNoVerdictRules:

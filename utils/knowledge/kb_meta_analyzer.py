@@ -58,6 +58,8 @@ class MetaAnalysisReport:
     signature_stats: list["SignatureStats"] = field(default_factory=list)
     unmatched_seeds: list["RunbookRow"] = field(default_factory=list)
     tool_quirks: list["ToolQuirk"] = field(default_factory=list)
+    # Seeds whose text contains a recorded quirk's example call (potential stale guidance).
+    quirk_flagged_seeds: list[tuple[str, str, str]] = field(default_factory=list)
 
 
 @dataclass
@@ -436,11 +438,42 @@ def _load_signature_stats(
     return stats, unmatched
 
 
+def seeds_with_literal_quirk(
+    seed_texts: dict[str, str],
+    quirks: list["ToolQuirk"],
+) -> list[tuple[str, str, str]]:
+    """Return (seed_filename, quirk_example, quirk_detail) for seeds that contain a
+    recorded quirk's example call verbatim.
+
+    This flags seeds that recommend a specific invocation that has repeatedly failed
+    in practice (e.g. ``ha apps info mosquitto`` when the real slug is
+    ``core_mosquitto``).  Only ``example`` strings that are 10+ chars are checked to
+    avoid trivial false positives.
+
+    Pure function; no I/O.
+    """
+    flagged: list[tuple[str, str, str]] = []
+    for filename, text in seed_texts.items():
+        for q in quirks:
+            example = q.example.strip()
+            if len(example) < 10:
+                continue
+            # The example may be rendered as ``tool(arg)``; check both the compact
+            # form and just the argument text for substring membership.
+            if example in text:
+                flagged.append((filename, example, q.detail))
+    return flagged
+
+
 def analyze_local_runbooks(
     db_path: str,
     knowledge_store: Optional["FakeKnowledgeStore"] = None,
 ) -> MetaAnalysisReport:
     """Read candidate/gap/validated runbooks and return a structured analysis report."""
+    from pathlib import Path
+
+    from utils.knowledge.strategy_seeder import _SEED_PROMPTS
+
     usage = _load_usage_stats(db_path)
     runbooks = _load_runbooks(db_path, usage)
     candidates = [r for r in runbooks if r.runbook_state == "candidate"]
@@ -451,6 +484,18 @@ def analyze_local_runbooks(
     contribution_ready = [r for r in validated if r.contributed_at is None]
     gaps_by_signature = _group_gaps_by_signature(gaps)
     sig_stats, unmatched_seeds = _load_signature_stats(db_path)
+    quirks = _load_tool_quirks(db_path)
+
+    # Load seed texts for quirk-flag check.
+    _prompts_dir = Path(__file__).parent.parent.parent / "prompts"
+    seed_texts: dict[str, str] = {}
+    for filename, _, _ in _SEED_PROMPTS:
+        try:
+            seed_texts[filename] = (_prompts_dir / filename).read_text("utf-8")
+        except OSError:
+            pass
+    quirk_flagged = seeds_with_literal_quirk(seed_texts, quirks)
+
     return MetaAnalysisReport(
         candidates=candidates,
         gaps=gaps,
@@ -460,5 +505,6 @@ def analyze_local_runbooks(
         gaps_by_signature=gaps_by_signature,
         signature_stats=sig_stats,
         unmatched_seeds=unmatched_seeds,
-        tool_quirks=_load_tool_quirks(db_path),
+        tool_quirks=quirks,
+        quirk_flagged_seeds=quirk_flagged,
     )

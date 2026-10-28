@@ -23,10 +23,11 @@ with no "Breaking" section in the release notes can be applied without user revi
    - Look for a "Breaking" or "Migration" section. If absent: patch bump is safe.
 
 2. Check integration dependencies:
-   - Mosquitto/MQTT add-on update → integrations that use the MQTT broker
-     (check `ha apps info mosquitto`) are affected if the broker port or auth config changes.
+   - MQTT broker add-on update → integrations that use the MQTT broker are affected if the
+     broker port or auth config changes.
    - File editor, SSH, or terminal add-ons: rarely break HA but may change config paths.
-   - Run `run_ha_command("ha apps info <slug>")` to confirm current state and dependents.
+   - Run `run_ha_command("ha apps info <slug>")` using the supervisor slug from the initial
+     context (e.g. "Supervisor slug: core_mosquitto") to confirm current state and dependents.
 
 3. If breaking changes mention a config schema change: `read_file("/addon_configs/<slug>/")` to
    check whether the installed config matches the old schema.
