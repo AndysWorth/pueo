@@ -1154,7 +1154,7 @@ class TestFinishDeviceAvailabilityFields:
         )
         assert "signature" in payload
 
-    def test_no_verification_fields_when_omitted(self, tmp_path):
+    def test_default_verification_question_when_omitted(self, tmp_path):
         import asyncio
 
         from utils.hitl.notify import FakeNotifier
@@ -1180,7 +1180,10 @@ class TestFinishDeviceAvailabilityFields:
         )
 
         payload = notifier.sent[0]["payload"]
-        assert "verification_question" not in payload
+        assert (
+            payload["verification_question"]
+            == "Was Pueo's diagnosis of Lamp going offline correct?"
+        )
         assert "fact_if_yes" not in payload
         assert "prediction" not in payload
 

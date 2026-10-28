@@ -304,6 +304,32 @@ def card_is_actionable(payload: dict) -> bool:
     )
 
 
+def default_verification_question(card_type: str, payload: dict) -> str:
+    """Return a sensible fallback verification question when the LLM omits one."""
+    if card_type == "host_health":
+        if payload.get("informational"):
+            return "Is it right that nothing needs doing here?"
+        if payload.get("outcome") == "needs_action":
+            return "Was Pueo's diagnosis and recommended action right?"
+        return "Was Pueo's assessment right?"
+    if card_type == "update":
+        component = str(payload.get("component") or "this update")
+        return f"Was the {component} update assessment right?"
+    if card_type == "device_offline":
+        devices = payload.get("devices") or []
+        if devices and isinstance(devices[0], dict):
+            name = str(devices[0].get("name") or "the device")
+            return f"Was Pueo's diagnosis of {name} going offline correct?"
+        return "Was Pueo's device-offline diagnosis correct?"
+    if card_type == "ha_repair":
+        return "Was Pueo's analysis of this repair issue right?"
+    if card_type == "ha_config_issue":
+        return "Was Pueo's config issue assessment right?"
+    if payload.get("is_notification_card"):
+        return "Was Pueo's notification assessment right?"
+    return "Was Pueo's assessment right?"
+
+
 def digest_due(now: float, hour: int, last_date: Optional[str]) -> Optional[str]:
     """Return today's local date when the digest should go out now, else None."""
     if hour < 0:

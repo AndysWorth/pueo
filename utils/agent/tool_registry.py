@@ -2268,6 +2268,14 @@ FINISH_UPDATE_ANALYSIS = ToolDefinition(
                     "of the runbook you actually followed. Pass 'none' if none applied."
                 ),
             },
+            "verification_question": {
+                "type": "string",
+                "description": (
+                    "One yes/no question (≤120 chars) whose Yes confirms your assessment. "
+                    "Example: 'Was the mosquitto update safe with no breaking changes?' "
+                    "A default is supplied automatically if you omit this."
+                ),
+            },
         },
         "required": [
             "safe_to_update",
