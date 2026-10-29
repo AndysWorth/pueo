@@ -2022,195 +2022,184 @@ async def poll_for_repairs(
                 # just-completed addon update), skip the LLM entirely.
                 _hacs_repo_id = _hacs_repo_id_from_issue(issue)
                 if _hacs_repo_id:
-                    from agents.ha_update_manager import (
-                        find_any_post_update_pending,
-                        clear_post_update_pending,
-                        execute_ha_core_restart,
-                    )
-
-                    _pending_slug = await asyncio.to_thread(
-                        find_any_post_update_pending, "restart", db_path
-                    )
-                    if _pending_slug is not None:
-                        # Consume the flag before taking action.
-                        await asyncio.to_thread(
-                            clear_post_update_pending, _pending_slug, db_path
-                        )
-
-                        # Enrich with repo info from profile if available.
-                        _repo_label = _hacs_repo_id
-                        try:
-                            from utils.ha.ha_environment import load_environment_profile
-
-                            _prof = await asyncio.to_thread(
-                                load_environment_profile, db_path
-                            )
-                            if _prof and _hacs_repo_id in (_prof.hacs_repo_map or {}):
-                                _full_name, _domain, _loaded = _prof.hacs_repo_map[
-                                    _hacs_repo_id
-                                ]
-                                _load_note = (
-                                    "loaded" if _loaded else "downloaded but not set up"
-                                )
-                                _repo_label = (
-                                    f"{_full_name} (domain: {_domain}, {_load_note})"
-                                )
-                        except Exception:  # nosec B110
-                            pass
-
-                        _gate = AutonomyGate(AUTONOMY_LEVEL)
-                        _should_auto = _gate.should_auto_execute(RiskLevel.MEDIUM)
-                        log.info(
-                            "hacs_restart_required_short_circuit",
-                            issue_key=issue.issue_key,
-                            repo_id=_hacs_repo_id,
-                            repo_label=_repo_label,
-                            pending_slug=_pending_slug,
-                            auto_execute=_should_auto,
-                        )
-
-                        if _should_auto:
-                            from utils.agent.work_queue import (
-                                PRIORITY_HIGH,
-                                WorkItem,
-                                get_work_queue_or_none,
-                            )
-                            from agents.ha_agent_advanced import mark_repair_hitl_sent
-
-                            _issue_sc = issue
-                            _ssh_sc = _ssh
-                            _notifier_sc = _notifier
-                            _repo_label_sc = _repo_label
-                            _db_sc = db_path
-
-                            async def _do_auto_restart(
-                                _iss: HARepairIssue = _issue_sc,
-                                _s: SSHClientProtocol = _ssh_sc,
-                                _n: NotifierProtocol = _notifier_sc,
-                                _rl: str = _repo_label_sc,
-                                _dp: str = _db_sc,
-                            ) -> None:
-                                from agents.ha_agent_advanced import (
-                                    mark_repair_resolved,
-                                )
-
-                                mark_repair_hitl_sent(_iss.issue_key)
-                                success = await execute_ha_core_restart(
-                                    _s, _n, skip_backup=True
-                                )
-                                if success:
-                                    mark_repair_resolved(_iss.issue_key)
-                                from utils.core.timeline import write_timeline_event
-
-                                write_timeline_event(
-                                    "INFO" if success else "WARNING",
-                                    "repair_poll",
-                                    f"HACS restart_required ({_rl}): "
-                                    + (
-                                        "auto-restart succeeded"
-                                        if success
-                                        else "auto-restart timed out"
-                                    ),
-                                    {
-                                        "issue_key": _iss.issue_key,
-                                        "repo_id": _hacs_repo_id,
-                                        "repo_label": _rl,
-                                        "auto_executed": True,
-                                        "success": success,
-                                    },
-                                )
-
-                            _wq = get_work_queue_or_none()
-                            if _wq is not None:
-                                await _wq.submit(
-                                    WorkItem(
-                                        priority=PRIORITY_HIGH,
-                                        activity_type="restart_execution",
-                                        description=f"Auto-restart: HACS {_hacs_repo_id}",
-                                        dedup_key=f"hacs_restart:{issue.issue_key}",
-                                        suppress_while_running=frozenset(),
-                                        coro_factory=_do_auto_restart,
-                                    )
-                                )
-                            else:
-                                await _do_auto_restart()
-                        else:
-                            # Send a restart card (no LLM).
-                            from utils.hitl.card_types import CARD_TYPE_HA_REPAIR
-                            from utils.hitl.hitl_tracker import stable_nid
-                            from agents.ha_agent_advanced import mark_repair_hitl_sent
-
-                            _repair_sup_key = (
-                                f"ha_repair:{issue.translation_key or issue.issue_key}"
-                            )
-                            _title = "HA Core restart required — HACS update applied"
-                            _body = (
-                                f"Repository: {_repo_label}\n"
-                                "Pueo applied a HACS integration update that requires"
-                                " an HA Core restart to take effect.\n"
-                                "Approve to restart now."
-                            )
-                            _payload: dict = {
-                                "notification_id": stable_nid(_repair_sup_key),
-                                "card_type": CARD_TYPE_HA_REPAIR,
-                                "suppression_key": _repair_sup_key,
-                                "action": "restart",
-                                "domain": issue.domain,
-                                "issue_id": issue.issue_id,
-                                "issue_key": issue.issue_key,
-                                "severity": issue.severity.upper(),
-                                "title": _title,
-                                "body": _body,
-                                "translation_key": issue.translation_key,
-                                "repo_id": _hacs_repo_id,
-                                "repo_label": _repo_label,
-                            }
-                            mark_repair_hitl_sent(issue.issue_key)
-                            await _notifier.send(
-                                subject=_title, body=_body, payload=_payload
-                            )
-                            try:
-                                from utils.core.timeline import write_timeline_event
-
-                                write_timeline_event(
-                                    "INFO",
-                                    "repair_poll",
-                                    f"HACS restart_required ({_repo_label}): restart card sent",
-                                    {
-                                        "issue_key": issue.issue_key,
-                                        "repo_id": _hacs_repo_id,
-                                        "repo_label": _repo_label,
-                                        "auto_executed": False,
-                                    },
-                                )
-                            except Exception:  # nosec B110
-                                pass
-
-                        continue  # skip the normal LLM investigation for this issue
-
-                    # No pending flag — proceed with normal investigation but
-                    # enrich initial_context with HACS repo info.
-                    _repo_label_enrich = _hacs_repo_id
+                    # Resolve the HA integration domain for this specific repo so
+                    # we only consume the pending flag written by *this* update, not
+                    # any other recently-updated HACS repo.
+                    _hacs_domain: Optional[str] = None
+                    _repo_label = _hacs_repo_id
                     try:
                         from utils.ha.ha_environment import load_environment_profile
 
-                        _prof_e = await asyncio.to_thread(
+                        _prof = await asyncio.to_thread(
                             load_environment_profile, db_path
                         )
-                        if _prof_e and _hacs_repo_id in (_prof_e.hacs_repo_map or {}):
-                            _fn_e, _dom_e, _loaded_e = _prof_e.hacs_repo_map[
+                        if _prof and _hacs_repo_id in (_prof.hacs_repo_map or {}):
+                            _full_name, _domain_val, _loaded = _prof.hacs_repo_map[
                                 _hacs_repo_id
                             ]
-                            _note_e = (
-                                "loaded in HA"
-                                if _loaded_e
-                                else "downloaded via HACS but not set up"
+                            _load_note = (
+                                "loaded" if _loaded else "downloaded but not set up"
                             )
-                            _repo_label_enrich = (
-                                f"{_fn_e} (domain: {_dom_e}, {_note_e})"
+                            _repo_label = (
+                                f"{_full_name} (domain: {_domain_val}, {_load_note})"
                             )
+                            _hacs_domain = _domain_val
                     except Exception:  # nosec B110
                         pass
+
+                    if _hacs_domain is not None:
+                        from agents.ha_update_manager import (
+                            get_post_update_pending,
+                            clear_post_update_pending,
+                            execute_ha_core_restart,
+                        )
+
+                        _pending_kind = await asyncio.to_thread(
+                            get_post_update_pending, _hacs_domain, db_path
+                        )
+                        if _pending_kind == "restart":
+                            # Consume the flag before taking action.
+                            await asyncio.to_thread(
+                                clear_post_update_pending, _hacs_domain, db_path
+                            )
+
+                            _gate = AutonomyGate(AUTONOMY_LEVEL)
+                            _should_auto = _gate.should_auto_execute(RiskLevel.MEDIUM)
+                            log.info(
+                                "hacs_restart_required_short_circuit",
+                                issue_key=issue.issue_key,
+                                repo_id=_hacs_repo_id,
+                                repo_label=_repo_label,
+                                pending_domain=_hacs_domain,
+                                auto_execute=_should_auto,
+                            )
+
+                            if _should_auto:
+                                from utils.agent.work_queue import (
+                                    PRIORITY_HIGH,
+                                    WorkItem,
+                                    get_work_queue_or_none,
+                                )
+                                from agents.ha_agent_advanced import (
+                                    mark_repair_hitl_sent,
+                                )
+
+                                _issue_sc = issue
+                                _ssh_sc = _ssh
+                                _notifier_sc = _notifier
+                                _repo_label_sc = _repo_label
+                                _db_sc = db_path
+
+                                async def _do_auto_restart(
+                                    _iss: HARepairIssue = _issue_sc,
+                                    _s: SSHClientProtocol = _ssh_sc,
+                                    _n: NotifierProtocol = _notifier_sc,
+                                    _rl: str = _repo_label_sc,
+                                    _dp: str = _db_sc,
+                                ) -> None:
+                                    from agents.ha_agent_advanced import (
+                                        mark_repair_resolved,
+                                    )
+
+                                    mark_repair_hitl_sent(_iss.issue_key)
+                                    success = await execute_ha_core_restart(
+                                        _s, _n, skip_backup=True
+                                    )
+                                    if success:
+                                        mark_repair_resolved(_iss.issue_key)
+                                    from utils.core.timeline import write_timeline_event
+
+                                    write_timeline_event(
+                                        "INFO" if success else "WARNING",
+                                        "repair_poll",
+                                        f"HACS restart_required ({_rl}): "
+                                        + (
+                                            "auto-restart succeeded"
+                                            if success
+                                            else "auto-restart timed out"
+                                        ),
+                                        {
+                                            "issue_key": _iss.issue_key,
+                                            "repo_id": _hacs_repo_id,
+                                            "repo_label": _rl,
+                                            "auto_executed": True,
+                                            "success": success,
+                                        },
+                                    )
+
+                                _wq = get_work_queue_or_none()
+                                if _wq is not None:
+                                    await _wq.submit(
+                                        WorkItem(
+                                            priority=PRIORITY_HIGH,
+                                            activity_type="restart_execution",
+                                            description=f"Auto-restart: HACS {_hacs_repo_id}",
+                                            dedup_key=f"hacs_restart:{issue.issue_key}",
+                                            suppress_while_running=frozenset(),
+                                            coro_factory=_do_auto_restart,
+                                        )
+                                    )
+                                else:
+                                    await _do_auto_restart()
+                            else:
+                                # Send a restart card (no LLM).
+                                from utils.hitl.card_types import CARD_TYPE_HA_REPAIR
+                                from utils.hitl.hitl_tracker import stable_nid
+                                from agents.ha_agent_advanced import (
+                                    mark_repair_hitl_sent,
+                                )
+
+                                _repair_sup_key = f"ha_repair:{issue.translation_key or issue.issue_key}"
+                                _title = (
+                                    "HA Core restart required — HACS update applied"
+                                )
+                                _body = (
+                                    f"Repository: {_repo_label}\n"
+                                    "Pueo applied a HACS integration update that requires"
+                                    " an HA Core restart to take effect.\n"
+                                    "Approve to restart now."
+                                )
+                                _payload: dict = {
+                                    "notification_id": stable_nid(_repair_sup_key),
+                                    "card_type": CARD_TYPE_HA_REPAIR,
+                                    "suppression_key": _repair_sup_key,
+                                    "action": "restart",
+                                    "domain": issue.domain,
+                                    "issue_id": issue.issue_id,
+                                    "issue_key": issue.issue_key,
+                                    "severity": issue.severity.upper(),
+                                    "title": _title,
+                                    "body": _body,
+                                    "translation_key": issue.translation_key,
+                                    "repo_id": _hacs_repo_id,
+                                    "repo_label": _repo_label,
+                                }
+                                mark_repair_hitl_sent(issue.issue_key)
+                                await _notifier.send(
+                                    subject=_title, body=_body, payload=_payload
+                                )
+                                try:
+                                    from utils.core.timeline import write_timeline_event
+
+                                    write_timeline_event(
+                                        "INFO",
+                                        "repair_poll",
+                                        f"HACS restart_required ({_repo_label}): restart card sent",
+                                        {
+                                            "issue_key": issue.issue_key,
+                                            "repo_id": _hacs_repo_id,
+                                            "repo_label": _repo_label,
+                                            "auto_executed": False,
+                                        },
+                                    )
+                                except Exception:  # nosec B110
+                                    pass
+
+                            continue  # skip the normal LLM investigation for this issue
+
+                    # No domain mapping or no matching pending flag — proceed with
+                    # normal investigation but enrich initial_context with HACS repo info.
+                    _repo_label_enrich = _repo_label
 
                     log.info(
                         "hacs_restart_required_investigation",
