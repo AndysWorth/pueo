@@ -4158,7 +4158,7 @@ class TestNetAlertXLogMonitor:
 
         healer_calls: list = []
 
-        async def fake_healer(ev):
+        async def fake_healer(ev, healer=None, llm_client=None):
             healer_calls.append(ev)
 
         monkeypatch.setattr(mod, "_dispatch_to_healer", fake_healer)
@@ -5310,7 +5310,25 @@ class TestNetAlertXHealer:
     # Log monitor dispatch wiring
     # -----------------------------------------------------------------------
 
-    def test_dispatch_to_healer_calls_heal(self):
+    def test_dispatch_with_llm_client_calls_heal_with_loop(self):
+        import asyncio
+        from unittest.mock import MagicMock
+
+        from netalertx.log_monitor import LogEvaluation, _dispatch_to_healer
+
+        healer = _FakeHealer()
+        fake_llm = MagicMock()
+        evaluation = LogEvaluation(
+            is_actionable=True,
+            root_cause_summary="ArpScan failed: network unreachable",
+            confidence_score=0.95,
+        )
+        asyncio.run(_dispatch_to_healer(evaluation, healer=healer, llm_client=fake_llm))
+        assert healer.heal_with_loop_calls == 1
+        assert healer.heal_calls == 0
+        assert healer.last_diagnostic is not None
+
+    def test_dispatch_without_llm_client_falls_back_to_heal(self):
         import asyncio
 
         from netalertx.log_monitor import LogEvaluation, _dispatch_to_healer
@@ -5318,13 +5336,12 @@ class TestNetAlertXHealer:
         healer = _FakeHealer()
         evaluation = LogEvaluation(
             is_actionable=True,
-            root_cause_summary="ArpScan failed: network unreachable",
-            confidence_score=0.95,
+            root_cause_summary="Database query failed",
+            confidence_score=0.85,
         )
-        asyncio.run(_dispatch_to_healer(evaluation, healer=healer))
+        asyncio.run(_dispatch_to_healer(evaluation, healer=healer, llm_client=None))
         assert healer.heal_calls == 1
-        assert healer.last_diagnostic is not None
-        assert healer.last_diagnostic.category == "networking"
+        assert healer.heal_with_loop_calls == 0
 
     def test_dispatch_without_healer_logs_skip(self):
         import asyncio
@@ -5339,29 +5356,23 @@ class TestNetAlertXHealer:
         # Should not raise even without a healer
         asyncio.run(_dispatch_to_healer(evaluation, healer=None))
 
-    def test_evaluation_to_diagnostic_config_category_for_mqtt(self):
-        from netalertx.log_monitor import LogEvaluation, _evaluation_to_diagnostic
+    def test_dispatch_no_keywords_uses_heal_with_loop_not_heal(self):
+        """Text with no matching keywords still routes through heal_with_loop, not heal."""
+        import asyncio
+        from unittest.mock import MagicMock
 
-        ev = LogEvaluation(
+        from netalertx.log_monitor import LogEvaluation, _dispatch_to_healer
+
+        healer = _FakeHealer()
+        fake_llm = MagicMock()
+        evaluation = LogEvaluation(
             is_actionable=True,
-            root_cause_summary="MQTT broker connection refused",
-            confidence_score=0.85,
+            root_cause_summary="An unrecognized error occurred",
+            confidence_score=0.9,
         )
-        diag = _evaluation_to_diagnostic(ev)
-        assert diag.category == "config"
-        assert diag.severity == "MEDIUM"
-
-    def test_evaluation_to_diagnostic_networking_category(self):
-        from netalertx.log_monitor import LogEvaluation, _evaluation_to_diagnostic
-
-        ev = LogEvaluation(
-            is_actionable=True,
-            root_cause_summary="ArpScan failed: network unreachable",
-            confidence_score=0.95,
-        )
-        diag = _evaluation_to_diagnostic(ev)
-        assert diag.category == "networking"
-        assert diag.severity == "HIGH"
+        asyncio.run(_dispatch_to_healer(evaluation, healer=healer, llm_client=fake_llm))
+        assert healer.heal_with_loop_calls == 1
+        assert healer.heal_calls == 0
 
     # -----------------------------------------------------------------------
     # Additional edge-case coverage
@@ -5598,10 +5609,15 @@ class _FakeHealer:
 
     def __init__(self) -> None:
         self.heal_calls = 0
+        self.heal_with_loop_calls = 0
         self.last_diagnostic = None
 
     async def heal(self, diagnostic) -> None:
         self.heal_calls += 1
+        self.last_diagnostic = diagnostic
+
+    async def heal_with_loop(self, diagnostic, llm_client=None) -> None:
+        self.heal_with_loop_calls += 1
         self.last_diagnostic = diagnostic
 
 
@@ -8859,7 +8875,7 @@ class TestNetalertxLogMonitorQueueWiring:
 
         healer_called: list = []
 
-        async def fake_dispatch(ev, healer=None):
+        async def fake_dispatch(ev, healer=None, llm_client=None):
             healer_called.append(ev)
 
         monkeypatch.setattr(mod, "_dispatch_to_healer", fake_dispatch)

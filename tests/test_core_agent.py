@@ -19373,6 +19373,7 @@ class TestHacsRestartRequiredShortCircuit:
         autonomy_level: int = 4,
         set_pending: bool = True,
         repo_id: str = "99887",
+        pending_domain: str = "pycync",
     ):
         """Run exactly one repair poll iteration and return the FakeNotifier."""
         import asyncio as asyncio_mod
@@ -19383,7 +19384,21 @@ class TestHacsRestartRequiredShortCircuit:
         if set_pending:
             from agents.ha_update_manager import set_post_update_pending
 
-            set_post_update_pending("pycync", "restart", db_path)
+            set_post_update_pending(pending_domain, "restart", db_path)
+
+        # The new code looks up the HA domain from hacs_repo_map before checking the
+        # pending flag.  Patch load_environment_profile to return a profile with the
+        # mapping so the short-circuit can find the right flag.
+        from utils.ha.ha_environment import HAEnvironmentProfile
+
+        fake_profile = HAEnvironmentProfile(
+            hacs_repo_map={repo_id: ("user/pycync", pending_domain, True)}
+        )
+
+        monkeypatch.setattr(
+            "utils.ha.ha_environment.load_environment_profile",
+            lambda *a, **kw: fake_profile,
+        )
 
         notifier = FakeNotifier()
         iteration = [0]
@@ -19558,6 +19573,7 @@ class TestHacsRestartRequiredShortCircuit:
             set_post_update_pending,
             get_post_update_pending,
         )
+        from utils.ha.ha_environment import HAEnvironmentProfile
 
         set_post_update_pending("pycync", "restart", db_path)
 
@@ -19568,6 +19584,14 @@ class TestHacsRestartRequiredShortCircuit:
             return True
 
         monkeypatch.setattr(_um, "execute_ha_core_restart", fake_restart)
+
+        fake_profile = HAEnvironmentProfile(
+            hacs_repo_map={"99887": ("user/pycync", "pycync", True)}
+        )
+        monkeypatch.setattr(
+            "utils.ha.ha_environment.load_environment_profile",
+            lambda *a, **kw: fake_profile,
+        )
 
         import asyncio as asyncio_mod
         from agents.ha_log_monitor import poll_for_repairs
@@ -19600,6 +19624,194 @@ class TestHacsRestartRequiredShortCircuit:
 
         # Flag should be cleared after short-circuit fires
         assert get_post_update_pending("pycync", db_path) is None
+
+    def test_non_matching_pending_flag_does_not_fire_short_circuit(
+        self, db_path, monkeypatch
+    ):
+        """A pending flag for a different HACS repo does not trigger the short-circuit."""
+        import agents.ha_update_manager as _um
+        from agents.ha_update_manager import (
+            set_post_update_pending,
+            get_post_update_pending,
+        )
+        from utils.ha.ha_environment import HAEnvironmentProfile
+
+        # Set a flag for "other_integration", not for "pycync" (repo 99887).
+        set_post_update_pending("other_integration", "restart", db_path)
+
+        restart_called = []
+
+        async def fake_restart(ssh_client, notifier, skip_backup=False):
+            restart_called.append(True)
+            return True
+
+        monkeypatch.setattr(_um, "execute_ha_core_restart", fake_restart)
+
+        # Profile maps repo 99887 → domain "pycync"; no flag for "pycync" exists.
+        fake_profile = HAEnvironmentProfile(
+            hacs_repo_map={"99887": ("user/pycync", "pycync", True)}
+        )
+        monkeypatch.setattr(
+            "utils.ha.ha_environment.load_environment_profile",
+            lambda *a, **kw: fake_profile,
+        )
+
+        import asyncio as asyncio_mod
+        from agents.ha_log_monitor import poll_for_repairs
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        fake_llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_repair_issue",
+                                "arguments": {
+                                    "human_explanation": "No matching flag.",
+                                    "recommended_action": "Dismiss.",
+                                    "requires_hitl": False,
+                                    "action": "dismiss",
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
+        llm_call_count = [0]
+        original_chat = fake_llm.chat_with_tools
+
+        async def counting_chat(*args, **kwargs):
+            llm_call_count[0] += 1
+            return await original_chat(*args, **kwargs)
+
+        fake_llm.chat_with_tools = counting_chat
+
+        iteration = [0]
+
+        async def one_shot_sleep(_seconds):
+            iteration[0] += 1
+            if iteration[0] >= 2:
+                raise asyncio.CancelledError()
+
+        monkeypatch.setattr(asyncio_mod, "sleep", one_shot_sleep)
+        monkeypatch.setattr("agents.ha_log_monitor.AUTONOMY_LEVEL", 4)
+        monkeypatch.setattr(
+            "utils.core.timeline.write_timeline_event", lambda *a, **kw: None
+        )
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(
+                poll_for_repairs(
+                    ha_ws_client=FakeHAWebSocketClient(
+                        repair_issues=[self._hacs_restart_issue()]
+                    ),
+                    notifier=FakeNotifier(),
+                    db_path=db_path,
+                    llm_client=fake_llm,
+                )
+            )
+
+        # Short-circuit must NOT have fired
+        assert not restart_called, "restart must not be called for a mismatched flag"
+        # The flag for "other_integration" must still be present (not consumed)
+        assert get_post_update_pending("other_integration", db_path) == "restart"
+        # Normal investigation must have been triggered
+        assert (
+            llm_call_count[0] >= 1
+        ), "LLM investigation should run when flag doesn't match"
+
+    def test_repo_not_in_hacs_repo_map_falls_through_to_investigation(
+        self, db_path, monkeypatch
+    ):
+        """When the repo is not in hacs_repo_map, no short-circuit fires."""
+        import agents.ha_update_manager as _um
+        from agents.ha_update_manager import set_post_update_pending
+        from utils.ha.ha_environment import HAEnvironmentProfile
+
+        set_post_update_pending("pycync", "restart", db_path)
+
+        restart_called = []
+
+        async def fake_restart(ssh_client, notifier, skip_backup=False):
+            restart_called.append(True)
+            return True
+
+        monkeypatch.setattr(_um, "execute_ha_core_restart", fake_restart)
+
+        # Profile has an EMPTY hacs_repo_map — repo 99887 is not in it.
+        fake_profile = HAEnvironmentProfile(hacs_repo_map={})
+        monkeypatch.setattr(
+            "utils.ha.ha_environment.load_environment_profile",
+            lambda *a, **kw: fake_profile,
+        )
+
+        import asyncio as asyncio_mod
+        from agents.ha_log_monitor import poll_for_repairs
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        fake_llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_repair_issue",
+                                "arguments": {
+                                    "human_explanation": "Not in map.",
+                                    "recommended_action": "Dismiss.",
+                                    "requires_hitl": False,
+                                    "action": "dismiss",
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
+        llm_call_count = [0]
+        original_chat = fake_llm.chat_with_tools
+
+        async def counting_chat(*args, **kwargs):
+            llm_call_count[0] += 1
+            return await original_chat(*args, **kwargs)
+
+        fake_llm.chat_with_tools = counting_chat
+
+        iteration = [0]
+
+        async def one_shot_sleep(_seconds):
+            iteration[0] += 1
+            if iteration[0] >= 2:
+                raise asyncio.CancelledError()
+
+        monkeypatch.setattr(asyncio_mod, "sleep", one_shot_sleep)
+        monkeypatch.setattr("agents.ha_log_monitor.AUTONOMY_LEVEL", 4)
+        monkeypatch.setattr(
+            "utils.core.timeline.write_timeline_event", lambda *a, **kw: None
+        )
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(
+                poll_for_repairs(
+                    ha_ws_client=FakeHAWebSocketClient(
+                        repair_issues=[self._hacs_restart_issue()]
+                    ),
+                    notifier=FakeNotifier(),
+                    db_path=db_path,
+                    llm_client=fake_llm,
+                )
+            )
+
+        assert not restart_called, "restart must not be called when repo not in map"
+        assert (
+            llm_call_count[0] >= 1
+        ), "LLM investigation should run when repo not in map"
 
 
 # ── Spook digest routing ──────────────────────────────────────────────────────

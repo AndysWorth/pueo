@@ -354,38 +354,10 @@ async def analyze_log_line_with_ai(
                 pass
 
 
-def _evaluation_to_diagnostic(evaluation: LogEvaluation) -> "NetAlertXDiagnostic":
-    """Convert a LogEvaluation to a minimal NetAlertXDiagnostic for healer dispatch."""
-    from netalertx.diagnosis import NetAlertXDiagnostic
-
-    summary = evaluation.root_cause_summary.lower()
-    if any(kw in summary for kw in ("scan", "arp", "network", "unreachable")):
-        category: str = "networking"
-    elif any(kw in summary for kw in ("database", "db")):
-        category = "database"
-    elif any(kw in summary for kw in ("mqtt", "broker", "mosquitto", "config", "conf")):
-        category = "config"
-    else:
-        category = "networking"
-
-    severity = (
-        "HIGH"
-        if evaluation.confidence_score > NETALERTX_SEVERITY_CONFIDENCE_THRESHOLD
-        else "MEDIUM"
-    )
-
-    return NetAlertXDiagnostic(
-        issue=evaluation.root_cause_summary,
-        severity=severity,
-        category=category,  # type: ignore[arg-type]
-        recommended_fix="See log context for details.",
-        affected_netalertx_version="unknown",
-    )
-
-
 async def _dispatch_to_healer(
     evaluation: LogEvaluation,
     healer: Optional["NetAlertXHealer"] = None,
+    llm_client: Optional["LLMClientProtocol"] = None,
 ) -> None:
     if healer is None:
         log.info(
@@ -393,13 +365,28 @@ async def _dispatch_to_healer(
             cause=evaluation.root_cause_summary,
         )
         return
-    diagnostic = _evaluation_to_diagnostic(evaluation)
+    from netalertx.diagnosis import NetAlertXDiagnostic
+
+    severity = (
+        "HIGH"
+        if evaluation.confidence_score > NETALERTX_SEVERITY_CONFIDENCE_THRESHOLD
+        else "MEDIUM"
+    )
+    diagnostic = NetAlertXDiagnostic(
+        issue=evaluation.root_cause_summary,
+        severity=severity,
+        category="networking",
+        recommended_fix="See log context for details.",
+        affected_netalertx_version="unknown",
+    )
     log.info(
         "netalertx_healer_dispatch",
         cause=evaluation.root_cause_summary,
-        category=diagnostic.category,
     )
-    await healer.heal(diagnostic)
+    if llm_client is not None:
+        await healer.heal_with_loop(diagnostic, llm_client)
+    else:
+        await healer.heal(diagnostic)
 
 
 @async_retry(max_attempts=0, base_delay=SSH_RETRY_BASE_DELAY, exceptions=(OSError,))
@@ -482,12 +469,14 @@ async def tail_netalertx_log_stream(
                     log.warning("netalertx_repair_triggered")
                     _eval_snap = evaluation
                     _healer_snap = healer
+                    _llm_snap = llm_client
 
                     async def _healer_coro(
                         _ev: LogEvaluation = _eval_snap,
                         _h: Optional["NetAlertXHealer"] = _healer_snap,
+                        _lc: Optional["LLMClientProtocol"] = _llm_snap,
                     ) -> None:
-                        await _dispatch_to_healer(_ev, healer=_h)
+                        await _dispatch_to_healer(_ev, healer=_h, llm_client=_lc)
 
                     from utils.agent.work_queue import (
                         PRIORITY_CRITICAL,
