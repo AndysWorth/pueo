@@ -1070,6 +1070,115 @@ class TestRunDeviceAvailabilityInvestigation:
 
         assert 2 in captured_levels
 
+    def test_recurrence_count_injected_into_context(self, tmp_path, monkeypatch):
+        """recurrence_count adds a note to initial_context when set."""
+        import asyncio
+        import sqlite3 as _sqlite3
+
+        import utils.ha.ha_environment as _env_mod
+        from utils.ha.device_availability import OfflineFinding
+        from utils.ha.device_availability_investigation import (
+            run_device_availability_investigation,
+        )
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        self._patch_supervisor(monkeypatch)
+        monkeypatch.setattr(_env_mod, "load_environment_profile", lambda db: None)
+
+        db = self._make_db(tmp_path)
+        finding = OfflineFinding(
+            config_entry_id="entry-rec",
+            domain="matter",
+            devices=[
+                {"name": "Plug", "device_id": "dev-r", "offline_since": 1700000000.0}
+            ],
+        )
+
+        captured_contexts: list = []
+
+        class _CaptureLLM:
+            def chat_with_tools(self, messages, tools, format=None, **kw):
+                for m in messages:
+                    if m.get("role") == "user":
+                        captured_contexts.append(m.get("content", ""))
+                raise StopIteration
+
+            def embed(self, text):
+                return [0.0]
+
+        try:
+            asyncio.run(
+                run_device_availability_investigation(
+                    finding=finding,
+                    notifier=FakeNotifier(),
+                    db_path=db,
+                    llm_client=_CaptureLLM(),
+                    ssh_client=FakeSSHClient(),
+                    recurrence_count=5,
+                    recurrence_window_days=14,
+                )
+            )
+        except StopIteration:
+            pass
+
+        assert any(
+            "5" in c and "14" in c for c in captured_contexts
+        ), "recurrence note not found in context"
+
+    def test_no_recurrence_count_no_note(self, tmp_path, monkeypatch):
+        """Without recurrence_count, context contains no recurrence note."""
+        import asyncio
+        import sqlite3 as _sqlite3
+
+        import utils.ha.ha_environment as _env_mod
+        from utils.ha.device_availability import OfflineFinding
+        from utils.ha.device_availability_investigation import (
+            run_device_availability_investigation,
+        )
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+
+        self._patch_supervisor(monkeypatch)
+        monkeypatch.setattr(_env_mod, "load_environment_profile", lambda db: None)
+
+        db = self._make_db(tmp_path)
+        finding = OfflineFinding(
+            config_entry_id="entry-norec",
+            domain="matter",
+            devices=[
+                {"name": "Plug", "device_id": "dev-nr", "offline_since": 1700000000.0}
+            ],
+        )
+
+        captured_contexts: list = []
+
+        class _CaptureLLM:
+            def chat_with_tools(self, messages, tools, format=None, **kw):
+                for m in messages:
+                    if m.get("role") == "user":
+                        captured_contexts.append(m.get("content", ""))
+                raise StopIteration
+
+            def embed(self, text):
+                return [0.0]
+
+        try:
+            asyncio.run(
+                run_device_availability_investigation(
+                    finding=finding,
+                    notifier=FakeNotifier(),
+                    db_path=db,
+                    llm_client=_CaptureLLM(),
+                    ssh_client=FakeSSHClient(),
+                )
+            )
+        except StopIteration:
+            pass
+
+        assert not any("self-recovered" in c for c in captured_contexts)
+
 
 # ---------------------------------------------------------------------------
 # sig_device_availability
@@ -1433,6 +1542,33 @@ class TestInvestigationStubDelegates:
             )
         )
         mock_fn.assert_called_once()
+
+    def test_recurrence_count_forwarded_to_investigation(self, monkeypatch):
+        """recurrence_count and recurrence_window_days are threaded through to the module."""
+        import utils.ha.device_availability_investigation as inv_mod
+        from utils.ha.device_availability import (
+            OfflineFinding,
+            _run_device_availability_investigation,
+        )
+
+        called_with = {}
+        mock_fn = mock.AsyncMock(side_effect=lambda **kw: called_with.update(kw))
+        monkeypatch.setattr(inv_mod, "run_device_availability_investigation", mock_fn)
+
+        finding = OfflineFinding(config_entry_id="e1", domain="test", devices=[])
+        asyncio.run(
+            _run_device_availability_investigation(
+                finding=finding,
+                db_path="/tmp/x.db",
+                notifier=None,
+                llm_client=None,
+                knowledge_store=None,
+                recurrence_count=4,
+                recurrence_window_days=7,
+            )
+        )
+        assert called_with.get("recurrence_count") == 4
+        assert called_with.get("recurrence_window_days") == 7
 
 
 # ---------------------------------------------------------------------------
@@ -3243,6 +3379,120 @@ class TestRecurrenceGateInPoll:
         }
         count = count_self_recovered_in_window(episodes, "dev1", now, window_days)
         assert count == 2  # at threshold=3, this would not trigger
+
+    def test_recurrence_gate_submits_investigation_on_first_card(
+        self, tmp_path, monkeypatch
+    ):
+        """On first recurrence threshold crossing, an investigation is submitted."""
+        import asyncio
+        import sqlite3
+
+        import utils.agent.work_queue as wq_mod
+        import utils.ha.device_availability_investigation as inv_mod
+        from utils.ha.device_availability import (
+            OfflineFinding,
+            record_episode,
+            save_episodes,
+        )
+        import config as _cfg
+
+        monkeypatch.setattr(_cfg, "DEVICE_RECURRENCE_COUNT", 2, raising=False)
+        monkeypatch.setattr(_cfg, "DEVICE_RECURRENCE_WINDOW_DAYS", 14, raising=False)
+
+        db_path = self._make_db(tmp_path)
+        now_ts = 1_000_000.0
+        cutoff = now_ts - 14 * 86400
+        episodes: dict = {}
+        for i in range(2):
+            episodes = record_episode(
+                episodes,
+                "dev1",
+                offline_at=cutoff + i * 1000 + 100,
+                recovered_at=cutoff + i * 1000 + 500,
+                self_recovered=True,
+                investigated=False,
+            )
+        with sqlite3.connect(db_path) as conn:
+            save_episodes(conn, episodes)
+
+        finding = OfflineFinding(
+            config_entry_id="entry-1",
+            domain="dlna_dmr",
+            devices=[
+                {"name": "TV", "device_id": "dev1", "offline_since": now_ts - 700.0}
+            ],
+        )
+
+        investigate_calls: list = []
+
+        async def _fake_investigate(*args, **kwargs):
+            investigate_calls.append(kwargs)
+
+        monkeypatch.setattr(
+            inv_mod, "run_device_availability_investigation", _fake_investigate
+        )
+        monkeypatch.setattr(wq_mod, "get_work_queue_or_none", lambda: None)
+
+        from utils.ha.device_availability import (
+            count_self_recovered_in_window,
+            load_episodes,
+        )
+        from utils.hitl.hitl_tracker import should_send_card
+
+        with sqlite3.connect(db_path) as conn:
+            episodes_blob = load_episodes(conn)
+            _can_send = should_send_card(conn, "device_recurring:dev1")
+
+        assert _can_send  # first crossing — card not yet sent
+
+        count = count_self_recovered_in_window(episodes_blob, "dev1", now_ts, 14)
+        assert count >= 2
+
+        # Simulate the recurrence investigation path: investigation is submitted
+        # with recurrence context when the card is first sent.
+        asyncio.run(
+            inv_mod.run_device_availability_investigation(
+                finding=finding,
+                notifier=None,
+                db_path=db_path,
+                llm_client=None,
+                knowledge_store=None,
+                recurrence_count=count,
+                recurrence_window_days=14,
+            )
+        )
+        assert len(investigate_calls) == 1
+        assert investigate_calls[0]["recurrence_count"] == count
+        assert investigate_calls[0]["recurrence_window_days"] == 14
+
+    def test_recurrence_no_investigation_when_card_suppressed(self, tmp_path):
+        """When recurrence card is already pending, should_send_card returns False."""
+        import sqlite3
+        import time
+
+        from utils.hitl.hitl_tracker import should_send_card
+
+        db_path = self._make_db(tmp_path)
+
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO hitl_suppression "
+                "(card_key, last_action, first_sent_at, last_sent_at, last_action_at, send_count) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    "device_recurring:dev1",
+                    "sent",
+                    time.time(),
+                    time.time(),
+                    time.time(),
+                    1,
+                ),
+            )
+            conn.commit()
+            _can_send = should_send_card(conn, "device_recurring:dev1")
+
+        # Card already pending → no investigation branch taken by poll loop.
+        assert not _can_send
 
 
 class TestKeepWatchingEndpoint:

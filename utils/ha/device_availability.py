@@ -760,6 +760,8 @@ async def _run_device_availability_investigation(
     netalertx_api_client: object = None,
     ws_client: object = None,
     ha_rest_client: object = None,
+    recurrence_count: "int | None" = None,
+    recurrence_window_days: "int | None" = None,
 ) -> None:
     """Delegate to the investigation module."""
     from utils.ha.device_availability_investigation import (
@@ -775,6 +777,8 @@ async def _run_device_availability_investigation(
         netalertx_api_client=netalertx_api_client,
         ws_client=ws_client,
         ha_rest_client=ha_rest_client,
+        recurrence_count=recurrence_count,
+        recurrence_window_days=recurrence_window_days,
     )
 
 
@@ -1063,7 +1067,6 @@ async def poll_device_availability(
                             f"{_rec_name} ({finding.domain}) has gone offline and"
                             f" self-recovered {_recurring_count}× in"
                             f" {_cfg.DEVICE_RECURRENCE_WINDOW_DAYS} days."
-                            " No investigation launched."
                         )
                         await asyncio.to_thread(
                             write_timeline_event,
@@ -1101,6 +1104,70 @@ async def poll_device_availability(
                                 "window_days": _cfg.DEVICE_RECURRENCE_WINDOW_DAYS,
                             },
                         )
+
+                        # Also submit one investigation to identify the root cause.
+                        _rf = finding
+                        _rd = _db
+                        _rn = _notifier
+                        _rl = llm_client
+                        _rk = knowledge_store
+                        _rnax = netalertx_api_client
+                        _rws = _ws
+                        _rrest = ha_rest_client
+                        _rcnt = _recurring_count
+                        _rwin = _cfg.DEVICE_RECURRENCE_WINDOW_DAYS
+
+                        async def _recurrence_coro(
+                            _f: OfflineFinding = _rf,
+                            _d: str = _rd,
+                            _n: object = _rn,
+                            _l: object = _rl,
+                            _k: object = _rk,
+                            _nax: object = _rnax,
+                            _wsc: object = _rws,
+                            _rest: object = _rrest,
+                            _cnt: int = _rcnt,
+                            _win: int = _rwin,
+                        ) -> None:
+                            await _run_device_availability_investigation(
+                                finding=_f,
+                                db_path=_d,
+                                notifier=_n,
+                                llm_client=_l,
+                                knowledge_store=_k,
+                                netalertx_api_client=_nax,
+                                ws_client=_wsc,
+                                ha_rest_client=_rest,
+                                recurrence_count=_cnt,
+                                recurrence_window_days=_win,
+                            )
+
+                        _wq_r = get_work_queue_or_none()
+                        if _wq_r is not None:
+                            await _wq_r.submit(
+                                WorkItem(
+                                    priority=PRIORITY_NORMAL,
+                                    activity_type="device_availability",
+                                    description=(
+                                        f"Device recurrence investigation:"
+                                        f" {finding.domain} ({_recurring_count}×)"
+                                    ),
+                                    dedup_key=f"device_offline:{finding.config_entry_id}",
+                                    suppress_while_running=frozenset(),
+                                    coro_factory=_recurrence_coro,
+                                )
+                            )
+                        else:
+                            await _recurrence_coro()
+
+                        # Mark as investigated so this offline period is not counted
+                        # as a self-recovery when the device recovers.
+                        _rec_snap = result.snapshot.get(_recurring_device["device_id"])
+                        if _rec_snap is not None:
+                            _rec_snap["investigated"] = True
+                            _rec_snap["card_key"] = _rec_card_key
+                        with sqlite3.connect(_db) as conn:
+                            save_snapshot(conn, result.snapshot)
                     else:
                         log.info(
                             "device_recurrence_card_suppressed",

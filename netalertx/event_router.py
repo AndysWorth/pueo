@@ -13,7 +13,6 @@ import sqlite3
 import time
 from typing import TYPE_CHECKING, Any
 
-from utils.agent.autonomy import RiskLevel
 from utils.hitl.card_types import CARD_TYPE_NETALERTX_NEW_DEVICE
 from utils.hitl.hitl_tracker import mark_card_sent, should_send_card, stable_nid
 from utils.core.logging import get_logger
@@ -143,10 +142,6 @@ class NetAlertXEventRouter:
                         break
             except Exception:  # nosec B110
                 pass
-
-        if self._gate.should_auto_execute(RiskLevel.LOW):
-            log.info("netalertx_new_device_auto_logged", mac=mac, ip=ip, vendor=vendor)
-            return
 
         card_key = (
             f"netalertx:new_device:{mac_key}"
