@@ -242,13 +242,11 @@ async def diagnose_installer_failure(
     finally:
         decrement_active_agent()
 
-    from utils.core.prompts import load_prompt as _lp
+    from utils.core.prompts import load_agent_prompt as _lap
 
     trace = LLMTrace(
         model=model,
-        system_prompt=_lp("agent_loop").format(
-            terminal_tool="finish_installer_diagnosis"
-        ),
+        system_prompt=_lap("config_repair", "finish_installer_diagnosis"),
         user_prompt=initial_message,
         raw_response=diagnostic.model_dump_json(),
     )

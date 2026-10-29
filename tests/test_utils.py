@@ -6894,12 +6894,12 @@ class TestStrategySeeder:
         assert n >= len(_SEED_PROMPTS) - 1  # all registered seeds upserted
 
     def test_agent_loop_prompt_loads(self):
-        """prompts/agent_loop.md loads without error and contains remember instruction."""
-        from utils.core.prompts import load_prompt
+        """prompts/agent_core.md loads without error and contains remember instruction."""
+        from utils.core.prompts import load_agent_prompt
 
-        text = load_prompt("agent_loop")
+        text = load_agent_prompt("config_repair", "finish_repair")
         assert "remember" in text.lower()
-        assert "Phase 4" in text
+        assert "root cause" in text.lower()
 
     def test_ai_agent_ha_seed_is_included(self):
         """seed_ai_agent_ha.md is registered in _SEED_PROMPTS and retrieves on phantom-state query."""

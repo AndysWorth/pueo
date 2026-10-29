@@ -3387,7 +3387,7 @@ class TestLoadPrompt:
         import importlib.resources
 
         ref = importlib.resources.files("prompts")
-        md_file = ref.joinpath("agent_loop.md")
+        md_file = ref.joinpath("agent_core.md")
         assert md_file.read_text(encoding="utf-8")
 
     def test_missing_prompt_raises(self):
@@ -3397,18 +3397,18 @@ class TestLoadPrompt:
             load_prompt("nonexistent_prompt_xyz")
 
     def test_loads_agent_loop_prompt(self):
-        from utils.core.prompts import load_prompt
+        from utils.core.prompts import load_agent_prompt
 
-        text = load_prompt("agent_loop").format(terminal_tool="finish_repair")
+        text = load_agent_prompt("config_repair", "finish_repair")
         assert "hypothesis" in text.lower()
         assert "finish_repair" in text
 
     def test_agent_loop_prompt_substitutes_terminal_tool(self):
-        from utils.core.prompts import load_prompt
+        from utils.core.prompts import load_agent_prompt
 
-        text = load_prompt("agent_loop").format(terminal_tool="finish_chat")
+        text = load_agent_prompt("chat", "finish_chat")
         assert "finish_chat" in text
-        assert "recall" in text.lower()
+        assert "interface" in text.lower()
 
     def test_loads_analyze_notification_prompt(self):
         from utils.core.prompts import load_prompt
@@ -12929,12 +12929,12 @@ class TestAgentLoop:
 
     def test_system_prompt_requires_finish_repair(self):
         """Default system prompt explicitly mandates finish_repair and prohibits plain text."""
-        from utils.core.prompts import load_prompt
+        from utils.core.prompts import load_agent_prompt
 
-        prompt = load_prompt("agent_loop").format(terminal_tool="finish_repair")
+        prompt = load_agent_prompt("config_repair", "finish_repair")
         prompt_lower = prompt.lower()
         assert "finish_repair" in prompt
-        assert "mandatory" in prompt_lower or "required" in prompt_lower
+        assert "rules" in prompt_lower or "never return" in prompt_lower
         assert "plain text" in prompt_lower or "never return" in prompt_lower
 
     def _make_review_loop(self, call_sequence, review_response_json, budget):
