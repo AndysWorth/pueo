@@ -221,12 +221,7 @@ _SEED_PROMPTS: list[tuple[str, str, str]] = [
 # from other kinds (#993).  Unsigned seeds not listed here are general references
 # shown to every session.
 SEED_FAMILIES: dict[str, str] = {
-    "seed_host_health.md": "host",
     "seed_disk_space.md": "host",
-    "seed_lovelace_config.md": "lovelace",
-    "seed_repair_issue.md": "repair",
-    "seed_notification_analysis.md": "notification",
-    "seed_update_analysis.md": "update",
     "seed_automation_authoring.md": "chat",
 }
 

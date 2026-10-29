@@ -1,3 +1,7 @@
+---
+signature: repair:*:*
+---
+
 # HA Repair Issue Investigation — method
 
 Use this runbook when no symptom-specific runbook matches.

@@ -7102,8 +7102,8 @@ class TestPerSymptomSeeds:
         assert row is not None
         assert row[0] == "repair:*:restart_required"
 
-    def test_seed_strategies_no_signature_for_method_seed(self, tmp_path, monkeypatch):
-        """Method seeds (no front-matter) have NULL signature in agent_strategies."""
+    def test_family_seeds_store_wildcard_signature(self, tmp_path, monkeypatch):
+        """Family seeds (with wildcard front-matter) store their signature in agent_strategies."""
         import sqlite3
 
         import agents.ha_agent_advanced as haa
@@ -7116,12 +7116,22 @@ class TestPerSymptomSeeds:
         seed_strategies(FakeKnowledgeStore(), db_path=db)
 
         with sqlite3.connect(db) as conn:
-            row = conn.execute(
-                "SELECT signature FROM agent_strategies"
-                " WHERE id='seed:seed_repair_issue.md'"
-            ).fetchone()
-        assert row is not None
-        assert row[0] is None  # method seed has no signature
+            rows = {
+                r[0]: r[1]
+                for r in conn.execute(
+                    "SELECT id, signature FROM agent_strategies"
+                    " WHERE id IN ('seed:seed_repair_issue.md',"
+                    " 'seed:seed_notification_analysis.md',"
+                    " 'seed:seed_update_analysis.md',"
+                    " 'seed:seed_host_health.md',"
+                    " 'seed:seed_lovelace_config.md')"
+                ).fetchall()
+            }
+        assert rows["seed:seed_repair_issue.md"] == "repair:*:*"
+        assert rows["seed:seed_notification_analysis.md"] == "notification:*"
+        assert rows["seed:seed_update_analysis.md"] == "update:*:*"
+        assert rows["seed:seed_host_health.md"] == "host:*:*"
+        assert rows["seed:seed_lovelace_config.md"] == "lovelace:*:*"
 
 
 class TestSigSpecificity:
@@ -7497,6 +7507,7 @@ class TestSeedRegistry:
             sig_device_availability,
             sig_device_post_restart,
             sig_host_health,
+            sig_lovelace,
             sig_netalertx,
             sig_notification,
             sig_repair,
@@ -7523,6 +7534,7 @@ class TestSeedRegistry:
             sig_update("supervisor", "home_assistant_supervisor"),
             sig_host_health("resolution_issue", "rpi_firmware_update_blocked"),
             sig_host_health("resolution_issue", "no_current_backup"),
+            sig_lovelace("sensor", "unregistered"),
             sig_device_availability("econet"),
             sig_device_post_restart(),
             sig_netalertx("availability"),
@@ -7582,17 +7594,37 @@ class TestSeedRegistry:
             for s in self._canonical_signatures()
         )
 
+    def test_family_seed_beats_nothing_specific_seed_beats_family(self):
+        """Family wildcard (host:*:*) wins when no specific seed exists; specific seed
+        beats it when both match (higher _sig_specificity score)."""
+        from utils.knowledge.runbook_distiller import _sig_specificity
+
+        family = "host:*:*"
+        specific = "host:resolution_issue:rpi_firmware_update_blocked"
+        query = "host:resolution_issue:rpi_firmware_update_blocked"
+
+        family_match, family_spec = _sig_specificity(family, query)
+        specific_match, specific_spec = _sig_specificity(specific, query)
+
+        assert family_match, "family wildcard must match the query"
+        assert specific_match, "specific seed must also match the query"
+        assert (
+            specific_spec > family_spec
+        ), "specific seed must score higher than family"
+
+        # Also verify that a trigger with no specific seed still matches the family.
+        generic_query = "host:memory_low:swap_pressure"
+        generic_match, _ = _sig_specificity(family, generic_query)
+        assert (
+            generic_match
+        ), "family wildcard must match a trigger with no specific seed"
+
     # Canonical signatures covered by seeds (or explicitly acknowledged as unseeded).
     # Every sig_* output must appear here or in _UNSEEDED_OK.
     _UNSEEDED_OK: frozenset = frozenset(
         {
-            # HACS integrations share seed_update_hacs.md via update:hacs_integration:*.
+            # HACS integrations are covered by seed_update_hacs.md via update:hacs_integration:*.
             "update:hacs_integration:noaa_it_all",
-            # device update type has no dedicated analysis seed — treated as addon.
-            # (firmware updates route to update:device:* which uses update:addon fallback)
-            # ip-ban notifications are handled by seed_notification_http_login (covers both)
-            # but that seed's signature is notification:http_login (no wildcard).
-            "notification:ip_ban",
         }
     )
 

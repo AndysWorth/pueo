@@ -1,3 +1,7 @@
+---
+signature: host:*:*
+---
+
 # Host-health investigation — method
 
 Use this runbook when no symptom-specific runbook matches.
