@@ -32,7 +32,7 @@ from config import (
 from utils.ha.context_sanitizer import sanitize_update_context
 from utils.llm.model_options import ModelCallOptions, derive_call_options
 from utils.core.logging import get_logger
-from utils.core.prompts import load_prompt
+from utils.core.prompts import load_agent_prompt, load_prompt
 from utils.agent.tool_registry import AgentLoopResult, AgentStep, ToolCall, ToolResult
 from utils.agent.tool_result_guardrail import ToolResultGuardrail
 from utils.debug.capture import ToolCallRecord
@@ -376,6 +376,14 @@ def _parse_content_as_tool_call(
 
 _UNSET_PROMPT = object()  # sentinel for auto-loaded, terminal-tool-aware default
 
+# Primary text field for each terminal tool; used in nudge messages so the model
+# knows which field to pass its answer into.
+_TERMINAL_TOOL_PRIMARY_FIELD: dict[str, str] = {
+    "finish_repair_issue": "human_explanation",
+    "finish_notification_investigation": "human_explanation",
+    "finish_update_analysis": "recommendation",
+}
+
 
 def _derive_loop_call_options(model_name: str) -> ModelCallOptions:
     """Derive ModelCallOptions for an agent loop session.
@@ -484,9 +492,7 @@ class AgentLoop:
 
             model = _default_model_for_provider()
         if system_prompt is _UNSET_PROMPT:
-            system_prompt = load_prompt("agent_loop").format(
-                terminal_tool=terminal_tool_name
-            )
+            system_prompt = load_agent_prompt("config_repair", terminal_tool_name)
         self._llm = llm_client
         self._executor = tool_executor
         self._registry = tool_registry
@@ -1621,6 +1627,9 @@ class AgentLoop:
                     # the terminal tool causes the model to skip investigation
                     # and hallucinate answers.  Instead, demand any tool call
                     # and let the system prompt guide which one to use first.
+                    _primary_field = _TERMINAL_TOOL_PRIMARY_FIELD.get(
+                        self._terminal_tool_name, "summary"
+                    )
                     if tool_call_count == 0:
                         nudge = (
                             "You must call a tool — do not return plain text. "
@@ -1629,7 +1638,7 @@ class AgentLoop:
                             f"first (e.g. get_disk_usage, read_config, read_logs). "
                             f"For general knowledge questions, call "
                             f"{self._terminal_tool_name} with your answer in the "
-                            f'"summary" field.'
+                            f'"{_primary_field}" field.'
                         )
                     else:
                         calls_remaining = self._max_tool_calls - tool_call_count
@@ -1637,7 +1646,7 @@ class AgentLoop:
                             nudge = (
                                 f"Budget nearly exhausted. Call "
                                 f"{self._terminal_tool_name} NOW with your findings "
-                                f'in the "summary" field.'
+                                f'in the "{_primary_field}" field.'
                             )
                         else:
                             if content:
@@ -1645,7 +1654,7 @@ class AgentLoop:
                                     "Your response was plain text and was not delivered "
                                     "to the user. Call "
                                     f"{self._terminal_tool_name} now with the following "
-                                    'text as the "summary" field:\n\n'
+                                    f'text as the "{_primary_field}" field:\n\n'
                                     f"{content[:3000]}"
                                 )
                             else:
@@ -1654,7 +1663,7 @@ class AgentLoop:
                                     "The user cannot see plain text — it is not delivered. "
                                     "Call the next appropriate tool now, or if investigation "
                                     f"is complete call {self._terminal_tool_name} with "
-                                    'your findings in the "summary" field.'
+                                    f'your findings in the "{_primary_field}" field.'
                                 )
                     _pending_nudges.append(nudge)
                     messages.append({"role": "user", "content": nudge})

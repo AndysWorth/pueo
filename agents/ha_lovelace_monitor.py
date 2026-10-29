@@ -85,7 +85,7 @@ async def _run_lovelace_investigation(
     from utils.agent.autonomy import AutonomyGate
     from utils.ha.read_only_ssh import ReadOnlySSHClient
     from utils.llm.llm_factory import make_llm_client
-    from utils.core.prompts import load_prompt
+    from utils.core.prompts import load_agent_prompt
 
     llm = llm_client or make_llm_client()  # pragma: no cover
     gate = gate or AutonomyGate(_config.AUTONOMY_LEVEL)
@@ -106,9 +106,7 @@ async def _run_lovelace_investigation(
     executor.set_lovelace_suspicious([e["entity_id"] for e in suspicious])
 
     registry = build_lovelace_investigation_registry()
-    system_prompt = load_prompt("agent_loop_lovelace").format(
-        terminal_tool="finish_lovelace_investigation"
-    )
+    system_prompt = load_agent_prompt("lovelace", "finish_lovelace_investigation")
 
     lines = []
     for e in suspicious:

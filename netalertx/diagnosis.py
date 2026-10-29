@@ -16,7 +16,7 @@ from utils.core.context import estimate_tokens
 from utils.hitl.llm_trace import LLMTrace
 from utils.core.logging import get_logger
 from utils.llm.llm_factory import _default_model_for_provider, make_llm_client
-from utils.core.prompts import load_prompt
+from utils.core.prompts import load_agent_prompt, load_prompt
 
 if TYPE_CHECKING:
     from interfaces import (
@@ -297,9 +297,7 @@ async def _diagnose_with_agent_loop(
             )
         trace = LLMTrace(
             model=model,
-            system_prompt=load_prompt("agent_loop").format(
-                terminal_tool="finish_health_diagnosis"
-            ),
+            system_prompt=load_agent_prompt("config_repair", "finish_health_diagnosis"),
             user_prompt=initial_message,
             raw_response=result.model_dump_json() if result else "",
         )

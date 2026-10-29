@@ -327,7 +327,7 @@ async def _run_notification_investigation(
     from utils.agent.autonomy import AutonomyGate
     from utils.ha.read_only_ssh import ReadOnlySSHClient
     from utils.llm.llm_factory import make_llm_client
-    from utils.core.prompts import load_prompt
+    from utils.core.prompts import load_agent_prompt
 
     category, severity = classify_notification(notification_id, message)
     llm = llm_client or make_llm_client()  # pragma: no cover
@@ -369,8 +369,8 @@ async def _run_notification_investigation(
         pass
 
     registry = build_notification_investigation_registry()
-    system_prompt = load_prompt("agent_loop_notification").format(
-        terminal_tool="finish_notification_investigation"
+    system_prompt = load_agent_prompt(
+        "notification", "finish_notification_investigation"
     )
 
     initial_context = (

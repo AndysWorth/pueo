@@ -6894,12 +6894,12 @@ class TestStrategySeeder:
         assert n >= len(_SEED_PROMPTS) - 1  # all registered seeds upserted
 
     def test_agent_loop_prompt_loads(self):
-        """prompts/agent_loop.md loads without error and contains remember instruction."""
-        from utils.core.prompts import load_prompt
+        """prompts/agent_core.md loads without error and contains remember instruction."""
+        from utils.core.prompts import load_agent_prompt
 
-        text = load_prompt("agent_loop")
+        text = load_agent_prompt("config_repair", "finish_repair")
         assert "remember" in text.lower()
-        assert "Phase 4" in text
+        assert "root cause" in text.lower()
 
     def test_ai_agent_ha_seed_is_included(self):
         """seed_ai_agent_ha.md is registered in _SEED_PROMPTS and retrieves on phantom-state query."""
@@ -7775,7 +7775,7 @@ class TestSeedsWithLiteralQuirk:
 
 
 class TestPromptNoVerdictRules:
-    """agent_loop_*.md keep method and safety rules; seeds own per-type verdicts (#945)."""
+    """task_*.md and agent_core.md keep shared rules; seeds own per-type verdicts (#945)."""
 
     _VERDICT_PATTERNS = (
         r"(?i)(?:→|->|escalate to)\s*(?:severity(?:_override)?\s*=\s*)?[\"']?critical",
@@ -7783,21 +7783,24 @@ class TestPromptNoVerdictRules:
         r"(?i)unknown device login",
     )
 
-    def _loop_prompts(self):
+    def _agent_prompts(self):
+        """Return agent_core.md and all task_*.md files."""
         from pathlib import Path
 
         prompts_dir = Path(__file__).parent.parent / "prompts"
-        return sorted(prompts_dir.glob("agent_loop_*.md"))
+        return sorted(prompts_dir.glob("agent_core.md")) + sorted(
+            prompts_dir.glob("task_*.md")
+        )
 
-    def test_finds_loop_prompts(self):
-        assert len(self._loop_prompts()) >= 5
+    def test_finds_task_prompts(self):
+        assert len(self._agent_prompts()) == 9  # agent_core + 8 task_*.md
 
     def test_no_per_type_verdicts(self):
         import re
 
         offenders = [
             (p.name, pat)
-            for p in self._loop_prompts()
+            for p in self._agent_prompts()
             for pat in self._VERDICT_PATTERNS
             if re.search(pat, p.read_text("utf-8"))
         ]
@@ -7812,13 +7815,13 @@ class TestPromptNoVerdictRules:
             for p in (self._VERDICT_PATTERNS[0], self._VERDICT_PATTERNS[2])
         )
 
-    def test_every_loop_prompt_has_grounding_rule(self):
-        missing = [
-            p.name
-            for p in self._loop_prompts()
-            if "Never state a fact" not in p.read_text("utf-8")
-        ]
-        assert missing == []
+    def test_agent_core_has_grounding_rule(self):
+        from pathlib import Path
+
+        text = (Path(__file__).parent.parent / "prompts" / "agent_core.md").read_text(
+            "utf-8"
+        )
+        assert "Never state a fact" in text
 
     def test_http_login_seed_owns_inventory_verdict(self):
         from pathlib import Path
@@ -7829,6 +7832,96 @@ class TestPromptNoVerdictRules:
         assert "search_log" in text
         assert "inventory_available=false" in text
         assert "Never escalate to CRITICAL" in text
+
+
+class TestLoadAgentPrompt:
+    """load_agent_prompt() composition, substitution, validation, and tool-name guard."""
+
+    def test_composition_contains_core_and_task(self):
+        from utils.core.prompts import load_agent_prompt
+
+        result = load_agent_prompt("chat", "finish_chat")
+        # core content
+        assert "6-PHASE CYCLE" in result
+        assert "Never state a fact" in result
+        # task content
+        assert "Chat interface" in result
+
+    def test_terminal_tool_substituted(self):
+        from utils.core.prompts import load_agent_prompt
+
+        result = load_agent_prompt("repair_issue", "finish_repair_issue")
+        assert "{terminal_tool}" not in result
+        assert "finish_repair_issue" in result
+
+    def test_unknown_task_raises(self):
+        from utils.core.prompts import load_agent_prompt
+
+        with pytest.raises(ValueError, match="Unknown agent task"):
+            load_agent_prompt("nonexistent_task", "finish_repair")
+
+    def test_all_tasks_compose_without_error(self):
+        from utils.core.prompts import _VALID_TASKS, load_agent_prompt
+
+        terminal_tools = {
+            "chat": "finish_chat",
+            "config_repair": "finish_repair",
+            "repair_issue": "finish_repair_issue",
+            "notification": "finish_notification_investigation",
+            "lovelace": "finish_lovelace_investigation",
+            "device": "finish_device_availability",
+            "host": "finish_host_health",
+            "update": "finish_update_analysis",
+        }
+        for task in _VALID_TASKS:
+            tool = terminal_tools[task]
+            result = load_agent_prompt(task, tool)
+            assert len(result) > 200, f"task {task!r} prompt too short"
+            assert "{terminal_tool}" not in result
+
+    def test_task_tool_names_are_registered(self):
+        """Tool names mentioned in task prompts must exist in build_ha_tool_registry."""
+        import re
+        from pathlib import Path
+
+        from utils.agent.tool_registry import build_ha_tool_registry
+
+        from utils.agent.tool_registry import (
+            build_chat_tool_registry,
+            build_device_availability_tool_registry,
+            build_host_health_tool_registry,
+            build_lovelace_investigation_registry,
+            build_netalertx_tool_registry,
+            build_notification_investigation_registry,
+            build_update_analysis_registry,
+        )
+
+        all_names = (
+            set(build_ha_tool_registry().names())
+            | set(build_chat_tool_registry().names())
+            | set(build_netalertx_tool_registry().names())
+            | set(build_notification_investigation_registry().names())
+            | set(build_update_analysis_registry().names())
+            | set(build_device_availability_tool_registry().names())
+            | set(build_host_health_tool_registry().names())
+            | set(build_lovelace_investigation_registry().names())
+        )
+
+        prompts_dir = Path(__file__).parent.parent / "prompts"
+        bad = []
+        for task_file in sorted(prompts_dir.glob("task_*.md")):
+            text = task_file.read_text("utf-8")
+            # Extract snake_case identifiers immediately followed by ( or preceded by
+            # "call " — these are tool name references, not field names.
+            candidates = re.findall(r"call\s+([a-z][a-z0-9_]+)\b", text)
+            candidates += re.findall(r"\b([a-z][a-z0-9_]+)\(", text)
+            for name in candidates:
+                # Skip short names and field-value references
+                if len(name) < 6:
+                    continue
+                if name not in all_names:
+                    bad.append((task_file.name, name))
+        assert bad == [], f"Unregistered tool names in task prompts: {bad}"
 
 
 class TestDeviceAndHostSeedContent:

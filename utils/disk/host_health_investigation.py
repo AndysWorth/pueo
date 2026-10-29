@@ -36,7 +36,7 @@ async def run_host_health_investigation(
     from utils.agent.autonomy import AutonomyGate
     from utils.agent.tool_executor import ToolExecutor
     from utils.agent.tool_registry import build_host_health_tool_registry
-    from utils.core.prompts import load_prompt
+    from utils.core.prompts import load_agent_prompt
     from utils.ha.ssh_client import AsyncSSHClient
     from utils.llm.llm_factory import make_llm_client
 
@@ -66,9 +66,7 @@ async def run_host_health_investigation(
         pass
 
     registry = build_host_health_tool_registry()
-    system_prompt = load_prompt("agent_loop_host_health").format(
-        terminal_tool="finish_host_health"
-    )
+    system_prompt = load_agent_prompt("host", "finish_host_health")
 
     evidence_lines = "\n".join(
         f"  {k}: {v}" for k, v in finding.evidence.items() if v is not None

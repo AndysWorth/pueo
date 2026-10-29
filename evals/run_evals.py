@@ -104,6 +104,12 @@ class FakeToolExecutor:
         self.apply_fix_yaml: Optional[str] = None
         self._apply_fix_used = False
 
+    def set_episode_id(self, episode_id: str) -> None:
+        pass
+
+    def set_signature(self, signature: str) -> None:
+        pass
+
     def reset(self) -> None:
         self.calls_made = []
         self.apply_fix_yaml = None

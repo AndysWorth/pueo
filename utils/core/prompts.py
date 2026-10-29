@@ -4,6 +4,19 @@ _cache: dict[str, str] = {}
 # Traversable pointing at the prompts/ package; tests inject a tmp_path Path here.
 _prompt_ref = importlib.resources.files("prompts")
 
+_VALID_TASKS = frozenset(
+    {
+        "chat",
+        "config_repair",
+        "repair_issue",
+        "notification",
+        "lovelace",
+        "device",
+        "host",
+        "update",
+    }
+)
+
 
 def load_prompt(name: str, /, **kwargs: str) -> str:
     """Load a prompt template from prompts/<name>.md, caching after first read."""
@@ -11,6 +24,21 @@ def load_prompt(name: str, /, **kwargs: str) -> str:
         _cache[name] = _prompt_ref.joinpath(f"{name}.md").read_text(encoding="utf-8")
     text = _cache[name]
     return text.format_map(kwargs) if kwargs else text
+
+
+def load_agent_prompt(task: str, terminal_tool: str) -> str:
+    """Compose prompts/agent_core.md + prompts/task_{task}.md with {terminal_tool} substituted.
+
+    Raises ValueError for unknown tasks.
+    """
+    if task not in _VALID_TASKS:
+        raise ValueError(
+            f"Unknown agent task {task!r}; valid tasks: {sorted(_VALID_TASKS)}"
+        )
+    core = load_prompt("agent_core")
+    task_text = load_prompt(f"task_{task}")
+    combined = f"{core}\n\n{task_text}"
+    return combined.format(terminal_tool=terminal_tool)
 
 
 def repeat_query(system_prompt: str, user_content: str) -> str:
