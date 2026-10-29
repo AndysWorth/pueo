@@ -16,7 +16,7 @@ from utils.core.context import estimate_tokens
 from utils.hitl.llm_trace import LLMTrace
 from utils.core.logging import get_logger
 from utils.llm.llm_factory import _default_model_for_provider, make_llm_client
-from utils.core.prompts import load_agent_prompt, load_prompt
+from utils.core.prompts import load_agent_prompt
 
 if TYPE_CHECKING:
     from interfaces import (
@@ -191,7 +191,9 @@ async def diagnose_health_report(
             ha_profile,
             db_path,
         )
-    return await _diagnose_one_shot(context, client, model)
+    raise RuntimeError(
+        "diagnose_health_report: ssh_client is required; the one-shot fallback was removed"
+    )
 
 
 async def _diagnose_with_agent_loop(
@@ -307,74 +309,3 @@ async def _diagnose_with_agent_loop(
         return None, None
     finally:
         decrement_active_agent()
-
-
-async def _diagnose_one_shot(
-    context: str,
-    client: "LLMClientProtocol",
-    model: str,
-) -> tuple[Optional[NetAlertXDiagnostic], Optional[LLMTrace]]:
-    """One-shot LLM call for NetAlertX health diagnosis (fallback without ssh_client)."""
-    system_prompt = load_prompt("diagnose_netalertx")
-    user_prompt = f"Diagnose the following NetAlertX issues:\n\n{context}"
-    _t0_nd = __import__("time").monotonic()
-    try:
-        from utils.llm.model_options import one_shot_options, one_shot_think
-
-        response = await client.chat(
-            model=model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            options=one_shot_options(model),
-            format=NetAlertXDiagnostic.model_json_schema(),
-            think=one_shot_think(model),
-        )
-        raw_output = response["message"]["content"]
-        result = NetAlertXDiagnostic.model_validate_json(raw_output)
-        log.info(
-            "netalertx_diagnosis_complete",
-            category=result.category,
-            severity=result.severity,
-        )
-        _dur_nd = (__import__("time").monotonic() - _t0_nd) * 1000
-        try:
-            from utils.debug.capture import record_one_shot as _ros
-
-            _ros(
-                "_diagnose_one_shot",
-                model,
-                user_prompt[:500],
-                raw_output[:500],
-                _dur_nd,
-                "success",
-                _config.DB_PATH,
-            )
-        except Exception:  # nosec B110
-            pass
-        trace = LLMTrace(
-            model=model,
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            raw_response=raw_output,
-        )
-        return result, trace
-    except Exception as exc:
-        log.error("netalertx_diagnosis_inference_failed", error=str(exc))
-        _dur_nd = (__import__("time").monotonic() - _t0_nd) * 1000
-        try:
-            from utils.debug.capture import record_one_shot as _ros
-
-            _ros(
-                "_diagnose_one_shot",
-                model,
-                user_prompt[:500],
-                str(exc)[:500],
-                _dur_nd,
-                "error",
-                _config.DB_PATH,
-            )
-        except Exception:  # nosec B110
-            pass
-        return None, None

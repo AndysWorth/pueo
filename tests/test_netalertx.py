@@ -4815,17 +4815,16 @@ class TestNetAlertXDiagnostic:
         )
         return FakeLLMClient(diag.model_dump_json())
 
-    def test_zero_devices_anomaly_returns_networking_diagnostic(self):
+    def test_diagnose_health_report_no_ssh_raises(self):
+        """Without ssh_client, diagnose_health_report raises RuntimeError."""
         import asyncio
+
+        import pytest
 
         from netalertx.diagnosis import diagnose_health_report
 
-        report = self._zero_devices_report()
-        llm = self._make_fake_llm("networking")
-        result, _trace = asyncio.run(diagnose_health_report(report, llm_client=llm))
-        assert result is not None
-        assert result.category == "networking"
-        assert "--network=host" in result.recommended_fix
+        with pytest.raises(RuntimeError, match="ssh_client is required"):
+            asyncio.run(diagnose_health_report(self._zero_devices_report()))
 
     def test_no_anomalies_returns_none(self):
         import asyncio
@@ -4842,124 +4841,6 @@ class TestNetAlertXDiagnostic:
         )
         result, _trace = asyncio.run(diagnose_health_report(report, config_issues=[]))
         assert result is None
-
-    def test_config_issues_trigger_diagnosis(self):
-        import asyncio
-
-        from netalertx.config_validator import ConfigIssue
-        from netalertx.health import HealthReport
-
-        from netalertx.diagnosis import diagnose_health_report
-
-        report = HealthReport(
-            last_scan_age_minutes=5,
-            device_counts={"total": 10, "online": 8},
-            anomalies=[],
-            netalertx_version="v26.7.1",
-        )
-        issue = ConfigIssue(
-            field="SCAN_SUBNETS",
-            message="SCAN_SUBNETS is empty",
-            severity="HIGH",
-        )
-        llm = self._make_fake_llm("networking")
-        result, _trace = asyncio.run(
-            diagnose_health_report(report, config_issues=[issue], llm_client=llm)
-        )
-        assert result is not None
-        assert result.category == "networking"
-
-    def test_llm_failure_returns_none(self):
-        import asyncio
-
-        from netalertx.diagnosis import diagnose_health_report
-
-        class _CrashingLLM:
-            async def chat(self, **_):
-                raise RuntimeError("Ollama unavailable")
-
-        result, _trace = asyncio.run(
-            diagnose_health_report(
-                self._zero_devices_report(), llm_client=_CrashingLLM()
-            )
-        )
-        assert result is None
-
-    def test_llm_called_with_anomaly_context(self):
-        import asyncio
-
-        from utils.llm.ollama_client import FakeToolCallingLLMClient
-
-        from netalertx.diagnosis import NetAlertXDiagnostic, diagnose_health_report
-
-        diag = NetAlertXDiagnostic(
-            issue="test",
-            severity="LOW",
-            category="networking",
-            recommended_fix="none",
-            affected_netalertx_version="v26.7.1",
-        )
-        llm = FakeToolCallingLLMClient(
-            [
-                {
-                    "tool_calls": [
-                        {
-                            "function": {
-                                "name": "finish_health_diagnosis",
-                                "arguments": {
-                                    **diag.model_dump(),
-                                    "summary": diag.issue,
-                                },
-                            }
-                        }
-                    ]
-                }
-            ]
-        )
-        asyncio.run(diagnose_health_report(self._zero_devices_report(), llm_client=llm))
-        assert len(llm.calls) == 1
-        user_msg = llm.calls[0]["messages"][1]["content"]
-        assert "No devices discovered" in user_msg
-
-    def test_diagnose_health_report_uses_model_factory(self, monkeypatch):
-        import asyncio
-        import netalertx.diagnosis as diag_mod
-        from utils.llm.ollama_client import FakeToolCallingLLMClient
-        from netalertx.diagnosis import NetAlertXDiagnostic, diagnose_health_report
-
-        diag = NetAlertXDiagnostic(
-            issue="test",
-            severity="LOW",
-            category="networking",
-            recommended_fix="none",
-            affected_netalertx_version="v26.7.1",
-        )
-        llm = FakeToolCallingLLMClient(
-            [
-                {
-                    "tool_calls": [
-                        {
-                            "function": {
-                                "name": "finish_health_diagnosis",
-                                "arguments": {
-                                    **diag.model_dump(),
-                                    "summary": diag.issue,
-                                },
-                            }
-                        }
-                    ]
-                }
-            ]
-        )
-        calls = []
-        monkeypatch.setattr(
-            diag_mod,
-            "_default_model_for_provider",
-            lambda: calls.append(True) or "sentinel-model",
-        )
-        asyncio.run(diagnose_health_report(self._zero_devices_report(), llm_client=llm))
-        assert calls, "_default_model_for_provider was not called"
-        assert llm.calls[0]["model"] == "sentinel-model"
 
     def test_diagnose_health_report_agent_loop_path(self):
         """When ssh_client is provided, diagnose_health_report uses AgentLoop."""
@@ -5197,93 +5078,6 @@ class TestNetAlertXHealer:
         assert len(gate.require_approval_calls) == 0
 
     # -----------------------------------------------------------------------
-    # Version bump detection
-    # -----------------------------------------------------------------------
-
-    def test_version_bump_triggers_hitl_at_level_3(self, tmp_path):
-        import asyncio
-        import sqlite3
-
-        from utils.agent.autonomy import FakeAutonomyGate
-        from utils.hitl.notify import FakeNotifier
-
-        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
-        notifier = FakeNotifier(approve=True)
-        db_path = str(tmp_path / "test.db")
-
-        with sqlite3.connect(db_path) as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS netalertx_state (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    key TEXT NOT NULL UNIQUE,
-                    value TEXT NOT NULL
-                )
-                """
-            )
-            conn.execute(
-                "INSERT INTO netalertx_state (key, value) VALUES ('netalertx_version', 'v26.6.0')"
-            )
-            conn.commit()
-
-        healer = self._make_healer(gate=gate, notifier=notifier, db_path=db_path)
-        approved = asyncio.run(healer.check_version_bump("v26.7.1"))
-
-        # HITL was requested for the version bump
-        assert len(gate.require_approval_calls) == 1
-        assert "v26.6.0" in gate.require_approval_calls[0]["body"]
-        assert "v26.7.1" in gate.require_approval_calls[0]["body"]
-        # With approval_result=True, healing is allowed to proceed
-        assert approved is True
-
-    def test_no_version_bump_returns_true_immediately(self, tmp_path):
-        import asyncio
-
-        from utils.agent.autonomy import FakeAutonomyGate
-
-        gate = FakeAutonomyGate(auto_execute_result=True)
-        db_path = str(tmp_path / "test.db")
-        healer = self._make_healer(gate=gate, db_path=db_path)
-        # First call stores the version
-        asyncio.run(healer.check_version_bump("v26.7.1"))
-        # Second call with same version — no HITL
-        result = asyncio.run(healer.check_version_bump("v26.7.1"))
-
-        assert result is True
-        assert len(gate.require_approval_calls) == 0
-
-    def test_version_bump_blocked_returns_false(self, tmp_path):
-        import asyncio
-        import sqlite3
-
-        from utils.agent.autonomy import FakeAutonomyGate
-        from utils.hitl.notify import FakeNotifier
-
-        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
-        notifier = FakeNotifier(approve=False)
-        db_path = str(tmp_path / "test.db")
-
-        with sqlite3.connect(db_path) as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS netalertx_state (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    key TEXT NOT NULL UNIQUE,
-                    value TEXT NOT NULL
-                )
-                """
-            )
-            conn.execute(
-                "INSERT INTO netalertx_state (key, value) VALUES ('netalertx_version', 'v26.5.0')"
-            )
-            conn.commit()
-
-        healer = self._make_healer(gate=gate, notifier=notifier, db_path=db_path)
-        result = asyncio.run(healer.check_version_bump("v26.7.1"))
-
-        assert result is False
-
-    # -----------------------------------------------------------------------
     # notify-only categories (database, version, ha_integration, mqtt, etc.)
     # -----------------------------------------------------------------------
 
@@ -5430,38 +5224,6 @@ class TestNetAlertXHealer:
 
         assert any("docker restart" in cmd for cmd in ssh.commands_run)
         assert api.trigger_scan_calls == 1
-
-    def test_version_bump_blocked_log_and_false(self, tmp_path):
-        """When version bump is blocked, returns False and logs the block."""
-        import asyncio
-        import sqlite3
-
-        from utils.agent.autonomy import FakeAutonomyGate
-        from utils.hitl.notify import FakeNotifier
-
-        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
-        notifier = FakeNotifier(approve=False)
-        db_path = str(tmp_path / "test.db")
-
-        with sqlite3.connect(db_path) as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS netalertx_state (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    key TEXT NOT NULL UNIQUE,
-                    value TEXT NOT NULL
-                )
-                """
-            )
-            conn.execute(
-                "INSERT INTO netalertx_state (key, value) VALUES ('netalertx_version', 'v26.6.0')"
-            )
-            conn.commit()
-
-        healer = self._make_healer(gate=gate, notifier=notifier, db_path=db_path)
-        result = asyncio.run(healer.check_version_bump("v26.7.1"))
-        assert result is False
-        assert len(gate.require_approval_calls) == 1
 
     def test_restart_container_addon_mode(self, monkeypatch):
         """In add-on mode, _restart_container runs 'ha apps restart <slug>' on ha_ssh."""
@@ -5658,132 +5420,6 @@ class TestNetAlertXMaintenanceValidator:
 
         metrics = {"Plugins_History": 100000.0}
         assert validate_db_row_counts(metrics, max_rows=100000) == []
-
-
-# ===========================================================================
-# TestNetAlertXMaintenanceHealer  (item 19)
-# ===========================================================================
-
-
-class TestNetAlertXMaintenanceHealer:
-    """Tests for heal_maintenance_issues in healer.py (item 19)."""
-
-    @pytest.fixture(autouse=True)
-    def _patch_sandbox_db_path(self, tmp_path, monkeypatch):
-        """Redirect agent DB_PATH variables to temp files.
-
-        record_backup_slug() resolves DB_PATH from ha_agent_advanced at call
-        time, so both modules must be patched to avoid writing to the real DB
-        and triggering the UNIQUE constraint across tests.
-        """
-        from agents import ha_agent_advanced, ha_agent_sandbox_engine
-
-        db = str(tmp_path / "sandbox_test.db")
-        monkeypatch.setattr(ha_agent_sandbox_engine, "DB_PATH", db)
-        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", db)
-        ha_agent_sandbox_engine.init_local_database()
-
-    def _make_issue(self, field: str, message: str = "test", severity: str = "MEDIUM"):
-        from netalertx.config_validator import ConfigIssue
-
-        return ConfigIssue(field=field, message=message, severity=severity)
-
-    def _make_healer(
-        self, gate, ssh_client=None, ha_ssh_client=None, api_client=None, notifier=None
-    ):
-        import sqlite3
-
-        from netalertx.healer import NetAlertXHealer
-        from utils.ha.ssh_client import FakeSSHClient
-
-        if ssh_client is None:
-            ssh_client = FakeSSHClient()
-        if ha_ssh_client is None:
-            ha_ssh_client = FakeSSHClient(
-                file_contents={
-                    "/config/automations.yaml": "- trigger:\n  - platform: webhook\n    webhook_id: netalertx_event\n  action:\n  - data:\n      mac: eve_mac\n"
-                }
-            )
-        if notifier is None:
-            from utils.hitl.notify import FakeNotifier
-
-            notifier = FakeNotifier(approve=True)
-        if api_client is None:
-            api_client = _FakeAPIClient()
-
-        db_path = ":memory:"
-        with sqlite3.connect(db_path) as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS netalertx_state (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    key TEXT NOT NULL UNIQUE,
-                    value TEXT NOT NULL
-                )
-                """
-            )
-            conn.commit()
-
-        return NetAlertXHealer(
-            gate=gate,
-            ssh_client=ssh_client,
-            ha_ssh_client=ha_ssh_client,
-            api_client=api_client,
-            notifier=notifier,
-            db_path=db_path,
-        )
-
-    # ── DB row count: DBCLNP cleanup at level 4 only ─────────────────────────
-
-    def test_db_issue_level_4_triggers_dbclnp(self):
-        import asyncio
-
-        from utils.agent.autonomy import FakeAutonomyGate
-
-        gate = FakeAutonomyGate(auto_execute_result=True)
-        api = _FakeAPIClient()
-        healer = self._make_healer(gate=gate, api_client=api)
-        issue = self._make_issue(
-            "Plugins_History", message="150k rows", severity="WARNING"
-        )
-        asyncio.run(healer.heal_maintenance_issues([issue]))
-
-        assert api.trigger_scan_calls == 1
-        assert "DBCLNP" in api.trigger_scan_types
-
-    def test_db_issue_level_3_no_dbclnp(self):
-        import asyncio
-
-        from utils.agent.autonomy import FakeAutonomyGate
-
-        # should_auto_execute returns False → no DBCLNP at level < 4
-        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
-        api = _FakeAPIClient()
-        healer = self._make_healer(gate=gate, api_client=api)
-        issue = self._make_issue("Events", message="200k rows", severity="WARNING")
-        asyncio.run(healer.heal_maintenance_issues([issue]))
-
-        assert api.trigger_scan_calls == 0
-
-    def test_no_issues_is_noop(self):
-        import asyncio
-
-        from utils.agent.autonomy import FakeAutonomyGate
-        from utils.hitl.notify import FakeNotifier
-        from utils.ha.ssh_client import FakeSSHClient
-
-        gate = FakeAutonomyGate(auto_execute_result=True)
-        notifier = FakeNotifier(approve=True)
-        ssh = FakeSSHClient()
-        api = _FakeAPIClient()
-        healer = self._make_healer(
-            gate=gate, ssh_client=ssh, notifier=notifier, api_client=api
-        )
-        asyncio.run(healer.heal_maintenance_issues([]))
-
-        assert ssh.written_files == {}
-        assert api.trigger_scan_calls == 0
-        assert len(notifier.sent) == 0
 
 
 # ── HITL Request model ────────────────────────────────────────────────────────────

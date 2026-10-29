@@ -1104,112 +1104,67 @@ async def _run_update_analysis(
                     component=update.component,
                 )
             elif executor._pending_auto_apply:
-                # Gate permitted auto-apply (autonomy_level ≥ AUTONOMOUS and update
-                # is safe). Core/OS updates are always blocked from auto-apply —
-                # they require explicit human approval regardless of autonomy level.
-                _BLOCKED_COMPONENTS = {"homeassistant", "core", "os", "supervisor"}
-                if update.component.lower() in _BLOCKED_COMPONENTS:
-                    log.warning(
-                        "update_auto_apply_blocked_critical",
-                        component=update.component,
-                    )
-                    # Create a HITL card even though the LLM said no card needed.
-                    # Stable nid + pending suppression row so the next poll does not
-                    # re-analyze and overwrite this card (#976).
-                    from agents.ha_log_monitor import _update_mark_card_sent
+                # Gate (tool_executor.py) already enforces the L4+high-confidence
+                # requirement for core/OS/supervisor (ADR 035); trust it here.
+                log.info(
+                    "update_auto_apply_start",
+                    component=update.component,
+                    version=update.latest_version,
+                )
+                _entities_executing_update.add(update.entity_id)
+                try:
+                    _update_ok = await execute_update(update, _ssh, _notifier, gate)
+                    from agents.ha_log_monitor import _update_mark_auto_applied
                     from utils.hitl.card_types import CARD_TYPE_UPDATE
-                    from utils.hitl.hitl_tracker import stable_nid
 
                     suppression_key = f"update:{update.entity_id}"
-                    _subject = (
-                        f"Update available: {update.component} "
-                        f"{update.installed_version} → {update.latest_version}"
-                    )
-                    _body_parts = [
-                        f"Auto-apply blocked for {update.component} — "
-                        "core/OS updates always require manual approval.",
-                        executor._auto_apply_advisory,
-                    ]
                     await asyncio.to_thread(
-                        _update_mark_card_sent,
+                        _update_mark_auto_applied,
                         suppression_key,
                         CARD_TYPE_UPDATE,
-                        _subject,
+                        f"Auto-applied: {update.component} {update.latest_version}",
                     )
-                    await _notifier.send(
-                        subject=_subject,
-                        body="\n".join(p for p in _body_parts if p),
-                        payload={
-                            "notification_id": stable_nid(suppression_key),
-                            "card_type": CARD_TYPE_UPDATE,
-                            "suppression_key": suppression_key,
-                            "component": update.component,
-                            "entity_id": update.entity_id,
-                            "installed_version": update.installed_version,
-                            "latest_version": update.latest_version,
-                            "episode_id": getattr(executor, "_episode_id", ""),
-                        },
-                    )
-                else:
-                    log.info(
-                        "update_auto_apply_start",
-                        component=update.component,
-                        version=update.latest_version,
-                    )
-                    _entities_executing_update.add(update.entity_id)
+                    # Verify the analysis session outcome by install result.
                     try:
-                        _update_ok = await execute_update(update, _ssh, _notifier, gate)
-                        from agents.ha_log_monitor import _update_mark_auto_applied
-                        from utils.hitl.card_types import CARD_TYPE_UPDATE
+                        from agents.ha_agent_advanced import resolve_session_outcome
 
-                        suppression_key = f"update:{update.entity_id}"
+                        _verif = "success" if _update_ok else "failure"
                         await asyncio.to_thread(
-                            _update_mark_auto_applied,
-                            suppression_key,
-                            CARD_TYPE_UPDATE,
-                            f"Auto-applied: {update.component} {update.latest_version}",
+                            resolve_session_outcome,
+                            update.entity_id,
+                            _verif,
+                            "system",
                         )
-                        # Verify the analysis session outcome by install result.
-                        try:
-                            from agents.ha_agent_advanced import resolve_session_outcome
-
-                            _verif = "success" if _update_ok else "failure"
-                            await asyncio.to_thread(
-                                resolve_session_outcome,
-                                update.entity_id,
-                                _verif,
-                                "system",
+                        if _verif == "success":
+                            await _enqueue_distillation_for_subject(
+                                update.entity_id, "success"
                             )
-                            if _verif == "success":
-                                await _enqueue_distillation_for_subject(
-                                    update.entity_id, "success"
-                                )
-                        except Exception:  # nosec B110
-                            pass
-                    except Exception as _exc:
-                        log.error(
-                            "update_auto_apply_failed",
-                            component=update.component,
-                            error=str(_exc),
-                        )
-                        try:
-                            from agents.ha_agent_advanced import resolve_session_outcome
+                    except Exception:  # nosec B110
+                        pass
+                except Exception as _exc:
+                    log.error(
+                        "update_auto_apply_failed",
+                        component=update.component,
+                        error=str(_exc),
+                    )
+                    try:
+                        from agents.ha_agent_advanced import resolve_session_outcome
 
-                            await asyncio.to_thread(
-                                resolve_session_outcome,
-                                update.entity_id,
-                                "failure",
-                                "system",
-                            )
-                        except Exception:  # nosec B110
-                            pass
-                        await _notifier.send(
-                            subject=f"Auto-update failed: {update.component} {update.latest_version}",
-                            body=f"Error: {_exc}",
-                            payload={},
+                        await asyncio.to_thread(
+                            resolve_session_outcome,
+                            update.entity_id,
+                            "failure",
+                            "system",
                         )
-                    finally:
-                        _entities_executing_update.discard(update.entity_id)
+                    except Exception:  # nosec B110
+                        pass
+                    await _notifier.send(
+                        subject=f"Auto-update failed: {update.component} {update.latest_version}",
+                        body=f"Error: {_exc}",
+                        payload={},
+                    )
+                finally:
+                    _entities_executing_update.discard(update.entity_id)
         finally:
             decrement_active_agent()
             try:

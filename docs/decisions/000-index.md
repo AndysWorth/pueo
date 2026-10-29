@@ -21,7 +21,7 @@ One row per ADR. Open the linked file for context, rationale, and consequences.
 | [015](015-llm-guided-disk-recovery.md) | LLM-guided disk recovery | Accepted | Disk space enforcement via `AgentLoop`; `finish_investigation` terminal tool |
 | [016](016-diagnostic-wan-fetch.md) | Diagnostic WAN fetch | Accepted | `fetch_url` read-only HTTP GET; RFC-1918 block list enforced |
 | [017](017-chat-tool-parity.md) | Chat tool parity | Accepted | Shared enrichment functions receive identical clients in chat and automated pipelines |
-| [018](018-unified-agent-methodology.md) | Unified agent methodology | Accepted | 6-phase investigation cycle; `save_runbook`; COLLECTIONS=7 |
+| [018](018-unified-agent-methodology.md) | Unified agent methodology | Accepted | 6-phase investigation cycle; 2 legitimate one-shots (`analyze_log_line_with_ai`, `_enrich_fix_context`); deterministic-by-design catalogue |
 | [019](019-tool-calling-loop.md) | Tool-calling loop | Accepted | `AgentLoop`; budget accounting; `finish_*` terminal tool pattern |
 | [020](020-outcome-primacy.md) | Outcome primacy | Accepted | Agent stops on genuine exhaustion; gap runbook required before `outcome=failed` |
 | [021](021-dashboard-entity-monitor.md) | Dashboard entity monitor | Accepted | `ha_lovelace_monitor.py`; benign suppression; `should_send_card` gate |
