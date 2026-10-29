@@ -218,6 +218,8 @@ async def run_device_availability_investigation(
     ssh_client: Optional[Any] = None,  # SSHClientProtocol
     ws_client: Optional[Any] = None,  # HAWebSocketClientProtocol
     netalertx_api_client: Optional[Any] = None,  # NetAlertXAPIClient
+    recurrence_count: Optional[int] = None,
+    recurrence_window_days: Optional[int] = None,
 ) -> None:
     """Run an AgentLoop to investigate an offline device and create a HITL card.
 
@@ -290,6 +292,13 @@ async def run_device_availability_investigation(
             f"{last_ha_start_line(db_path)}"
             f"Offline devices ({len(finding.devices)}):\n{device_lines}"
         )
+        if recurrence_count is not None:
+            _win = recurrence_window_days or 14
+            initial_context += (
+                f"\n\nNote: This device has self-recovered {recurrence_count}× in the"
+                f" last {_win} days without investigation. A pattern of self-recoveries"
+                " may indicate an intermittent hardware, integration, or network issue."
+            )
         signature = sig_device_availability(finding.domain)
         subject_key = f"{finding.config_entry_id}:{finding.domain}"
         prior_keys = [subject_key]

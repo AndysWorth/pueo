@@ -7868,14 +7868,15 @@ class TestNetAlertXEventRouter:
         assert call_kwargs["payload"]["card_type"] == CARD_TYPE_NETALERTX_NEW_DEVICE
         assert call_kwargs["payload"]["mac"] == "AA:BB:CC:DD:EE:FF"
 
-    def test_new_device_no_card_when_gate_auto_executes(self):
+    def test_new_device_card_sent_at_all_autonomy_levels(self):
+        """New device always surfaces a card — unknown MACs are security signals."""
         router, notifier, _ = self._make_router(auto_execute=True)
         asyncio.run(
             router._handle_new_device(
                 mac="AA:BB:CC:DD:EE:FF", ip="", vendor="", name=""
             )
         )
-        notifier.send.assert_not_called()
+        notifier.send.assert_called_once()
 
     def test_deduplication_suppresses_second_event(self):
         router, notifier, _ = self._make_router(auto_execute=False)
