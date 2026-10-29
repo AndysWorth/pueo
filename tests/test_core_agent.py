@@ -134,19 +134,18 @@ class TestAgentLoopPreInject:
         )
         loop = self._make_loop(knowledge_store=store)
         result = _asyncio.run(loop._pre_inject_knowledge("ZHA error"))
-        assert "Relevant context" in result
+        assert "Knowledge context" in result
         assert "ZHA error: fix by restarting" in result
-        assert "ZHA error" in result  # original context preserved
 
-    def test_returns_original_when_store_is_none(self):
+    def test_returns_empty_when_store_is_none(self):
         import asyncio as _asyncio
 
         loop = self._make_loop(knowledge_store=None)
         loop._knowledge_store = None
         result = _asyncio.run(loop._pre_inject_knowledge("some context"))
-        assert result == "some context"
+        assert result == ""
 
-    def test_returns_original_when_store_raises(self):
+    def test_returns_empty_when_store_raises(self):
         import asyncio as _asyncio
 
         class BrokenStore:
@@ -156,9 +155,9 @@ class TestAgentLoopPreInject:
         loop = self._make_loop()
         loop._knowledge_store = BrokenStore()  # type: ignore[assignment]
         result = _asyncio.run(loop._pre_inject_knowledge("some context"))
-        assert result == "some context"
+        assert result == ""
 
-    def test_returns_original_when_no_chunks(self):
+    def test_returns_empty_when_no_chunks(self):
         import asyncio as _asyncio
 
         from utils.knowledge.knowledge_store import FakeKnowledgeStore
@@ -166,7 +165,7 @@ class TestAgentLoopPreInject:
         store = FakeKnowledgeStore()  # empty store → no chunks
         loop = self._make_loop(knowledge_store=store)
         result = _asyncio.run(loop._pre_inject_knowledge("unrelated query"))
-        assert result == "unrelated query"
+        assert result == ""
 
     def test_pre_inject_includes_authority_label(self):
         """Authority labels are prepended to each injected chunk."""
@@ -256,7 +255,7 @@ class TestAgentLoopPreInject:
         )
         loop = self._make_loop(knowledge_store=store)
         result = _asyncio.run(loop._pre_inject_knowledge("swap pressure"))
-        assert "Relevant context" in result
+        assert "Knowledge context" in result
         assert "TOP-RUNBOOK-HEAD" in result
         assert "LOW-RANK-TAIL" not in result
         assert "…[truncated]" in result
@@ -371,7 +370,7 @@ class TestAgentLoopPreInject:
         # FakeKnowledgeStore assigns score=1.0; raising the floor above that filters all chunks.
         monkeypatch.setattr(_al, "RAG_MIN_SCORE", 1.5)
         result = _asyncio.run(loop._pre_inject_knowledge("ZHA error"))
-        assert result == "ZHA error"
+        assert result == ""
 
 
 class TestFormatKnowledgeBlock:
@@ -396,7 +395,7 @@ class TestFormatKnowledgeBlock:
         block = _format_knowledge_block(
             [self._chunk("FIRST", chunk_id="a"), self._chunk("SECOND", chunk_id="b")]
         )
-        assert block.startswith("Relevant context")
+        assert block.startswith("Knowledge context")
         assert block.index("FIRST") < block.index("SECOND")
         assert "[SEED RUNBOOK]" in block
         assert "…[truncated]" not in block
@@ -576,7 +575,7 @@ class TestAgentLoopPreInjectHaProfile:
             tool_registry=build_ha_tool_registry(),
         )
 
-    def test_prepends_profile_block_when_profile_present(self):
+    def test_returns_profile_block_when_profile_present(self):
         from utils.ha.ha_environment import HAEnvironmentProfile
 
         profile = HAEnvironmentProfile(
@@ -588,17 +587,16 @@ class TestAgentLoopPreInjectHaProfile:
             config_entries=[],
         )
         loop = self._make_loop_with_profile(profile=profile)
-        result = loop._pre_inject_ha_profile("original context")
+        result = loop._pre_inject_ha_profile()
         assert "HA environment" in result
         assert "2026.8.2" in result
-        assert "original context" in result
 
-    def test_returns_original_when_no_profile(self):
+    def test_returns_empty_when_no_profile(self):
         loop = self._make_loop_with_profile(profile=None)
-        result = loop._pre_inject_ha_profile("original context")
-        assert result == "original context"
+        result = loop._pre_inject_ha_profile()
+        assert result == ""
 
-    def test_returns_original_when_executor_raises(self):
+    def test_returns_empty_when_executor_raises(self):
         loop = self._make_loop_with_profile(profile=None)
 
         class BrokenExecutor:
@@ -606,8 +604,8 @@ class TestAgentLoopPreInjectHaProfile:
                 raise RuntimeError("broken")
 
         loop._executor = BrokenExecutor()  # type: ignore[assignment]
-        result = loop._pre_inject_ha_profile("some context")
-        assert result == "some context"
+        result = loop._pre_inject_ha_profile()
+        assert result == ""
 
 
 # ── Log monitor ──────────────────────────────────────────────────────────────────
