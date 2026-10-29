@@ -376,7 +376,7 @@ async def _run_notification_investigation(
     initial_context = (
         f"HA persistent notification:\n"
         f"Notification ID: {notification_id}\n"
-        f"Category: {category} | Severity: {severity}\n"
+        f"Category: {category}\n"
         f"Title: {title or '(none)'}\n"
         f"Message: {message}\n"
     )

@@ -347,18 +347,14 @@ def evaluate_host_health(
                 "context": issue.get("context"),
                 "reference": issue.get("reference"),
             }
-            # Enrich RPi firmware findings with EEPROM data fetched earlier
-            is_informational = False
             if issue_type == "rpi_firmware_update_blocked" and health.rpi_firmware:
                 evidence.update(health.rpi_firmware)
-                is_informational = True
             findings.append(
                 HostHealthFinding(
                     key=f"resolution_issue:{uuid}",
                     kind="resolution_issue",
                     severity="WARN",
                     evidence=evidence,
-                    informational=is_informational,
                 )
             )
 

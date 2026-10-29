@@ -3280,6 +3280,19 @@ class TestSupervisorMain:
         assert "device_availability_poll" in started
 
 
+# ── hacs_unloaded card body ───────────────────────────────────────────────────────
+
+
+class TestHacsUnloadedCardBody:
+    def test_non_companion_body_is_neutral_fact(self):
+        """Non-companion HACS unloaded card must not contain a verdict."""
+        import pathlib
+
+        src = (pathlib.Path(__file__).parent.parent / "main.py").read_text()
+        assert "No action required; this is informational." not in src
+        assert "it isn't running." in src
+
+
 # ── check_ha_version ─────────────────────────────────────────────────────────────
 
 
@@ -9562,6 +9575,39 @@ class TestRunNotificationInvestigation:
         )
         assert len(notifier.sent) == 1
         assert notifier.sent[0]["payload"]["severity"] == "CRITICAL"
+
+    def test_initial_context_excludes_severity(self, db_path, monkeypatch):
+        """Severity is not pre-told to the LLM; the seed owns the verdict."""
+        from agents import ha_notification_manager as _nm
+        from utils.agent.agent_loop import AgentLoop
+        from utils.hitl.notify import FakeNotifier
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        captured_ctx: list = []
+        _orig_run = AgentLoop.run
+
+        async def _capture_run(self, initial_context="", **kw):
+            captured_ctx.append(initial_context)
+            return await _orig_run(self, initial_context=initial_context, **kw)
+
+        monkeypatch.setattr(AgentLoop, "run", _capture_run)
+
+        notifier = FakeNotifier()
+        llm = FakeToolCallingLLMClient(self._finish_call(requires_hitl=False))
+        asyncio.run(
+            _nm._run_notification_investigation(
+                notification_id="http-login",
+                title="Login attempt",
+                message="Invalid auth from 192.168.1.99",
+                ha_created_at=None,
+                db_path=db_path,
+                notifier=notifier,
+                llm_client=llm,
+            )
+        )
+        assert len(captured_ctx) == 1
+        assert "Severity:" not in captured_ctx[0]
+        assert "Category:" in captured_ctx[0]
 
 
 # ── utils/ha_ws_client — FakeHAWebSocketClient ───────────────────────────────────

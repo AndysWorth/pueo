@@ -1700,7 +1700,8 @@ class TestEvaluateHostHealthFirmwareEnrichment:
         defaults.update(kwargs)
         return evaluate_host_health(health=health, **defaults)
 
-    def test_rpi_firmware_finding_is_informational(self):
+    def test_rpi_firmware_finding_evidence_enriched(self):
+        # informational verdict belongs to the seed; code just enriches evidence
         from utils.disk.host_health import ResolutionInfo
 
         uuid = "abc123def456abc123def456abc12345"
@@ -1719,7 +1720,7 @@ class TestEvaluateHostHealthFirmwareEnrichment:
         findings = self._eval(h)
         rf = [f for f in findings if f.kind == "resolution_issue"]
         assert len(rf) == 1
-        assert rf[0].informational is True
+        assert rf[0].informational is False
         assert rf[0].evidence["blocked_reason"] == "eeprom_update_unavailable"
         assert rf[0].evidence["current"] == "2021-12-02"
 
@@ -1975,7 +1976,12 @@ class TestCheckHostHealthFingerprintReopen:
         with sqlite3.connect(db) as conn:
             assert not should_send_card(conn, card_key)
 
-    def test_changed_fingerprint_clears_known_issue(self, tmp_path, monkeypatch):
+    def test_rpi_firmware_finding_not_informational_skips_fingerprint_check(
+        self, tmp_path, monkeypatch
+    ):
+        # evaluate_host_health no longer pre-marks rpi_firmware findings as informational
+        # (the seed/LLM owns that verdict), so the pre-investigation fingerprint check
+        # in resource.py does not fire for this finding type.
         import asyncio
         import sqlite3
 
@@ -1988,7 +1994,7 @@ class TestCheckHostHealthFingerprintReopen:
             update_host_health,
         )
         from utils.disk.resource import ResourcePoller
-        from utils.hitl.hitl_tracker import mark_card_acknowledged, should_send_card
+        from utils.hitl.hitl_tracker import mark_card_acknowledged
         from utils.hitl.notify import FakeNotifier
 
         db = self._make_db(tmp_path)
@@ -2013,7 +2019,8 @@ class TestCheckHostHealthFingerprintReopen:
         with sqlite3.connect(db) as conn:
             mark_card_acknowledged(conn, card_key, note=old_fp)
 
-        # Now evidence changes (firmware updated, current date changed)
+        # Evidence changes, but evaluate_host_health produces informational=False,
+        # so compute_finding_fingerprint returns None and the re-trigger does not fire.
         new_firmware = {
             "current": "2024-06-01",
             "latest": "2024-06-01",
@@ -2048,14 +2055,11 @@ class TestCheckHostHealthFingerprintReopen:
         status = _make_status()
         asyncio.run(poller._check_host_health(status))
 
-        # known_issue must be cleared (fingerprint mismatch re-opens investigation)
+        # known_issue stays set — fingerprint check did not fire (finding.informational=False)
         with sqlite3.connect(db) as conn:
             row = conn.execute(
                 "SELECT known_issue FROM hitl_suppression WHERE card_key = ?",
                 (card_key,),
             ).fetchone()
         assert row is not None
-        assert row[0] == 0
-
-        # A new notification was dispatched
-        assert len(notifier.sent) > 0
+        assert row[0] == 1

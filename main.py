@@ -1170,9 +1170,9 @@ async def supervisor_main(config_path: Path) -> None:
                     else:
                         ct = CARD_TYPE_HOST_HEALTH
                         body = (
-                            f"The {domain} integration is installed via HACS but has "
-                            "no config entry — it has no effect on your HA instance "
-                            "until set up. No action required; this is informational."
+                            f"The {domain} integration is downloaded via HACS but has "
+                            "no config entry — it isn't running. Remove it in HACS or "
+                            "add the integration to use it."
                         )
                         extra_payload = {"informational": True}
 
