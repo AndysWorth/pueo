@@ -2680,8 +2680,8 @@ class TestKnowledgeInjectionOrdering:
             user_question[:50]
         ), f"Expected query to start with user question, got: {store.captured_query!r}"
 
-    def test_context_ordering_question_before_ha_profile(self, db_path):
-        """Final user message must read [question] -> [knowledge] -> [HA profile]."""
+    def test_context_ordering_trigger_last(self, db_path):
+        """Final user message order: knowledge → trigger (trigger is last for recency)."""
         from utils.knowledge.knowledge_store import KnowledgeChunk
 
         class _ReturnsChunk:
@@ -2751,5 +2751,7 @@ class TestKnowledgeInjectionOrdering:
         assert q_pos != -1, "User question not found in context"
         assert k_pos != -1, "Knowledge block not found in context"
         assert (
-            q_pos < k_pos
-        ), "User question must appear before knowledge block in context"
+            k_pos < q_pos
+        ), "Knowledge block must appear before user question (trigger is last)"
+        assert "<trigger>" in content, "Trigger must be wrapped in <trigger> tag"
+        assert "<knowledge>" in content, "Knowledge must be wrapped in <knowledge> tag"

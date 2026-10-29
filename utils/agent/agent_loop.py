@@ -106,7 +106,7 @@ def _format_knowledge_block(chunks: list[Any]) -> str:
     from utils.agent.tool_executor import ToolExecutor as _TE
     from utils.core.context import truncate_to_budget
 
-    parts = ["Relevant context (use as reference, verify before applying):"]
+    parts = ["Knowledge context:"]
     for chunk in chunks:
         col = getattr(chunk, "collection", "")
         cid = getattr(chunk, "chunk_id", "")
@@ -634,28 +634,28 @@ class AgentLoop:
         )
         return episode.id
 
-    def _pre_inject_ha_profile(self, initial_context: str) -> str:
-        """Append a compact HA profile block to the initial context.
+    def _pre_inject_ha_profile(self) -> str:
+        """Return a compact HA profile block, or '' if not available.
 
-        Best-effort — any failure returns the original context unchanged.
+        Best-effort — any failure returns ''.
         """
         try:
             if self._executor is None:
-                return initial_context
+                return ""
             summary = self._executor.get_ha_profile_summary()
             if summary == "HA environment profile not yet available.":
-                return initial_context
-            return f"{initial_context}\n\n---\n{summary}"
+                return ""
+            return summary
         except Exception as exc:
             log.warning("ha_profile_injection_failed", error=str(exc))
-            return initial_context
+            return ""
 
     async def _pre_inject_knowledge(
         self, initial_context: str, query_text: str = ""
     ) -> str:
-        """Query the knowledge store and append results to the initial context.
+        """Query the knowledge store and return the formatted knowledge block.
 
-        Best-effort — any failure returns the original context unchanged.
+        Returns the block string, or '' when no chunks are found or on error.
         Semantic chunks are head-truncated to _PRE_INJECT_CHUNK_TOKENS in rank order.
         Exact-signature runbooks (seed + best learned) use _PRE_INJECT_RUNBOOK_TOKENS
         each so they are never cut.
@@ -696,7 +696,7 @@ class AgentLoop:
             )
         except Exception as exc:
             log.warning("knowledge_injection_failed", error=str(exc))
-            return initial_context
+            return ""
 
         # Prepend signature matches, deduplicating semantic results by chunk_id.
         sig_ids = {
@@ -741,7 +741,7 @@ class AgentLoop:
                 chunks = memory_chunks + chunks
 
         if not chunks:
-            return initial_context
+            return ""
         # Signal to the executor so the auto-gap logic knows KB had results.
         if self._executor is not None:
             self._executor._query_knowledge_had_results = True
@@ -781,7 +781,7 @@ class AgentLoop:
                 "knowledge_chunks", count=len(chunks), query=effective_query[:100]
             )
             log.debug("knowledge_pre_inject", block=block[:500])
-        return f"{initial_context}\n\n---\n{block}"
+        return block
 
     def _per_call_timeout_seconds(self) -> float:
         """Compute the per-call LLM timeout from historical latency data.
@@ -947,19 +947,17 @@ class AgentLoop:
         # Fall back to the start of initial_context if none supplied.
         _effective_knowledge_query = knowledge_query or initial_context[:500]
 
+        _knowledge_block = ""
         if self._knowledge_store is not None:
-            enriched = await self._pre_inject_knowledge(
+            _knowledge_block = await self._pre_inject_knowledge(
                 initial_context, query_text=_effective_knowledge_query
             )
-            if (
-                enriched != initial_context
-                and self._context_inject_callback is not None
-            ):
-                self._context_inject_callback(enriched[:1000])
-            initial_context = enriched
+            if _knowledge_block and self._context_inject_callback is not None:
+                self._context_inject_callback(_knowledge_block[:1000])
 
+        _prior_block = ""
         if self._db_path:
-            prior_block = await asyncio.to_thread(
+            _prior_block = await asyncio.to_thread(
                 _fetch_prior_sessions,
                 self._db_path,
                 (
@@ -968,17 +966,29 @@ class AgentLoop:
                     else [subject_key]
                 ),
             )
-            if prior_block:
-                initial_context = f"{initial_context}\n\n---\n{prior_block}"
 
-        initial_context = self._pre_inject_ha_profile(initial_context)
+        _profile_block = self._pre_inject_ha_profile()
+
+        # Assemble first user message: profile → knowledge → prior → trigger (last).
+        # Trigger is placed last so it receives the highest recency weight.
+        _parts: list[str] = []
+        if _profile_block:
+            _parts.append(f"<ha_profile>\n{_profile_block}\n</ha_profile>")
+        if _knowledge_block:
+            _parts.append(f"<knowledge>\n{_knowledge_block}\n</knowledge>")
+        if _prior_block:
+            _parts.append(
+                f"<previous_investigations>\n{_prior_block}\n</previous_investigations>"
+            )
+        _parts.append(f"<trigger>\n{initial_context}\n</trigger>")
+        _assembled_context = "\n\n".join(_parts)
 
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": self._system_prompt},
         ]
         if initial_messages:
             messages.extend(initial_messages)
-        messages.append({"role": "user", "content": initial_context})
+        messages.append({"role": "user", "content": _assembled_context})
         self._messages = messages  # expose for inject_context()
         tools = self._registry.get_ollama_tools()
         steps: list[AgentStep] = []
