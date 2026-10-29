@@ -98,15 +98,41 @@ New config key `ESCALATION_PREFERENCE: "hitl" | "cloud" | "cloud_then_hitl"` (de
 
 ## What to leave as one-shot
 
-These remain one-shot calls and should not be converted to AgentLoop sessions:
+Two patterns remain legitimate one-shot LLM calls (not `AgentLoop` sessions, not queue submissions). Also covered by ADR 025's "only legitimate one-shot" list.
 
-| Function | Reason |
+| Function | File | Reason |
+|---|---|---|
+| `analyze_log_line_with_ai()` | `ha_log_monitor.py`, `netalertx/log_monitor.py` | Volume/latency — fires per log line; sole output is a binary gate before a queue submission. Loop latency would starve the single LLM slot (ADR 026). |
+| `_enrich_fix_context()` | `utils/agent/tool_executor.py` | Nested inside a running loop — called inside an already-running AgentLoop session and cannot be a `WorkItem`. |
+
+Deleted since this ADR was first written:
+- `analyze_breaking_changes` and `_self_check_llm_cross_reference` — removed PR #608
+- `netalertx._diagnose_one_shot` — removed #1043; both production callers always pass `ssh_client`
+- `config_analysis._analyze_one_shot` — kept only as an exception fallback inside `_analyze_with_agent_loop`; never the primary path in production (both callers always pass `ssh_client`)
+
+## Deterministic by design
+
+Some loops skip the LLM and runbooks entirely. This is intentional and should not be changed.
+
+**Safety rails (LLM must not be able to argue past these):**
+
+| Code | What it decides |
 |---|---|
-| `ha_log_monitor.analyze_log_line_with_ai()` | Hot streaming path — loop latency harmful |
-| `netalertx/log_monitor.analyze_log_line_with_ai()` | Same reason |
-| `ha_update_manager.analyze_breaking_changes()` | Pure text analysis — no benefit from iteration |
-| `ha_update_manager._self_check_llm_cross_reference()` | Pure text comparison |
-| `ha_notification_manager` enrichment pipeline | Data gathering, not reasoning |
+| `CRITICAL_LOG_PATTERN` / `_TRANSIENT_LOG_PATTERNS` in `ha_log_monitor.py` | Pre-filter gate before LLM triage; volume and safety |
+| `service_policy.classify_service_risk()` | Blocks destructive HA services before any approval path |
+| `AutonomyGate` thresholds | Hard limits on what auto-executes at each level |
+| Lovelace structural benign rules (`ha_lovelace_monitor.py:26-52`) | Pattern list; model must not suppress structural alerts |
+
+**Fixed recipes / no self-grading (ADR 045, 046, 050):**
+
+| Code | What it decides |
+|---|---|
+| `companion_setup.py` | Deterministic provisioning recipe; always requires explicit user approval regardless of autonomy level |
+| `judge_prediction()` in `utils/knowledge/session_verification.py` | Verifies LLM prediction outcomes; model must not grade its own work |
+| Runbook auto-promotion in `runbook_distiller.py` | Code counter (success ≥ threshold); not LLM |
+| `netalertx/reconcile._fix_scan_subnets()` | User chose deterministic 2026-10-27 |
+| Device online/offline/arming detection in `device_availability.py` | Data gathering from HA state; model consumes the result |
+| `classify_update_type()` | Deterministic routing by component name |
 
 ## Rationale
 

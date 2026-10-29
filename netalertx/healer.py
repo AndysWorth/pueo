@@ -4,9 +4,6 @@ heal() dispatches repair actions by category (linear pipeline, backward-compatib
 heal_with_loop() replaces the linear pipeline with AgentLoop for iterative
 tool-calling repair (item 46). When an LLM client is provided in production,
 one_shot_diagnose.py calls heal_with_loop() instead of heal().
-
-Version change detection persists last-seen NetAlertX version in netalertx_state
-(migrated in _migrate_v4).  A version bump gates all automated actions at levels 1–3.
 """
 
 from __future__ import annotations
@@ -117,65 +114,6 @@ class NetAlertXHealer:
         self._rest_client = rest_client
         self._ws_client = ws_client
         self._ha_profile = ha_profile
-
-    # ------------------------------------------------------------------
-    # Version tracking
-    # ------------------------------------------------------------------
-
-    def _get_stored_version(self) -> Optional[str]:
-        try:
-            with sqlite3.connect(self._db_path) as conn:
-                row = conn.execute(
-                    "SELECT value FROM netalertx_state WHERE key = 'netalertx_version'"
-                ).fetchone()
-                return row[0] if row else None
-        except sqlite3.OperationalError:
-            return None
-
-    def _store_version(self, version: str) -> None:
-        with sqlite3.connect(self._db_path) as conn:
-            conn.execute(
-                "INSERT INTO netalertx_state (key, value) VALUES ('netalertx_version', ?)"
-                " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                (version,),
-            )
-            conn.commit()
-
-    async def check_version_bump(self, current_version: str) -> bool:
-        """Return True if healing may proceed (no bump, or bump was approved).
-
-        Persists the current version.  At levels 1–3, a version bump gates all
-        subsequent actions via HIGH-risk approval.  At level 4, the bump is
-        logged and healing continues.
-        """
-        stored = self._get_stored_version()
-        self._store_version(current_version)
-
-        if stored is None or stored == current_version:
-            return True
-
-        log.info(
-            "netalertx_version_bump_detected",
-            from_version=stored,
-            to_version=current_version,
-        )
-        approved = await self._gate.require_approval(
-            subject=f"Pueo: NetAlertX version changed {stored} → {current_version}",
-            body=(
-                f"NetAlertX upgraded from {stored} to {current_version}. "
-                "Review breaking changes before automated actions proceed."
-            ),
-            payload={"from_version": stored, "to_version": current_version},
-            notifier=self._notifier,
-            risk=RiskLevel.HIGH,
-        )
-        if not approved:
-            log.info(
-                "netalertx_version_bump_blocked",
-                from_version=stored,
-                to_version=current_version,
-            )
-        return approved
 
     # ------------------------------------------------------------------
     # AgentLoop-based healing — item 46
@@ -487,19 +425,3 @@ class NetAlertXHealer:
     async def run_heal(self, action: str) -> None:
         """Execute a named heal action approved via the dashboard."""
         raise ValueError(f"Unknown NetAlertX heal action: {action!r}")
-
-    # ------------------------------------------------------------------
-    # Item 19: maintenance issue healing
-    # ------------------------------------------------------------------
-
-    async def heal_maintenance_issues(self, config_issues: list["ConfigIssue"]) -> None:
-        """Process ConfigIssues from item 19 maintenance checks.
-
-        - DB row count excess → DBCLNP cleanup at level 4 only
-        """
-        _db_metrics = {"Plugins_History", "Events"}
-        db_issues = [i for i in config_issues if i.field in _db_metrics]
-
-        if db_issues and self._gate.should_auto_execute(RiskLevel.HIGH):
-            await self._api.trigger_scan("DBCLNP")
-            log.info("netalertx_dbclnp_triggered", issue_count=len(db_issues))

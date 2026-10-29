@@ -74,6 +74,9 @@ Use `get_work_queue_or_none()` and fall back to direct execution only when the q
 The only legitimate one-shot LLM calls are:
 - Volume-throttled streaming pre-filters (`analyze_log_line_with_ai`) — fire per log line; sole output is a binary gate before a queue submission
 - Secondary enrichment inside a running tool executor (`_enrich_fix_context`) — called inside an already-running AgentLoop; cannot itself be a queue submission
+- Distillation verdict lane in `utils/knowledge/runbook_distiller.py` — fires as a PRIORITY_LOW `WorkItem` after explicit verification; gated by code (grounding, seed-overlap, version, unknown-tool checks) so the result is never trusted blindly
+
+See ADR 018 §"What to leave as one-shot" for the full table and deleted items.
 
 ### Mandatory queue rule — HA interaction
 

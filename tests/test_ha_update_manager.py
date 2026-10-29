@@ -798,8 +798,10 @@ class TestCoreOsCardEnforcement:
 class TestAutoApplyBlock:
     """Auto-apply is always blocked for core/os/supervisor components."""
 
-    def test_core_update_auto_apply_blocked(self, tmp_path, pueo_dirs):
-        """When _pending_auto_apply=True for 'core', a notification is sent instead."""
+    def test_core_update_auto_applies_when_pending_auto_apply(
+        self, tmp_path, pueo_dirs
+    ):
+        """When _pending_auto_apply=True for 'core', auto-apply runs (ADR 035: L4+confidence gate in tool_executor is the authority)."""
         import asyncio
         from unittest import mock
         from unittest.mock import AsyncMock, MagicMock
@@ -816,15 +818,12 @@ class TestAutoApplyBlock:
             release_url = None
             release_summary = None
 
-        notifier_calls = []
+        execute_update_calls = []
 
-        class _CapturingNotifier:
-            async def send(self, subject="", body="", payload=None, **kw):
-                notifier_calls.append(
-                    {"subject": subject, "body": body, "payload": payload}
-                )
+        async def _fake_execute_update(update, ssh, notifier, gate):
+            execute_update_calls.append(update.component)
+            return True
 
-        # Simulate loop returning success + executor has _pending_auto_apply=True
         def _make_mock_loop(executor_ref):
             async def _fake_run(initial_context, **kwargs):
                 executor_ref._pending_auto_apply = True
@@ -836,8 +835,6 @@ class TestAutoApplyBlock:
             return m
 
         captured_executor = []
-
-        original_ToolExecutor = None
 
         import utils.agent.tool_executor as _te_mod
 
@@ -864,6 +861,10 @@ class TestAutoApplyBlock:
                 "utils.agent.work_queue.get_work_queue_or_none", return_value=None
             ),
             mock.patch("utils.agent.tool_executor.ToolExecutor", _SpyToolExecutor),
+            mock.patch(
+                "agents.ha_update_manager.execute_update",
+                side_effect=_fake_execute_update,
+            ),
         ):
 
             def _make_loop_side_effect(*a, **kw):
@@ -878,25 +879,14 @@ class TestAutoApplyBlock:
             asyncio.run(
                 _run_update_analysis(
                     update=_FakeUpdate(),
-                    notifier=_CapturingNotifier(),
+                    notifier=MagicMock(send=AsyncMock()),
                 )
             )
 
-        # A warning notification must have been sent instead of auto-apply
-        block_msgs = [
-            c for c in notifier_calls if "blocked" in c.get("body", "").lower()
-        ]
-        assert block_msgs, "Core update auto-apply must be blocked with a notification"
-        # Stable nid + pending suppression row so the next poll skips (#976).
-        from utils.hitl.hitl_tracker import should_send_card, stable_nid
-
-        key = "update:update.home_assistant_core_update"
-        payload = block_msgs[0]["payload"]
-        assert payload["notification_id"] == stable_nid(key)
-        assert payload["suppression_key"] == key
-        assert "Advisory: SAFE — looks fine" in block_msgs[0]["body"]
-        with sqlite3.connect(db_path) as conn:
-            assert should_send_card(conn, key) is False
+        assert execute_update_calls == ["core"], (
+            "Core update should auto-apply when _pending_auto_apply=True "
+            "(L4+confidence gate in tool_executor is the authority, ADR 035)"
+        )
 
     def test_addon_auto_apply_success_marks_auto_applied(self, tmp_path, pueo_dirs):
         """Successful add-on auto-apply records 'auto_applied', not a sent card (#843)."""
