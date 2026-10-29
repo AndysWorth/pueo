@@ -1,3 +1,7 @@
+---
+signature: update:*:*
+---
+
 # Runbook: HA Update Breaking-Change Analysis — method
 
 Use this runbook when no component-specific runbook matches.

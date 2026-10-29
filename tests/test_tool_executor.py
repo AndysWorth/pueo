@@ -6423,7 +6423,7 @@ def _scoped_executor(tmp_path, signature: str = "", ssh=None):
 
 def _seed_store(store) -> None:
     rows = [
-        ("seed:seed_host_health.md", {"filename": "seed_host_health.md"}),
+        ("seed:seed_host_health.md", {"signature": "host:*:*"}),
         ("seed:seed_update_addon.md", {"signature": "update:addon:*"}),
         ("seed:seed_device_offline.md", {"signature": "device:offline:*"}),
         ("seed:seed_supervisor_cli.md", {"filename": "seed_supervisor_cli.md"}),
@@ -6484,7 +6484,7 @@ class TestQueryKnowledgeScoping:
             "strategies",
             ids=["seed:seed_host_health.md"],
             documents=["swap pressure runbook"],
-            metadatas=[{"filename": "seed_host_health.md"}],
+            metadatas=[{"signature": "host:*:*"}],
         )
         r = asyncio.run(ex._query_knowledge("swap pressure"))
         assert r.success
@@ -6498,9 +6498,13 @@ class TestStrategyFamily:
             ({"signature": "device:offline:*"}, "", "device"),
             ({"signature": "repair:*:restart_required"}, "", "repair"),
             ({"signature": "*:anything"}, "", None),
-            ({"filename": "seed_host_health.md"}, "", "host"),
-            ({}, "seed:seed_update_analysis.md", "update"),
+            # signed family seeds derive family from their signature
+            ({"signature": "host:*:*"}, "", "host"),
+            ({"signature": "update:*:*"}, "", "update"),
+            # unsigned general reference seeds have no family
             ({"filename": "seed_supervisor_cli.md"}, "", None),
+            # disk_space is still unsigned and in SEED_FAMILIES
+            ({"filename": "seed_disk_space.md"}, "", "host"),
             ({"source": "pueo_kb"}, "kb_rb_abc", None),
         ],
     )

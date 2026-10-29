@@ -1,3 +1,7 @@
+---
+signature: notification:*
+---
+
 # HA Notification Investigation — method
 
 Use this runbook when no symptom-specific runbook matches.
