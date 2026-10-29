@@ -22,10 +22,11 @@ is not the real notes; fetch from the release URL instead.
 
 ## Investigation steps
 
-1. `get_update_release_notes(entity_id=<entity>)` — fetch notes for the target OS version.
-   - If the body is under 200 characters or consists only of a `<ha-alert>` block: the WS
-     endpoint returned a stub. The initial context carries a `Release URL` — use that URL to
-     fetch the real GitHub release notes with `fetch_ha_docs` or `fetch_url(release_url)`.
+1. `get_update_release_notes(target_version=<latest version>)` — fetch notes for the target
+   OS version.
+   - If the output is only a `<ha-alert>` block (e.g. "A reboot is required"), the WS endpoint
+     returned a stub, not the notes. Call `fetch_url(<Release URL from the initial context>)`;
+     it returns the GitHub release body. Do not conclude without reading it.
    - Look for a "Breaking changes" or "Deprecations" section.
 
 2. Board-specific notes: check for mentions of Yellow, CM4, or ODROID in the release notes.

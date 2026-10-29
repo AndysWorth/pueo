@@ -2781,6 +2781,17 @@ class ToolExecutor:
                 error="Only http:// and https:// URLs are allowed.",
             )
 
+        from agents.ha_update_manager import (
+            _is_alert_only,
+            _rewrite_github_release_url,
+        )
+
+        # A github.com release page is ~200 KB of markup with the notes far past
+        # the output cap; the API form returns just the notes body (#1029).
+        if url.startswith(("https://github.com/", "http://github.com/")) and (
+            "/releases/tag/" in url
+        ):
+            url = _rewrite_github_release_url(url)
         parsed = urllib.parse.urlparse(url)
         hostname = parsed.hostname or ""
         if any(
@@ -2840,6 +2851,15 @@ class ToolExecutor:
                     },
                     indent=2,
                 )
+                # Real notes for the pending update's release count as obtained.
+                _pending = self._pending_update_status
+                _pending_url = getattr(_pending, "release_url", None)
+                if (
+                    _pending_url
+                    and _rewrite_github_release_url(_pending_url) == url
+                    and not _is_alert_only(str(_data.get("body") or ""))
+                ):
+                    self._release_notes_obtained = True
             except Exception:  # nosec B110
                 pass
         text = text[:_MAX_FETCH_URL_CHARS]
@@ -5737,7 +5757,10 @@ class ToolExecutor:
                 error="target_version is required",
             )
         try:
-            from agents.ha_update_manager import fetch_release_notes_cached
+            from agents.ha_update_manager import (
+                _is_alert_only,
+                fetch_release_notes_cached,
+            )
             import config as _cfg
 
             # Match the stored update status when the passed version contains
@@ -5796,7 +5819,14 @@ class ToolExecutor:
                 notes = notes[len("STUB:") :].lstrip()
             # Mark that real notes were obtained (not the "unavailable" sentinel).
             _UNAVAILABLE_SENTINEL = "Release notes unavailable"
-            if notes and not notes.startswith(_UNAVAILABLE_SENTINEL):
+            if _is_alert_only(notes):
+                # HA's OS-update WS body is only a "reboot required" alert (#1029).
+                if _release_url:
+                    notes += (
+                        "\n[Stub only — these are not the release notes. Fetch the"
+                        f" release URL with fetch_url({_release_url!r}).]"
+                    )
+            elif not notes.startswith(_UNAVAILABLE_SENTINEL):
                 self._release_notes_obtained = True
             return ToolResult(
                 tool_name="get_update_release_notes",

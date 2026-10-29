@@ -350,6 +350,15 @@ def _is_stub_notes(notes: str) -> bool:
     return len(stripped) < _WS_STUB_THRESHOLD
 
 
+def _is_alert_only(notes: str) -> bool:
+    """Return True when *notes* has no content outside <ha-alert> blocks (#1029).
+
+    Stricter than ``_is_stub_notes``: a short but real add-on changelog is not
+    alert-only, while HA's OS-update "reboot required" notice is.
+    """
+    return not _HA_ALERT_RE.sub("", notes).strip()
+
+
 def _rewrite_github_release_url(url: str) -> str:
     """Rewrite a github.com HTML release URL to its GitHub API counterpart."""
     m = _GITHUB_RELEASE_HTML_RE.match(url)
@@ -433,7 +442,16 @@ async def fetch_release_notes_cached(
         cache_path = Path(cache_dir) / f"{_safe_eid}_{version}.txt"
 
     if cache_path.exists():
-        return cache_path.read_text()
+        cached = cache_path.read_text()
+        # A cached alert-only WS stub must not block the GitHub fallback: refetch
+        # when a GitHub release URL could supply the real notes (#1029).
+        if not (
+            not _is_ha_core
+            and _is_alert_only(cached)
+            and release_url
+            and _GITHUB_RELEASE_HTML_RE.match(release_url)
+        ):
+            return cached
 
     if not _is_ha_core:
         # 1. Try WS update/release_notes first — most reliable for supervisor add-ons.
@@ -449,7 +467,7 @@ async def fetch_release_notes_cached(
                             _api_url = _rewrite_github_release_url(release_url)
                             try:
                                 gh_notes = await _fetch_release_notes_from_url(_api_url)
-                                if not _is_stub_notes(gh_notes):
+                                if not _is_alert_only(gh_notes):
                                     cache_path.parent.mkdir(parents=True, exist_ok=True)
                                     cache_path.write_text(gh_notes)
                                     return gh_notes
