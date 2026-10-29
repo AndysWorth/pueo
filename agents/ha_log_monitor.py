@@ -845,7 +845,7 @@ async def _run_spook_digest_investigation(
     from utils.agent.tool_registry import build_ha_tool_registry
     from utils.ha.read_only_ssh import ReadOnlySSHClient
     from utils.llm.llm_factory import make_llm_client
-    from utils.core.prompts import load_prompt
+    from utils.core.prompts import load_agent_prompt
 
     llm = llm_client or make_llm_client()  # pragma: no cover
     gate = AutonomyGate(AUTONOMY_LEVEL)
@@ -880,9 +880,7 @@ async def _run_spook_digest_investigation(
         pass
 
     registry = build_ha_tool_registry()
-    system_prompt = load_prompt("agent_loop_repair_issue").format(
-        terminal_tool="finish_repair_issue"
-    )
+    system_prompt = load_agent_prompt("repair_issue", "finish_repair_issue")
 
     issue_lines = "\n".join(f"  - issue_id: {i.issue_id}" for i in issues)
     initial_context = (
@@ -960,7 +958,7 @@ async def _run_repair_issue_investigation(
     from utils.agent.tool_registry import build_ha_tool_registry
     from utils.ha.read_only_ssh import ReadOnlySSHClient
     from utils.llm.llm_factory import make_llm_client
-    from utils.core.prompts import load_prompt
+    from utils.core.prompts import load_agent_prompt
 
     llm = llm_client or make_llm_client()  # pragma: no cover
     gate = gate or AutonomyGate(AUTONOMY_LEVEL)
@@ -986,9 +984,7 @@ async def _run_repair_issue_investigation(
         pass
 
     registry = build_ha_tool_registry()
-    system_prompt = load_prompt("agent_loop_repair_issue").format(
-        terminal_tool="finish_repair_issue"
-    )
+    system_prompt = load_agent_prompt("repair_issue", "finish_repair_issue")
 
     initial_context = (
         f"HA repair issue:\n"

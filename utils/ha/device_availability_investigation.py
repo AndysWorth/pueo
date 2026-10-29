@@ -230,7 +230,7 @@ async def run_device_availability_investigation(
     from utils.agent.autonomy import AutonomyGate
     from utils.agent.tool_executor import ToolExecutor
     from utils.agent.tool_registry import build_device_availability_tool_registry
-    from utils.core.prompts import load_prompt
+    from utils.core.prompts import load_agent_prompt
     from utils.ha.read_only_ssh import ReadOnlySSHClient
     from utils.ha.ssh_client import AsyncSSHClient
     from utils.llm.llm_factory import make_llm_client
@@ -263,9 +263,7 @@ async def run_device_availability_investigation(
         pass
 
     registry = build_device_availability_tool_registry()
-    system_prompt = load_prompt("agent_loop_device_availability").format(
-        terminal_tool="finish_device_availability"
-    )
+    system_prompt = load_agent_prompt("device", "finish_device_availability")
 
     from utils.knowledge.runbook_signature import (
         sig_device_availability,

@@ -918,7 +918,7 @@ async def _run_update_analysis(
         WorkItem,
         get_work_queue_or_none,
     )
-    from utils.core.prompts import load_prompt
+    from utils.core.prompts import load_agent_prompt
     from utils.llm.llm_factory import make_llm_client
     from utils.hitl.notify import get_notifier
 
@@ -958,9 +958,7 @@ async def _run_update_analysis(
         if _profile is not None:
             executor.set_ha_profile(_profile)
 
-        system_prompt = load_prompt("agent_loop_update_analysis").replace(
-            "{terminal_tool}", terminal_tool
-        )
+        system_prompt = load_agent_prompt("update", terminal_tool)
         from utils.ha.context_sanitizer import sanitize_update_context
         from utils.ha.device_summarizer import device_context_summary
 

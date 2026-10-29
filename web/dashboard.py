@@ -4641,10 +4641,13 @@ async def _run_chat_loop(
             _on_chat_llm_start = None  # type: ignore[assignment]
             _on_chat_llm_done = None  # type: ignore[assignment]
 
+        from utils.core.prompts import load_agent_prompt as _lap
+
         agent_loop = AgentLoop(
             llm_client=make_llm_client(),
             tool_executor=executor,
             tool_registry=build_chat_tool_registry(),
+            system_prompt=_lap("chat", "finish_chat"),
             terminal_tool_name="finish_chat",
             max_tool_calls=20,
             max_wall_seconds=AGENT_MAX_WALL_SECONDS,
