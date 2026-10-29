@@ -4546,3 +4546,250 @@ class TestFinishUpdateAnalysisVerificationQuestion:
         assert notifier.send.called
         payload = notifier.send.call_args.kwargs["payload"]
         assert payload["verification_question"] == "Was the NOAA update safe?"
+
+
+# ---------------------------------------------------------------------------
+# #1029 — OS update WS stub: cached stub retried, not counted as notes,
+# fetch_url rewrites GitHub release pages to the API form
+# ---------------------------------------------------------------------------
+
+_OS_ENTITY = "update.home_assistant_operating_system_update"
+_OS_RELEASE_URL = "https://github.com/home-assistant/operating-system/releases/tag/18.4"
+_OS_API_URL = (
+    "https://api.github.com/repos/home-assistant/operating-system/releases/tags/18.4"
+)
+_OS_STUB = (
+    "<ha-alert alert-type='info'>A reboot is required after install for the "
+    "update to take effect.</ha-alert>\n"
+)
+_OS_REAL_NOTES = (
+    "## Changes\n\nHome Assistant OS 18.4 is a bugfix and security release.\n\n"
+    "## Raspberry Pi\n\n* Refill boot tries before slot selection in U-Boot scripts\n"
+)
+
+
+class TestIsAlertOnly:
+    """_is_alert_only is true only when nothing remains outside <ha-alert> blocks."""
+
+    def test_alert_only(self):
+        from agents.ha_update_manager import _is_alert_only
+
+        assert _is_alert_only(_OS_STUB)
+
+    def test_empty(self):
+        from agents.ha_update_manager import _is_alert_only
+
+        assert _is_alert_only("  \n")
+
+    def test_short_real_changelog_is_not_alert_only(self):
+        """A short add-on changelog (mosquitto 7.1.3 style) is real notes."""
+        from agents.ha_update_manager import _is_alert_only, _is_stub_notes
+
+        notes = "## 7.1.3\n- Stop building libwebsockets\n- Update base image"
+        assert _is_stub_notes(notes)  # under the length threshold
+        assert not _is_alert_only(notes)
+
+    def test_alert_plus_content_is_not_alert_only(self):
+        from agents.ha_update_manager import _is_alert_only
+
+        assert not _is_alert_only(_OS_STUB + "## Changes\n- fix")
+
+
+class TestFetchReleaseNotesCachedStubRetry:
+    """A cached alert-only stub does not block the GitHub fallback."""
+
+    def _seed_cache(self, tmp_path, text):
+        cache = tmp_path / "cache"
+        cache.mkdir()
+        path = cache / "update_home_assistant_operating_system_update_18.4.txt"
+        path.write_text(text)
+        return cache, path
+
+    def _run(self, cache, release_url, fake_url):
+        import asyncio
+        from unittest.mock import patch
+
+        async def _fake_ws(entity_id):
+            return _OS_STUB
+
+        async def _go():
+            from agents.ha_update_manager import fetch_release_notes_cached
+
+            return await fetch_release_notes_cached(
+                "18.4",
+                cache_dir=str(cache),
+                entity_id=_OS_ENTITY,
+                release_url=release_url,
+                ws_fetcher=_fake_ws,
+            )
+
+        with patch(
+            "agents.ha_update_manager._fetch_release_notes_from_url",
+            side_effect=fake_url,
+        ) as mock_url:
+            return asyncio.run(_go()), mock_url
+
+    def test_cached_stub_with_github_url_refetches(self, tmp_path):
+        cache, path = self._seed_cache(tmp_path, _OS_STUB)
+
+        async def _fake_url(url):
+            assert url == _OS_API_URL
+            return _OS_REAL_NOTES
+
+        result, _ = self._run(cache, _OS_RELEASE_URL, _fake_url)
+        assert "Raspberry Pi" in result
+        assert path.read_text() == _OS_REAL_NOTES
+
+    def test_cached_stub_without_url_returned(self, tmp_path):
+        cache, _ = self._seed_cache(tmp_path, _OS_STUB)
+        result, mock_url = self._run(cache, None, None)
+        assert result == _OS_STUB
+        mock_url.assert_not_called()
+
+    def test_cached_stub_with_non_github_url_returned(self, tmp_path):
+        cache, _ = self._seed_cache(tmp_path, _OS_STUB)
+        result, mock_url = self._run(cache, "https://example.com/18.4", None)
+        assert result == _OS_STUB
+        mock_url.assert_not_called()
+
+    def test_cached_short_real_changelog_returned(self, tmp_path):
+        notes = "## 18.4\n- small fix"
+        cache, _ = self._seed_cache(tmp_path, notes)
+        result, mock_url = self._run(cache, _OS_RELEASE_URL, None)
+        assert result == notes
+        mock_url.assert_not_called()
+
+
+class TestGetUpdateReleaseNotesAlertOnlyStub:
+    """An alert-only WS body is not counted as release notes obtained."""
+
+    def _executor(self, release_url):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, MagicMock
+
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        executor = ToolExecutor(
+            ha_ssh_client=MagicMock(),
+            gate=MagicMock(),
+            notifier=AsyncMock(),
+            db_path=":memory:",
+        )
+        executor.set_ws_client(
+            FakeHAWebSocketClient(update_release_notes={_OS_ENTITY: _OS_STUB})
+        )
+        executor.set_update_status(
+            SimpleNamespace(
+                entity_id=_OS_ENTITY,
+                component="os",
+                installed_version="18.3",
+                latest_version="18.4",
+                release_url=release_url,
+                release_summary=None,
+            )
+        )
+        return executor
+
+    def _call(self, executor, tmp_path):
+        import asyncio
+        from unittest.mock import patch
+
+        import config as _cfg
+
+        with (
+            patch.object(
+                _cfg, "HA_UPDATE_RELEASE_NOTES_CACHE_DIR", str(tmp_path / "cache")
+            ),
+            patch(
+                "agents.ha_update_manager._fetch_release_notes_from_url",
+                side_effect=RuntimeError("offline"),
+            ),
+        ):
+            return asyncio.run(executor._get_update_release_notes("18.4"))
+
+    def test_stub_with_release_url_adds_fetch_hint(self, tmp_path, pueo_dirs):
+        executor = self._executor(_OS_RELEASE_URL)
+        result = self._call(executor, tmp_path)
+        assert result.success
+        assert executor._release_notes_obtained is False
+        assert f"fetch_url({_OS_RELEASE_URL!r})" in result.output
+
+    def test_stub_without_release_url_no_hint(self, tmp_path, pueo_dirs):
+        executor = self._executor(None)
+        result = self._call(executor, tmp_path)
+        assert executor._release_notes_obtained is False
+        assert "fetch_url" not in result.output
+
+
+class TestFetchUrlGitHubReleaseRewrite:
+    """fetch_url rewrites github.com release tag pages to the API form."""
+
+    def _executor(self, release_url=None):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, MagicMock
+
+        from utils.agent.tool_executor import ToolExecutor
+
+        executor = ToolExecutor(
+            ha_ssh_client=MagicMock(),
+            gate=MagicMock(),
+            notifier=AsyncMock(),
+            db_path=":memory:",
+        )
+        if release_url is not None:
+            executor.set_update_status(
+                SimpleNamespace(
+                    entity_id=_OS_ENTITY,
+                    component="os",
+                    installed_version="18.3",
+                    latest_version="18.4",
+                    release_url=release_url,
+                    release_summary=None,
+                )
+            )
+        return executor
+
+    def _fetch(self, executor, url, body):
+        import asyncio
+        import json
+        from unittest.mock import patch
+
+        payload = json.dumps({"tag_name": "18.4", "body": body}).encode()
+        with patch("urllib.request.urlopen") as mock_open:
+            mock_open.return_value.read.return_value = payload
+            result = asyncio.run(executor._fetch_url(url))
+        return result, mock_open.call_args[0][0].full_url
+
+    def test_release_page_rewritten_and_marks_notes(self, pueo_dirs):
+        import json
+
+        executor = self._executor(_OS_RELEASE_URL)
+        result, requested = self._fetch(executor, _OS_RELEASE_URL, _OS_REAL_NOTES)
+        assert requested == _OS_API_URL
+        assert "Raspberry Pi" in json.loads(result.output)["body"]
+        assert executor._release_notes_obtained is True
+
+    def test_other_release_does_not_mark_notes(self, pueo_dirs):
+        executor = self._executor(_OS_RELEASE_URL)
+        other = "https://github.com/home-assistant/operating-system/releases/tag/18.3"
+        _, requested = self._fetch(executor, other, _OS_REAL_NOTES)
+        assert requested.endswith("/releases/tags/18.3")
+        assert executor._release_notes_obtained is False
+
+    def test_alert_only_body_does_not_mark_notes(self, pueo_dirs):
+        executor = self._executor(_OS_RELEASE_URL)
+        self._fetch(executor, _OS_RELEASE_URL, _OS_STUB)
+        assert executor._release_notes_obtained is False
+
+    def test_no_pending_update_does_not_mark_notes(self, pueo_dirs):
+        executor = self._executor()
+        _, requested = self._fetch(executor, _OS_RELEASE_URL, _OS_REAL_NOTES)
+        assert requested == _OS_API_URL
+        assert executor._release_notes_obtained is False
+
+    def test_release_download_url_not_rewritten(self, pueo_dirs):
+        executor = self._executor()
+        url = "https://github.com/o/r/releases/download/18.4/sha256sums"
+        _, requested = self._fetch(executor, url, "x")
+        assert requested == url
