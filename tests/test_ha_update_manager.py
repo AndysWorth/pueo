@@ -1177,7 +1177,12 @@ class TestUpdateAnalysisContextBuilding:
         assert "no config entry" not in ctx
 
     def test_addon_supervisor_slug_in_context(self, tmp_path, pueo_dirs):
-        """Add-on updates include 'Supervisor slug: <component>' in initial_context (#1019)."""
+        """Add-on updates include 'Supervisor slug: <resolved>' in initial_context (#1019).
+
+        _resolve_addon_slug is patched to return a resolved slug (simulating a
+        prefix match: component='mosquitto' → slug='core_mosquitto') so the test
+        does not require a live SSH connection.
+        """
         import asyncio
         from contextlib import ExitStack
         from unittest import mock
@@ -1187,7 +1192,7 @@ class TestUpdateAnalysisContextBuilding:
         from utils.hitl.notify import FakeNotifier
 
         class _FakeAddonUpdate:
-            component = "core_mosquitto"
+            component = "mosquitto"
             entity_id = "update.core_mosquitto_update"
             installed_version = "2.0.14"
             latest_version = "2.0.15"
@@ -1197,9 +1202,18 @@ class TestUpdateAnalysisContextBuilding:
         db_path = _make_db(tmp_path)
         captured_context = []
 
+        async def _fake_resolve(component, ssh_client):
+            return "core_mosquitto"
+
         with ExitStack() as stack:
             patches = _base_patches(db_path)
             mocks = [stack.enter_context(p) for p in patches]
+            stack.enter_context(
+                mock.patch(
+                    "agents.ha_update_manager._resolve_addon_slug",
+                    side_effect=_fake_resolve,
+                )
+            )
             MockLoop = mocks[0]
             mock_instance = MagicMock()
 
