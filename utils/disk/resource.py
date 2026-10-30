@@ -883,25 +883,32 @@ class ResourcePoller:
 
     def _check_pueo_reboot_recent(
         self, db_path: str, window_seconds: float = 1200.0
-    ) -> bool:
-        """True if a Pueo-initiated restart or reboot timeline event exists in the last window."""
+    ) -> "tuple[bool, str]":
+        """Return (is_recent, action_detail) for the last Pueo-initiated restart/reboot.
+
+        Reads the ``pueo_action:last_restart`` user_prefs row written by
+        ``record_pueo_action``.  Returns (True, detail) when the action's timestamp
+        is within *window_seconds* of now, (False, '') otherwise.
+        """
         import sqlite3 as _sqlite3
         import time as _time
 
         try:
-            since = _time.time() - window_seconds
+            from utils.ha.device_availability import load_pueo_action
+
             with _sqlite3.connect(db_path) as _conn:
-                row = _conn.execute(
-                    "SELECT 1 FROM timeline_events"
-                    " WHERE event_category = 'resource'"
-                    " AND (message LIKE '%restart%' OR message LIKE '%reboot%')"
-                    " AND timestamp > ?"
-                    " LIMIT 1",
-                    (since,),
-                ).fetchone()
-                return row is not None
+                action = load_pueo_action(_conn)
+                if action is None:
+                    return False, ""
+                age = _time.time() - float(action.get("ts", 0))
+                if age <= window_seconds:
+                    detail = (
+                        f"{action.get('kind', 'restart')} ({action.get('detail', '')})"
+                    )
+                    return True, detail
         except Exception:  # nosec B110 — table may not exist yet
-            return False
+            pass
+        return False, ""
 
     def _load_known_repair_uuids(self, db_path: str) -> "set[str]":
         """Return the set of issue_ids stored for hassio domain in ha_repair_history."""
@@ -939,8 +946,9 @@ class ResourcePoller:
         _db = self._db_path or _cfg.DB_PATH
 
         last_boot_ts = await asyncio.to_thread(self._read_last_boot_ts, _db)
-        pueo_reboot_recent = await asyncio.to_thread(
-            self._check_pueo_reboot_recent, _db
+        _window_s = float(_cfg.PUEO_ACTION_REBOOT_WINDOW_MINUTES) * 60.0
+        pueo_reboot_recent, _pueo_action_detail = await asyncio.to_thread(
+            self._check_pueo_reboot_recent, _db, _window_s
         )
         known_repair_uuids = await asyncio.to_thread(self._load_known_repair_uuids, _db)
 
@@ -954,6 +962,29 @@ class ResourcePoller:
             disk_life_warn_pct=_cfg.HOST_DISK_LIFE_WARN_PCT,
             mem_warn_mb=self._mem_warn_mb,
         )
+
+        # When boot_ts changed and a Pueo action caused it, write an expected-reboot
+        # timeline event so the review shows context; the unexpected_reboot finding
+        # is already absent (pueo_reboot_recent=True suppresses it in evaluate).
+        if (
+            pueo_reboot_recent
+            and _pueo_action_detail
+            and health.boot_ts is not None
+            and last_boot_ts is not None
+            and abs(health.boot_ts - last_boot_ts) > 30.0
+        ):
+            try:
+                from utils.core.timeline import write_timeline_event
+
+                await asyncio.to_thread(
+                    write_timeline_event,
+                    "INFO",
+                    "resource",
+                    f"Expected reboot after {_pueo_action_detail}",
+                    {"boot_ts": health.boot_ts},
+                )
+            except Exception:  # nosec B110
+                pass
 
         # A host reboot restarts HA too; the device availability poll holds
         # transitions for a settle window after it.

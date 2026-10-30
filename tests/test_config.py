@@ -1815,3 +1815,18 @@ class TestFederatedCasesRepoConfig:
         assert config.HOST_SWAP_WARN_PCT == 70.0
         assert config.HOST_DISK_LIFE_WARN_PCT == 75.0
         assert config.HOST_HEALTH_INVESTIGATION_ENABLED is False
+
+    def test_pueo_action_reboot_window_minutes_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.PUEO_ACTION_REBOOT_WINDOW_MINUTES == 20
+
+    def test_pueo_action_reboot_window_minutes_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump({"agent": {"pueo_action_reboot_window_minutes": 30}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.PUEO_ACTION_REBOOT_WINDOW_MINUTES == 30

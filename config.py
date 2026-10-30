@@ -87,6 +87,11 @@ BACKUP_MAX_PER_HOUR: int = int(_agent.get("backup_max_per_hour", 6))
 
 # Host-health detection and LLM investigation
 HOST_SWAP_WARN_PCT: float = float(_agent.get("host_swap_warn_pct", 80.0))
+# Reboots/restarts within this many minutes of a Pueo-initiated action are expected
+# and suppress unexpected_reboot host-health investigations.
+PUEO_ACTION_REBOOT_WINDOW_MINUTES: int = int(
+    _agent.get("pueo_action_reboot_window_minutes", 20)
+)
 HOST_DISK_LIFE_WARN_PCT: float = float(_agent.get("host_disk_life_warn_pct", 80.0))
 HOST_HEALTH_INVESTIGATION_ENABLED: bool = bool(
     _agent.get("host_health_investigation_enabled", True)

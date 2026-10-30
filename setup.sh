@@ -984,6 +984,7 @@ agent:
   # host_swap_warn_pct: 80.0
   # host_disk_life_warn_pct: 80.0
   # host_health_investigation_enabled: true
+  # pueo_action_reboot_window_minutes: 20
   # backup_offload_enabled: true
   # backup_local_dir: ""     # default: data_dir/backups
   # backup_retain_on_ha: 2

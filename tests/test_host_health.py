@@ -705,38 +705,52 @@ class TestResourcePollerHostHealthHelpers:
         poller._write_last_boot_ts(db, 1_700_100_000.0)
         assert poller._read_last_boot_ts(db) == pytest.approx(1_700_100_000.0)
 
-    def test_check_pueo_reboot_recent_false_no_events(self, tmp_path):
+    def test_check_pueo_reboot_recent_false_no_action(self, tmp_path):
         poller = self._make_poller(tmp_path)
         db = str(tmp_path / "state.db")
-        assert not poller._check_pueo_reboot_recent(db)
+        recent, detail = poller._check_pueo_reboot_recent(db)
+        assert not recent
+        assert detail == ""
 
     def test_check_pueo_reboot_recent_true(self, tmp_path):
-        import sqlite3
-        import time
+        from utils.ha.device_availability import record_pueo_action
 
         poller = self._make_poller(tmp_path)
         db = str(tmp_path / "state.db")
-        with sqlite3.connect(db) as conn:
-            conn.execute(
-                "INSERT INTO timeline_events (timestamp, event_type, event_category, message, data)"
-                " VALUES (?, 'INFO', 'resource', 'HA Core restart triggered', '{}')",
-                (time.time() - 60,),
-            )
-        assert poller._check_pueo_reboot_recent(db)
+        record_pueo_action(db, "core_restart", "ha core restart")
+        recent, detail = poller._check_pueo_reboot_recent(db)
+        assert recent
+        assert "core_restart" in detail
 
-    def test_check_pueo_reboot_recent_old_event(self, tmp_path):
-        import sqlite3
+    def test_check_pueo_reboot_recent_outside_window(self, tmp_path):
+        import json
         import time
+
+        from utils.ha.device_availability import record_pueo_action
 
         poller = self._make_poller(tmp_path)
         db = str(tmp_path / "state.db")
-        with sqlite3.connect(db) as conn:
+        # Write an action with a timestamp well outside the window
+        import sqlite3 as _sqlite3
+
+        old_ts = time.time() - 3000
+        with _sqlite3.connect(db) as conn:
             conn.execute(
-                "INSERT INTO timeline_events (timestamp, event_type, event_category, message, data)"
-                " VALUES (?, 'INFO', 'resource', 'HA Core restart triggered', '{}')",
-                (time.time() - 3000,),
+                "INSERT INTO user_prefs (key, value) VALUES (?, ?)"
+                " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (
+                    "pueo_action:last_restart",
+                    json.dumps(
+                        {
+                            "ts": old_ts,
+                            "kind": "core_restart",
+                            "detail": "ha core restart",
+                        }
+                    ),
+                ),
             )
-        assert not poller._check_pueo_reboot_recent(db)
+        recent, detail = poller._check_pueo_reboot_recent(db)
+        assert not recent
 
     def test_load_known_repair_uuids(self, tmp_path):
         import sqlite3
@@ -1014,6 +1028,56 @@ class TestResourcePollerCheckHostHealth:
 
         assert len(notifier.sent) == 1
         assert "disk_wear" in poller._alerted_host
+
+    def test_boot_change_with_pueo_action_writes_timeline_not_investigation(
+        self, tmp_path, monkeypatch
+    ):
+        """Boot_ts changed and a Pueo action is within the window: write_timeline_event
+        is called with an 'Expected reboot' message and the unexpected_reboot finding is
+        suppressed (no notification sent)."""
+        import asyncio
+        from unittest.mock import MagicMock
+
+        import config as cfg_mod
+        import utils.disk.host_health as hh_mod
+        from utils.ha.device_availability import record_pueo_action
+
+        monkeypatch.setattr(cfg_mod, "HOST_HEALTH_INVESTIGATION_ENABLED", False)
+        monkeypatch.setattr(cfg_mod, "PUEO_ACTION_REBOOT_WINDOW_MINUTES", 20)
+        poller, db = self._make_poller(tmp_path)
+
+        # Capture calls to write_timeline_event; it uses config.DB_PATH which the test
+        # cannot easily redirect, so we patch the function itself in the source module.
+        import utils.core.timeline as tl_mod
+
+        timeline_calls: list[tuple] = []
+
+        def _fake_write(level, source, message, detail=None):
+            timeline_calls.append((level, source, message, detail))
+
+        monkeypatch.setattr(tl_mod, "write_timeline_event", _fake_write)
+
+        # First call: establish last_boot_ts baseline
+        monkeypatch.setattr(
+            hh_mod, "_last_host_health", _make_health(boot_ts=1_700_000_000.0)
+        )
+        asyncio.run(poller._check_host_health(_make_status()))
+
+        # Record a Pueo action (simulate recent restart)
+        record_pueo_action(db, "core_restart", "ha core restart")
+
+        # Second call: boot_ts changed → looks like a reboot
+        monkeypatch.setattr(
+            hh_mod, "_last_host_health", _make_health(boot_ts=1_700_100_000.0)
+        )
+        asyncio.run(poller._check_host_health(_make_status()))
+
+        # write_timeline_event should have been called with "Expected reboot …"
+        reboot_calls = [c for c in timeline_calls if "Expected reboot" in c[2]]
+        assert (
+            len(reboot_calls) == 1
+        ), f"Expected 1 'Expected reboot' call, got: {timeline_calls}"
+        assert "core_restart" in reboot_calls[0][2]
 
 
 # ---------------------------------------------------------------------------

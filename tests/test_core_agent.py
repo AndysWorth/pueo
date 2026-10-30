@@ -18069,6 +18069,79 @@ class TestAgentLoopStuckOutcome:
 
         assert result.outcome == "stuck"
 
+    def test_sleep_retry_recovers_on_second_attempt(self):
+        """Timeout during Mac sleep is retried once; success on retry → non-stuck outcome."""
+        import time
+        from unittest.mock import patch
+
+        call_count = 0
+
+        async def _first_times_out_then_ok(*a, **k):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                await asyncio.sleep(9999)
+            return {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [],
+            }
+
+        class _RetryLLM:
+            async def chat_with_tools(self, *a, **k):
+                return await _first_times_out_then_ok()
+
+            async def chat(self, *a, **k):
+                return {"message": {"content": "{}"}}
+
+        loop = self._make_loop(_RetryLLM())
+
+        # Patch host_sleep_seconds to report a sleep > threshold on the first timeout.
+        _big_sleep = 120.0
+
+        def _fake_host_sleep(wall_prev, mono_prev, wall_now, mono_now):
+            return _big_sleep if call_count <= 1 else 0.0
+
+        with (
+            patch.object(loop, "_per_call_timeout_seconds", return_value=0.01),
+            patch("utils.system.sleep_guard.host_sleep_seconds", _fake_host_sleep),
+        ):
+            result = asyncio.run(loop.run("diagnose the system"))
+
+        assert (
+            result.outcome != "stuck"
+        ), f"expected non-stuck outcome, got {result.outcome}"
+        assert result.stuck_reason == ""
+
+    def test_sleep_stuck_sets_stuck_reason_on_double_timeout(self):
+        """Two successive timeouts both showing host sleep → stuck_reason='host_sleep'."""
+        from unittest.mock import patch
+
+        async def _always_slow(*a, **k):
+            await asyncio.sleep(9999)
+            return {"role": "assistant", "content": ""}
+
+        class _SlowLLM:
+            async def chat_with_tools(self, *a, **k):
+                return await _always_slow()
+
+            async def chat(self, *a, **k):
+                return {"message": {"content": "{}"}}
+
+        loop = self._make_loop(_SlowLLM())
+
+        def _fake_host_sleep(wall_prev, mono_prev, wall_now, mono_now):
+            return 120.0  # always looks like a host sleep
+
+        with (
+            patch.object(loop, "_per_call_timeout_seconds", return_value=0.01),
+            patch("utils.system.sleep_guard.host_sleep_seconds", _fake_host_sleep),
+        ):
+            result = asyncio.run(loop.run("diagnose the system"))
+
+        assert result.outcome == "stuck"
+        assert result.stuck_reason == "host_sleep"
+
 
 class TestRepairLoopKnowledgeInjectCallback:
     """context_inject_callback is wired in the HA repair loop (Closes #410)."""

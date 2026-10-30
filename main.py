@@ -1569,11 +1569,27 @@ async def supervisor_main(config_path: Path) -> None:
                 _cur_sessions = _esub_wd.session_count()
                 catchup = _catchup_wake_targets(_prev_sessions, _cur_sessions, _slept)
                 if _cur_sessions > _prev_sessions > 0:
-                    # A WS reconnect usually means HA restarted; the device
-                    # availability poll holds transitions for a settle window.
-                    from utils.ha.device_availability import record_ha_start
+                    from utils.ha.device_availability import (
+                        confirm_ha_restart,
+                        record_ha_start,
+                    )
 
-                    await asyncio.to_thread(record_ha_start, cfg.DB_PATH, now)
+                    if _slept >= HOST_SLEEP_THRESHOLD_SECONDS:
+                        _gl_wd("main").info(
+                            "ha_start_skipped",
+                            reason="host_sleep",
+                            slept_s=round(_slept, 1),
+                        )
+                    else:
+                        _rest = getattr(_exec_wd, "_rest_client", None)
+                        _confirmed = await confirm_ha_restart(_rest, cfg.DB_PATH, now)
+                        if _confirmed:
+                            await asyncio.to_thread(record_ha_start, cfg.DB_PATH, now)
+                        else:
+                            _gl_wd("main").info(
+                                "ha_start_skipped",
+                                reason="unconfirmed",
+                            )
                 _prev_sessions = _cur_sessions
                 if catchup:
                     if _slept >= HOST_SLEEP_THRESHOLD_SECONDS:

@@ -68,6 +68,9 @@ class AgentLoopResult(BaseModel):
     top_retrieved_signature: str = (
         ""  # top strategy chunk signature from pre-inject (S4b)
     )
+    stuck_reason: str = (
+        ""  # "host_sleep" when a per-call timeout was caused by Mac sleep
+    )
 
 
 class ToolDefinition(BaseModel):

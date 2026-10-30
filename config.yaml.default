@@ -113,6 +113,7 @@ agent:
                                      # HA backups are consistently larger than 2 GB.
   ha_mem_warn_mb: 256                # Send an approval card when HA memory available drops below this value (MB)
   host_swap_warn_pct: 80.0           # Fire host-health investigation when swap use exceeds this % (and mem is also low)
+  # pueo_action_reboot_window_minutes: 20  # Reboots within this window after a Pueo action are expected; suppress unexpected_reboot
   host_disk_life_warn_pct: 80.0      # Fire host-health investigation when eMMC life used exceeds this %
   host_health_investigation_enabled: true  # Start an LLM investigation on host-health findings; false = notification only
   backup_offload_enabled: true       # SFTP-pull each backup .tar to Pueo's local machine after creation

@@ -2048,6 +2048,15 @@ async def execute_ha_reboot(
         log.info("ha_reboot_backup_complete", slug=backup_slug)
 
     _emit_step("Sending reboot command to HA…", activity="reboot_execution")
+    try:
+        import config as _rcfg
+        from utils.ha.device_availability import record_pueo_action
+
+        await asyncio.to_thread(
+            record_pueo_action, _rcfg.DB_PATH, "host_reboot", "ha host reboot"
+        )
+    except Exception:  # nosec B110
+        pass
     await ssh_client.run("ha host reboot", check=False)
 
     host = ha_host or HA_HOST
@@ -2136,6 +2145,15 @@ async def execute_ha_core_restart(
         log.info("ha_core_restart_backup_complete", slug=backup_slug)
 
     _emit_step("Sending restart command to HA Core…", activity="restart_execution")
+    try:
+        import config as _rcfg
+        from utils.ha.device_availability import record_pueo_action
+
+        await asyncio.to_thread(
+            record_pueo_action, _rcfg.DB_PATH, "core_restart", "ha core restart"
+        )
+    except Exception:  # nosec B110
+        pass
     down_fn = _down_poll or _wait_for_ha_down
 
     # Pause loops and start the TCP down-watcher BEFORE the blocking SSH call.
