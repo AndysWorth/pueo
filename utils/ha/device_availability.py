@@ -800,9 +800,10 @@ def upsert_recurrence_fact(
                 (key, signature),
             )
             conn.execute(
-                "INSERT INTO agent_memory (key, content, source, ts, signature)"
-                " VALUES (?, ?, ?, ?, ?)",
-                (key, fact, "observed", now, signature),
+                "INSERT INTO agent_memory"
+                " (key, content, source, ts, signature, subject_key)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (key, fact, "observed", now, signature, device_id),
             )
             conn.commit()
     except Exception as e:  # nosec B110
@@ -853,21 +854,59 @@ async def _run_device_availability_investigation(
 def _post_restart_sweep(
     findings: list[OfflineFinding], db_path: str, ha_start_ts: float
 ) -> list[OfflineFinding]:
-    """Drop suppressed/backed-off entries, then merge the rest into one sweep."""
+    """Drop suppressed/backed-off/disarmed/recurring entries, then merge the rest."""
+    import config as _cfg
+
     from utils.hitl.hitl_tracker import should_send_card
 
+    now = time.time()
     eligible: list[OfflineFinding] = []
     with sqlite3.connect(db_path) as conn:
+        disarmed = load_disarmed(conn)
+        episodes_blob = load_episodes(conn)
         for f in findings:
-            if should_send_card(
-                conn, f"device_offline:{f.config_entry_id}"
-            ) and should_send_card(conn, f"device_offline_backoff:{f.config_entry_id}"):
-                eligible.append(f)
-            else:
+            if not (
+                should_send_card(conn, f"device_offline:{f.config_entry_id}")
+                and should_send_card(
+                    conn, f"device_offline_backoff:{f.config_entry_id}"
+                )
+            ):
                 log.info(
                     "device_offline_sweep_entry_suppressed",
                     config_entry_id=f.config_entry_id,
                 )
+                continue
+            # Apply the same disarm check as the normal poll (F3).
+            disarmed_ids = [
+                d.get("device_id") for d in f.devices if d.get("device_id") in disarmed
+            ]
+            if disarmed_ids:
+                log.info(
+                    "device_offline_sweep_entry_disarmed",
+                    config_entry_id=f.config_entry_id,
+                    device_ids=disarmed_ids,
+                )
+                continue
+            # Apply the same recurring self-recovery check as the normal poll (F3).
+            recurring_ids = [
+                d.get("device_id", "")
+                for d in f.devices
+                if count_self_recovered_in_window(
+                    episodes_blob,
+                    d.get("device_id", ""),
+                    now,
+                    _cfg.DEVICE_RECURRENCE_WINDOW_DAYS,
+                )
+                >= _cfg.DEVICE_RECURRENCE_COUNT
+            ]
+            if recurring_ids:
+                log.info(
+                    "device_offline_sweep_entry_recurring",
+                    config_entry_id=f.config_entry_id,
+                    device_ids=recurring_ids,
+                )
+                continue
+            eligible.append(f)
     sweep = merge_post_restart_findings(eligible, ha_start_ts)
     if sweep is None:
         return []

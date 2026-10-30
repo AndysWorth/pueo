@@ -970,7 +970,7 @@ class TestAdvancedDB:
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 42
+        assert version == 43
 
     def test_version_unchanged_on_second_init(self, db_path):
         from agents import ha_agent_advanced
@@ -980,7 +980,7 @@ class TestAdvancedDB:
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute("SELECT version FROM schema_version").fetchall()
         assert len(rows) == 1
-        assert rows[0][0] == 42
+        assert rows[0][0] == 43
 
     def test_pre_migration_database_upgraded(self, db_path):
         from agents import ha_agent_advanced
@@ -1009,7 +1009,7 @@ class TestAdvancedDB:
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 42
+        assert version == 43
 
     def test_migration_v2_adds_correlation_id_column(self, db_path):
         from agents import ha_agent_advanced
@@ -1973,7 +1973,7 @@ class TestSandboxDB:
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 42
+        assert version == 43
 
     def test_version_unchanged_on_second_init(self, db_path):
         from agents import ha_agent_sandbox_engine
@@ -1983,7 +1983,7 @@ class TestSandboxDB:
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute("SELECT version FROM schema_version").fetchall()
         assert len(rows) == 1
-        assert rows[0][0] == 42
+        assert rows[0][0] == 43
 
     def test_pre_migration_database_upgraded(self, db_path):
         from agents import ha_agent_sandbox_engine
@@ -2011,7 +2011,7 @@ class TestSandboxDB:
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 42
+        assert version == 43
 
     def test_migration_v24_creates_agent_strategies(self, db_path):
         from agents import ha_agent_sandbox_engine
@@ -20169,6 +20169,49 @@ class TestMigrationV41Backfill:
                 ).fetchall()
             )
         assert rows == {"done": "2026-10-19T09:30:00Z", "open": None}
+
+
+class TestMigrationV43SubjectKey:
+    """V43 adds subject_key + index to agent_memory."""
+
+    @pytest.mark.parametrize(
+        "module", ["agents.ha_agent_advanced", "agents.ha_agent_sandbox_engine"]
+    )
+    def test_adds_subject_key_column(self, tmp_path, monkeypatch, module):
+        import importlib
+        import sqlite3
+
+        mod = importlib.import_module(module)
+        db_path = str(tmp_path / "v42.db")
+        monkeypatch.setattr(mod, "DB_PATH", db_path)
+        mod.init_local_database()
+        with sqlite3.connect(db_path) as conn:
+            cols = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(agent_memory)").fetchall()
+            }
+        assert "subject_key" in cols
+
+    @pytest.mark.parametrize(
+        "module", ["agents.ha_agent_advanced", "agents.ha_agent_sandbox_engine"]
+    )
+    def test_index_exists_on_subject_key(self, tmp_path, monkeypatch, module):
+        import importlib
+        import sqlite3
+
+        mod = importlib.import_module(module)
+        db_path = str(tmp_path / "v42idx.db")
+        monkeypatch.setattr(mod, "DB_PATH", db_path)
+        mod.init_local_database()
+        with sqlite3.connect(db_path) as conn:
+            indexes = {
+                row[1]
+                for row in conn.execute(
+                    "SELECT * FROM sqlite_master WHERE type='index'"
+                    " AND tbl_name='agent_memory'"
+                ).fetchall()
+            }
+        assert "idx_agent_memory_subject_key" in indexes
 
 
 class TestReadNetAlertXConf:

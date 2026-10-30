@@ -3105,7 +3105,7 @@ class TestUpsertRecurrenceFact:
         with sqlite3.connect(str(db)) as conn:
             conn.execute(
                 "CREATE TABLE agent_memory "
-                "(id INTEGER PRIMARY KEY, key TEXT, content TEXT, source TEXT, ts REAL, signature TEXT)"
+                "(id INTEGER PRIMARY KEY, key TEXT, content TEXT, source TEXT, ts REAL, signature TEXT, subject_key TEXT)"
             )
             conn.commit()
 
@@ -3128,7 +3128,7 @@ class TestUpsertRecurrenceFact:
         with sqlite3.connect(str(db)) as conn:
             conn.execute(
                 "CREATE TABLE agent_memory "
-                "(id INTEGER PRIMARY KEY, key TEXT, content TEXT, source TEXT, ts REAL, signature TEXT)"
+                "(id INTEGER PRIMARY KEY, key TEXT, content TEXT, source TEXT, ts REAL, signature TEXT, subject_key TEXT)"
             )
             conn.commit()
 
@@ -3148,7 +3148,7 @@ class TestUpsertRecurrenceFact:
         with sqlite3.connect(str(db)) as conn:
             conn.execute(
                 "CREATE TABLE agent_memory "
-                "(id INTEGER PRIMARY KEY, key TEXT, content TEXT, source TEXT, ts REAL, signature TEXT)"
+                "(id INTEGER PRIMARY KEY, key TEXT, content TEXT, source TEXT, ts REAL, signature TEXT, subject_key TEXT)"
             )
             conn.commit()
 
@@ -4368,6 +4368,58 @@ class TestPollPostRestartSweep:
         with sqlite3.connect(db) as conn:
             assert load_disarmed(conn) == frozenset()
 
+    def test_sweep_drops_disarmed_entry(self, tmp_path, monkeypatch):
+        """Sweep excludes a finding whose device is disarmed (F3)."""
+        db = _make_poll_db(tmp_path)
+        start = _NOW - 15 * 60
+        self._arm(db, start)
+        # Disarm dev-A (belongs to entry-matter).
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO user_prefs (key, value) VALUES (?, '{}')",
+                ("device_availability:disarmed:dev-A",),
+            )
+        calls = self._poll(db, _two_entry_ws(), monkeypatch, _NOW + 30)
+        # Only the non-disarmed device (dev-B / entry-cast) should appear.
+        assert len(calls) == 1
+        assert {d["device_id"] for d in calls[0].devices} == {"dev-B"}
+
+    def test_sweep_drops_recurring_entry(self, tmp_path, monkeypatch):
+        """Sweep excludes a finding whose device has self-recovered above the threshold (F3)."""
+        import config as _cfg
+
+        from utils.ha.device_availability import save_episodes
+
+        db = _make_poll_db(tmp_path)
+        start = _NOW - 15 * 60
+        self._arm(db, start)
+        # Record enough self-recoveries for dev-B to exceed the recurrence threshold.
+        episodes: dict = {}
+        for i in range(_cfg.DEVICE_RECURRENCE_COUNT):
+            t = _NOW - (i + 1) * 3600.0
+            episodes.setdefault("dev-B", []).append(
+                {"offline_at": t - 300, "recovered_at": t, "self_recovered": True}
+            )
+        with sqlite3.connect(db) as conn:
+            save_episodes(conn, episodes)
+        calls = self._poll(db, _two_entry_ws(), monkeypatch, _NOW + 30)
+        # dev-B is recurring; only dev-A / entry-matter should appear.
+        assert len(calls) == 1
+        assert {d["device_id"] for d in calls[0].devices} == {"dev-A"}
+
+    def test_sweep_all_disarmed_no_session(self, tmp_path, monkeypatch):
+        """If all devices are disarmed, no sweep session starts."""
+        db = _make_poll_db(tmp_path)
+        start = _NOW - 15 * 60
+        self._arm(db, start)
+        with sqlite3.connect(db) as conn:
+            for dev in ("dev-A", "dev-B"):
+                conn.execute(
+                    "INSERT INTO user_prefs (key, value) VALUES (?, '{}')",
+                    (f"device_availability:disarmed:{dev}",),
+                )
+        assert self._poll(db, _two_entry_ws(), monkeypatch, _NOW + 30) == []
+
 
 class TestPostRestartContext:
     def _finding(self, start=1_700_000_000.0):
@@ -4508,7 +4560,13 @@ class TestPostRestartContext:
         )
         assert seen["signature"] == "device:offline:post_restart"
         assert seen["subject_key"] == "post_restart"
-        assert seen["prior_subject_keys"] == ["post_restart", "e1:matter", "e2:cast"]
+        assert seen["prior_subject_keys"] == [
+            "post_restart",
+            "a",
+            "b",
+            "e1:matter",
+            "e2:cast",
+        ]
         assert "post-restart sweep" in seen["initial_context"]
 
 
