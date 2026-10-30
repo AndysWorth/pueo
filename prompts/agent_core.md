@@ -21,7 +21,9 @@ ha_version for version_check queries).
 5. Act — address the root cause, not the symptom. Call remember() for non-obvious
    instance-specific facts.
 6. Report — call {terminal_tool} with a complete, data-driven answer. Pass
-   runbook_followed ([id=…] of any runbook followed, or "none").
+   runbook_followed ([id=…] of any runbook followed, or "none"). Pass
+   deviated_from_runbook({{rule, why}}) only when you departed from the pre-injected
+   runbook and the departure produced a better result.
 
 STOPPING: Stop when complete or all reasonable paths exhausted. Before outcome=failed,
 call request_escalation(reason). Stop immediately when you already have a complete answer.

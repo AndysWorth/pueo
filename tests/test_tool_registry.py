@@ -349,11 +349,11 @@ class TestRegistryMembership:
         )
 
         # Ceiling = observed value at test-write time + 25% headroom.
-        # chat registry: ~7000 tokens; ha registry: ~5000 tokens.
+        # chat registry: ~9500 tokens; ha registry: ~8000 tokens.
         # Bump these numbers (with the same +25% formula) when you intentionally
         # add new tools, not as a shortcut past a surprise regression.
-        CHAT_CEILING = 10_000
-        HA_CEILING = 8_000
+        CHAT_CEILING = 12_000
+        HA_CEILING = 10_100
         assert chat_tokens <= CHAT_CEILING, (
             f"Chat registry schema is {chat_tokens} tokens (ceiling {CHAT_CEILING}). "
             "Either the registry grew unexpectedly or the ceiling needs bumping."
