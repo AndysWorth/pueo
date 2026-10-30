@@ -4648,3 +4648,92 @@ class TestLastHaStartLine:
         from utils.ha.device_availability_investigation import last_ha_start_line
 
         assert last_ha_start_line(str(tmp_path / "missing" / "x.db")) == ""
+
+
+class TestPueoActionTracking:
+    def test_record_and_load_round_trip(self, tmp_path):
+        from utils.ha.device_availability import load_pueo_action, record_pueo_action
+
+        db = _make_poll_db(tmp_path)
+        record_pueo_action(db, "core_restart", "ha core restart")
+        with sqlite3.connect(db) as conn:
+            action = load_pueo_action(conn)
+        assert action is not None
+        assert action["kind"] == "core_restart"
+        assert action["detail"] == "ha core restart"
+        assert action["ts"] > 0
+
+    def test_record_overwrites_previous(self, tmp_path):
+        from utils.ha.device_availability import load_pueo_action, record_pueo_action
+
+        db = _make_poll_db(tmp_path)
+        record_pueo_action(db, "host_reboot", "ha host reboot")
+        record_pueo_action(db, "core_restart", "ha core restart")
+        with sqlite3.connect(db) as conn:
+            action = load_pueo_action(conn)
+        assert action["kind"] == "core_restart"
+
+    def test_load_missing_returns_none(self, tmp_path):
+        from utils.ha.device_availability import load_pueo_action
+
+        db = _make_poll_db(tmp_path)
+        with sqlite3.connect(db) as conn:
+            assert load_pueo_action(conn) is None
+
+    def test_load_bad_db_returns_none(self, tmp_path):
+        from utils.ha.device_availability import load_pueo_action
+
+        conn = sqlite3.connect(str(tmp_path / "empty.db"))
+        assert load_pueo_action(conn) is None
+        conn.close()
+
+    def test_record_bad_path_is_silent(self, tmp_path):
+        from utils.ha.device_availability import record_pueo_action
+
+        record_pueo_action(
+            str(tmp_path / "missing" / "x.db"), "core_restart", "ha core restart"
+        )
+
+
+class TestConfirmHARestart:
+    def test_no_rest_client_returns_true(self, tmp_path):
+        from utils.ha.device_availability import confirm_ha_restart
+
+        result = asyncio.run(confirm_ha_restart(None, str(tmp_path / "x.db"), 1000.0))
+        assert result is True
+
+    def test_rest_returns_config_returns_true(self, tmp_path):
+        from utils.ha.device_availability import confirm_ha_restart
+
+        class _FakeRest:
+            async def get_raw(self, path):
+                return {"version": "2025.1.0", "location_name": "Home"}
+
+        result = asyncio.run(
+            confirm_ha_restart(_FakeRest(), str(tmp_path / "x.db"), 1000.0)
+        )
+        assert result is True
+
+    def test_rest_raises_returns_false(self, tmp_path):
+        from utils.ha.device_availability import confirm_ha_restart
+
+        class _FakeRest:
+            async def get_raw(self, path):
+                raise RuntimeError("connection refused")
+
+        result = asyncio.run(
+            confirm_ha_restart(_FakeRest(), str(tmp_path / "x.db"), 1000.0)
+        )
+        assert result is False
+
+    def test_rest_empty_dict_returns_false(self, tmp_path):
+        from utils.ha.device_availability import confirm_ha_restart
+
+        class _FakeRest:
+            async def get_raw(self, path):
+                return {}
+
+        result = asyncio.run(
+            confirm_ha_restart(_FakeRest(), str(tmp_path / "x.db"), 1000.0)
+        )
+        assert result is False

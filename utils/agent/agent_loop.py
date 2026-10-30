@@ -528,6 +528,9 @@ class AgentLoop:
         self._top_retrieved_signature: str = (
             ""  # first strategy chunk sig from pre-inject
         )
+        self._stuck_reason: str = (
+            ""  # "host_sleep" when timeout was caused by Mac sleep
+        )
 
     def inject_context(self, message: str) -> None:
         """Append a user message to the live conversation during a running loop.
@@ -1160,6 +1163,7 @@ class AgentLoop:
             tool_call_records=list(self._tool_call_records),
             debug_log_path=debug_log_path,
             top_retrieved_signature=self._top_retrieved_signature,
+            stuck_reason=self._stuck_reason,
         )
 
     async def _enqueue_distillation(
@@ -1260,7 +1264,9 @@ class AgentLoop:
             # Supervisor mode: only queue gap writing for non-success (no LLM).
             # Success sessions are deferred until S5 wires distillation to verification.
             # awaiting_approval is not a failure: its card's executor verifies it.
-            if outcome not in ("success", "awaiting_approval"):
+            # host_sleep-stuck sessions are infrastructure interruptions, not knowledge gaps.
+            _is_sleep_stuck = outcome == "stuck" and self._stuck_reason == "host_sleep"
+            if outcome not in ("success", "awaiting_approval") and not _is_sleep_stuck:
                 _steps_snap = list(steps)
                 _outcome = outcome
                 _stub = dict(episode_stub) if episode_stub else None
@@ -1350,7 +1356,14 @@ class AgentLoop:
         else:
             # Standalone / test mode: write gap for non-success sessions only.
             # Success distillation requires verification (no queue = skip).
-            if outcome not in ("success", "awaiting_approval"):
+            # host_sleep-stuck sessions are infrastructure interruptions, not gaps.
+            _is_sleep_stuck_sa = (
+                outcome == "stuck" and self._stuck_reason == "host_sleep"
+            )
+            if (
+                outcome not in ("success", "awaiting_approval")
+                and not _is_sleep_stuck_sa
+            ):
                 try:
                     await asyncio.to_thread(
                         write_gap,
@@ -1423,6 +1436,7 @@ class AgentLoop:
         _pending_nudges: list[str] = []  # nudges injected before the next LLM call
         _call_seq = 0
         _cache_only_streak = 0  # consecutive LLM iterations where every call was cached
+        _sleep_retry_done = False  # allow at most one sleep-retry per session
 
         known_tool_names = {t["function"]["name"] for t in tools}
         guardrail = ToolResultGuardrail(
@@ -1449,6 +1463,7 @@ class AgentLoop:
                 return "exhausted", episode_stub
 
             _t0 = time.monotonic()
+            _t0_wall = time.time()
             if self._on_llm_call_start is not None:
                 try:
                     self._on_llm_call_start(self._model, self._trigger)
@@ -1470,6 +1485,24 @@ class AgentLoop:
                     timeout=per_call_secs,
                 )
             except asyncio.TimeoutError:
+                from utils.system.sleep_guard import (
+                    HOST_SLEEP_THRESHOLD_SECONDS,
+                    host_sleep_seconds,
+                )
+
+                _slept = host_sleep_seconds(
+                    _t0_wall, _t0, time.time(), time.monotonic()
+                )
+                if _slept >= HOST_SLEEP_THRESHOLD_SECONDS and not _sleep_retry_done:
+                    _sleep_retry_done = True
+                    log.info(
+                        "llm_call_retry_after_sleep",
+                        slept_s=round(_slept, 1),
+                        timeout_seconds=round(per_call_secs, 1),
+                    )
+                    continue  # retry this LLM call once
+                if _slept >= HOST_SLEEP_THRESHOLD_SECONDS:
+                    self._stuck_reason = "host_sleep"
                 log.warning(
                     "llm_call_stuck",
                     model=self._model,

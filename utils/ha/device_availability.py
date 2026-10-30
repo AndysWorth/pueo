@@ -40,7 +40,7 @@ import sqlite3
 import statistics
 import time
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 from utils.core.logging import get_logger
 
@@ -436,6 +436,69 @@ def record_ha_start(db_path: str, ts: float) -> None:
         log.info("ha_start_recorded", ts=ts)
     except Exception as e:  # nosec B110
         log.warning("ha_start_record_failed", error=str(e))
+
+
+async def confirm_ha_restart(
+    rest_client: "Optional[Any]",
+    db_path: str,
+    now: float,
+) -> bool:
+    """Return True if a WS reconnect is likely an HA restart, False if unconfirmable.
+
+    Uses the REST client to verify HA is actively responding after the reconnect.
+    Returns True when rest_client is None (can't check; old behaviour) or when the
+    REST call succeeds.  Returns False when the call fails — HA may not be back yet
+    or the token isn't configured.  Log ``ha_start_skipped reason=unconfirmed`` when
+    returning False so callers can see why recording was skipped.
+    """
+    import asyncio
+
+    if rest_client is None:
+        return True
+    try:
+        result = await asyncio.wait_for(
+            rest_client.get_raw("/config"),
+            timeout=5.0,
+        )
+        return isinstance(result, dict) and bool(result)
+    except Exception:
+        return False
+
+
+# ------------------------------------------------------------------
+# Pueo-initiated action tracking
+# ------------------------------------------------------------------
+
+_PUEO_ACTION_KEY = "pueo_action:last_restart"
+
+
+def record_pueo_action(db_path: str, kind: str, detail: str) -> None:
+    """Record a Pueo-initiated restart/reboot action for unexpected_reboot suppression."""
+    try:
+        data = json.dumps({"ts": time.time(), "kind": kind, "detail": detail})
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO user_prefs (key, value) VALUES (?, ?)"
+                " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (_PUEO_ACTION_KEY, data),
+            )
+            conn.commit()
+        log.info("pueo_action_recorded", kind=kind, detail=detail)
+    except Exception as e:  # nosec B110
+        log.warning("pueo_action_record_failed", error=str(e))
+
+
+def load_pueo_action(conn: sqlite3.Connection) -> Optional[dict]:
+    """Return the last recorded Pueo restart/reboot action dict, or None."""
+    try:
+        row = conn.execute(
+            "SELECT value FROM user_prefs WHERE key = ?", (_PUEO_ACTION_KEY,)
+        ).fetchone()
+        if row:
+            return json.loads(row[0])
+    except Exception as e:  # nosec B110
+        log.warning("pueo_action_load_failed", error=str(e))
+    return None
 
 
 # ------------------------------------------------------------------

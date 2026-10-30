@@ -1470,6 +1470,17 @@ async def _execute_ha_command(
         json_path.write_text(json.dumps(data, indent=2))
         (watch_dir / f"{nid}.approved").touch()
         await _verify_card_execution(payload)
+        if command in ("ha core restart", "ha host reboot"):
+            try:
+                import config as _cfg_da
+                from utils.ha.device_availability import record_pueo_action
+
+                kind = "core_restart" if "restart" in command else "host_reboot"
+                await asyncio.to_thread(
+                    record_pueo_action, _cfg_da.DB_PATH, kind, command
+                )
+            except Exception:  # nosec B110  # pragma: no cover
+                pass
         try:
             from utils.core.timeline import write_timeline_event
 
