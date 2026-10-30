@@ -890,6 +890,38 @@ def classify_update_type(
     return "addon"
 
 
+async def _resolve_addon_slug(component: str, ssh_client: Any) -> Optional[str]:
+    """Return the Supervisor slug for an add-on whose entity component is *component*.
+
+    Queries ``ha apps list --raw-json`` and matches by:
+    - slug == component (exact)
+    - slug.endswith("_" + component) (prefix, e.g. core_matter_server → matter_server)
+    - url ending in "/<component>"
+
+    Returns None on no match or SSH error.
+    """
+    try:
+        _, stdout, _ = await ssh_client.run("ha apps list --raw-json", check=False)
+        data = json.loads(stdout)
+        addons = (
+            data.get("data", {}).get("addons", []) if isinstance(data, dict) else []
+        )
+    except Exception:
+        return None
+    for app in addons:
+        slug = str(app.get("slug") or "")
+        if not slug:
+            continue
+        if slug == component:
+            return slug
+        if slug.endswith("_" + component):
+            return slug
+        url = str(app.get("url") or "")
+        if url and url.rstrip("/").endswith("/" + component):
+            return slug
+    return None
+
+
 async def _run_update_analysis(
     update: UpdateStatus,
     ssh_client: Optional[SSHClientProtocol] = None,
@@ -969,10 +1001,14 @@ async def _run_update_analysis(
             f"Available update: {update.component} "
             f"{update.installed_version} → {update.latest_version}"
         )
-        # Expose the supervisor slug explicitly for add-on updates so the agent can
-        # use it in `ha apps info <slug>` without guessing.
+        # Expose the resolved Supervisor slug for add-on updates so the agent can
+        # use it in `ha apps info <slug>` without guessing.  update.component is the
+        # HA entity component name (e.g. "matter_server"), which may differ from the
+        # actual slug (e.g. "core_matter_server"); resolve via `ha apps list --raw-json`.
         if _update_type_early == "addon":
-            initial_context += f"\nSupervisor slug: {update.component}"
+            _resolved_slug = await _resolve_addon_slug(update.component, _ssh)
+            if _resolved_slug:
+                initial_context += f"\nSupervisor slug: {_resolved_slug}"
         if update.release_url:
             initial_context += f"\nRelease URL: {update.release_url}"
         if update.release_summary:

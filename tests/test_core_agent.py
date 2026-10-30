@@ -20243,3 +20243,63 @@ class TestReadNetAlertXConf:
         result = asyncio.run(executor._read_netalertx_conf())
         assert not result.success
         assert "slug" in result.error.lower()
+
+
+# ---------------------------------------------------------------------------
+# TestResolveAddonSlug
+# ---------------------------------------------------------------------------
+
+
+class TestResolveAddonSlug:
+    """Tests for _resolve_addon_slug in ha_update_manager."""
+
+    def _make_ssh(self, addons):
+        import json as _json
+
+        return FakeSSHClient(
+            command_results={
+                "ha apps list --raw-json": (
+                    0,
+                    _json.dumps({"data": {"addons": addons}}),
+                    "",
+                )
+            }
+        )
+
+    def test_exact_slug_match(self):
+        from agents.ha_update_manager import _resolve_addon_slug
+
+        ssh = self._make_ssh([{"slug": "matter_server", "name": "Matter Server"}])
+        result = asyncio.run(_resolve_addon_slug("matter_server", ssh))
+        assert result == "matter_server"
+
+    def test_prefix_slug_match(self):
+        from agents.ha_update_manager import _resolve_addon_slug
+
+        ssh = self._make_ssh([{"slug": "core_matter_server", "name": "Matter Server"}])
+        result = asyncio.run(_resolve_addon_slug("matter_server", ssh))
+        assert result == "core_matter_server"
+
+    def test_url_suffix_match(self):
+        from agents.ha_update_manager import _resolve_addon_slug
+
+        ssh = self._make_ssh(
+            [{"slug": "local_mqtt", "url": "https://github.com/example/matter_server"}]
+        )
+        result = asyncio.run(_resolve_addon_slug("matter_server", ssh))
+        assert result == "local_mqtt"
+
+    def test_no_match_returns_none(self):
+        from agents.ha_update_manager import _resolve_addon_slug
+
+        ssh = self._make_ssh([{"slug": "other_addon"}])
+        result = asyncio.run(_resolve_addon_slug("unknown_component", ssh))
+        assert result is None
+
+    def test_ssh_error_returns_none(self):
+        from agents.ha_update_manager import _resolve_addon_slug
+
+        client = FakeSSHClient()
+        # No "ha apps list --raw-json" output → will raise on json.loads
+        result = asyncio.run(_resolve_addon_slug("matter_server", client))
+        assert result is None

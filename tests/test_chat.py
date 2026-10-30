@@ -225,6 +225,70 @@ class TestRememberRecall:
         assert result.success
         assert "unique_key_xyz" in result.output
 
+    def test_recall_token_match_multi_word(self, executor, db_path):
+        """recall tokenises the query so 'GoogVision dlna_dmr offline' finds the fact."""
+        asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="remember",
+                    arguments={
+                        "key": "fact_googvision_1",
+                        "content": "GoogVision enters DLNA standby mode after 10 min",
+                    },
+                )
+            )
+        )
+        asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="remember",
+                    arguments={
+                        "key": "fact_googvision_2",
+                        "content": "GoogVision has gone offline 8x in 14 days",
+                    },
+                )
+            )
+        )
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="recall",
+                    arguments={"query": "GoogVision dlna_dmr offline"},
+                )
+            )
+        )
+        assert result.success
+        assert "Nothing found" not in result.output
+        # Both facts should surface (they both contain "GoogVision")
+        assert "fact_googvision_1" in result.output
+        assert "fact_googvision_2" in result.output
+
+    def test_recall_ranked_by_token_hits(self, executor, db_path):
+        """Rows matching more tokens rank higher."""
+        asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="remember",
+                    arguments={"key": "k_low", "content": "mentions foo only"},
+                )
+            )
+        )
+        asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="remember",
+                    arguments={"key": "k_high", "content": "foo bar both tokens here"},
+                )
+            )
+        )
+        result = asyncio.run(
+            executor.execute(ToolCall(name="recall", arguments={"query": "foo bar"}))
+        )
+        assert result.success
+        lines = [ln for ln in result.output.splitlines() if ln.strip()]
+        # k_high (matches both tokens) should come first
+        assert "k_high" in lines[0]
+
 
 # ---------------------------------------------------------------------------
 # TestChatToolRegistry

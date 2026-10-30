@@ -287,6 +287,29 @@ _NOTE_ARG_CHARS = 100
 _NOTE_SKIP_ARGS = frozenset({"reason"})
 _QUIRK_PREFIX = "procedure_quirk:"
 
+# Python exception patterns that indicate a Pueo code defect (not an HA/external error).
+# These are stored as procedure_quirk rows with kind="pueo_defect" and never injected as
+# procedure notes into prompts.
+_PUEO_DEFECT_RE = re.compile(
+    r"invalid literal for int\b"
+    r"|(?:TypeError|KeyError|ValueError|AttributeError|IndexError|NameError"
+    r"|ZeroDivisionError|RuntimeError):\s"
+    r"|object is not subscriptable"
+    r"|NoneType.*has no attribute",
+    re.I,
+)
+
+# Normalise quirk detail so `App mosquitto…` and `App matter_server…` count as one.
+_QUOTED_TOKEN_RE = re.compile(r"'[^']*?'")
+_NUMBER_TOKEN_RE = re.compile(r"\b\d+\b")
+
+
+def _normalise_quirk_detail(text: str) -> str:
+    """Replace quoted strings → '<x>' and numbers → 'N' for stable dedup."""
+    text = _QUOTED_TOKEN_RE.sub("'<x>'", text)
+    text = _NUMBER_TOKEN_RE.sub("N", text)
+    return " ".join(text.split())[:_NOTE_ERROR_CHARS]
+
 
 def _normalise_error(text: str) -> str:
     text = _HTTPX_STATUS_RE.sub(r"HTTP \1", text)
@@ -390,6 +413,10 @@ def extract_procedure_facts(steps: list[AgentStep]) -> list[ProceduralLesson]:
         if kind == "empty":
             _add(empties, f"`{shown}` returned no results", s.step_number)
             continue
+        # Pueo-internal errors (Python exceptions from Pueo's own code) are tracked
+        # separately as pueo_defect quirks and never surfaced as procedure notes.
+        if _PUEO_DEFECT_RE.search(detail):
+            continue
         fix = next(
             (
                 t
@@ -433,13 +460,20 @@ def _record_tool_quirks(db_path: str, signature: str, steps: list[AgentStep]) ->
         if problem is None:
             continue
         kind, detail = problem
-        h = hashlib.sha256(f"{s.tool_call.name}|{kind}|{detail}".encode()).hexdigest()
+        if kind == "failed" and _PUEO_DEFECT_RE.search(detail):
+            kind = "pueo_defect"
+        norm_detail = (
+            _normalise_quirk_detail(detail) if kind == "pueo_defect" else detail
+        )
+        h = hashlib.sha256(
+            f"{s.tool_call.name}|{kind}|{norm_detail}".encode()
+        ).hexdigest()
         found.setdefault(
             _QUIRK_PREFIX + h[:12],
             {
                 "tool": s.tool_call.name,
                 "kind": kind,
-                "detail": detail,
+                "detail": norm_detail,
                 "example": _format_call(s.tool_call),
             },
         )

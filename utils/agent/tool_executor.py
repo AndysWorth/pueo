@@ -131,6 +131,23 @@ def _coerce_int(value: object, default: int) -> int:
         return default
 
 
+def _ts_to_local(ts: str) -> str:
+    """Convert an ISO-8601 UTC timestamp to local time with tz offset.
+
+    E.g. '2024-01-01T12:00:00.000+00:00' → '2024-01-01 07:00 -0500'.
+    Falls back to a bare truncated string on parse failure.
+    """
+    import datetime as _dt
+
+    if not ts:
+        return ts
+    try:
+        dt = _dt.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        return dt.astimezone().strftime("%Y-%m-%d %H:%M %z")
+    except (ValueError, TypeError):
+        return ts[:16].replace("T", " ")
+
+
 def _filter_log_by_domain(text: str, domain: str, limit: int) -> str:
     """Keep only log records that mention *domain*, with their continuation lines.
 
@@ -637,7 +654,7 @@ class ToolExecutor:
             if name == "get_system_error_log":
                 return await self._get_system_error_log(
                     level=str(args.get("level", "ERROR")),
-                    limit=int(args.get("limit", 20)),
+                    limit=_coerce_int(args.get("limit"), 20),
                     logger_filter=args.get("logger_filter") or None,
                 )
             if name == "get_area_layout":
@@ -742,8 +759,8 @@ class ToolExecutor:
                 return await self._search_log(
                     args.get("log_name", "pueo"),
                     args.get("pattern", ""),
-                    int(args.get("context_lines", 2)),
-                    int(args.get("max_matches", 20)),
+                    _coerce_int(args.get("context_lines"), 2),
+                    _coerce_int(args.get("max_matches"), 20),
                     args.get("addon_slug"),
                 )
             if name == "summarize_log_window":
@@ -1530,13 +1547,26 @@ class ToolExecutor:
 
     async def _recall(self, query: str) -> ToolResult:
         try:
+            tokens = [t for t in re.split(r"\W+", query.lower()) if len(t) >= 3]
             with sqlite3.connect(self._db_path) as conn:
-                rows = conn.execute(
-                    "SELECT key, content, source, ts FROM agent_memory "
-                    "WHERE content LIKE ? OR key LIKE ? "
-                    "ORDER BY ts DESC LIMIT ?",
-                    (f"%{query}%", f"%{query}%", CHAT_MEMORY_TOP_K),
-                ).fetchall()
+                if tokens:
+                    cond = " OR ".join(["(content LIKE ? OR key LIKE ?)"] * len(tokens))
+                    params: list = [p for t in tokens for p in (f"%{t}%", f"%{t}%")]
+                    params.append(CHAT_MEMORY_TOP_K * 3)
+                    rows = conn.execute(
+                        f"SELECT key, content, source, ts FROM agent_memory "  # nosec B608
+                        f"WHERE {cond} ORDER BY ts DESC LIMIT ?",
+                        params,
+                    ).fetchall()
+
+                    def _score(row: tuple) -> int:
+                        text = (row[0] + " " + row[1]).lower()
+                        return sum(1 for t in tokens if t in text)
+
+                    rows.sort(key=_score, reverse=True)
+                    rows = rows[:CHAT_MEMORY_TOP_K]
+                else:
+                    rows = []
             log.debug("tool_recall", query=query, results_count=len(rows))
             if not rows:
                 return ToolResult(
@@ -1715,8 +1745,7 @@ class ToolExecutor:
         for entry in states[: self._MAX_HISTORY_ROWS]:
             state = entry.get("state", "")
             ts = entry.get("last_changed") or entry.get("last_updated", "")
-            if ts and len(ts) > 19:
-                ts = ts[:19].replace("T", " ")
+            ts = _ts_to_local(ts) if ts else ""
             if state != prev_state:
                 rows.append(f"{ts}  {state}")
                 prev_state = state
@@ -1752,7 +1781,7 @@ class ToolExecutor:
             )
         rows: list[str] = []
         for entry in entries[: self._MAX_LOGBOOK_ROWS]:
-            when = (entry.get("when") or "")[:19].replace("T", " ")
+            when = _ts_to_local(entry.get("when") or "")
             name = entry.get("name") or entry.get("domain", "")
             message = entry.get("message", "")
             rows.append(f"{when}  {name}: {message}")

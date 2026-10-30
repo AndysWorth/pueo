@@ -1898,3 +1898,91 @@ class TestLoadEntries:
             )
             conn.commit()
         assert _load_entries(db, _UPDATE_SIG)[0]["episode_refs"] == []
+
+
+# ---------------------------------------------------------------------------
+# TestPueoDefect
+# ---------------------------------------------------------------------------
+
+
+class TestPueoDefect:
+    """Tests for pueo_defect detection in extract_procedure_facts and _record_tool_quirks."""
+
+    def _defect_step(self, n=1):
+        return _step(
+            "search_log",
+            n,
+            {"log_name": "pueo", "pattern": "error"},
+            output="",
+            success=False,
+            error="invalid literal for int() with base 10: '2.0'",
+        )
+
+    def test_pueo_defect_excluded_from_procedure_notes(self):
+        from utils.knowledge.runbook_distiller import extract_procedure_facts
+
+        notes = extract_procedure_facts([self._defect_step()])
+        assert notes == [], "pueo_defect errors must not appear as procedure notes"
+
+    def test_non_defect_failure_still_captured(self):
+        from utils.knowledge.runbook_distiller import extract_procedure_facts
+
+        steps = [
+            _step(
+                "run_ha_command",
+                1,
+                {"command": "ha apps info bad_slug"},
+                output="",
+                success=False,
+                error="exit 1: App bad_slug does not exist",
+            )
+        ]
+        notes = extract_procedure_facts(steps)
+        assert len(notes) == 1
+
+    def test_pueo_defect_recorded_in_quirks_with_kind(self, tmp_path):
+        from utils.knowledge.runbook_distiller import _record_tool_quirks
+
+        db = _prefs_db(tmp_path)
+        _record_tool_quirks(db, "host:unexpected_reboot:unknown", [self._defect_step()])
+        with sqlite3.connect(db) as conn:
+            rows = conn.execute("SELECT key, value FROM user_prefs").fetchall()
+        assert len(rows) == 1
+        q = json.loads(rows[0][1])
+        assert q["kind"] == "pueo_defect"
+
+    def test_quirk_detail_normalised_for_dedup(self, tmp_path):
+        from utils.knowledge.runbook_distiller import _record_tool_quirks
+
+        db = _prefs_db(tmp_path)
+        step1 = _step(
+            "run_ha_command",
+            1,
+            {"command": "ha apps info matter_server"},
+            output="",
+            success=False,
+            error="TypeError: 'matter_server' is not a valid slug",
+        )
+        step2 = _step(
+            "run_ha_command",
+            2,
+            {"command": "ha apps info mosquitto"},
+            output="",
+            success=False,
+            error="TypeError: 'mosquitto' is not a valid slug",
+        )
+        _record_tool_quirks(db, "sig1", [step1])
+        _record_tool_quirks(db, "sig2", [step2])
+        with sqlite3.connect(db) as conn:
+            rows = conn.execute("SELECT key, value FROM user_prefs").fetchall()
+        # Both should collapse into one quirk row (same normalised detail)
+        assert len(rows) == 1
+        q = json.loads(rows[0][1])
+        assert q["count"] == 2
+        assert "<x>" in q["detail"]
+
+    def test_normalise_quirk_detail(self):
+        from utils.knowledge.runbook_distiller import _normalise_quirk_detail
+
+        assert "'<x>'" in _normalise_quirk_detail("TypeError: 'matter_server' invalid")
+        assert "N" in _normalise_quirk_detail("error at line 42")
