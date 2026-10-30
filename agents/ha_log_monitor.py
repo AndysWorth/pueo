@@ -599,7 +599,9 @@ _TRANSIENT_LOG_PATTERNS = re.compile(
 # _LOG_RECURRENCE_WINDOW seconds before the error is forced through triage even
 # when its block matches _TRANSIENT_LOG_PATTERNS.
 LOG_RECURRENCE_THRESHOLD = 3
-_LOG_RECURRENCE_WINDOW = 24 * 3600  # seconds
+_LOG_RECURRENCE_WINDOW = (
+    7 * 24 * 3600
+)  # seconds (7-day window so daily errors escalate)
 _LOG_BLOCK_MAX_LINES = 50
 _LOG_BLOCK_MAX_SECONDS = 2.0
 
@@ -629,6 +631,25 @@ def _strip_log_timestamp(line: str) -> str:
     """Remove the 'YYYY-MM-DD HH:MM:SS ' prefix from a HA log line for stable hashing."""
     m = _HA_LOG_TS.match(_strip_ansi(line))
     return line[m.end() :] if m else line
+
+
+_DIGIT_RE = re.compile(r"\d+")
+
+
+def _recurrence_fingerprint(block: list[str]) -> str:
+    """Return a stable fingerprint for a log error block.
+
+    Uses the last exception line (XxxError: …) with digits normalised so that
+    the same recurring error with different values (pids, line numbers) maps to
+    the same fingerprint.  Falls back to the first block line when no exception
+    line is present.
+    """
+    exc_line: Optional[str] = None
+    for line in block:
+        if _EXCEPTION_LINE_RE.match(line.strip()):
+            exc_line = line.strip()
+    target = exc_line if exc_line is not None else (block[0] if block else "")
+    return _DIGIT_RE.sub("N", _strip_log_timestamp(target))
 
 
 def _check_and_record_recurrence(logger: str, first_error_line: str, now: float) -> int:
@@ -1141,7 +1162,7 @@ async def tail_remote_log_stream(
                 _recurrence_count = await asyncio.to_thread(
                     _check_and_record_recurrence,
                     _logger or "",
-                    _strip_log_timestamp(clean_line),
+                    _recurrence_fingerprint(_error_block),
                     time.time(),
                 )
                 _is_recurring = _recurrence_count >= LOG_RECURRENCE_THRESHOLD

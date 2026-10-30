@@ -1,6 +1,7 @@
 """LLM-guided investigation for device-availability findings (offline devices)."""
 
 import asyncio
+import datetime
 import sqlite3
 import time
 from typing import Any, Optional
@@ -9,6 +10,24 @@ from utils.core.logging import get_logger
 from utils.ha.device_availability import OfflineFinding, load_ha_start_ts
 
 log = get_logger("device_availability_investigation")
+
+
+def _nax_ts_to_local(ts: str) -> str:
+    """Format a NetAlertX timestamp as local time with a UTC-offset label.
+
+    NetAlertX uses 'YYYY-MM-DD HH:MM:SS' in the HA host's local timezone.
+    We re-express it with an explicit offset so it is unambiguous to the LLM.
+    Falls back to the original string on any parse failure.
+    """
+    if not ts or ts == "unknown":
+        return ts
+    try:
+        dt = datetime.datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
+        # Attach local timezone and re-format with offset.
+        local_dt = dt.astimezone()
+        return local_dt.strftime("%Y-%m-%d %H:%M %z")
+    except (ValueError, TypeError):
+        return ts
 
 
 def device_availability_knowledge_query(finding: OfflineFinding) -> str:
@@ -185,11 +204,12 @@ async def build_presence_context(
                 continue
 
             present = bool(nax_dev.get("devPresentLastScan"))
-            last_seen = (
+            last_seen_raw = (
                 nax_dev.get("devLastSeen")
                 or nax_dev.get("devLastConnection")
                 or "unknown"
             )
+            last_seen = _nax_ts_to_local(last_seen_raw)
             current_ip = nax_dev.get("devLastIP") or "unknown"
             nax_mac = (nax_dev.get("devMac") or "").lower()
             method_note = "" if method in ("mac", "manual") else f" matched by {method}"

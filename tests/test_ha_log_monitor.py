@@ -745,3 +745,43 @@ class TestTailStreamReplay:
         self._run(["INFO core line"], stream_env)
         assert list(ha_log_monitor._core_state.log_buffer) == ["INFO core line"]
         assert list(sup.log_buffer) == []
+
+
+# ---------------------------------------------------------------------------
+# TestRecurrenceFingerprint
+# ---------------------------------------------------------------------------
+
+
+class TestRecurrenceFingerprint:
+    def test_uses_exception_line_over_header(self, pueo_dirs):
+        from agents.ha_log_monitor import _recurrence_fingerprint
+
+        block = [
+            "2026-01-01 12:00:00 ERROR [homeassistant.sensors] Something went wrong",
+            "Traceback (most recent call last):",
+            "  File 'foo.py', line 42, in bar",
+            "COOPSAPIError: Invalid datum value 42",
+        ]
+        fp = _recurrence_fingerprint(block)
+        # Should contain the exception class, not the header
+        assert "COOPSAPIError" in fp
+        assert "Traceback" not in fp
+
+    def test_digits_normalised(self, pueo_dirs):
+        from agents.ha_log_monitor import _recurrence_fingerprint
+
+        block1 = ["SomeError: failed to connect to port 8123"]
+        block2 = ["SomeError: failed to connect to port 9999"]
+        assert _recurrence_fingerprint(block1) == _recurrence_fingerprint(block2)
+
+    def test_falls_back_to_first_line(self, pueo_dirs):
+        from agents.ha_log_monitor import _recurrence_fingerprint
+
+        block = ["2026-01-01 12:00:00 ERROR plain message 99"]
+        fp = _recurrence_fingerprint(block)
+        assert "plain message N" in fp
+
+    def test_recurrence_window_is_7_days(self, pueo_dirs):
+        from agents.ha_log_monitor import _LOG_RECURRENCE_WINDOW
+
+        assert _LOG_RECURRENCE_WINDOW == 7 * 24 * 3600

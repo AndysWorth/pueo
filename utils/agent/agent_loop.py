@@ -128,6 +128,28 @@ def _format_knowledge_block(chunks: list[Any]) -> str:
 
 from utils.knowledge.runbook_distiller import _sig_specificity  # noqa: E402
 
+import re as _re  # noqa: E402 — used only by _clean_seed_approach
+
+_FRONT_MATTER_STRIP_RE = _re.compile(r"^---\n.*?\n---\s*\n?", _re.DOTALL)
+_LEADING_H1_RE = _re.compile(r"^#[^\n]*\n*")
+
+
+def _clean_seed_approach(approach: str, title: str) -> str:
+    """Strip YAML front matter and a duplicate leading H1 from a seed approach text.
+
+    Seeds are stored verbatim (including front matter) so that ``only_changed``
+    diffing works in strategy_seeder.  Strip the front matter here so it does not
+    appear in the injected chunk, and strip a leading ``# <title>`` that would
+    duplicate the H1 the caller prepends.
+    """
+    text = _FRONT_MATTER_STRIP_RE.sub("", approach, count=1).lstrip("\n")
+    m = _LEADING_H1_RE.match(text)
+    if m:
+        h1 = text[: m.end()].strip().lstrip("#").strip()
+        if h1 == title:
+            text = text[m.end() :]
+    return text
+
 
 def _fetch_signature_chunks(db_path: str, signature: str) -> "list[Any]":
     """Return up to two KnowledgeChunks for *signature*: best seed + best learned runbook.
@@ -197,6 +219,11 @@ def _fetch_signature_chunks(db_path: str, signature: str) -> "list[Any]":
         title = row["title"] or signature
         approach = row["approach"] or ""
         state = row["runbook_state"] or "candidate"
+
+        # Seeds are stored verbatim (front matter + H1 + body); strip the front
+        # matter and any leading duplicate H1 before injecting.
+        if row["runbook_state"] == "seed":
+            approach = _clean_seed_approach(approach, title)
 
         # Split procedure notes out so they get their own [PROCEDURE NOTES] label.
         main_approach, proc_notes = _split_procedure_notes(approach)
