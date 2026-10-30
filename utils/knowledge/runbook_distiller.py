@@ -529,7 +529,11 @@ def _split_procedure_notes(approach: str) -> tuple[str, str]:
 
 
 def _write_instance_facts(
-    db_path: str, signature: str, episode_id: str, facts: list[InstanceFact]
+    db_path: str,
+    signature: str,
+    episode_id: str,
+    facts: list[InstanceFact],
+    subject_key: str = "",
 ) -> int:
     """Upsert grounded facts into agent_memory scoped to *signature*.
 
@@ -540,6 +544,7 @@ def _write_instance_facts(
     if not facts or not signature:
         return 0
     now = time.time()
+    subj = subject_key or None
     with sqlite3.connect(db_path) as conn:
         for f in facts:
             norm = " ".join(f.fact.lower().split())
@@ -552,9 +557,10 @@ def _write_instance_facts(
                 (key, signature),
             )
             conn.execute(
-                "INSERT INTO agent_memory (key, content, source, ts, signature)"
-                " VALUES (?, ?, ?, ?, ?)",
-                (key, f.fact, f"distilled:{episode_id}", now, signature),
+                "INSERT INTO agent_memory"
+                " (key, content, source, ts, signature, subject_key)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (key, f.fact, f"distilled:{episode_id}", now, signature, subj),
             )
         conn.commit()
     return len(facts)
@@ -619,16 +625,17 @@ def _fetch_seed_text_for_signature(db_path: str, signature: str) -> str:
 def _read_distillation_payload(db_path: str, episode_id: str) -> Optional[dict]:
     """Read the stashed distill_payload_json and signature from session_outcomes.
 
-    Returns a dict with keys: steps, initial_context, episode_stub, signature.
-    Returns None when the row is missing, already cleared, already distilled, or the
-    DB is unavailable.
+    Returns a dict with keys: steps, initial_context, episode_stub, signature,
+    subject_key.  Returns None when the row is missing, already cleared, already
+    distilled, or the DB is unavailable.
     """
     if not db_path or not episode_id:
         return None
     try:
         with sqlite3.connect(db_path) as conn:
             row = conn.execute(
-                "SELECT distill_payload_json, signature FROM session_outcomes"
+                "SELECT distill_payload_json, signature, subject_key"
+                " FROM session_outcomes"
                 " WHERE episode_id = ? AND distilled_at IS NULL",
                 (episode_id,),
             ).fetchone()
@@ -636,6 +643,7 @@ def _read_distillation_payload(db_path: str, episode_id: str) -> Optional[dict]:
             return None
         payload: dict = json.loads(row[0])
         payload["signature"] = row[1] or payload.get("signature", "")
+        payload["subject_key"] = row[2] or ""
         return payload
     except Exception:  # nosec B110
         return None
@@ -825,6 +833,7 @@ async def distill_and_persist(
     verification: Optional[str] = None,
     correction: Optional[str] = None,
     seed_text: str = "",
+    subject_key: str = "",
 ) -> None:
     """Orchestrate post-session distillation.
 
@@ -900,6 +909,7 @@ async def distill_and_persist(
             verification=verification,
             correction=correction,
             seed_text=seed_text,
+            subject_key=subject_key,
         )
     finally:
         # Every terminal path — entries written, nothing new, LLM or write
@@ -923,6 +933,7 @@ async def _distill_verified(
     verification: Optional[str],
     correction: Optional[str],
     seed_text: str,
+    subject_key: str = "",
 ) -> None:
     """LLM distillation of a verified session (ADR 051).
 
@@ -1008,7 +1019,12 @@ async def _distill_verified(
         if facts:
             try:
                 written = await asyncio.to_thread(
-                    _write_instance_facts, db_path, signature, episode_id, facts
+                    _write_instance_facts,
+                    db_path,
+                    signature,
+                    episode_id,
+                    facts,
+                    subject_key,
                 )
                 log.info(
                     "distillation_facts_written",
@@ -1129,6 +1145,7 @@ async def enqueue_distillation_after_verification(
     steps_raw = payload.get("steps", [])
     initial_ctx = payload.get("initial_context", "")
     episode_stub = payload.get("episode_stub")
+    subj = payload.get("subject_key", "")
 
     from utils.agent.tool_registry import AgentStep
 
@@ -1148,6 +1165,7 @@ async def enqueue_distillation_after_verification(
     _store = knowledge_store
     _model = model
     _llm = llm_client
+    _subj = subj
 
     async def _run_distill() -> None:
         await distill_and_persist(
@@ -1163,6 +1181,7 @@ async def enqueue_distillation_after_verification(
             episode_stub=episode_stub,
             llm_client=_llm,
             seed_text=seed_text,
+            subject_key=_subj,
             verification=_verification,
             correction=_correction,
         )

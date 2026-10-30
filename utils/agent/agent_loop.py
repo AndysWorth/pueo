@@ -262,12 +262,15 @@ def _fetch_signature_chunks(db_path: str, signature: str) -> "list[Any]":
     return chunks
 
 
-def _fetch_memory_chunks(db_path: str, signature: str) -> "list[Any]":
-    """Return agent_memory rows whose signature matches as [INSTANCE FACT] chunks.
+def _fetch_memory_chunks(
+    db_path: str, signature: str, subject_keys: "list[str] | None" = None
+) -> "list[Any]":
+    """Return agent_memory rows as [INSTANCE FACT] chunks.
 
-    Uses the same wildcard matching as _fetch_signature_chunks.  Returns at most 5
-    rows, ordered newest first.  Added in V40 (agent_memory.signature column).
-    Falls back gracefully if the column does not exist yet.
+    Matches by signature (wildcard, same as _fetch_signature_chunks) OR by any
+    subject_key in *subject_keys*.  Returns at most 5 unique rows, newest first.
+    Added in V40 (signature column); subject_key added in V43.
+    Falls back gracefully if either column does not exist yet.
     """
     import sqlite3
 
@@ -275,28 +278,44 @@ def _fetch_memory_chunks(db_path: str, signature: str) -> "list[Any]":
 
     if not db_path or not signature or ":" not in signature:
         return []
+    subj_set = set(s for s in (subject_keys or []) if s)
     try:
         with sqlite3.connect(db_path) as conn:
             conn.row_factory = sqlite3.Row
             try:
                 rows = conn.execute(
-                    "SELECT key, content, source, ts, signature"
+                    "SELECT key, content, source, ts, signature, subject_key"
                     " FROM agent_memory"
-                    " WHERE signature IS NOT NULL"
-                    " ORDER BY ts DESC LIMIT 50"
+                    " ORDER BY ts DESC LIMIT 100"
                 ).fetchall()
             except sqlite3.OperationalError:
-                return []  # column not yet added (pre-V40)
+                # Fall back if subject_key column not yet added (pre-V43).
+                try:
+                    rows_no_subj = conn.execute(
+                        "SELECT key, content, source, ts, signature"
+                        " FROM agent_memory"
+                        " WHERE signature IS NOT NULL"
+                        " ORDER BY ts DESC LIMIT 50"
+                    ).fetchall()
+                except sqlite3.OperationalError:
+                    return []  # pre-V40
+                rows = rows_no_subj
     except Exception:  # nosec B110
         return []
 
+    seen_keys: set[str] = set()
     chunks: list[Any] = []
     for row in rows:
         stored_sig = row["signature"] or ""
-        matches, _ = _sig_specificity(stored_sig, signature)
-        if not matches:
+        row_subj = row["subject_key"] if "subject_key" in row.keys() else None
+        sig_match, _ = _sig_specificity(stored_sig, signature)
+        subj_match = bool(row_subj and row_subj in subj_set)
+        if not sig_match and not subj_match:
             continue
         key = row["key"] or ""
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
         content = row["content"] or ""
         text = f"[{key}] {content}".strip()
         chunks.append(
@@ -549,6 +568,9 @@ class AgentLoop:
         self._subject_key: str = (
             ""  # set at start of run() from the subject_key= argument
         )
+        self._fact_subject_keys: list[str] = (
+            []  # set at start of run(); used to fetch [INSTANCE FACT] by subject
+        )
         self._raw_initial_context: str = (
             ""  # pre-injection context, set at start of run()
         )
@@ -761,10 +783,11 @@ class AgentLoop:
 
         chunks = sig_chunks + deduped_semantic
 
-        # Fetch matching agent_memory rows as [INSTANCE FACT] chunks (V40).
+        # Fetch matching agent_memory rows as [INSTANCE FACT] chunks (V40/V43).
+        # Pass all session subject keys so facts follow the subject across signatures.
         if _sig and ":" in _sig and self._db_path:
             memory_chunks = await asyncio.to_thread(
-                _fetch_memory_chunks, self._db_path, _sig
+                _fetch_memory_chunks, self._db_path, _sig, self._fact_subject_keys
             )
             if memory_chunks:
                 log.debug("pre_inject_memory_facts", count=len(memory_chunks))
@@ -969,7 +992,14 @@ class AgentLoop:
         self._signature = signature or self._trigger
         if self._executor is not None:
             self._executor.set_signature(self._signature)
+            self._executor.set_subject_key(subject_key)
         self._subject_key = subject_key
+        # Collect all subject keys relevant to this session for memory-fact lookup.
+        # Includes prior_subject_keys when provided (sweep passes per-device ids).
+        _all_subj = [subject_key] if subject_key else []
+        if prior_subject_keys:
+            _all_subj = list(dict.fromkeys(_all_subj + list(prior_subject_keys)))
+        self._fact_subject_keys = _all_subj
         self._raw_initial_context = initial_context
 
         # Use the caller-supplied knowledge_query for a more targeted ChromaDB search

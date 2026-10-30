@@ -583,6 +583,18 @@ def _migrate_v42(cursor: sqlite3.Cursor) -> None:
     )
 
 
+def _migrate_v43(cursor: sqlite3.Cursor) -> None:
+    cols = {
+        row[1] for row in cursor.execute("PRAGMA table_info(agent_memory)").fetchall()
+    }
+    if "subject_key" not in cols:
+        cursor.execute("ALTER TABLE agent_memory ADD COLUMN subject_key TEXT")
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_agent_memory_subject_key"
+        " ON agent_memory(subject_key)"
+    )
+
+
 _MIGRATIONS: list[tuple[int, object]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
@@ -626,6 +638,7 @@ _MIGRATIONS: list[tuple[int, object]] = [
     (40, _migrate_v40),
     (41, _migrate_v41),
     (42, _migrate_v42),
+    (43, _migrate_v43),
 ]
 
 

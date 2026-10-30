@@ -96,7 +96,7 @@ def _make_db(tmp_path):
         conn.execute(
             "CREATE TABLE agent_memory ("
             "id INTEGER PRIMARY KEY, key TEXT NOT NULL, content TEXT NOT NULL, "
-            "source TEXT NOT NULL, ts REAL NOT NULL, signature TEXT)"
+            "source TEXT NOT NULL, ts REAL NOT NULL, signature TEXT, subject_key TEXT)"
         )
         conn.execute(
             "CREATE TABLE user_prefs (key TEXT PRIMARY KEY, value TEXT NOT NULL)"

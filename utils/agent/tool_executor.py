@@ -443,6 +443,8 @@ class ToolExecutor:
         self._episode_id: str = ""
         # Session signature (set via set_signature before each run; stamped on memory rows)
         self._session_signature: str = ""
+        # Session subject key (set via set_subject_key before each run; stamped on facts)
+        self._subject_key: str = ""
         # Set to True when the session sends a HITL card carrying its episode_id; the
         # user's verdict on that card (or its executor) verifies the session (ADR 046).
         # AgentLoop._enqueue_distillation checks this to decide whether to auto-verify.
@@ -469,6 +471,7 @@ class ToolExecutor:
         self._declared_runbook_id = None
         self._episode_id = ""
         self._session_signature = ""
+        self._subject_key = ""
         self._hitl_card_queued = False
         self._hitl_card_id = None
         self._fetched_urls = {}
@@ -542,6 +545,10 @@ class ToolExecutor:
     def set_signature(self, signature: str) -> None:
         """Set the current session signature so remember() can stamp it on memory rows."""
         self._session_signature = signature
+
+    def set_subject_key(self, subject_key: str) -> None:
+        """Set the current session subject key so remember() can stamp it on memory rows."""
+        self._subject_key = subject_key
 
     # Recorded outputs kept per session for remember() grounding.
     _MAX_SESSION_OUTPUTS = 60
@@ -1475,12 +1482,14 @@ class ToolExecutor:
     async def _remember(self, key: str, content: str, source: str) -> ToolResult:
         log.debug("tool_remember", key=key, value_preview=str(content)[:200])
         sig = self._session_signature or None
+        subj = self._subject_key or None
         try:
             with sqlite3.connect(self._db_path) as conn:
                 conn.execute(
-                    "INSERT INTO agent_memory (key, content, source, ts, signature)"
-                    " VALUES (?, ?, ?, ?, ?)",
-                    (key, content, source, time.time(), sig),
+                    "INSERT INTO agent_memory"
+                    " (key, content, source, ts, signature, subject_key)"
+                    " VALUES (?, ?, ?, ?, ?, ?)",
+                    (key, content, source, time.time(), sig, subj),
                 )
             return ToolResult(
                 tool_name="remember", success=True, output=f"Remembered: {key}"

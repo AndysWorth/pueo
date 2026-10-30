@@ -7413,6 +7413,75 @@ class TestFetchMemoryChunks:
         chunks = _fetch_memory_chunks(db, "repair:hacs:restart_required")
         assert chunks == []
 
+    def test_subject_key_match_across_signature(self, tmp_path, monkeypatch):
+        """A fact stored under a different signature is returned when subject_key matches."""
+        import sqlite3
+
+        from utils.agent.agent_loop import _fetch_memory_chunks
+
+        db = self._init_db(tmp_path, monkeypatch)
+        with sqlite3.connect(db) as conn:
+            # Stored under device:offline:dlna_dmr with subject_key = device_id.
+            conn.execute(
+                "INSERT INTO agent_memory"
+                " (key, content, source, ts, signature, subject_key)"
+                " VALUES ('fact_dlna', 'GoogVision goes offline for DLNA standby',"
+                "         'agent', 1.0, 'device:offline:dlna_dmr', 'dev-abc')"
+            )
+
+        # Session signature is post_restart (different from stored), but passes device id.
+        chunks = _fetch_memory_chunks(
+            db,
+            "device:offline:post_restart",
+            subject_keys=["dev-abc"],
+        )
+        assert len(chunks) == 1
+        assert "GoogVision" in chunks[0].text
+
+    def test_subject_key_no_match_wrong_id(self, tmp_path, monkeypatch):
+        """A fact is NOT returned when neither signature nor subject_key matches."""
+        import sqlite3
+
+        from utils.agent.agent_loop import _fetch_memory_chunks
+
+        db = self._init_db(tmp_path, monkeypatch)
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO agent_memory"
+                " (key, content, source, ts, signature, subject_key)"
+                " VALUES ('fact_dlna', 'GoogVision standby fact', 'agent', 1.0,"
+                "         'device:offline:dlna_dmr', 'dev-abc')"
+            )
+
+        chunks = _fetch_memory_chunks(
+            db,
+            "device:offline:post_restart",
+            subject_keys=["dev-xyz"],
+        )
+        assert chunks == []
+
+    def test_deduplicates_when_both_sig_and_subject_match(self, tmp_path, monkeypatch):
+        """A row matched by both signature and subject_key appears only once."""
+        import sqlite3
+
+        from utils.agent.agent_loop import _fetch_memory_chunks
+
+        db = self._init_db(tmp_path, monkeypatch)
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO agent_memory"
+                " (key, content, source, ts, signature, subject_key)"
+                " VALUES ('fact_dlna', 'GoogVision standby fact', 'agent', 1.0,"
+                "         'device:offline:*', 'dev-abc')"
+            )
+
+        chunks = _fetch_memory_chunks(
+            db,
+            "device:offline:post_restart",
+            subject_keys=["dev-abc"],
+        )
+        assert len(chunks) == 1
+
 
 class TestHaCommandAllowlistFirmware:
     """Firmware and OS-info commands must be in the allowlist; update must stay blocked."""
@@ -10357,7 +10426,7 @@ class TestPreInjectSupplementalCap:
         def _sync_fake(db_path, sig):
             return [exact_chunk]
 
-        def _sync_no_mem(db_path, sig):
+        def _sync_no_mem(db_path, sig, subject_keys=None):
             return []
 
         try:

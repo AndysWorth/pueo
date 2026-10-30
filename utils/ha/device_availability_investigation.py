@@ -296,12 +296,14 @@ async def run_device_availability_investigation(
         initial_context = build_post_restart_context(finding, db_path)
         signature = sig_device_post_restart()
         subject_key = finding.domain
-        # Earlier per-integration sessions about the same devices count too.
+        # Earlier per-integration sessions and per-device facts count too.
+        # device_id keys let _fetch_memory_chunks find subject-keyed facts (V43).
         prior_keys = [subject_key] + sorted(
             {
                 f"{d.get('config_entry_id', '')}:{d.get('domain', '')}"
                 for d in finding.devices
             }
+            | {d.get("device_id", "") for d in finding.devices} - {""}
         )
     else:
         device_lines = "\n".join(format_device_line(d) for d in finding.devices)
