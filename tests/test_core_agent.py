@@ -322,7 +322,7 @@ class TestAgentLoopPreInject:
                     "rb:exact",
                     "Exact Runbook",
                     "Step 1: restart the integration.",
-                    "validated",
+                    "seed",  # _fetch_signature_chunks reads seeds from agent_strategies
                     "repair:recorder:backup_not_available",
                     1,
                 ),
@@ -970,7 +970,7 @@ class TestAdvancedDB:
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 43
+        assert version == 44
 
     def test_version_unchanged_on_second_init(self, db_path):
         from agents import ha_agent_advanced
@@ -980,7 +980,7 @@ class TestAdvancedDB:
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute("SELECT version FROM schema_version").fetchall()
         assert len(rows) == 1
-        assert rows[0][0] == 43
+        assert rows[0][0] == 44
 
     def test_pre_migration_database_upgraded(self, db_path):
         from agents import ha_agent_advanced
@@ -1009,7 +1009,7 @@ class TestAdvancedDB:
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 43
+        assert version == 44
 
     def test_migration_v2_adds_correlation_id_column(self, db_path):
         from agents import ha_agent_advanced
@@ -1973,7 +1973,7 @@ class TestSandboxDB:
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 43
+        assert version == 44
 
     def test_version_unchanged_on_second_init(self, db_path):
         from agents import ha_agent_sandbox_engine
@@ -1983,7 +1983,7 @@ class TestSandboxDB:
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute("SELECT version FROM schema_version").fetchall()
         assert len(rows) == 1
-        assert rows[0][0] == 43
+        assert rows[0][0] == 44
 
     def test_pre_migration_database_upgraded(self, db_path):
         from agents import ha_agent_sandbox_engine
@@ -2011,7 +2011,7 @@ class TestSandboxDB:
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 43
+        assert version == 44
 
     def test_migration_v24_creates_agent_strategies(self, db_path):
         from agents import ha_agent_sandbox_engine
@@ -20212,6 +20212,48 @@ class TestMigrationV43SubjectKey:
                 ).fetchall()
             }
         assert "idx_agent_memory_subject_key" in indexes
+
+
+class TestMigrationV44PromotedTo:
+    """V44 adds promoted_to column to runbook_entries."""
+
+    @pytest.mark.parametrize(
+        "module", ["agents.ha_agent_advanced", "agents.ha_agent_sandbox_engine"]
+    )
+    def test_adds_promoted_to_column(self, tmp_path, monkeypatch, module):
+        import importlib
+        import sqlite3
+
+        mod = importlib.import_module(module)
+        db_path = str(tmp_path / "v44.db")
+        monkeypatch.setattr(mod, "DB_PATH", db_path)
+        mod.init_local_database()
+        with sqlite3.connect(db_path) as conn:
+            cols = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(runbook_entries)").fetchall()
+            }
+        assert "promoted_to" in cols
+
+    @pytest.mark.parametrize(
+        "module", ["agents.ha_agent_advanced", "agents.ha_agent_sandbox_engine"]
+    )
+    def test_migration_idempotent(self, tmp_path, monkeypatch, module):
+        """Running init_local_database a second time does not fail."""
+        import importlib
+        import sqlite3
+
+        mod = importlib.import_module(module)
+        db_path = str(tmp_path / "v44idem.db")
+        monkeypatch.setattr(mod, "DB_PATH", db_path)
+        mod.init_local_database()
+        mod.init_local_database()  # must not raise
+        with sqlite3.connect(db_path) as conn:
+            cols = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(runbook_entries)").fetchall()
+            }
+        assert "promoted_to" in cols
 
 
 class TestReadNetAlertXConf:

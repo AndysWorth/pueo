@@ -386,8 +386,10 @@ def _load_signature_stats(
     except sqlite3.OperationalError:
         pass
 
-    # ── 4b. runbook_entries counts (V42) ─────────────────────────────────
-    entry_counts: dict[str, tuple[int, int]] = {}  # sig -> (live, retired)
+    # ── 4b. runbook_entries counts (V42, includes family-pattern ADR 052) ─
+    # Raw per-signature counts; family pattern rows are merged into each
+    # sibling when building SignatureStats.
+    entry_counts_raw: dict[str, tuple[int, int]] = {}  # sig -> (live, retired)
     try:
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute(
@@ -395,9 +397,18 @@ def _load_signature_stats(
                 " FROM runbook_entries GROUP BY signature"
             ).fetchall()
         for r in rows:
-            entry_counts[r[0]] = (int(r[1] or 0), int(r[2] or 0))
+            entry_counts_raw[r[0]] = (int(r[1] or 0), int(r[2] or 0))
     except sqlite3.OperationalError:
         pass
+
+    def _family_sig(s: str) -> str:
+        parts = s.rsplit(":", 1)
+        return parts[0] + ":*" if len(parts) == 2 else s + ":*"
+
+    def _entry_counts(sig: str) -> tuple[int, int]:
+        exact = entry_counts_raw.get(sig, (0, 0))
+        family = entry_counts_raw.get(_family_sig(sig), (0, 0))
+        return (exact[0] + family[0], exact[1] + family[1])
 
     # ── 5. Build SignatureStats rows ─────────────────────────────────────
     stats: list[SignatureStats] = []
@@ -413,6 +424,7 @@ def _load_signature_stats(
             state, title, _, procedure_notes = learned_by_sig[sig]
             learned_state = f"{state}: {title}"
 
+        live_entries, retired = _entry_counts(sig)
         stats.append(
             SignatureStats(
                 signature=sig,
@@ -427,8 +439,8 @@ def _load_signature_stats(
                 procedure_notes=procedure_notes,
                 instance_facts=fact_counts.get(sig, 0),
                 last_used_at=used_at.get(sig),
-                entries=entry_counts.get(sig, (0, 0))[0],
-                retired_entries=entry_counts.get(sig, (0, 0))[1],
+                entries=live_entries,
+                retired_entries=retired,
             )
         )
 

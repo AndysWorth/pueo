@@ -7245,7 +7245,9 @@ class TestFetchSignatureChunks:
             )
 
     def test_returns_seed_and_learned_for_wildcard(self, tmp_path, monkeypatch):
-        """Returns both matching seed and candidate when wildcards match."""
+        """Returns both matching seed and live-entry learned chunk when present."""
+        import sqlite3
+
         from utils.agent.agent_loop import _fetch_signature_chunks
 
         db = self._init_db(tmp_path, monkeypatch)
@@ -7256,32 +7258,43 @@ class TestFetchSignatureChunks:
             "repair:*:restart_required",
             "Seed content",
         )
-        self._insert_row(
-            db, "cand_001", "candidate", "repair:*:restart_required", "Learned content"
-        )
+        # Learned chunk now comes from runbook_entries, not agent_strategies
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO runbook_entries (id, signature, kind, text,"
+                " episode_refs, success_count, failure_count, created_at, updated_at)"
+                " VALUES ('e1', 'repair:hacs:restart_required', 'decision_rule',"
+                " 'Learned content about restart', '[]', 1, 0,"
+                " datetime('now'), datetime('now'))"
+            )
 
         chunks = _fetch_signature_chunks(db, "repair:hacs:restart_required")
         assert len(chunks) == 2
         ids = [c.chunk_id for c in chunks]
         assert "seed:restart_required" in ids
-        assert "cand_001" in ids
+        assert "live_entries:repair:hacs:restart_required" in ids
 
     def test_procedure_only_learned_runbook_yields_notes_chunk_only(
         self, tmp_path, monkeypatch
     ):
-        """A rendered runbook with only procedure entries has no main-body chunk."""
+        """A procedure-only learned runbook has only a proc chunk, no main-body chunk."""
+        import sqlite3
+
         from utils.agent.agent_loop import _fetch_signature_chunks
 
         db = self._init_db(tmp_path, monkeypatch)
-        self._insert_row(
-            db,
-            "cand_proc",
-            "candidate",
-            "update:os:os",
-            "## Procedure notes\n- `read_logs(x)` returned no results",
-        )
+        # Insert a procedure entry (no decision_rule/pitfall)
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO runbook_entries (id, signature, kind, text,"
+                " episode_refs, success_count, failure_count, created_at, updated_at)"
+                " VALUES ('ep1', 'update:os:os', 'procedure',"
+                " '`read_logs(x)` returned no results', '[]', 1, 0,"
+                " datetime('now'), datetime('now'))"
+            )
+
         chunks = _fetch_signature_chunks(db, "update:os:os")
-        assert [c.chunk_id for c in chunks] == ["proc:cand_proc"]
+        assert [c.chunk_id for c in chunks] == ["live_proc:update:os:os"]
         assert "read_logs(x)" in chunks[0].text
 
     def test_prefers_more_specific_seed(self, tmp_path, monkeypatch):

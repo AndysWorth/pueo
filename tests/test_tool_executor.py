@@ -4634,7 +4634,7 @@ class TestRunbookUsageTracking:
                 "CREATE TABLE agent_strategies ("
                 "id TEXT PRIMARY KEY, title TEXT, trigger_pattern TEXT, "
                 "approach TEXT, runbook_state TEXT DEFAULT 'candidate', "
-                "created_at TEXT)"
+                "created_at TEXT, signature TEXT)"
             )
             conn.execute(
                 "CREATE TABLE runbook_usage ("
@@ -4736,7 +4736,11 @@ class TestRunbookUsageTracking:
         import sqlite3
 
         with sqlite3.connect(db_path) as conn:
-            conn.execute("ALTER TABLE agent_strategies ADD COLUMN signature TEXT")
+            existing = {
+                row[1] for row in conn.execute("PRAGMA table_info(agent_strategies)")
+            }
+            if "signature" not in existing:
+                conn.execute("ALTER TABLE agent_strategies ADD COLUMN signature TEXT")
             for sid, sig in sigs.items():
                 conn.execute(
                     "UPDATE agent_strategies SET signature = ? WHERE id = ?", (sig, sid)
@@ -4906,6 +4910,40 @@ class TestRunbookUsageTracking:
                 "SELECT runbook_state FROM agent_strategies WHERE id='s1'"
             ).fetchone()[0]
         assert state == "seed"  # not promoted; auto-validate is candidate-only
+
+    def test_auto_validate_family_pattern_counts_across_siblings(self, tmp_path):
+        """A family-pattern runbook (sig ends with ':*') uses LIKE-based counting
+        so sibling-signature sessions contribute to the validation threshold."""
+        import sqlite3
+
+        executor, _, db_path = self._make_executor(tmp_path)
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO agent_strategies"
+                " (id, title, trigger_pattern, approach, runbook_state, created_at, signature)"
+                " VALUES ('sfam', 'T', 'trig', 'approach', 'candidate',"
+                " datetime('now'), 'update:addon:*')",
+            )
+            # Three successes spread across different sibling signatures
+            for ep, sig in (
+                ("ep1", "update:addon:matter_server"),
+                ("ep2", "update:addon:mosquitto"),
+                ("ep3", "update:addon:tasmota"),
+            ):
+                conn.execute(
+                    "INSERT INTO runbook_usage (strategy_id, episode_id, outcome,"
+                    " verification, signature) VALUES ('sfam', ?, 'pending', 'success', ?)",
+                    (ep, sig),
+                )
+            conn.commit()
+
+        with sqlite3.connect(db_path) as conn:
+            executor._auto_validate_if_eligible(conn, "sfam", min_successes=3)
+            conn.commit()
+            state = conn.execute(
+                "SELECT runbook_state FROM agent_strategies WHERE id='sfam'"
+            ).fetchone()[0]
+        assert state == "validated"
 
     def test_auto_validate_standalone_syncs_chroma_when_store_provided(
         self, tmp_path, monkeypatch

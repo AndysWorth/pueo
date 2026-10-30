@@ -595,6 +595,15 @@ def _migrate_v43(cursor: sqlite3.Cursor) -> None:
     )
 
 
+def _migrate_v44(cursor: sqlite3.Cursor) -> None:
+    cols = {
+        row[1]
+        for row in cursor.execute("PRAGMA table_info(runbook_entries)").fetchall()
+    }
+    if "promoted_to" not in cols:
+        cursor.execute("ALTER TABLE runbook_entries ADD COLUMN promoted_to TEXT")
+
+
 _MIGRATIONS: list[tuple[int, object]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
@@ -639,6 +648,7 @@ _MIGRATIONS: list[tuple[int, object]] = [
     (41, _migrate_v41),
     (42, _migrate_v42),
     (43, _migrate_v43),
+    (44, _migrate_v44),
 ]
 
 

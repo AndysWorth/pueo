@@ -4411,27 +4411,44 @@ class ToolExecutor:
     ) -> None:
         """Promote candidate → validated when success threshold is met with no failures.
 
+        For family-pattern runbooks (signature ends with ':*'), counts verified
+        sessions across all sibling signatures matching the prefix (ADR 052).
         Also logs a warning when a runbook accumulates 2+ failures and 0 successes.
         Syncs the updated runbook_type to Chroma after promotion.
         """
         row = conn.execute(
-            "SELECT runbook_state FROM agent_strategies WHERE id = ?",
+            "SELECT runbook_state, signature FROM agent_strategies WHERE id = ?",
             (strategy_id,),
         ).fetchone()
         if not row or row[0] != "candidate":
             return
 
+        sig = row[1] or ""
         # Count verified successes and failures only; pending/unverified rows don't count.
-        success_count = conn.execute(
-            "SELECT COUNT(DISTINCT episode_id) FROM runbook_usage"
-            " WHERE strategy_id = ? AND verification = 'success' AND episode_id != ''",
-            (strategy_id,),
-        ).fetchone()[0]
-        failure_count = conn.execute(
-            "SELECT COUNT(DISTINCT episode_id) FROM runbook_usage"
-            " WHERE strategy_id = ? AND verification = 'failure' AND episode_id != ''",
-            (strategy_id,),
-        ).fetchone()[0]
+        if sig.endswith(":*"):
+            # Family-pattern runbook: count across sibling signatures.
+            prefix = sig[:-1]  # "update:addon:"
+            success_count = conn.execute(
+                "SELECT COUNT(DISTINCT episode_id) FROM runbook_usage"
+                " WHERE signature LIKE ? AND verification = 'success' AND episode_id != ''",
+                (prefix + "%",),
+            ).fetchone()[0]
+            failure_count = conn.execute(
+                "SELECT COUNT(DISTINCT episode_id) FROM runbook_usage"
+                " WHERE signature LIKE ? AND verification = 'failure' AND episode_id != ''",
+                (prefix + "%",),
+            ).fetchone()[0]
+        else:
+            success_count = conn.execute(
+                "SELECT COUNT(DISTINCT episode_id) FROM runbook_usage"
+                " WHERE strategy_id = ? AND verification = 'success' AND episode_id != ''",
+                (strategy_id,),
+            ).fetchone()[0]
+            failure_count = conn.execute(
+                "SELECT COUNT(DISTINCT episode_id) FROM runbook_usage"
+                " WHERE strategy_id = ? AND verification = 'failure' AND episode_id != ''",
+                (strategy_id,),
+            ).fetchone()[0]
 
         if failure_count >= 2 and success_count == 0:
             log.warning(
