@@ -101,9 +101,10 @@ def _make_db(tmp_path):
         conn.execute(
             "CREATE TABLE user_prefs (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
         )
-        from agents.ha_agent_advanced import _migrate_v42
+        from agents.ha_agent_advanced import _migrate_v42, _migrate_v44
 
         _migrate_v42(conn.cursor())
+        _migrate_v44(conn.cursor())
         conn.commit()
     return db_path
 
@@ -1419,10 +1420,10 @@ class TestWriteEntries:
 
         db = _make_db(tmp_path)
         item = [("decision_rule", _RULE, None)]
-        assert _write_entries(db, _UPDATE_SIG, "ep1", item)[0][0] == "inserted"
+        assert _write_entries(db, _UPDATE_SIG, "ep1", item)[0][0][0] == "inserted"
         near_dup = [("decision_rule", _RULE.replace("first", "before update"), None)]
-        assert _write_entries(db, _UPDATE_SIG, "ep2", near_dup)[0][0] == "reinforced"
-        assert _write_entries(db, _UPDATE_SIG, "ep2", item)[0][0] == "unchanged"
+        assert _write_entries(db, _UPDATE_SIG, "ep2", near_dup)[0][0][0] == "reinforced"
+        assert _write_entries(db, _UPDATE_SIG, "ep2", item)[0][0][0] == "unchanged"
         rows = _entries(db)
         assert len(rows) == 1
         assert rows[0]["text"] == _RULE
@@ -1898,6 +1899,273 @@ class TestLoadEntries:
             )
             conn.commit()
         assert _load_entries(db, _UPDATE_SIG)[0]["episode_refs"] == []
+
+
+# ---------------------------------------------------------------------------
+# TestFamilyScopedEntries (ADR 052)
+# ---------------------------------------------------------------------------
+
+
+class TestFamilyScopedEntries:
+    """Tests for _family_pattern, _subject_tokens, scope rule in _write_entries,
+    _promote_siblings_to_family, and _load_entries_for_session."""
+
+    # ----- pure-function unit tests ---
+
+    def test_family_pattern_replaces_last_segment(self):
+        from utils.knowledge.runbook_distiller import _family_pattern
+
+        assert _family_pattern("update:addon:matter_server") == "update:addon:*"
+        assert _family_pattern("update:addon:mosquitto") == "update:addon:*"
+
+    def test_family_pattern_single_segment(self):
+        from utils.knowledge.runbook_distiller import _family_pattern
+
+        assert _family_pattern("repair") == "repair:*"
+
+    def test_family_pattern_two_segments(self):
+        from utils.knowledge.runbook_distiller import _family_pattern
+
+        assert _family_pattern("device:offline") == "device:*"
+
+    def test_subject_tokens_from_signature_last_segment(self):
+        from utils.knowledge.runbook_distiller import _subject_tokens
+
+        tokens = _subject_tokens("update:addon:matter_server")
+        assert "matter" in tokens
+        assert "server" in tokens
+        # stop words and short tokens excluded
+        assert "the" not in tokens
+        assert "ha" not in tokens  # len < 3
+
+    def test_subject_tokens_from_subject_key(self):
+        from utils.knowledge.runbook_distiller import _subject_tokens
+
+        tokens = _subject_tokens("update:addon:mosquitto", subject_key="mqtt broker")
+        assert "mosquitto" in tokens
+        assert "mqtt" in tokens
+        assert "broker" in tokens
+
+    def test_subject_tokens_wildcard_excluded(self):
+        from utils.knowledge.runbook_distiller import _subject_tokens
+
+        tokens = _subject_tokens("update:addon:*")
+        assert "*" not in tokens
+        assert len(tokens) == 0  # wildcard + short segments produce no tokens
+
+    # ----- scope rule in _write_entries ---
+
+    def test_scope_rule_subject_token_stays_concrete(self, tmp_path):
+        """An item whose text contains a subject token is written under the
+        concrete signature, not the family pattern."""
+        from utils.knowledge.runbook_distiller import _write_entries, _subject_tokens
+
+        db = _make_db(tmp_path)
+        sig = "update:addon:matter_server"
+        tokens = _subject_tokens(sig)
+        item = [("decision_rule", "matter_server needs a fresh token on upgrade", None)]
+        results, written_sigs = _write_entries(
+            db, sig, "ep1", item, subject_tokens=tokens
+        )
+
+        assert results[0][0] == "inserted"
+        assert sig in written_sigs
+        # Family pattern was NOT written to
+        assert "update:addon:*" not in written_sigs
+        with sqlite3.connect(db) as conn:
+            rows = conn.execute(
+                "SELECT signature FROM runbook_entries WHERE retired_at IS NULL"
+            ).fetchall()
+        assert all(r[0] == sig for r in rows)
+
+    def test_scope_rule_generic_item_goes_to_family(self, tmp_path):
+        """An item whose text contains no subject tokens is written under the
+        family-pattern signature."""
+        from utils.knowledge.runbook_distiller import _write_entries, _subject_tokens
+
+        db = _make_db(tmp_path)
+        sig = "update:addon:matter_server"
+        tokens = _subject_tokens(sig)
+        # Generic rule — no mention of matter_server, server, matter
+        item = [
+            ("decision_rule", "always take a backup before upgrading any addon", None)
+        ]
+        results, written_sigs = _write_entries(
+            db, sig, "ep1", item, subject_tokens=tokens
+        )
+
+        assert results[0][0] == "inserted"
+        assert "update:addon:*" in written_sigs
+        assert sig not in written_sigs
+        with sqlite3.connect(db) as conn:
+            rows = conn.execute(
+                "SELECT signature FROM runbook_entries WHERE retired_at IS NULL"
+            ).fetchall()
+        assert rows[0][0] == "update:addon:*"
+
+    def test_scope_rule_no_subject_tokens_all_go_concrete(self, tmp_path):
+        """When no subject_tokens are passed, all items go to the concrete signature."""
+        from utils.knowledge.runbook_distiller import _write_entries
+
+        db = _make_db(tmp_path)
+        sig = "update:addon:matter_server"
+        item = [
+            ("decision_rule", "always take a backup before upgrading any addon", None)
+        ]
+        results, written_sigs = _write_entries(db, sig, "ep1", item)
+
+        assert results[0][0] == "inserted"
+        assert sig in written_sigs
+        assert "update:addon:*" not in written_sigs
+
+    # ----- sibling promotion ---
+
+    def test_promote_siblings_merges_near_dups(self, tmp_path):
+        """When two OTHER sibling signatures both have a near-duplicate entry,
+        calling _promote_siblings_to_family retires both and creates a family entry.
+        The scan excludes the passed signature, so we need a third sig to trigger it."""
+        from utils.knowledge.runbook_distiller import (
+            _promote_siblings_to_family,
+            _write_entries,
+        )
+
+        db = _make_db(tmp_path)
+        rule = "always take a backup before upgrading any addon"
+        # mosquitto and tasmota both have the same generic rule
+        _write_entries(
+            db, "update:addon:mosquitto", "ep1", [("decision_rule", rule, None)]
+        )
+        _write_entries(
+            db, "update:addon:tasmota", "ep2", [("decision_rule", rule, None)]
+        )
+        # Calling with matter_server — the query scans siblings != matter_server, != *
+        # finds mosquitto + tasmota, detects the near-dup and merges them
+        retired = _promote_siblings_to_family(db, "update:addon:matter_server")
+
+        assert retired == 2  # both sibling entries retired
+        with sqlite3.connect(db) as conn:
+            rows = conn.execute(
+                "SELECT signature, retired_at, promoted_to FROM runbook_entries"
+                " ORDER BY signature"
+            ).fetchall()
+        # Family entry live; both sibling entries retired with promoted_to set
+        live = [r for r in rows if r[1] is None]
+        retired_rows = [r for r in rows if r[1] is not None]
+        assert len(live) == 1
+        assert live[0][0] == "update:addon:*"
+        assert len(retired_rows) == 2
+        assert all(r[2] is not None for r in retired_rows)  # promoted_to set
+
+    def test_promote_siblings_summed_counts(self, tmp_path):
+        """Family-pattern entry gets summed success_count from merged sibling entries."""
+        from utils.knowledge.runbook_distiller import (
+            _promote_siblings_to_family,
+            _write_entries,
+        )
+
+        db = _make_db(tmp_path)
+        rule = "always take a backup before upgrading any addon"
+        # mosquitto reinforced twice, tasmota once
+        _write_entries(
+            db, "update:addon:mosquitto", "ep1", [("decision_rule", rule, None)]
+        )
+        _write_entries(
+            db, "update:addon:mosquitto", "ep2", [("decision_rule", rule, None)]
+        )
+        _write_entries(
+            db, "update:addon:tasmota", "ep3", [("decision_rule", rule, None)]
+        )
+        # Trigger promotion via a third sig
+        _promote_siblings_to_family(db, "update:addon:matter_server")
+
+        with sqlite3.connect(db) as conn:
+            row = conn.execute(
+                "SELECT success_count, episode_refs FROM runbook_entries"
+                " WHERE signature = 'update:addon:*' AND retired_at IS NULL"
+            ).fetchone()
+        assert row is not None
+        # mosquitto had 2 successes, tasmota had 1 → 3 total
+        assert row[0] == 3
+        refs = json.loads(row[1])
+        assert set(refs) == {"ep1", "ep2", "ep3"}
+
+    def test_promote_siblings_no_match_returns_zero(self, tmp_path):
+        """Returns 0 when no sibling pair has near-duplicate entries."""
+        from utils.knowledge.runbook_distiller import (
+            _promote_siblings_to_family,
+            _write_entries,
+        )
+
+        db = _make_db(tmp_path)
+        # Two sibling entries with completely different text — not near-dups
+        _write_entries(
+            db,
+            "update:addon:mosquitto",
+            "ep1",
+            [("decision_rule", "mosquitto bridge config must be updated", None)],
+        )
+        _write_entries(
+            db,
+            "update:addon:tasmota",
+            "ep2",
+            [("decision_rule", "tasmota firmware version check required", None)],
+        )
+        retired = _promote_siblings_to_family(db, "update:addon:matter_server")
+        assert retired == 0
+
+    # ----- _load_entries_for_session retrieval ---
+
+    def test_load_entries_for_session_includes_family(self, tmp_path):
+        """_load_entries_for_session returns both exact-sig and family-pattern entries."""
+        from utils.knowledge.runbook_distiller import (
+            _load_entries_for_session,
+            _write_entries,
+        )
+
+        db = _make_db(tmp_path)
+        family_rule = "always take a backup before upgrading any addon"
+        concrete_rule = "matter_server needs a fresh token on upgrade"
+        _write_entries(
+            db, "update:addon:*", "ep0", [("decision_rule", family_rule, None)]
+        )
+        _write_entries(
+            db,
+            "update:addon:matter_server",
+            "ep1",
+            [("decision_rule", concrete_rule, None)],
+        )
+
+        entries = _load_entries_for_session(db, "update:addon:matter_server")
+        texts = [e["text"] for e in entries]
+        assert family_rule in texts
+        assert concrete_rule in texts
+
+    def test_load_entries_for_session_new_sibling_sees_family(self, tmp_path):
+        """A new sibling subject (mosquitto) sees entries written under the family
+        pattern even when it has no concrete entries of its own."""
+        from utils.knowledge.runbook_distiller import (
+            _load_entries_for_session,
+            _write_entries,
+        )
+
+        db = _make_db(tmp_path)
+        family_rule = "always take a backup before upgrading any addon"
+        _write_entries(
+            db, "update:addon:*", "ep0", [("decision_rule", family_rule, None)]
+        )
+
+        # mosquitto has no entries of its own
+        entries = _load_entries_for_session(db, "update:addon:mosquitto")
+        assert len(entries) == 1
+        assert entries[0]["text"] == family_rule
+        assert entries[0]["signature"] == "update:addon:*"
+
+    def test_load_entries_for_session_empty_on_missing_table(self, tmp_path):
+        from utils.knowledge.runbook_distiller import _load_entries_for_session
+
+        db = str(tmp_path / "empty.db")
+        sqlite3.connect(db).close()
+        assert _load_entries_for_session(db, "update:addon:matter_server") == []
 
 
 # ---------------------------------------------------------------------------

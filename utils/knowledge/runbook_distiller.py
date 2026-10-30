@@ -1065,17 +1065,21 @@ async def _distill_verified(
                     continue
                 kept.append((kind, text, _first_tool(text, known_tools)))
 
+    subj_tokens = _subject_tokens(signature, subject_key)
     if kept:
         try:
-            results = await asyncio.to_thread(
-                _write_entries, db_path, signature, episode_id, kept
+            entry_results, written_sigs = await asyncio.to_thread(
+                _write_entries, db_path, signature, episode_id, kept, subj_tokens
             )
+            # Trigger sibling promotion for new concrete entries.
+            if signature in written_sigs:
+                await asyncio.to_thread(_promote_siblings_to_family, db_path, signature)
         except sqlite3.Error as exc:
             log.warning(
                 "distillation_entry_write_failed", signature=signature, error=str(exc)
             )
-            results = []
-        for (kind, _, _), (action, text) in zip(kept, results):
+            entry_results, written_sigs = [], set()
+        for (kind, _, _), (action, text) in zip(kept, entry_results):
             log.info(
                 "distillation_entry_written",
                 signature=signature,
@@ -1083,23 +1087,27 @@ async def _distill_verified(
                 action=action,
                 text=text[:200],
             )
-    elif delta is not None:
-        log.info(
-            "distillation_skipped",
-            reason="no_new_knowledge",
-            signature=signature,
-            episode_id=episode_id,
-        )
+    else:
+        written_sigs = set()
+        if delta is not None:
+            log.info(
+                "distillation_skipped",
+                reason="no_new_knowledge",
+                signature=signature,
+                episode_id=episode_id,
+            )
 
     if kept or retired:
-        try:
-            await asyncio.to_thread(
-                render_learned_runbook, db_path, signature, knowledge_store
-            )
-        except sqlite3.Error as exc:
-            log.warning(
-                "learned_runbook_render_failed", signature=signature, error=str(exc)
-            )
+        render_sigs = {signature} | written_sigs
+        for rsig in render_sigs:
+            try:
+                await asyncio.to_thread(
+                    render_learned_runbook, db_path, rsig, knowledge_store
+                )
+            except sqlite3.Error as exc:
+                log.warning(
+                    "learned_runbook_render_failed", signature=rsig, error=str(exc)
+                )
 
 
 async def enqueue_distillation_after_verification(
@@ -1207,7 +1215,7 @@ async def enqueue_distillation_after_verification(
 
 
 # ---------------------------------------------------------------------------
-# Atomic runbook entries (ADR 051)
+# Atomic runbook entries (ADR 051 / ADR 052)
 # ---------------------------------------------------------------------------
 
 _VERDICT_KINDS = ("decision_rule", "pitfall")
@@ -1337,6 +1345,43 @@ def _now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
+# Stop words used by _subject_tokens when deciding if an entry is subject-scoped.
+_SUBJECT_STOPWORDS = frozenset(
+    "the its and for but are was has this that with from "
+    "not has have had via per all any get new".split()
+)
+
+
+def _family_pattern(signature: str) -> str:
+    """Replace the last segment of *signature* with '*' to get its family pattern.
+
+    ``update:addon:matter_server`` → ``update:addon:*``
+    Single-segment signatures return ``<seg>:*``.
+    """
+    parts = signature.rsplit(":", 1)
+    if len(parts) == 2:
+        return parts[0] + ":*"
+    return signature + ":*"
+
+
+def _subject_tokens(signature: str, subject_key: str = "") -> frozenset[str]:
+    """Extract tokens specific to this session's subject.
+
+    Taken from the last segment of *signature* and from *subject_key*.
+    Tokens shorter than 3 characters or in the stop-word list are excluded.
+    Used by ``_write_entries`` to decide whether an entry belongs under the
+    concrete signature or the family wildcard pattern.
+    """
+    last = signature.rsplit(":", 1)[-1] if ":" in signature else signature
+    tokens: set[str] = set()
+    for segment in (last, subject_key):
+        if segment and segment != "*":
+            for tok in re.split(r"[_\-\s]+", segment.lower()):
+                if len(tok) >= 3 and tok not in _SUBJECT_STOPWORDS:
+                    tokens.add(tok)
+    return frozenset(tokens)
+
+
 def _load_entries(db_path: str, signature: str) -> list[dict]:
     """Return the live (not retired) entries for *signature*.  Synchronous."""
     try:
@@ -1348,6 +1393,39 @@ def _load_entries(db_path: str, signature: str) -> list[dict]:
                 " WHERE signature = ? AND retired_at IS NULL"
                 " ORDER BY created_at, id",
                 (signature,),
+            ).fetchall()
+    except sqlite3.Error:
+        return []
+    entries = []
+    for r in rows:
+        e = dict(r)
+        try:
+            e["episode_refs"] = json.loads(e["episode_refs"] or "[]")
+        except ValueError:
+            e["episode_refs"] = []
+        entries.append(e)
+    return entries
+
+
+def _load_entries_for_session(db_path: str, signature: str) -> list[dict]:
+    """Return live entries matching this session: exact signature + family pattern.
+
+    Ranked by (success_count - failure_count) desc, then by created_at desc.
+    Used by ``_fetch_signature_chunks`` to build the learned chunk directly from
+    live entries rather than from the rendered ``agent_strategies`` row.
+    """
+    family = _family_pattern(signature)
+    sigs = (signature, family) if family != signature else (signature,)
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            placeholders = ",".join("?" * len(sigs))
+            rows = conn.execute(
+                f"SELECT id, kind, text, tool, episode_refs, success_count,"  # nosec B608
+                f" failure_count, created_at, signature FROM runbook_entries"
+                f" WHERE signature IN ({placeholders}) AND retired_at IS NULL"
+                f" ORDER BY (success_count - failure_count) DESC, created_at DESC",
+                sigs,
             ).fetchall()
     except sqlite3.Error:
         return []
@@ -1377,18 +1455,43 @@ def _write_entries(
     signature: str,
     episode_id: str,
     items: list[tuple[str, str, Optional[str]]],
-) -> list[tuple[str, str]]:
+    subject_tokens: frozenset[str] = frozenset(),
+) -> tuple[list[tuple[str, str]], set[str]]:
     """Insert each (kind, text, tool) item, or reinforce a near-duplicate entry.
 
-    Reinforcing adds one to ``success_count`` and appends *episode_id* to the
-    entry's refs, once per episode.  Returns ``(action, text)`` pairs, where
-    action is ``inserted``, ``reinforced`` or ``unchanged``.  Synchronous.
+    Scope rule (ADR 052): when *subject_tokens* is supplied, items whose text
+    contains none of those tokens are written under the family pattern instead
+    of the concrete *signature*.  Reinforcing adds one to ``success_count`` and
+    appends *episode_id* to the entry's refs, once per episode.
+
+    Returns ``(results, written_sigs)`` where *results* is a list of
+    ``(action, text)`` pairs (``inserted``, ``reinforced`` or ``unchanged``)
+    and *written_sigs* is the set of signature strings that received a write.
+    Synchronous.
     """
-    entries = _load_entries(db_path, signature)
+    family_sig = _family_pattern(signature) if subject_tokens else signature
+
+    def _write_sig_for(text: str) -> str:
+        if subject_tokens and family_sig != signature:
+            tl = text.lower()
+            if not any(tok in tl for tok in subject_tokens):
+                return family_sig
+        return signature
+
+    # Pre-load entries for each write-signature we may need.
+    sigs_needed: set[str] = {_write_sig_for(text) for _, text, _ in items}
+    entries_by_sig: dict[str, list[dict]] = {
+        sig: _load_entries(db_path, sig) for sig in sigs_needed
+    }
+
     now = _now_iso()
     results: list[tuple[str, str]] = []
+    written_sigs: set[str] = set()
+
     with sqlite3.connect(db_path) as conn:
         for kind, text, tool in items:
+            wsig = _write_sig_for(text)
+            entries = entries_by_sig[wsig]
             match = next((e for e in entries if _same_entry(kind, text, e)), None)
             if match is None:
                 entry = {
@@ -1407,7 +1510,7 @@ def _write_entries(
                     " updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, 0, ?, ?)",
                     (
                         entry["id"],
-                        signature,
+                        wsig,
                         kind,
                         text,
                         tool,
@@ -1418,6 +1521,7 @@ def _write_entries(
                 )
                 entries.append(entry)
                 results.append(("inserted", text))
+                written_sigs.add(wsig)
             elif episode_id and episode_id not in match["episode_refs"]:
                 match["episode_refs"].append(episode_id)
                 match["success_count"] += 1
@@ -1432,10 +1536,146 @@ def _write_entries(
                     ),
                 )
                 results.append(("reinforced", match["text"]))
+                written_sigs.add(wsig)
             else:
                 results.append(("unchanged", match["text"]))
         conn.commit()
-    return results
+    return results, written_sigs
+
+
+def _promote_siblings_to_family(db_path: str, signature: str) -> int:
+    """Merge sibling near-duplicates into a shared family-pattern entry.
+
+    After a new entry is written under *signature*, scan all live entries for
+    sibling signatures in the same family (same prefix, different last segment,
+    not already the family pattern).  For any pair of entries with the same kind
+    that ``_same_entry`` deems equivalent, create or reinforce a family-pattern
+    entry (summed success_count, union of episode_refs) and retire both subject
+    entries with ``promoted_to`` pointing to the family entry id.
+
+    Returns the number of subject-entry rows retired.  Synchronous.
+    """
+    family = _family_pattern(signature)
+    if family == signature:
+        return 0
+    prefix = family[: -len("*")]  # "update:addon:"
+
+    now = _now_iso()
+    retired = 0
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            # Load all live sibling entries (exclude exact sig and family pattern).
+            rows = conn.execute(
+                "SELECT id, signature, kind, text, tool, episode_refs,"
+                " success_count, failure_count FROM runbook_entries"
+                " WHERE signature LIKE ? AND signature != ? AND signature != ?"
+                "   AND retired_at IS NULL"
+                " ORDER BY signature, kind, created_at",
+                (prefix + "%", signature, family),
+            ).fetchall()
+
+        if not rows:
+            return 0
+
+        # Parse episode_refs.
+        sibling_entries: list[dict] = []
+        for r in rows:
+            e = dict(r)
+            try:
+                e["episode_refs"] = json.loads(e["episode_refs"] or "[]")
+            except ValueError:
+                e["episode_refs"] = []
+            sibling_entries.append(e)
+
+        # Group by (kind, canonical text via near-dup matching).
+        # For each pair from different signatures that are near-dups, promote.
+        promoted_ids: set[str] = set()  # entry ids already retired this call
+        for i, entry_a in enumerate(sibling_entries):
+            if entry_a["id"] in promoted_ids:
+                continue
+            for entry_b in sibling_entries[i + 1 :]:
+                if entry_b["id"] in promoted_ids:
+                    continue
+                if entry_b["signature"] == entry_a["signature"]:
+                    continue
+                if not _same_entry(entry_a["kind"], entry_a["text"], entry_b):
+                    continue
+                # Near-dup pair from different sibling signatures — merge.
+                family_entries = _load_entries(db_path, family)
+                existing_family = next(
+                    (
+                        fe
+                        for fe in family_entries
+                        if _same_entry(entry_a["kind"], entry_a["text"], fe)
+                    ),
+                    None,
+                )
+                merged_refs = list({*entry_a["episode_refs"], *entry_b["episode_refs"]})
+                merged_success = entry_a["success_count"] + entry_b["success_count"]
+                merged_failure = entry_a["failure_count"] + entry_b["failure_count"]
+                with sqlite3.connect(db_path) as conn:
+                    if existing_family is None:
+                        family_id = str(uuid.uuid4())
+                        conn.execute(
+                            "INSERT INTO runbook_entries"
+                            " (id, signature, kind, text, tool, episode_refs,"
+                            " success_count, failure_count, created_at, updated_at)"
+                            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            (
+                                family_id,
+                                family,
+                                entry_a["kind"],
+                                entry_a["text"],
+                                entry_a.get("tool"),
+                                json.dumps(merged_refs),
+                                merged_success,
+                                merged_failure,
+                                now,
+                                now,
+                            ),
+                        )
+                    else:
+                        family_id = existing_family["id"]
+                        combined_refs = list(
+                            {*existing_family["episode_refs"], *merged_refs}
+                        )
+                        conn.execute(
+                            "UPDATE runbook_entries"
+                            " SET success_count = success_count + ?,"
+                            " failure_count = failure_count + ?,"
+                            " episode_refs = ?, updated_at = ? WHERE id = ?",
+                            (
+                                merged_success,
+                                merged_failure,
+                                json.dumps(combined_refs),
+                                now,
+                                family_id,
+                            ),
+                        )
+                    # Retire both subject entries with promoted_to pointer.
+                    for eid in (entry_a["id"], entry_b["id"]):
+                        if eid not in promoted_ids:
+                            conn.execute(
+                                "UPDATE runbook_entries"
+                                " SET retired_at = ?, updated_at = ?, promoted_to = ?"
+                                " WHERE id = ?",
+                                (now, now, family_id, eid),
+                            )
+                            promoted_ids.add(eid)
+                            retired += 1
+                    conn.commit()
+                log.info(
+                    "runbook_entry_promoted_to_family",
+                    family=family,
+                    family_entry_id=family_id,
+                    retired_ids=list({entry_a["id"], entry_b["id"]}),
+                )
+    except sqlite3.Error as exc:
+        log.warning(
+            "runbook_entry_promotion_failed", signature=signature, error=str(exc)
+        )
+    return retired
 
 
 def _session_created_at(db_path: str, episode_id: str) -> str:
@@ -1593,6 +1833,7 @@ async def distill_procedure(
     episode_id: str,
     db_path: str,
     knowledge_store: "KnowledgeStoreClientProtocol",
+    subject_key: str = "",
 ) -> None:
     """Record the session's tool-use notes as ``procedure`` entries (ADR 049/051).
 
@@ -1614,17 +1855,19 @@ async def distill_procedure(
         )
         return
 
+    subj_tokens = _subject_tokens(signature, subject_key)
     tool_by_step = {s.step_number: s.tool_call.name for s in steps}
     items: list[tuple[str, str, Optional[str]]] = [
         ("procedure", n.lesson, tool_by_step.get(n.evidence_step)) for n in notes
     ]
     try:
-        results = await asyncio.to_thread(
-            _write_entries, db_path, signature, episode_id, items
+        proc_results, written_sigs = await asyncio.to_thread(
+            _write_entries, db_path, signature, episode_id, items, subj_tokens
         )
-        await asyncio.to_thread(
-            render_learned_runbook, db_path, signature, knowledge_store
-        )
+        for rsig in {signature} | written_sigs:
+            await asyncio.to_thread(
+                render_learned_runbook, db_path, rsig, knowledge_store
+            )
     except sqlite3.Error as exc:
         log.warning(
             "procedure_distillation_persist_failed",
@@ -1638,7 +1881,7 @@ async def distill_procedure(
         episode_id=episode_id,
         outcome=outcome,
         notes=len(notes),
-        inserted=sum(1 for a, _ in results if a == "inserted"),
+        inserted=sum(1 for a, _ in proc_results if a == "inserted"),
     )
 
 
@@ -1672,6 +1915,7 @@ async def enqueue_procedural_distillation(
     outcome = (
         (episode_stub or {}).get("outcome", "success") if episode_stub else "success"
     )
+    subj = payload.get("subject_key", "")
 
     from utils.agent.tool_registry import AgentStep
 
@@ -1687,6 +1931,7 @@ async def enqueue_procedural_distillation(
     _db = db_path
     _store = knowledge_store
     _outcome = outcome
+    _subj = subj
 
     async def _run_procedure() -> None:
         await distill_procedure(
@@ -1696,6 +1941,7 @@ async def enqueue_procedural_distillation(
             episode_id=_ep,
             db_path=_db,
             knowledge_store=_store,
+            subject_key=_subj,
         )
 
     submitted = await queue.submit(

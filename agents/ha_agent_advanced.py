@@ -574,6 +574,18 @@ def _migrate_v43(cursor: sqlite3.Cursor) -> None:
     # New writes set it going forward; old rows remain without it.
 
 
+def _migrate_v44(cursor: sqlite3.Cursor) -> None:
+    # Family-scoped entries (ADR 052): promoted_to tracks which family-pattern
+    # entry a concrete subject entry was merged into when a sibling near-dup
+    # was found; used for auditability, not for retrieval logic.
+    cols = {
+        row[1]
+        for row in cursor.execute("PRAGMA table_info(runbook_entries)").fetchall()
+    }
+    if "promoted_to" not in cols:
+        cursor.execute("ALTER TABLE runbook_entries ADD COLUMN promoted_to TEXT")
+
+
 _MIGRATIONS: list[tuple[int, object]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
@@ -618,6 +630,7 @@ _MIGRATIONS: list[tuple[int, object]] = [
     (41, _migrate_v41),
     (42, _migrate_v42),
     (43, _migrate_v43),
+    (44, _migrate_v44),
 ]
 
 
@@ -1009,6 +1022,8 @@ def _auto_validate_if_eligible_standalone(
 ) -> None:
     """Promote candidate→validated when success threshold is met with no failures.
 
+    For family-pattern runbooks (signature ends with ':*'), counts verified
+    sessions across all sibling signatures matching the prefix (ADR 052).
     When knowledge_store is provided the Chroma entry is synced immediately;
     otherwise sync is deferred to the next RAG refresh.
     """
@@ -1017,22 +1032,36 @@ def _auto_validate_if_eligible_standalone(
     _log = _sl.get_logger()
 
     row = conn.execute(
-        "SELECT runbook_state FROM agent_strategies WHERE id = ?",
+        "SELECT runbook_state, signature FROM agent_strategies WHERE id = ?",
         (strategy_id,),
     ).fetchone()
     if not row or row[0] != "candidate":
         return
 
-    success_count = conn.execute(
-        "SELECT COUNT(DISTINCT episode_id) FROM runbook_usage"
-        " WHERE strategy_id = ? AND verification = 'success' AND episode_id != ''",
-        (strategy_id,),
-    ).fetchone()[0]
-    failure_count = conn.execute(
-        "SELECT COUNT(DISTINCT episode_id) FROM runbook_usage"
-        " WHERE strategy_id = ? AND verification = 'failure' AND episode_id != ''",
-        (strategy_id,),
-    ).fetchone()[0]
+    sig = row[1] or ""
+    if sig.endswith(":*"):
+        prefix = sig[:-1]  # "update:addon:"
+        success_count = conn.execute(
+            "SELECT COUNT(DISTINCT episode_id) FROM runbook_usage"
+            " WHERE signature LIKE ? AND verification = 'success' AND episode_id != ''",
+            (prefix + "%",),
+        ).fetchone()[0]
+        failure_count = conn.execute(
+            "SELECT COUNT(DISTINCT episode_id) FROM runbook_usage"
+            " WHERE signature LIKE ? AND verification = 'failure' AND episode_id != ''",
+            (prefix + "%",),
+        ).fetchone()[0]
+    else:
+        success_count = conn.execute(
+            "SELECT COUNT(DISTINCT episode_id) FROM runbook_usage"
+            " WHERE strategy_id = ? AND verification = 'success' AND episode_id != ''",
+            (strategy_id,),
+        ).fetchone()[0]
+        failure_count = conn.execute(
+            "SELECT COUNT(DISTINCT episode_id) FROM runbook_usage"
+            " WHERE strategy_id = ? AND verification = 'failure' AND episode_id != ''",
+            (strategy_id,),
+        ).fetchone()[0]
 
     if failure_count >= 2 and success_count == 0:
         _log.warning(

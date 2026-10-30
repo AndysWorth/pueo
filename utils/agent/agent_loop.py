@@ -152,25 +152,38 @@ def _clean_seed_approach(approach: str, title: str) -> str:
 
 
 def _fetch_signature_chunks(db_path: str, signature: str) -> "list[Any]":
-    """Return up to two KnowledgeChunks for *signature*: best seed + best learned runbook.
+    """Return up to two KnowledgeChunks for *signature*: best seed + learned runbook.
 
-    Wildcard matching: stored patterns like ``repair:*:restart_required`` match a query
-    of ``repair:hacs:restart_required``.  Specificity = number of non-wildcard parts that
-    matched; most specific wins.  Within equal specificity, state priority is
-    seed > validated > candidate.
+    **Seed:** read from ``agent_strategies`` as before — wildcard pattern matching,
+    most-specific wins, state priority seed > validated > candidate.
 
-    Returns a list (0–2 items).  Each chunk carries ``metadata["sig_match"]=True`` and
-    ``metadata["exact_match"]=True`` so ``_knowledge_authority_label`` emits
+    **Learned:** built directly from live ``runbook_entries`` (exact signature +
+    family pattern), ranked by (success − failure) desc then recency, rendered via
+    ``_render_approach``, truncated to 1 200 tokens (ADR 052).  This allows lessons
+    from sibling sessions (e.g. ``update:addon:*``) to reach a new subject without
+    waiting for the rendered ``agent_strategies`` row to be updated.
+
+    Returns a list (0–2 items).  Each chunk carries ``metadata["sig_match"]=True``
+    and ``metadata["exact_match"]=True`` so ``_knowledge_authority_label`` emits
     ``[RUNBOOK FOR THIS EXACT SYMPTOM]``.
     """
     import sqlite3
 
     from utils.knowledge.knowledge_store import KnowledgeChunk
+    from utils.knowledge.runbook_distiller import (
+        _load_entries_for_session,
+        _render_approach,
+        _split_procedure_notes,
+    )
 
     if not db_path or not signature or ":" not in signature:
         return []
 
     _STATE_ORDER = {"seed": 0, "validated": 1, "candidate": 2}
+    _LEARNED_CHUNK_TOKENS = 1200
+
+    # ── Seed lookup (agent_strategies, unchanged) ─────────────────────────
+    best_seed: Optional[tuple[int, int, "sqlite3.Row"]] = None
 
     try:
         with sqlite3.connect(db_path) as conn:
@@ -179,86 +192,103 @@ def _fetch_signature_chunks(db_path: str, signature: str) -> "list[Any]":
                 "SELECT id, title, approach, runbook_state, signature"
                 " FROM agent_strategies"
                 " WHERE signature IS NOT NULL"
-                "   AND runbook_state IN ('seed', 'validated', 'candidate')"
+                "   AND runbook_state = 'seed'"
             ).fetchall()
-    except Exception:  # nosec B110
-        return []
-
-    # Score each row; keep best seed and best learned runbook separately.
-    best_seed: Optional[tuple[int, int, sqlite3.Row]] = (
-        None  # (specificity, state, row)
-    )
-    best_learned: Optional[tuple[int, int, sqlite3.Row]] = None
-
-    for row in rows:
-        stored_sig = row["signature"] or ""
-        matches, spec = _sig_specificity(stored_sig, signature)
-        if not matches:
-            continue
-        state_order = _STATE_ORDER.get(row["runbook_state"] or "", 99)
-        if row["runbook_state"] == "seed":
+        for row in rows:
+            stored_sig = row["signature"] or ""
+            matches, spec = _sig_specificity(stored_sig, signature)
+            if not matches:
+                continue
+            state_order = _STATE_ORDER.get(row["runbook_state"] or "", 99)
             if best_seed is None or (spec, -state_order) > (
                 best_seed[0],
                 -best_seed[1],
             ):
                 best_seed = (spec, state_order, row)
-        else:
-            if best_learned is None or (spec, -state_order) > (
-                best_learned[0],
-                -best_learned[1],
-            ):
-                best_learned = (spec, state_order, row)
+    except Exception:  # nosec B110
+        pass
 
-    from utils.knowledge.runbook_distiller import _split_procedure_notes
+    # ── Learned chunk built from live runbook_entries (ADR 052) ──────────
+    learned_entries = _load_entries_for_session(db_path, signature)
 
     chunks: list[Any] = []
-    for entry in (best_seed, best_learned):
-        if entry is None:
-            continue
-        _, _, row = entry
-        title = row["title"] or signature
-        approach = row["approach"] or ""
-        state = row["runbook_state"] or "candidate"
 
-        # Seeds are stored verbatim (front matter + H1 + body); strip the front
-        # matter and any leading duplicate H1 before injecting.
-        if row["runbook_state"] == "seed":
-            approach = _clean_seed_approach(approach, title)
-
-        # Split procedure notes out so they get their own [PROCEDURE NOTES] label.
+    # Seed chunk.
+    if best_seed is not None:
+        _, _, seed_row = best_seed
+        title = seed_row["title"] or signature
+        approach = _clean_seed_approach(seed_row["approach"] or "", title)
         main_approach, proc_notes = _split_procedure_notes(approach)
         text = f"# {title}\n\n{main_approach}".strip()
         if main_approach.strip():
             chunks.append(
                 KnowledgeChunk(
                     text=text,
-                    source=f"sig:{row['id']}",
+                    source=f"sig:{seed_row['id']}",
                     collection="strategies",
                     score=1.0,
                     metadata={
                         "exact_match": True,
                         "sig_match": True,
-                        "runbook_type": state,
+                        "runbook_type": "seed",
                     },
                     authority_score=1.0,
-                    chunk_id=row["id"],
+                    chunk_id=seed_row["id"],
                 )
             )
         if proc_notes:
             chunks.append(
                 KnowledgeChunk(
                     text=proc_notes,
-                    source=f"proc:{row['id']}",
+                    source=f"proc:{seed_row['id']}",
+                    collection="strategies",
+                    score=1.0,
+                    metadata={"procedure_note": True, "sig_match": True},
+                    authority_score=0.9,
+                    chunk_id=f"proc:{seed_row['id']}",
+                )
+            )
+
+    # Learned chunk from live entries.
+    if learned_entries:
+        from utils.core.context import truncate_to_budget
+
+        approach = _render_approach(learned_entries)
+        main_approach, proc_notes = _split_procedure_notes(approach)
+        if main_approach.strip():
+            text = truncate_to_budget(
+                f"# Learned: {signature}\n\n{main_approach}".strip(),
+                _LEARNED_CHUNK_TOKENS,
+            )
+            chunks.append(
+                KnowledgeChunk(
+                    text=text,
+                    source=f"live_entries:{signature}",
                     collection="strategies",
                     score=1.0,
                     metadata={
-                        "procedure_note": True,
+                        "exact_match": True,
                         "sig_match": True,
+                        "runbook_type": "candidate",
                     },
-                    authority_score=0.9,
-                    chunk_id=f"proc:{row['id']}",
+                    authority_score=0.75,
+                    chunk_id=f"live_entries:{signature}",
                 )
             )
+        if proc_notes:
+            proc_text = truncate_to_budget(proc_notes, _LEARNED_CHUNK_TOKENS)
+            chunks.append(
+                KnowledgeChunk(
+                    text=proc_text,
+                    source=f"live_proc:{signature}",
+                    collection="strategies",
+                    score=1.0,
+                    metadata={"procedure_note": True, "sig_match": True},
+                    authority_score=0.9,
+                    chunk_id=f"live_proc:{signature}",
+                )
+            )
+
     return chunks
 
 
