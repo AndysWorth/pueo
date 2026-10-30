@@ -357,6 +357,25 @@ FINISH_REPAIR = ToolDefinition(
                     "Pass 'none' if no runbook was relevant or found."
                 ),
             },
+            "deviated_from_runbook": {
+                "type": "object",
+                "description": (
+                    "Set when your investigation departed from the pre-injected runbook "
+                    "and the departure produced a better result. Triggers learning for "
+                    "this symptom type. Provide the specific rule you departed from and why."
+                ),
+                "properties": {
+                    "rule": {
+                        "type": "string",
+                        "description": "The specific runbook rule you departed from.",
+                    },
+                    "why": {
+                        "type": "string",
+                        "description": "Why your approach worked better.",
+                    },
+                },
+                "required": ["rule", "why"],
+            },
         },
         "required": ["summary", "action_taken"],
     },
@@ -982,6 +1001,25 @@ FINISH_CHAT = ToolDefinition(
                     "of the runbook you actually followed. Pass 'none' if none applied."
                 ),
             },
+            "deviated_from_runbook": {
+                "type": "object",
+                "description": (
+                    "Set when your investigation departed from the pre-injected runbook "
+                    "and the departure produced a better result. Triggers learning for "
+                    "this symptom type. Provide the specific rule you departed from and why."
+                ),
+                "properties": {
+                    "rule": {
+                        "type": "string",
+                        "description": "The specific runbook rule you departed from.",
+                    },
+                    "why": {
+                        "type": "string",
+                        "description": "Why your approach worked better.",
+                    },
+                },
+                "required": ["rule", "why"],
+            },
         },
         "required": ["summary"],
     },
@@ -1549,6 +1587,25 @@ FINISH_DIAGNOSIS = ToolDefinition(
                 "type": "string",
                 "description": "One-sentence conclusion summarising the diagnosis outcome.",
             },
+            "deviated_from_runbook": {
+                "type": "object",
+                "description": (
+                    "Set when your investigation departed from the pre-injected runbook "
+                    "and the departure produced a better result. Triggers learning for "
+                    "this symptom type. Provide the specific rule you departed from and why."
+                ),
+                "properties": {
+                    "rule": {
+                        "type": "string",
+                        "description": "The specific runbook rule you departed from.",
+                    },
+                    "why": {
+                        "type": "string",
+                        "description": "Why your approach worked better.",
+                    },
+                },
+                "required": ["rule", "why"],
+            },
         },
         "required": ["is_valid", "severity", "identified_issues"],
     },
@@ -1590,6 +1647,25 @@ FINISH_IMPACT_ANALYSIS = ToolDefinition(
             "summary": {
                 "type": "string",
                 "description": "One-paragraph summary of impact on this installation",
+            },
+            "deviated_from_runbook": {
+                "type": "object",
+                "description": (
+                    "Set when your investigation departed from the pre-injected runbook "
+                    "and the departure produced a better result. Triggers learning for "
+                    "this symptom type. Provide the specific rule you departed from and why."
+                ),
+                "properties": {
+                    "rule": {
+                        "type": "string",
+                        "description": "The specific runbook rule you departed from.",
+                    },
+                    "why": {
+                        "type": "string",
+                        "description": "Why your approach worked better.",
+                    },
+                },
+                "required": ["rule", "why"],
             },
         },
         "required": [
@@ -1648,6 +1724,25 @@ FINISH_INSTALLER_DIAGNOSIS = ToolDefinition(
                 "type": "string",
                 "description": "One-sentence summary of what was found.",
             },
+            "deviated_from_runbook": {
+                "type": "object",
+                "description": (
+                    "Set when your investigation departed from the pre-injected runbook "
+                    "and the departure produced a better result. Triggers learning for "
+                    "this symptom type. Provide the specific rule you departed from and why."
+                ),
+                "properties": {
+                    "rule": {
+                        "type": "string",
+                        "description": "The specific runbook rule you departed from.",
+                    },
+                    "why": {
+                        "type": "string",
+                        "description": "Why your approach worked better.",
+                    },
+                },
+                "required": ["rule", "why"],
+            },
         },
         "required": [
             "primary_hypothesis",
@@ -1693,6 +1788,25 @@ FINISH_HEALTH_DIAGNOSIS = ToolDefinition(
             "summary": {
                 "type": "string",
                 "description": "One-sentence summary of the diagnosis.",
+            },
+            "deviated_from_runbook": {
+                "type": "object",
+                "description": (
+                    "Set when your investigation departed from the pre-injected runbook "
+                    "and the departure produced a better result. Triggers learning for "
+                    "this symptom type. Provide the specific rule you departed from and why."
+                ),
+                "properties": {
+                    "rule": {
+                        "type": "string",
+                        "description": "The specific runbook rule you departed from.",
+                    },
+                    "why": {
+                        "type": "string",
+                        "description": "Why your approach worked better.",
+                    },
+                },
+                "required": ["rule", "why"],
             },
         },
         "required": [
@@ -1930,6 +2044,25 @@ FINISH_LOVELACE_INVESTIGATION = ToolDefinition(
                     "Omit if no reusable fact applies."
                 ),
             },
+            "deviated_from_runbook": {
+                "type": "object",
+                "description": (
+                    "Set when your investigation departed from the pre-injected runbook "
+                    "and the departure produced a better result. Triggers learning for "
+                    "this symptom type. Provide the specific rule you departed from and why."
+                ),
+                "properties": {
+                    "rule": {
+                        "type": "string",
+                        "description": "The specific runbook rule you departed from.",
+                    },
+                    "why": {
+                        "type": "string",
+                        "description": "Why your approach worked better.",
+                    },
+                },
+                "required": ["rule", "why"],
+            },
         },
         "required": ["findings"],
     },
@@ -1990,6 +2123,25 @@ FINISH_REPAIR_ISSUE = ToolDefinition(
                     "Example: 'LIFX Clip-on goes offline during Wi-Fi band-steering; self-recovers.' "
                     "Omit if no reusable fact applies."
                 ),
+            },
+            "deviated_from_runbook": {
+                "type": "object",
+                "description": (
+                    "Set when your investigation departed from the pre-injected runbook "
+                    "and the departure produced a better result. Triggers learning for "
+                    "this symptom type. Provide the specific rule you departed from and why."
+                ),
+                "properties": {
+                    "rule": {
+                        "type": "string",
+                        "description": "The specific runbook rule you departed from.",
+                    },
+                    "why": {
+                        "type": "string",
+                        "description": "Why your approach worked better.",
+                    },
+                },
+                "required": ["rule", "why"],
             },
         },
         "required": [
@@ -2062,6 +2214,25 @@ FINISH_NOTIFICATION_INVESTIGATION = ToolDefinition(
                     "Example: 'LIFX Clip-on goes offline during Wi-Fi band-steering; self-recovers.' "
                     "Omit if no reusable fact applies."
                 ),
+            },
+            "deviated_from_runbook": {
+                "type": "object",
+                "description": (
+                    "Set when your investigation departed from the pre-injected runbook "
+                    "and the departure produced a better result. Triggers learning for "
+                    "this symptom type. Provide the specific rule you departed from and why."
+                ),
+                "properties": {
+                    "rule": {
+                        "type": "string",
+                        "description": "The specific runbook rule you departed from.",
+                    },
+                    "why": {
+                        "type": "string",
+                        "description": "Why your approach worked better.",
+                    },
+                },
+                "required": ["rule", "why"],
             },
         },
         "required": ["human_explanation", "recommended_action", "requires_hitl"],
@@ -2282,6 +2453,25 @@ FINISH_UPDATE_ANALYSIS = ToolDefinition(
                     "A default is supplied automatically if you omit this."
                 ),
             },
+            "deviated_from_runbook": {
+                "type": "object",
+                "description": (
+                    "Set when your investigation departed from the pre-injected runbook "
+                    "and the departure produced a better result. Triggers learning for "
+                    "this symptom type. Provide the specific rule you departed from and why."
+                ),
+                "properties": {
+                    "rule": {
+                        "type": "string",
+                        "description": "The specific runbook rule you departed from.",
+                    },
+                    "why": {
+                        "type": "string",
+                        "description": "Why your approach worked better.",
+                    },
+                },
+                "required": ["rule", "why"],
+            },
         },
         "required": [
             "safe_to_update",
@@ -2373,6 +2563,25 @@ FINISH_HOST_HEALTH = ToolDefinition(
                 "properties": _PREDICTION_PROPERTIES,
                 "required": ["kind", "within_minutes"],
             },
+            "deviated_from_runbook": {
+                "type": "object",
+                "description": (
+                    "Set when your investigation departed from the pre-injected runbook "
+                    "and the departure produced a better result. Triggers learning for "
+                    "this symptom type. Provide the specific rule you departed from and why."
+                ),
+                "properties": {
+                    "rule": {
+                        "type": "string",
+                        "description": "The specific runbook rule you departed from.",
+                    },
+                    "why": {
+                        "type": "string",
+                        "description": "Why your approach worked better.",
+                    },
+                },
+                "required": ["rule", "why"],
+            },
         },
         "required": ["summary", "root_cause", "outcome", "recommended_actions"],
     },
@@ -2445,6 +2654,25 @@ FINISH_DEVICE_AVAILABILITY = ToolDefinition(
                 ),
                 "properties": _PREDICTION_PROPERTIES,
                 "required": ["kind", "within_minutes"],
+            },
+            "deviated_from_runbook": {
+                "type": "object",
+                "description": (
+                    "Set when your investigation departed from the pre-injected runbook "
+                    "and the departure produced a better result. Triggers learning for "
+                    "this symptom type. Provide the specific rule you departed from and why."
+                ),
+                "properties": {
+                    "rule": {
+                        "type": "string",
+                        "description": "The specific runbook rule you departed from.",
+                    },
+                    "why": {
+                        "type": "string",
+                        "description": "Why your approach worked better.",
+                    },
+                },
+                "required": ["rule", "why"],
             },
         },
         "required": ["summary", "root_cause", "outcome", "recommended_actions"],

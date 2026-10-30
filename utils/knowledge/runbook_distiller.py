@@ -191,15 +191,30 @@ _FACT_STOPWORDS = frozenset(
 )
 
 
+def _is_alpha_hyphenated(tok: str) -> bool:
+    """Return True when *tok* is composed only of alphabetic parts joined by hyphens.
+
+    e.g. ``add-on``, ``built-in`` → True (treated as content words, not
+    distinctive).  ``core-1``, ``add-on2`` → False (digit present).
+    """
+    if "-" not in tok:
+        return False
+    if any(c in "._:/" or c.isdigit() for c in tok):
+        return False
+    return all(part.isalpha() for part in tok.split("-") if part)
+
+
 def _fact_is_grounded(fact: str, evidence: str) -> bool:
     """Cheap grounding check: does the cited step output support *fact*?
 
-    Every distinctive token (contains a digit or ``._:/-``, or is a capitalized
-    word after the first) must appear in the evidence.  Content words (4+ chars,
-    not stopwords) must also be at least half present, except that a single
-    content word is waived when distinctive tokens already matched.
-    Case-insensitive.  Rejects facts the model carried over from seed text or
-    invented outright.
+    Every distinctive token (contains a digit or ``._:/``, a non-alpha-hyphenated
+    hyphen, or is a capitalized word after the first) must appear in the evidence.
+    Hyphenated tokens whose every part is alphabetic (``add-on``, ``built-in``) are
+    treated as content words, not distinctive, so they don't block otherwise-grounded
+    facts.  Content words (4+ chars, not stopwords) must also be at least half
+    present, except that a single content word is waived when distinctive tokens
+    already matched.  Case-insensitive.  Rejects facts the model carried over from
+    seed text or invented outright.
     """
     ev = evidence.lower()
     if not fact.strip() or not ev.strip():
@@ -213,7 +228,8 @@ def _fact_is_grounded(fact: str, evidence: str) -> bool:
             continue
         if (
             any(c.isdigit() for c in tok)
-            or any(c in "._:/-" for c in tok)
+            or (any(c in "._:/" for c in tok))
+            or ("-" in tok and not _is_alpha_hyphenated(tok))
             or (i > 0 and tok[0].isupper())
         ):
             distinctive.append(low)
@@ -735,8 +751,13 @@ def _build_prompt(
     known_entries: Optional[list[str]] = None,
     verification: Optional[str] = None,
     correction: Optional[str] = None,
+    facts_only: bool = False,
 ) -> str:
-    """Build the verdict-lane prompt: ask for the delta beyond the seed (ADR 051)."""
+    """Build the verdict-lane prompt: ask for the delta beyond the seed (ADR 051).
+
+    When *facts_only* is True (no surprise this session), omit the
+    decision_rules / pitfalls instructions and ask only for instance_facts.
+    """
     ctx_trimmed = truncate_to_budget(
         initial_context, _INITIAL_CONTEXT_TOKENS, strategy="head"
     )
@@ -793,21 +814,33 @@ def _build_prompt(
         "Tool trace (FAILED = tool error, EMPTY = no output returned):",
         step_trace,
         "",
-        "List only what this session adds beyond the seed and the already-learned "
-        "items:",
-        "- decision_rules: what determined the right action, one sentence each, "
-        "stated directly as 'When <evidence>, <conclusion or action>'.",
-        "- pitfalls: what misled the session or did not work, one sentence each.",
-        "",
-        "Rules:",
-        "- Never restate the seed or an already-learned item.  Empty lists are the "
-        "right answer when the session simply confirms the seed.",
-        "- Each item cites evidence_step, the trace step that shows it, and reuses "
-        "that step's own words.",
-        "- Write for this kind of symptom, never for one version or release: no "
-        "version numbers.",
-        "- Name only tools that appear in the trace.",
-        "",
+    ]
+    if facts_only:
+        parts_prompt += [
+            "This session confirmed the runbook without deviation — return empty "
+            "lists for decision_rules and pitfalls.",
+            "",
+        ]
+    else:
+        parts_prompt += [
+            "List only what this session adds beyond the seed and the already-learned "
+            "items:",
+            "- decision_rules: what determined the right action, one sentence each, "
+            "stated directly as 'When <evidence>, <conclusion or action>'.",
+            "- pitfalls: what misled the session or did not work (cite a failed or "
+            "empty step), one sentence each.",
+            "",
+            "Rules:",
+            "- Never restate the seed or an already-learned item.  Empty lists are the "
+            "right answer when the session simply confirms the seed.",
+            "- Each item cites evidence_step, the trace step that shows it, and reuses "
+            "that step's own words.",
+            "- Write for this kind of symptom, never for one version or release: no "
+            "version numbers.",
+            "- Name only tools that appear in the trace.",
+            "",
+        ]
+    parts_prompt += [
         "Separately, list instance_facts: facts about this specific Home Assistant "
         "instance (hardware, device quirks, entity naming, known-wrong states) that a "
         "future session on this symptom should know. Every fact must be visible in "
@@ -834,6 +867,7 @@ async def distill_and_persist(
     correction: Optional[str] = None,
     seed_text: str = "",
     subject_key: str = "",
+    deviated_from_runbook: Optional[dict] = None,
 ) -> None:
     """Orchestrate post-session distillation.
 
@@ -910,6 +944,7 @@ async def distill_and_persist(
             correction=correction,
             seed_text=seed_text,
             subject_key=subject_key,
+            deviated_from_runbook=deviated_from_runbook,
         )
     finally:
         # Every terminal path — entries written, nothing new, LLM or write
@@ -934,6 +969,7 @@ async def _distill_verified(
     correction: Optional[str],
     seed_text: str,
     subject_key: str = "",
+    deviated_from_runbook: Optional[dict] = None,
 ) -> None:
     """LLM distillation of a verified session (ADR 051).
 
@@ -941,6 +977,11 @@ async def _distill_verified(
     become ``runbook_entries`` rows (or reinforce one), and the learned runbook
     is re-rendered.  A failure verification first counts against the entries
     the session was shown.
+
+    A "surprise" is present when the session deviated from the runbook (agent
+    signalled ``deviated_from_runbook``), received a correction, or was a
+    failure verification.  Without a surprise, only instance_facts are requested
+    from the LLM; decision_rules and pitfalls are skipped.
     """
     # Resolve any existing gap for this signature first.
     await asyncio.to_thread(resolve_gap, db_path, signature, episode_id)
@@ -965,6 +1006,21 @@ async def _distill_verified(
     )
     seed_text = seed_text or db_seed_text
 
+    # Surprise = the session deviated from the runbook, had a correction, or was a
+    # failure.  Without surprise only instance_facts are requested (cheaper prompt).
+    is_surprise = bool(
+        verification == "failure"
+        or correction
+        or (deviated_from_runbook and deviated_from_runbook.get("rule"))
+    )
+    if not is_surprise:
+        log.info(
+            "distillation_rules_skipped",
+            reason="no_surprise",
+            signature=signature,
+            episode_id=episode_id,
+        )
+
     prompt = _build_prompt(
         signature=signature,
         trigger=trigger,
@@ -976,6 +1032,7 @@ async def _distill_verified(
         known_entries=[e["text"] for e in existing if e["kind"] in _VERDICT_KINDS],
         verification=verification,
         correction=correction,
+        facts_only=not is_surprise,
     )
 
     timeout_secs = await asyncio.to_thread(
@@ -1041,12 +1098,36 @@ async def _distill_verified(
 
         evidence = _trace_evidence(steps, correction)
         known_tools = _known_tool_names()
-        for kind, items in (
-            ("decision_rule", delta.decision_rules),
-            ("pitfall", delta.pitfalls),
-        ):
+        verdict_items = (
+            [("decision_rule", delta.decision_rules), ("pitfall", delta.pitfalls)]
+            if is_surprise
+            else []
+        )
+        for kind, items in verdict_items:
             for item in items:
                 text = " ".join(item.text.split())
+                # Mechanics gate: reject items about Pueo's own internal machinery.
+                if _is_pueo_mechanics(text):
+                    log.info(
+                        "distillation_entry_rejected",
+                        signature=signature,
+                        kind=kind,
+                        reason="pueo_mechanics",
+                        text=text[:200],
+                    )
+                    continue
+                # Pitfall gate: evidence_step must point to a failed/empty/corrected step.
+                if kind == "pitfall" and not _pitfall_step_valid(
+                    item, steps, correction
+                ):
+                    log.info(
+                        "distillation_entry_rejected",
+                        signature=signature,
+                        kind=kind,
+                        reason="pitfall_without_failure",
+                        text=text[:200],
+                    )
+                    continue
                 reason = _gate_item(
                     text,
                     evidence=evidence,
@@ -1154,6 +1235,7 @@ async def enqueue_distillation_after_verification(
     initial_ctx = payload.get("initial_context", "")
     episode_stub = payload.get("episode_stub")
     subj = payload.get("subject_key", "")
+    _dfr = (episode_stub or {}).get("deviated_from_runbook") if episode_stub else None
 
     from utils.agent.tool_registry import AgentStep
 
@@ -1174,6 +1256,7 @@ async def enqueue_distillation_after_verification(
     _model = model
     _llm = llm_client
     _subj = subj
+    _deviated = _dfr
 
     async def _run_distill() -> None:
         await distill_and_persist(
@@ -1192,6 +1275,7 @@ async def enqueue_distillation_after_verification(
             subject_key=_subj,
             verification=_verification,
             correction=_correction,
+            deviated_from_runbook=_deviated,
         )
 
     submitted = await queue.submit(
@@ -1314,6 +1398,51 @@ def _trace_evidence(steps: list[AgentStep], correction: Optional[str]) -> str:
     if correction:
         parts.append(correction)
     return "\n".join(parts)
+
+
+_PUEO_MECHANICS_PHRASES = frozenset(
+    {
+        "the session",
+        "the analysis tool",
+        "autonomy gate",
+        "auto-apply",
+        "the distillation",
+    }
+)
+_FINISH_TOOL_RE = re.compile(r"\bfinish_\w+\b")
+
+
+def _is_pueo_mechanics(text: str) -> bool:
+    """Return True when *text* is about Pueo's own internal machinery.
+
+    Rejects entries like "the autonomy gate may authorize auto-apply" that describe
+    Pueo's own decision logic rather than the HA symptom being diagnosed.
+    """
+    low = text.lower()
+    for phrase in _PUEO_MECHANICS_PHRASES:
+        if phrase in low:
+            return True
+    return bool(_FINISH_TOOL_RE.search(text))
+
+
+def _pitfall_step_valid(
+    item: "DeltaItem",
+    steps: "list[AgentStep]",
+    correction: Optional[str],
+) -> bool:
+    """Return True when a pitfall's evidence_step is a failed, empty, or corrected step.
+
+    A pitfall that cites a successful non-empty step but no correction is likely
+    fabricated — a session verified as a success should not produce pitfalls without
+    a clear failing step.
+    """
+    if correction:
+        return True
+    steps_by_num = {s.step_number: s for s in steps}
+    step = steps_by_num.get(item.evidence_step)
+    if step is None:
+        return False
+    return (not step.tool_result.success) or (not step.tool_result.output.strip())
 
 
 def _gate_item(

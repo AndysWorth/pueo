@@ -2025,6 +2025,9 @@ class AgentLoop:
                             "gap_description", ""
                         ),
                     }
+                    _dfr = tool_call.arguments.get("deviated_from_runbook")
+                    if isinstance(_dfr, dict) and _dfr.get("rule") and _dfr.get("why"):
+                        episode_stub["deviated_from_runbook"] = _dfr
                     # Stored in conclusion_json; the watching poll checks it (ADR 050).
                     from utils.knowledge.session_verification import (
                         normalize_prediction,

@@ -18,7 +18,10 @@ from utils.knowledge.runbook_distiller import (
     _fact_is_grounded,
     _format_step_trace,
     _grounded_facts,
+    _is_alpha_hyphenated,
+    _is_pueo_mechanics,
     _mark_distilled,
+    _pitfall_step_valid,
     _read_distillation_payload,
     _write_instance_facts,
     distill_and_persist,
@@ -626,7 +629,14 @@ class _FactsLLM:
 class TestDistillFactsAndDistilledAt:
     SIG = "host:resolution_issue:rpi_firmware_update_blocked"
 
-    def _run(self, db_path, llm, episode_id="ep_rpi", verification="success"):
+    def _run(
+        self,
+        db_path,
+        llm,
+        episode_id="ep_rpi",
+        verification="success",
+        deviated_from_runbook=None,
+    ):
         from utils.knowledge.knowledge_store import FakeKnowledgeStore
 
         steps = [
@@ -650,6 +660,7 @@ class TestDistillFactsAndDistilledAt:
                 model="qwen2.5:7b",
                 llm_client=llm,
                 verification=verification,
+                deviated_from_runbook=deviated_from_runbook,
             )
         )
 
@@ -668,7 +679,11 @@ class TestDistillFactsAndDistilledAt:
     def test_rule_rendered_and_facts_kept_out_of_approach(self, tmp_path):
         db_path = _make_db(tmp_path)
         _insert_session(db_path, "ep_rpi", self.SIG)
-        self._run(db_path, _FactsLLM(with_rule=True))
+        self._run(
+            db_path,
+            _FactsLLM(with_rule=True),
+            deviated_from_runbook={"rule": "expected X", "why": "Y was better"},
+        )
         with sqlite3.connect(db_path) as conn:
             approach = conn.execute("SELECT approach FROM agent_strategies").fetchone()[
                 0
@@ -689,7 +704,11 @@ class TestDistillFactsAndDistilledAt:
         monkeypatch.setattr(
             "utils.knowledge.runbook_distiller._write_instance_facts", _boom
         )
-        self._run(db_path, _FactsLLM(with_rule=True))
+        self._run(
+            db_path,
+            _FactsLLM(with_rule=True),
+            deviated_from_runbook={"rule": "expected X", "why": "Y was better"},
+        )
         with sqlite3.connect(db_path) as conn:
             count = conn.execute("SELECT COUNT(*) FROM agent_strategies").fetchone()[0]
         assert count == 1
@@ -1627,7 +1646,13 @@ class TestVerdictLaneEntries:
         from utils.knowledge.knowledge_store import FakeKnowledgeStore
 
         db, store = _make_db(tmp_path), FakeKnowledgeStore()
-        _distill(db, store, _DeltaLLM(rules=[_RULE]), "ep1")
+        _distill(
+            db,
+            store,
+            _DeltaLLM(rules=[_RULE]),
+            "ep1",
+            deviated_from_runbook={"rule": "tried X", "why": "Y worked"},
+        )
         rows = _entries(db)
         assert [(r["kind"], r["text"], r["success_count"]) for r in rows] == [
             ("decision_rule", _RULE, 1)
@@ -1639,9 +1664,21 @@ class TestVerdictLaneEntries:
         from utils.knowledge.knowledge_store import FakeKnowledgeStore
 
         db, store = _make_db(tmp_path), FakeKnowledgeStore()
-        _distill(db, store, _DeltaLLM(rules=[_RULE]), "ep1")
+        _distill(
+            db,
+            store,
+            _DeltaLLM(rules=[_RULE]),
+            "ep1",
+            deviated_from_runbook={"rule": "tried X", "why": "Y worked"},
+        )
         llm = _DeltaLLM(rules=[_RULE])
-        _distill(db, store, llm, "ep2")
+        _distill(
+            db,
+            store,
+            llm,
+            "ep2",
+            deviated_from_runbook={"rule": "tried X", "why": "Y worked"},
+        )
         rows = _entries(db)
         assert len(rows) == 1 and rows[0]["success_count"] == 2
         assert f"Already learned for this signature:\n- {_RULE}" in llm.prompts[0]
@@ -1684,7 +1721,14 @@ class TestVerdictLaneEntries:
                 knowledge_store=store,
             )
         )
-        _distill(db, store, _DeltaLLM(rules=[_RULE]), "ep1", steps=steps)
+        _distill(
+            db,
+            store,
+            _DeltaLLM(rules=[_RULE]),
+            "ep1",
+            steps=steps,
+            deviated_from_runbook={"rule": "tried X", "why": "Y worked"},
+        )
         approach = _learned(db)[2]
         assert f"## Decision rules\n- {_RULE}" in approach
         assert "## Procedure notes\n- `get_integration_diagnostics(hassio)` failed" in (
@@ -1695,7 +1739,13 @@ class TestVerdictLaneEntries:
         from utils.knowledge.knowledge_store import FakeKnowledgeStore
 
         db, store = _make_db(tmp_path), FakeKnowledgeStore()
-        _distill(db, store, _DeltaLLM(rules=[_RULE]), "ep1")
+        _distill(
+            db,
+            store,
+            _DeltaLLM(rules=[_RULE]),
+            "ep1",
+            deviated_from_runbook={"rule": "tried X", "why": "Y worked"},
+        )
         for ep in ("ep2", "ep3"):
             with sqlite3.connect(db) as conn:
                 conn.execute(
@@ -2254,3 +2304,218 @@ class TestPueoDefect:
 
         assert "'<x>'" in _normalise_quirk_detail("TypeError: 'matter_server' invalid")
         assert "N" in _normalise_quirk_detail("error at line 42")
+
+
+# ---------------------------------------------------------------------------
+# TestIsAlphaHyphenated
+# ---------------------------------------------------------------------------
+
+
+class TestIsAlphaHyphenated:
+    def test_add_on_is_alpha_hyphenated(self):
+        assert _is_alpha_hyphenated("add-on") is True
+
+    def test_built_in_is_alpha_hyphenated(self):
+        assert _is_alpha_hyphenated("built-in") is True
+
+    def test_token_with_digit_is_not(self):
+        assert _is_alpha_hyphenated("core-1") is False
+
+    def test_token_with_dot_is_not(self):
+        assert _is_alpha_hyphenated("add-on.x") is False
+
+    def test_plain_word_without_hyphen_is_not(self):
+        assert _is_alpha_hyphenated("addon") is False
+
+
+# ---------------------------------------------------------------------------
+# TestFactIsGroundedHyphenated
+# ---------------------------------------------------------------------------
+
+
+class TestFactIsGroundedHyphenated:
+    def test_add_on_not_treated_as_distinctive(self):
+        # "add-on" should not be a distinctive token, so the fact should pass
+        # when the other distinctive token (core_matter_server) is present.
+        evidence = "add-on name: core_matter_server slug installed ok"
+        fact = "The add-on core_matter_server is installed"
+        assert _fact_is_grounded(fact, evidence) is True
+
+    def test_hyphenated_with_digit_blocks_when_missing(self):
+        # "core-1" has a digit → distinctive; if absent from evidence it blocks.
+        evidence = "firmware update ok"
+        fact = "core-1 eeprom is blocked"
+        assert _fact_is_grounded(fact, evidence) is False
+
+
+# ---------------------------------------------------------------------------
+# TestIsPueoMechanics
+# ---------------------------------------------------------------------------
+
+
+class TestIsPueoMechanics:
+    def test_session_phrase_rejected(self):
+        assert _is_pueo_mechanics("The session timed out") is True
+
+    def test_autonomy_gate_rejected(self):
+        assert _is_pueo_mechanics("The autonomy gate may block this") is True
+
+    def test_auto_apply_rejected(self):
+        assert _is_pueo_mechanics("auto-apply was triggered") is True
+
+    def test_finish_tool_rejected(self):
+        assert _is_pueo_mechanics("call finish_repair to end") is True
+
+    def test_finish_tool_other_name_rejected(self):
+        assert _is_pueo_mechanics("finish_update_analysis returns outcome") is True
+
+    def test_normal_text_passes(self):
+        assert _is_pueo_mechanics("The EEPROM firmware is outdated") is False
+
+    def test_case_insensitive_phrase(self):
+        assert _is_pueo_mechanics("THE AUTONOMY GATE blocks repairs") is True
+
+
+# ---------------------------------------------------------------------------
+# TestPitfallStepValid
+# ---------------------------------------------------------------------------
+
+
+class TestPitfallStepValid:
+    def test_correction_always_passes(self):
+        item = DeltaItem(text="pitfall text", evidence_step=1)
+        steps = [_make_step("run_ha_command", 1, success=True, output="all good")]
+        assert (
+            _pitfall_step_valid(item, steps, correction="user said it was wrong")
+            is True
+        )
+
+    def test_failed_step_passes(self):
+        item = DeltaItem(text="pitfall text", evidence_step=1)
+        steps = [_make_step("run_ha_command", 1, success=False, output="error text")]
+        assert _pitfall_step_valid(item, steps, correction=None) is True
+
+    def test_empty_step_passes(self):
+        item = DeltaItem(text="pitfall text", evidence_step=1)
+        steps = [_make_step("run_ha_command", 1, success=True, output="   ")]
+        assert _pitfall_step_valid(item, steps, correction=None) is True
+
+    def test_success_step_without_correction_fails(self):
+        item = DeltaItem(text="pitfall text", evidence_step=1)
+        steps = [_make_step("run_ha_command", 1, success=True, output="firmware ok")]
+        assert _pitfall_step_valid(item, steps, correction=None) is False
+
+    def test_missing_step_fails(self):
+        item = DeltaItem(text="pitfall text", evidence_step=99)
+        steps = [_make_step("run_ha_command", 1, success=False, output="err")]
+        assert _pitfall_step_valid(item, steps, correction=None) is False
+
+
+# ---------------------------------------------------------------------------
+# TestIsSurpriseLogic (via distill_and_persist)
+# ---------------------------------------------------------------------------
+
+
+class TestIsSurpriseLogic:
+    """Test that decision_rules/pitfalls are only written on a 'surprise'."""
+
+    SIG = "repair:config_error:yaml_parse_fail"
+
+    def _setup(self, tmp_path):
+        db_path = _make_db(tmp_path)
+        _insert_session(db_path, "ep1", self.SIG)
+        return db_path
+
+    def _rule_llm(self):
+        """LLM that returns a decision_rule grounded in step 1 output."""
+
+        class _RuleLLM:
+            RULE = "eeprom_update_unavailable means blocked"
+
+            async def chat(self, **kw):
+                return {
+                    "message": {
+                        "content": DistilledDelta(
+                            decision_rules=[
+                                DeltaItem(
+                                    text=self.RULE + " eeprom_update_unavailable",
+                                    evidence_step=1,
+                                )
+                            ],
+                            pitfalls=[],
+                            instance_facts=[],
+                        ).model_dump_json()
+                    }
+                }
+
+        return _RuleLLM()
+
+    def test_no_surprise_skips_rules(self, tmp_path, caplog):
+        """Success + no deviated_from_runbook → rules skipped, no agent_strategies row."""
+        import logging
+
+        db_path = self._setup(tmp_path)
+        steps = [
+            _make_step(
+                "run_ha_command",
+                1,
+                output="eeprom_update_unavailable blocked",
+            )
+        ]
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        with caplog.at_level(logging.INFO, logger="pueo"):
+            asyncio.run(
+                distill_and_persist(
+                    trigger=self.SIG,
+                    signature=self.SIG,
+                    steps=steps,
+                    outcome="success",
+                    episode_id="ep1",
+                    db_path=db_path,
+                    knowledge_store=FakeKnowledgeStore(),
+                    model="qwen2.5:7b",
+                    llm_client=self._rule_llm(),
+                    verification="success",
+                    deviated_from_runbook=None,
+                )
+            )
+        assert any(
+            "distillation_rules_skipped" in r.message for r in caplog.records
+        ), "Expected distillation_rules_skipped log"
+        with sqlite3.connect(db_path) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM agent_strategies").fetchone()[0]
+        assert count == 0
+
+    def test_deviated_from_runbook_allows_rules(self, tmp_path):
+        """deviated_from_runbook set → rules written even on a success."""
+        db_path = self._setup(tmp_path)
+        steps = [
+            _make_step(
+                "run_ha_command",
+                1,
+                output="eeprom_update_unavailable blocked",
+            )
+        ]
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        asyncio.run(
+            distill_and_persist(
+                trigger=self.SIG,
+                signature=self.SIG,
+                steps=steps,
+                outcome="success",
+                episode_id="ep1",
+                db_path=db_path,
+                knowledge_store=FakeKnowledgeStore(),
+                model="qwen2.5:7b",
+                llm_client=self._rule_llm(),
+                verification="success",
+                deviated_from_runbook={"rule": "tried X first", "why": "Y worked"},
+            )
+        )
+        with sqlite3.connect(db_path) as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM runbook_entries WHERE kind='decision_rule'"
+            ).fetchone()[0]
+        assert count >= 1
