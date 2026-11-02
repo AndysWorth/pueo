@@ -4504,6 +4504,31 @@ def _persist_chat_results(session_id: int, result: Any, summary: str) -> None:
         )
 
 
+def _chat_episode_meta(
+    loop_meta: dict[str, Any],
+    *,
+    session_id: int,
+    outcome: str,
+    model: str,
+    agent_episode_id: str | None,
+) -> dict[str, Any]:
+    """Debug episode meta for a chat turn: the loop's v2 meta, chat-keyed."""
+    meta: dict[str, Any] = dict(loop_meta or {})
+    meta.setdefault("model", model)
+    meta.setdefault("provider", "local")
+    meta.setdefault("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    meta.update(
+        {
+            "session_id": session_id,
+            "outcome": outcome,
+            "trigger": "chat",
+            "session_type": "chat",
+            "agent_episode_id": agent_episode_id or "",
+        }
+    )
+    return meta
+
+
 async def _run_chat_loop(
     session_id: int,
     message: str,
@@ -4726,24 +4751,29 @@ async def _run_chat_loop(
                 episode_dir = (
                     _get_dirs().data_dir / "debug_episodes" / f"session_{session_id}"
                 )
-                _session_meta = {
-                    "session_id": session_id,
-                    "outcome": result.outcome,
-                    "model": agent_loop._model,
-                    "provider": "local",
-                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                }
-                _conv = [
-                    {"role": m.get("role"), "content": m.get("content")}
-                    for m in prior_messages
-                ] + [{"role": "user", "content": message}]
+                _session_meta = _chat_episode_meta(
+                    result.debug_session_meta,
+                    session_id=session_id,
+                    outcome=result.outcome,
+                    model=agent_loop._model,
+                    agent_episode_id=result.episode_id,
+                )
+                # Full turn: prior history, the user message and every
+                # assistant / tool reply produced this turn (schema v2).
+                _conv = list(result.debug_messages) or (
+                    [
+                        {"role": m.get("role"), "content": m.get("content")}
+                        for m in prior_messages
+                    ]
+                    + [{"role": "user", "content": message}]
+                )
                 await asyncio.to_thread(
                     write_episode_html,
                     episode_dir,
                     _session_meta,
                     result.llm_captures,
                     _conv,
-                    result.tool_call_records or None,
+                    list(result.tool_call_records),
                 )
                 debug_log_path = str(episode_dir)
 

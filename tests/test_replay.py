@@ -157,9 +157,10 @@ class TestEpisodeDataJsonWritten:
         data_file = ep_dir / "episode_data.json"
         assert data_file.exists()
 
-    def test_episode_data_json_not_written_without_tool_records(self, tmp_path):
-        """write_episode_html does NOT write episode_data.json when records absent."""
-        from utils.debug.capture import LLMCallRecord
+    def test_episode_data_json_written_without_tool_records(self, tmp_path):
+        """Schema v2: episode_data.json is always written, even with no records."""
+        import json
+
         from utils.debug.episode_writer import write_episode_html
 
         ep_dir = tmp_path / "test_ep2"
@@ -172,7 +173,54 @@ class TestEpisodeDataJsonWritten:
             "trigger": "manual",
         }
         write_episode_html(ep_dir, session_meta, [], [], None)
-        assert not (ep_dir / "episode_data.json").exists()
+        data = json.loads((ep_dir / "episode_data.json").read_text())
+        assert data["schema_version"] == 2
+        assert data["tool_calls"] == []
+
+    def test_replayer_loads_v1_file(self, tmp_path):
+        """A v1 episode_data.json (no schema_version / v2 fields) still loads."""
+        import json
+
+        from utils.replay.episode_replayer import EpisodeReplayer
+
+        v1 = {
+            "episode_id": "v1-ep",
+            "trigger": "repair_poll",
+            "model": "qwen3",
+            "outcome": "exhausted",
+            "timestamp": "2026-10-01 10:00:00",
+            "initial_context": "diagnose thing",
+            "llm_calls": [
+                {
+                    "seq": 1,
+                    "request_messages": [],
+                    "request_tools": ["read_logs"],
+                    "response_content": "",
+                    "response_tool_calls": [],
+                    "thinking": None,
+                    "nudges_injected": [],
+                    "duration_ms": 10.0,
+                    "outcome_path": "exhaustion_fallback",
+                }
+            ],
+            "tool_calls": [
+                {
+                    "seq": 0,
+                    "name": "read_logs",
+                    "args": {},
+                    "output": "logs",
+                    "error": None,
+                    "success": True,
+                    "discard_previous": False,
+                    "duration_ms": 1.0,
+                }
+            ],
+        }
+        (tmp_path / "episode_data.json").write_text(json.dumps(v1))
+        data = EpisodeReplayer().load_episode_data(tmp_path)
+        assert data["episode_id"] == "v1-ep"
+        assert "schema_version" not in data
+        assert data["tool_calls"][0]["output"] == "logs"
 
     def test_load_episode_data_round_trip(self, tmp_path):
         """Fields survive write_episode_html → episode_data.json → load round trip."""
@@ -387,6 +435,31 @@ class TestEpisodeReplayer:
         assert result.matched is True
         assert result.replay_outcome == "success"
         assert result.error is None
+
+    def test_clean_replay_of_v2_data(self):
+        """Schema-v2 extra fields on calls and top level don't break replay."""
+        from utils.replay.episode_replayer import EpisodeReplayer
+
+        call = _make_llm_call(
+            seq=0,
+            tool_calls=[_make_finish_tool_call("finish_repair")],
+            outcome_path="finish_repair",
+        )
+        call.update(
+            thinking_native="reasoning",
+            input_tokens=10,
+            output_tokens=2,
+            eval_ms=5.0,
+            load_ms=1.0,
+        )
+        data = _make_episode_data(outcome="success", llm_calls=[call])
+        data.update(schema_version=2, messages=[], signature="repair:x:y")
+        result = self._run(
+            EpisodeReplayer().run_deterministic(
+                data, tool_registry=self._make_minimal_registry()
+            )
+        )
+        assert result.matched is True
 
     def test_divergence_on_extra_llm_call(self):
         """Replay fails gracefully when the loop makes more LLM calls than recorded."""

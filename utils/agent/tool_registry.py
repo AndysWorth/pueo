@@ -71,6 +71,10 @@ class AgentLoopResult(BaseModel):
     stuck_reason: str = (
         ""  # "host_sleep" when a per-call timeout was caused by Mac sleep
     )
+    # Schema-v2 debug episode meta + full message history (capture_llm=True only);
+    # lets the chat endpoint write its own episode without rebuilding either.
+    debug_session_meta: dict[str, Any] = {}
+    debug_messages: list[Any] = []
 
 
 class ToolDefinition(BaseModel):
