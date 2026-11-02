@@ -3,6 +3,7 @@
 
 import asyncio
 import datetime
+import ipaddress
 import re
 import socket
 import sqlite3
@@ -32,17 +33,86 @@ if TYPE_CHECKING:
 
 log = get_logger("ha_notification_manager")
 
-_IP_PATTERN = re.compile(r"from (\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})")
-_RFC1918 = re.compile(r"^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)")
+_IP_CANDIDATE_PATTERN = re.compile(r"from \(?([0-9A-Fa-f:.]+[0-9A-Fa-f])")
 _IOS_HA_UA = "io.robbie.HomeAssistant"
+
+# Private LAN ranges that need no local-interface context: RFC-1918, IPv4
+# link-local, IPv6 link-local and IPv6 unique-local (ULA).
+_PRIVATE_LAN_NETWORKS = tuple(
+    ipaddress.ip_network(n)
+    for n in (
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "169.254.0.0/16",
+        "fe80::/10",
+        "fc00::/7",
+    )
+)
+_INTERFACE_ADDR_PATTERN = re.compile(r"\binet6?\s+([0-9A-Fa-f:.]+)")
+_MAC_PATTERN = re.compile(r"([0-9a-f]{1,2}(?::[0-9a-f]{1,2}){5})", re.I)
+
+NetworkScope = Literal["pueo_host", "lan", "external", "unknown"]
+
+
+def _parse_ip(
+    value: str,
+) -> Optional[ipaddress.IPv4Address | ipaddress.IPv6Address]:
+    """Parse an IPv4/IPv6 string (zone suffix ``%en0`` dropped); None if invalid.
+
+    IPv4-mapped IPv6 addresses (``::ffff:10.0.0.5``) are unwrapped to IPv4.
+    """
+    try:
+        addr = ipaddress.ip_address(value.strip().split("%", 1)[0])
+    except ValueError:
+        return None
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+        return addr.ipv4_mapped
+    return addr
+
+
+def _is_private_lan(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    return any(
+        addr in net for net in _PRIVATE_LAN_NETWORKS if addr.version == net.version
+    )
+
+
+def classify_network_scope(ip: str, local_addrs: set) -> NetworkScope:
+    """Classify a source IP relative to the Pueo host — pure, deterministic.
+
+    ``pueo_host``: one of the host's own addresses (or loopback).
+    ``lan``: a private LAN range, or a global IPv6 address in the same /64 as one
+    of the host's own global IPv6 addresses (SLAAC clients on the home network
+    have public-looking addresses, so "not RFC-1918" does not mean external).
+    ``external``: anything else.  ``unknown``: not a parseable IP.
+    """
+    addr = _parse_ip(ip)
+    if addr is None:
+        return "unknown"
+    local = {a for a in (_parse_ip(str(x)) for x in local_addrs) if a is not None}
+    if addr in local or addr.is_loopback:
+        return "pueo_host"
+    if _is_private_lan(addr):
+        return "lan"
+    if isinstance(addr, ipaddress.IPv6Address):
+        for own in local:
+            if (
+                isinstance(own, ipaddress.IPv6Address)
+                and not own.is_loopback
+                and not own.is_link_local
+                and addr in ipaddress.IPv6Network(f"{own}/64", strict=False)
+            ):
+                return "lan"
+    return "external"
 
 
 def _is_ios_ha_companion(message: str) -> bool:
     """Return True when the message is from the iOS HA companion app on a local IP."""
     if _IOS_HA_UA not in message:
         return False
-    m = _IP_PATTERN.search(message)
-    return bool(m and _RFC1918.match(m.group(1)))
+    ip = extract_ip_from_message(message)
+    addr = _parse_ip(ip) if ip else None
+    return bool(addr is not None and _is_private_lan(addr))
 
 
 class NotificationAnalysis(BaseModel):
@@ -89,9 +159,12 @@ def notification_knowledge_query(notification_id: str, title: Optional[str]) -> 
 
 
 def extract_ip_from_message(message: str) -> Optional[str]:
-    """Extract the first IPv4 address preceded by 'from ' in a notification message."""
-    m = _IP_PATTERN.search(message)
-    return m.group(1) if m else None
+    """Extract the first IPv4/IPv6 address preceded by 'from ' in a notification message."""
+    for m in _IP_CANDIDATE_PATTERN.finditer(message):
+        candidate = m.group(1)
+        if _parse_ip(candidate) is not None:
+            return candidate
+    return None
 
 
 async def _get_default_gateway() -> Optional[str]:
@@ -118,54 +191,105 @@ async def _get_default_gateway() -> Optional[str]:
     return None
 
 
-def _get_local_interface_addresses() -> set:
-    """Return all IPv4 addresses assigned to local network interfaces (sync, for to_thread)."""
+def _parse_interface_addresses(text: str) -> set:
+    """Extract IPv4 and IPv6 addresses from ``ifconfig`` or ``ip -o addr`` output.
+
+    Zone suffixes (``%en0``) and prefix lengths (``/64``) are dropped.  Deprecated
+    and temporary IPv6 privacy addresses are kept — a client may still be using
+    one when HA logs its request (#1061).
+    """
     addrs: set = set()
-    try:
-        import ifaddr
-
-        for adapter in ifaddr.get_adapters():
-            for addr in adapter.ips:
-                if isinstance(addr.ip, str):
-                    addrs.add(addr.ip)
-    except ImportError:
-        import subprocess  # nosec B404
-
-        try:
-            out = subprocess.check_output(  # nosec B603 B607
-                ["ifconfig"], text=True, stderr=subprocess.DEVNULL
-            )
-            for line in out.splitlines():
-                line = line.strip()
-                if line.startswith("inet ") and not line.startswith("inet6"):
-                    parts = line.split()
-                    if len(parts) >= 2:
-                        addrs.add(parts[1])
-        except Exception:  # nosec B110
-            pass
+    for m in _INTERFACE_ADDR_PATTERN.finditer(text):
+        addr = _parse_ip(m.group(1))
+        if addr is not None:
+            addrs.add(str(addr))
     return addrs
 
 
+def _get_local_interface_addresses() -> set:
+    """Return all IPv4/IPv6 addresses on local interfaces (sync, for to_thread).
+
+    Tries ``ifconfig`` (macOS) and then ``ip -o addr`` (Linux / Docker host
+    network); the union of whatever succeeds is returned.
+    """
+    import subprocess  # nosec B404
+
+    addrs: set = set()
+    for cmd in (["ifconfig"], ["ip", "-o", "addr"]):
+        try:
+            out = subprocess.check_output(  # nosec B603 B607
+                cmd, text=True, stderr=subprocess.DEVNULL, timeout=5
+            )
+        except Exception:  # nosec B112
+            continue
+        addrs |= _parse_interface_addresses(out)
+    return addrs
+
+
+def _normalize_mac(mac: str) -> str:
+    """Lower-case and zero-pad a MAC (``e4:5f:1:a2:b1:91`` → ``e4:5f:01:a2:b1:91``)."""
+    return ":".join(part.zfill(2) for part in mac.lower().split(":"))
+
+
+def _parse_neighbor_mac(text: str, ip: str) -> Optional[str]:
+    """Return the MAC for ``ip`` from ``ndp -an`` or ``ip -6 neigh`` output, or None.
+
+    Each line starts with the address (``ndp`` adds ``%en0`` to link-local ones);
+    lines without a MAC (``(incomplete)``, ``FAILED``) are skipped.
+    """
+    target = _parse_ip(ip)
+    if target is None:
+        return None
+    for line in text.splitlines():
+        parts = line.split()
+        if not parts or _parse_ip(parts[0]) != target:
+            continue
+        m = _MAC_PATTERN.search(" ".join(parts[1:]))
+        if m:
+            return _normalize_mac(m.group(1))
+    return None
+
+
+async def _run_capture(*cmd: str) -> str:
+    """Run a local command and return its stdout ('' on any failure)."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await proc.communicate()
+        return stdout.decode(errors="replace")
+    except Exception:
+        return ""
+
+
+async def _lookup_mac(ip: str) -> Optional[str]:
+    """Resolve ``ip`` to a MAC via the host's ARP (IPv4) or NDP (IPv6) cache."""
+    addr = _parse_ip(ip)
+    if isinstance(addr, ipaddress.IPv6Address):
+        for cmd in (("ndp", "-an"), ("ip", "-6", "neigh", "show", str(addr))):
+            mac = _parse_neighbor_mac(await _run_capture(*cmd), str(addr))
+            if mac:
+                return mac
+        return None
+    if addr is None:
+        return None
+    m = _MAC_PATTERN.search(await _run_capture("arp", "-n", str(addr)))
+    return _normalize_mac(m.group(1)) if m else None
+
+
 async def _get_arp_info(ip: str) -> dict:
-    """Return MAC address and vendor info from the local ARP table."""
+    """Return MAC address and vendor info from the local ARP / NDP neighbor cache."""
     result: dict = {
         "mac_address": None,
         "mac_is_randomized": None,
         "mac_vendor": None,
     }
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "arp",
-            "-n",
-            ip,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        stdout, _ = await proc.communicate()
-        m = re.search(r"([0-9a-f]{1,2}(?::[0-9a-f]{1,2}){5})", stdout.decode(), re.I)
-        if not m:
+        mac = await _lookup_mac(ip)
+        if not mac:
             return result
-        mac = m.group(1).lower()
         result["mac_address"] = mac
         first_byte = int(mac.split(":")[0], 16)
         result["mac_is_randomized"] = bool(first_byte & 0x02)
@@ -213,6 +337,47 @@ async def _try_router_dhcp_hostname(gateway_ip: str, target_ip: str) -> Optional
     return None
 
 
+def _match_netalertx_device(
+    devices: list[dict],
+    source: Optional[ipaddress.IPv4Address | ipaddress.IPv6Address],
+    mac: Optional[str],
+) -> tuple[Optional[dict], Optional[str]]:
+    """Return (device, "ip"|"mac") for the NetAlertX device matching the source.
+
+    IP match (``devLastIP`` / ``devPrimaryIPv4`` / ``devPrimaryIPv6``) wins over a
+    MAC match, which is how IPv6 sources are found (#1061).
+    """
+    if source is not None:
+        for device in devices:
+            for key in ("devLastIP", "devPrimaryIPv4", "devPrimaryIPv6"):
+                value = device.get(key)
+                if value and _parse_ip(str(value)) == source:
+                    return device, "ip"
+    if mac:
+        for device in devices:
+            dev_mac = device.get("devMac")
+            if dev_mac and _normalize_mac(str(dev_mac)) == mac:
+                return device, "mac"
+    return None, None
+
+
+def _registry_device_matches(
+    device: dict,
+    source: Optional[ipaddress.IPv4Address | ipaddress.IPv6Address],
+    mac: Optional[str],
+) -> bool:
+    """True when an HA registry device has an ``ip`` or ``mac`` connection for the source."""
+    for conn in device.get("connections", []):
+        if len(conn) != 2:
+            continue
+        kind, value = conn[0], str(conn[1])
+        if kind == "ip" and source is not None and _parse_ip(value) == source:
+            return True
+        if kind == "mac" and mac and _normalize_mac(value) == mac:
+            return True
+    return False
+
+
 async def enrich_http_login(
     ip: str,
     netalertx_client: Optional[NetAlertXClientProtocol] = None,
@@ -220,18 +385,26 @@ async def enrich_http_login(
 ) -> dict:
     """Enrich an http_login notification with device context for the given source IP.
 
-    Tries three sources in order: reverse DNS, NetAlertX device list, HA device registry.
+    Sources: local interfaces (``network_scope``), reverse DNS, the host's ARP/NDP
+    neighbor cache (MAC), the NetAlertX device list and the HA device registry.
     All are best-effort; failure in any source is skipped.  ``inventory_available`` is
     True only when the NetAlertX device list was actually read, so a null
     ``netalertx_name`` is not mistaken for "not in inventory" (#945).
     ``netalertx_status`` is one of ok / not_configured / no_token / error.
+
+    NetAlertX and HA are matched by IP first and then by MAC.  NetAlertX scans
+    IPv4 only, so an IPv6 source is identified through its neighbor-cache MAC
+    (#1061).  ``network_scope`` (pueo_host / lan / external / unknown) is computed
+    in code so a home-network IPv6 address is never judged "external".
     """
     context: dict = {
         "source_ip": ip,
+        "network_scope": "unknown",
         "hostname": None,
         "inventory_available": False,
         "netalertx_status": "not_configured",
         "netalertx_name": None,
+        "netalertx_match": None,
         "ha_device_name": None,
         "is_known_device": False,
         "is_pueo_host": False,
@@ -240,6 +413,16 @@ async def enrich_http_login(
         "mac_vendor": None,
         "dhcp_hostname": None,
     }
+    source = _parse_ip(ip)
+
+    try:
+        local_addrs = await asyncio.to_thread(_get_local_interface_addresses)
+    except Exception:  # nosec B110
+        local_addrs = set()
+    context["network_scope"] = classify_network_scope(ip, local_addrs)
+    if context["network_scope"] == "pueo_host":
+        context["is_pueo_host"] = True
+        context["is_known_device"] = True
 
     try:
         hostname, _, _ = await asyncio.to_thread(socket.gethostbyaddr, ip)
@@ -248,13 +431,9 @@ async def enrich_http_login(
     except Exception:  # nosec B110
         pass
 
-    try:
-        local_addrs = await asyncio.to_thread(_get_local_interface_addresses)
-        if ip in local_addrs:
-            context["is_pueo_host"] = True
-            context["is_known_device"] = True
-    except Exception:  # nosec B110
-        pass
+    arp_info = await _get_arp_info(ip)
+    context.update(arp_info)
+    mac = arp_info.get("mac_address")
 
     if netalertx_client is not None and not getattr(
         netalertx_client, "has_token", True
@@ -265,11 +444,11 @@ async def enrich_http_login(
             devices = await netalertx_client.get_devices()
             context["inventory_available"] = True
             context["netalertx_status"] = "ok"
-            for device in devices:
-                if device.get("devLastIP") == ip:
-                    context["netalertx_name"] = device.get("devName")
-                    context["is_known_device"] = True
-                    break
+            match, method = _match_netalertx_device(devices, source, mac)
+            if match is not None:
+                context["netalertx_name"] = match.get("devName")
+                context["netalertx_match"] = method
+                context["is_known_device"] = True
         except Exception as exc:  # nosec B110
             context["netalertx_status"] = "error"
             log.warning("netalertx_enrichment_failed", ip=ip, error=str(exc))
@@ -278,7 +457,7 @@ async def enrich_http_login(
         try:
             registry = await ws_client.get_device_registry()
             for device in registry:
-                if ["ip", ip] in device.get("connections", []):
+                if _registry_device_matches(device, source, mac):
                     context["ha_device_name"] = device.get(
                         "name_by_user"
                     ) or device.get("name")
@@ -287,11 +466,8 @@ async def enrich_http_login(
         except Exception as exc:  # nosec B110
             log.warning("ha_device_registry_enrichment_failed", ip=ip, error=str(exc))
 
-    arp_info = await _get_arp_info(ip)
-    context.update(arp_info)
-
     gateway_ip = await _get_default_gateway()
-    if gateway_ip:
+    if gateway_ip and isinstance(source, ipaddress.IPv4Address):
         dhcp_hostname = await _try_router_dhcp_hostname(gateway_ip, ip)
         if dhcp_hostname:
             context["dhcp_hostname"] = dhcp_hostname

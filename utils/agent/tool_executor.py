@@ -3690,11 +3690,9 @@ class ToolExecutor:
 
     async def _investigate_device(self, ip: str) -> ToolResult:
         """Enrich an IP address with MAC, vendor, hostname, and NetAlertX context."""
-        import re
+        from agents.ha_notification_manager import _parse_ip, enrich_http_login
 
-        from agents.ha_notification_manager import enrich_http_login
-
-        if not ip or not re.match(r"^\d{1,3}(\.\d{1,3}){3}$", ip):
+        if not ip or _parse_ip(ip) is None:
             return ToolResult(
                 tool_name="investigate_device",
                 success=False,
