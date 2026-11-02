@@ -1374,6 +1374,57 @@ class TestDashboardRichPayload:
             or len(result) == 19
         )
 
+    @pytest.mark.parametrize(
+        "seconds,expected",
+        [
+            (-5, "0 s"),
+            (0, "0 s"),
+            (59, "59 s"),
+            (60, "1 min"),
+            (3599, "59 min"),
+            (3600, "1 h"),
+            (3660, "1 h 1 min"),
+            (86399, "23 h 59 min"),
+            (86400, "1 d"),
+            (90000, "1 d 1 h"),
+        ],
+    )
+    def test_humanize_age(self, seconds, expected):
+        from web.dashboard import humanize_age
+
+        assert humanize_age(seconds) == expected
+
+    def test_humanize_age_filter_registered(self):
+        import web.dashboard as dashboard
+
+        assert dashboard.templates.env.filters["humanize_age"] is dashboard.humanize_age
+
+    def test_card_header_shows_timestamp_and_scaled_age(self, tmp_path, monkeypatch):
+        import json as _json
+        import time as _time
+
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        sent_at = int(_time.time()) - 2 * 3600 - 30
+        (tmp_path / "age1.json").write_text(
+            _json.dumps(
+                {
+                    "notification_id": "age1",
+                    "subject": "Age subject",
+                    "body": "b",
+                    "payload": {},
+                    "sent_at": sent_at,
+                }
+            )
+        )
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/queue").text
+        iso = dashboard.templates.env.filters["epoch_to_iso"](sent_at)
+        assert f"{iso} · 2 h" in html
+        assert "s ago</span>" not in html
+
 
 # ── Backup inventory dashboard tab (item 32) ─────────────────────────────────────
 
