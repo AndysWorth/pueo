@@ -11,6 +11,7 @@ from utils.knowledge.runbook_signature import (
     sig_lovelace,
     sig_notification,
     sig_repair,
+    sig_setup,
     sig_update,
 )
 
@@ -228,6 +229,17 @@ class TestSigHostHealth:
         assert sig_host_health("supervisor_unhealthy", "") == (
             "host:supervisor_unhealthy:unknown"
         )
+
+
+class TestSigSetup:
+    def test_format(self):
+        assert sig_setup("noaa_it_all") == "setup:integration:noaa_it_all"
+
+    def test_hyphenated_domain_normalised(self):
+        assert sig_setup("Upgrade-Advisor") == "setup:integration:upgrade_advisor"
+
+    def test_empty_domain_is_unknown(self):
+        assert sig_setup("") == "setup:integration:unknown"
 
 
 class TestSigChat:
