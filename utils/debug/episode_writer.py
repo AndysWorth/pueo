@@ -5,14 +5,13 @@ from __future__ import annotations
 import dataclasses
 import html
 import json
+import re
 import shutil
 import time
 from pathlib import Path
 from typing import Any
 
 from utils.debug.capture import LLMCallRecord, ToolCallRecord
-
-_INLINE_THRESHOLD = 2048  # bytes: content below this is inlined in <details>
 
 _PAGE_CSS = """
 body { font-family: system-ui, sans-serif; margin: 0; padding: 1.5rem 2rem;
@@ -68,85 +67,44 @@ def _json_block(data: Any) -> str:
     return f"<pre>{_esc(s)}</pre>"
 
 
-def _maybe_file_link(
-    content: str,
-    filename: str,
-    label: str,
-    episode_dir: Path,
-) -> str:
-    """Return inline <details> if small; write file and return a link if large."""
-    encoded = content.encode("utf-8", errors="replace")
-    if len(encoded) <= _INLINE_THRESHOLD:
-        return (
-            f"<details><summary>{_esc(label)}</summary>"
-            f"<pre>{_esc(content)}</pre></details>"
+def _inline_block(content: str, label: str) -> str:
+    """Return *content* inline in a <details> block (never a side file)."""
+    return (
+        f"<details><summary>{_esc(label)}</summary><pre>{_esc(content)}</pre></details>"
+    )
+
+
+def _response_html(rec: LLMCallRecord) -> str:
+    """Inline thinking, text content and tool calls for one LLM call."""
+    parts = []
+    thinking = rec.thinking_native or rec.thinking
+    if thinking:
+        parts.append(
+            "<details open><summary>Thinking</summary>"
+            f"<div class='thinking'><pre>{_esc(thinking)}</pre></div></details>"
         )
-    (episode_dir / filename).write_text(content, encoding="utf-8")
-    size_kb = len(encoded) // 1024
-    return f"<a href='{_esc(filename)}'>{_esc(label)} ({size_kb} KB)</a>"
-
-
-def _build_request_page(seq: int, rec: LLMCallRecord) -> str:
-    rows = ""
-    for msg in rec.request_messages:
-        role = msg.get("role", "?")
-        content = msg.get("content") or ""
-        if isinstance(content, list):
-            content = json.dumps(content, ensure_ascii=False, default=str)
-        rows += (
-            f"<tr><td class='msg-role'>{_esc(role)}</td>"
-            f"<td class='msg-content'>{_esc(str(content))}</td></tr>\n"
-        )
-    tools_html = _esc(", ".join(rec.request_tools)) if rec.request_tools else "(none)"
-    return f"""<!DOCTYPE html>
-<html><head><meta charset='utf-8'>
-<title>LLM Call {seq} — Request</title>
-<style>{_PAGE_CSS}</style></head><body>
-<h1>LLM Call {seq} — Full Request</h1>
-<p><strong>Tools registered:</strong> {tools_html}</p>
-<h2>Messages ({len(rec.request_messages)})</h2>
-<table><tr><th>Role</th><th>Content</th></tr>
-{rows}
-</table>
-</body></html>"""
-
-
-def _build_response_page(seq: int, rec: LLMCallRecord) -> str:
-    thinking_html = ""
-    if rec.thinking:
-        thinking_html = (
-            f"<details open><summary>Thinking</summary>"
-            f"<div class='thinking'><pre>{_esc(rec.thinking)}</pre></div></details>"
-        )
-    tc_html = ""
-    if rec.response_tool_calls:
-        tc_html = f"<h2>Tool Calls</h2>{_json_block(rec.response_tool_calls)}"
-    content_html = ""
     display_content = rec.response_content
     if rec.thinking:
-        import re as _re
-
-        display_content = _re.sub(
-            r"<think>.*?</think>", "", display_content, flags=_re.DOTALL
+        display_content = re.sub(
+            r"<think>.*?</think>", "", display_content, flags=re.DOTALL
         ).strip()
     if display_content:
-        content_html = f"<h2>Text Content</h2><pre>{_esc(display_content)}</pre>"
-    return f"""<!DOCTYPE html>
-<html><head><meta charset='utf-8'>
-<title>LLM Call {seq} — Response</title>
-<style>{_PAGE_CSS}</style></head><body>
-<h1>LLM Call {seq} — Full Response</h1>
-<p><strong>Duration:</strong> {rec.duration_ms:.0f} ms</p>
-{thinking_html}
-{content_html}
-{tc_html}
-</body></html>"""
+        parts.append(_inline_block(display_content, "Response text"))
+    if rec.response_tool_calls:
+        parts.append(
+            "<details><summary>Response tool calls</summary>"
+            f"{_json_block(rec.response_tool_calls)}</details>"
+        )
+    return "\n".join(parts)
 
 
-def _build_tool_call_log(
-    tool_call_records: list[ToolCallRecord],
-    episode_dir: Path,
-) -> str:
+def _token_label(rec: LLMCallRecord) -> str:
+    if rec.input_tokens is None and rec.output_tokens is None:
+        return ""
+    return f" · {rec.input_tokens or 0}→{rec.output_tokens or 0} tok"
+
+
+def _build_tool_call_log(tool_call_records: list[ToolCallRecord]) -> str:
     if not tool_call_records:
         return ""
     cards = ""
@@ -158,29 +116,35 @@ def _build_tool_call_log(
             if rec.discard_previous
             else ""
         )
-        args_block = _maybe_file_link(
-            json.dumps(rec.args, indent=2, ensure_ascii=False, default=str),
-            f"tool_{rec.seq}_args.json",
-            "Args",
-            episode_dir,
+        cached_badge = (
+            "<span class='tool-discard'>cached (repeat)</span>" if rec.cached else ""
+        )
+        args_block = _inline_block(
+            json.dumps(rec.args, indent=2, ensure_ascii=False, default=str), "Args"
         )
         body_text = rec.error if not rec.success and rec.error else rec.output
-        output_block = _maybe_file_link(
-            str(body_text)[:3000] + ("…" if len(str(body_text)) > 3000 else ""),
-            f"tool_{rec.seq}_output.txt",
-            "Output" if rec.success else "Error",
-            episode_dir,
+        output_block = _inline_block(
+            str(body_text), "Output" if rec.success else "Error"
+        )
+        saw_block = (
+            _inline_block(
+                rec.model_saw,
+                f"Model saw ({len(rec.model_saw)} of {len(str(body_text))} chars)",
+            )
+            if rec.model_saw is not None
+            else ""
         )
         cards += f"""
 <div class='tool-card {_esc(card_cls)}'>
   <div class='tool-header'>
     <span>{rec.seq}. {_esc(rec.name)}</span>
     <span>{success_badge} {rec.duration_ms:.0f} ms</span>
-    {discard_badge}
+    {discard_badge}{cached_badge}
   </div>
   <div class='tool-body'>
     {args_block}
     {output_block}
+    {saw_block}
   </div>
 </div>"""
     return f"<h2>Tool Call Log</h2>\n{cards}"
@@ -190,7 +154,6 @@ def _build_index(
     session_meta: dict[str, Any],
     captures: list[LLMCallRecord],
     conversation: list[dict[str, Any]],
-    episode_dir: Path,
     tool_call_records: list[ToolCallRecord] | None = None,
 ) -> str:
     # Session header
@@ -228,18 +191,7 @@ def _build_index(
             f"<div class='nudge'><strong>Nudge injected:</strong><br>{_esc(n)}</div>"
             for n in rec.nudges_injected
         )
-        req_link = _maybe_file_link(
-            _build_request_page(rec.seq, rec),
-            f"llm_{rec.seq}_request.html",
-            f"Full request ({len(rec.request_messages)} messages)",
-            episode_dir,
-        )
-        resp_link = _maybe_file_link(
-            _build_response_page(rec.seq, rec),
-            f"llm_{rec.seq}_response.html",
-            f"Full response{' (thinking present)' if rec.thinking else ''}",
-            episode_dir,
-        )
+        resp_html = _response_html(rec)
         tc_names = (
             ", ".join(
                 tc.get("function", {}).get("name", "?")
@@ -260,20 +212,18 @@ def _build_index(
 <div class='call-card'>
   <div class='call-header'>
     <span>Call {rec.seq}</span>
-    <span>{rec.duration_ms:.0f} ms{outcome_label}</span>
+    <span>{rec.duration_ms:.0f} ms{_esc(_token_label(rec))}{outcome_label}</span>
   </div>
   <div class='call-body'>
     {nudge_html}
-    <p><strong>Tools called:</strong> {_esc(tc_names)}</p>
-    {req_link}
-    {resp_link}
+    <p><strong>Tools called:</strong> {_esc(tc_names)}
+      · request: {len(rec.request_messages)} messages</p>
+    {resp_html}
   </div>
 </div>"""
 
     tool_log_html = (
-        _build_tool_call_log(tool_call_records, episode_dir)
-        if tool_call_records is not None
-        else ""
+        _build_tool_call_log(tool_call_records) if tool_call_records is not None else ""
     )
     tool_count_meta = (
         f"  <span><span class='label'>Tool calls:</span> {len(tool_call_records)}</span>\n"
@@ -308,20 +258,63 @@ def write_episode_html(
     conversation: list[dict[str, Any]],
     tool_call_records: list[ToolCallRecord] | None = None,
 ) -> None:
-    """Write an HTML debug episode bundle to *episode_dir*.
+    """Write a self-contained debug episode bundle to *episode_dir*.
 
-    Generates index.html plus per-call request/response files (only when
-    content exceeds the inline threshold).  When tool_call_records is provided,
-    also writes episode_data.json for deterministic replay.
+    Always writes index.html and episode_data.json (also for sessions with no
+    tool calls).  Every piece of content is inlined — no side files.
     """
     episode_dir.mkdir(parents=True, exist_ok=True)
-    index_html = _build_index(
-        session_meta, captures, conversation, episode_dir, tool_call_records
-    )
+    index_html = _build_index(session_meta, captures, conversation, tool_call_records)
     (episode_dir / "index.html").write_text(index_html, encoding="utf-8")
+    _write_episode_data_json(
+        episode_dir, session_meta, captures, tool_call_records or [], conversation
+    )
 
-    if tool_call_records is not None:
-        _write_episode_data_json(episode_dir, session_meta, captures, tool_call_records)
+
+# Meta keys copied verbatim into episode_data.json when present (schema v2).
+_V2_META_KEYS = (
+    "session_type",
+    "signature",
+    "subject_key",
+    "provider",
+    "started_at",
+    "ended_at",
+    "duration_seconds",
+    "steps",
+    "stuck_reason",
+    "top_retrieved_signature",
+    "finish_tool",
+    "finish_args",
+    "episode_stub",
+    "system_prompt",
+    "offered_tools",
+    "agent_episode_id",
+)
+
+
+def build_episode_data(
+    session_meta: dict[str, Any],
+    captures: list[LLMCallRecord],
+    tool_call_records: list[ToolCallRecord],
+    conversation: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Return the episode_data.json dict (schema v2; v1 keys unchanged)."""
+    episode_data: dict[str, Any] = {
+        "schema_version": 2,
+        "episode_id": session_meta.get("session_id", ""),
+        "trigger": session_meta.get("trigger", ""),
+        "model": session_meta.get("model", ""),
+        "outcome": session_meta.get("outcome", ""),
+        "timestamp": session_meta.get("timestamp", ""),
+        "initial_context": session_meta.get("initial_context", ""),
+    }
+    for key in _V2_META_KEYS:
+        if key in session_meta:
+            episode_data[key] = session_meta[key]
+    episode_data["messages"] = list(conversation or [])
+    episode_data["llm_calls"] = [dataclasses.asdict(r) for r in captures]
+    episode_data["tool_calls"] = [dataclasses.asdict(r) for r in tool_call_records]
+    return episode_data
 
 
 def _write_episode_data_json(
@@ -329,32 +322,12 @@ def _write_episode_data_json(
     session_meta: dict[str, Any],
     captures: list[LLMCallRecord],
     tool_call_records: list[ToolCallRecord],
+    conversation: list[dict[str, Any]] | None = None,
 ) -> None:
-    """Write machine-readable episode_data.json for replay support."""
-
-    def _llm_call_to_dict(rec: LLMCallRecord) -> dict[str, Any]:
-        return {
-            "seq": rec.seq,
-            "request_messages": rec.request_messages,
-            "request_tools": rec.request_tools,
-            "response_content": rec.response_content,
-            "response_tool_calls": rec.response_tool_calls,
-            "thinking": rec.thinking,
-            "nudges_injected": rec.nudges_injected,
-            "duration_ms": rec.duration_ms,
-            "outcome_path": rec.outcome_path,
-        }
-
-    episode_data = {
-        "episode_id": session_meta.get("session_id", ""),
-        "trigger": session_meta.get("trigger", ""),
-        "model": session_meta.get("model", ""),
-        "outcome": session_meta.get("outcome", ""),
-        "timestamp": session_meta.get("timestamp", ""),
-        "initial_context": session_meta.get("initial_context", ""),
-        "llm_calls": [_llm_call_to_dict(r) for r in captures],
-        "tool_calls": [dataclasses.asdict(r) for r in tool_call_records],
-    }
+    """Write machine-readable episode_data.json for replay and the report."""
+    episode_data = build_episode_data(
+        session_meta, captures, tool_call_records, conversation
+    )
     (episode_dir / "episode_data.json").write_text(
         json.dumps(episode_data, indent=2, ensure_ascii=False, default=str),
         encoding="utf-8",

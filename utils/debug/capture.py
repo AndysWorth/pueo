@@ -19,6 +19,13 @@ class ToolCallRecord:
     success: bool
     discard_previous: bool
     duration_ms: float
+    # Schema v2: True when the repeat guard served a cached result instead of
+    # executing the tool.
+    cached: bool = False
+    # Schema v2: the tool message content the model actually received (after
+    # guardrail processing / repeat prefix).  None when identical to the raw
+    # output (or "Error: <error>" for failures), so the common case stores nothing.
+    model_saw: str | None = None
 
 
 @dataclass
@@ -33,6 +40,13 @@ class LLMCallRecord:
     duration_ms: float
     # "finish_chat" | "exhaustion_fallback" | None (mid-session or non-terminal)
     outcome_path: str | None = None
+    # Schema v2: provider-native reasoning (Ollama ``message.thinking``), which
+    # never appears in response_content.  ``thinking`` stays the <think>-tag parse.
+    thinking_native: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    eval_ms: float | None = None
+    load_ms: float | None = None
 
     def __post_init__(self) -> None:
         # Defensive copies so callers can mutate original lists safely.

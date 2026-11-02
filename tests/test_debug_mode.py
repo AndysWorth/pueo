@@ -130,27 +130,134 @@ class TestEpisodeWriter:
         html = (episode_dir / "index.html").read_text()
         assert "finish_chat" in html
 
-    def test_large_request_written_as_separate_file(self, tmp_path):
-        """When request page > 2 KB the writer saves llm_N_request.html."""
-        from utils.debug.episode_writer import write_episode_html, _INLINE_THRESHOLD
-        from utils.debug.capture import LLMCallRecord
+    def test_no_side_files_and_long_content_inline(self, tmp_path):
+        """Schema v2: everything is inlined; only index.html + JSON are written."""
+        from utils.debug.episode_writer import write_episode_html
+        from utils.debug.capture import LLMCallRecord, ToolCallRecord
 
-        big_content = "x" * (_INLINE_THRESHOLD + 100)
+        big_response = "R" * 5000 + "END_OF_RESPONSE"
+        big_output = "O" * 5000 + "END_OF_OUTPUT"
         captures = [
             LLMCallRecord(
                 seq=1,
-                request_messages=[{"role": "user", "content": big_content}],
+                request_messages=[{"role": "user", "content": "x" * 5000}],
                 request_tools=[],
-                response_content="",
+                response_content=big_response,
                 response_tool_calls=[],
                 thinking=None,
                 nudges_injected=[],
                 duration_ms=1.0,
             )
         ]
+        records = [
+            ToolCallRecord(
+                seq=0,
+                name="read_logs",
+                args={"lines": 500},
+                output=big_output,
+                error=None,
+                success=True,
+                discard_previous=False,
+                duration_ms=3.0,
+            )
+        ]
         episode_dir = tmp_path / "ep"
-        write_episode_html(episode_dir, self._make_session_meta(), captures, [])
-        assert (episode_dir / "llm_1_request.html").exists()
+        write_episode_html(
+            episode_dir, self._make_session_meta(), captures, [], records
+        )
+        assert sorted(p.name for p in episode_dir.iterdir()) == [
+            "episode_data.json",
+            "index.html",
+        ]
+        html = (episode_dir / "index.html").read_text()
+        assert "END_OF_RESPONSE" in html
+        assert "END_OF_OUTPUT" in html  # no 3000-char truncation
+
+    def test_native_thinking_tokens_cached_and_model_saw_rendered(self, tmp_path):
+        from utils.debug.episode_writer import write_episode_html
+        from utils.debug.capture import LLMCallRecord, ToolCallRecord
+
+        captures = [
+            LLMCallRecord(
+                seq=1,
+                request_messages=[],
+                request_tools=[],
+                response_content="Answer.",
+                response_tool_calls=[],
+                thinking=None,
+                nudges_injected=[],
+                duration_ms=5.0,
+                thinking_native="NATIVE_REASONING",
+                input_tokens=1200,
+                output_tokens=34,
+            )
+        ]
+        records = [
+            ToolCallRecord(
+                seq=0,
+                name="read_config",
+                args={},
+                output="raw output",
+                error=None,
+                success=True,
+                discard_previous=False,
+                duration_ms=1.0,
+                cached=True,
+                model_saw="[Repeated call] raw output",
+            )
+        ]
+        episode_dir = tmp_path / "ep"
+        write_episode_html(
+            episode_dir, self._make_session_meta(), captures, [], records
+        )
+        html = (episode_dir / "index.html").read_text()
+        assert "NATIVE_REASONING" in html
+        assert "1200→34 tok" in html
+        assert "cached (repeat)" in html
+        saw_len = len("[Repeated call] raw output")
+        assert f"Model saw ({saw_len} of 10 chars)" in html
+
+    def test_episode_data_json_written_without_tool_calls(self, tmp_path):
+        """A session with LLM calls but no tool calls still writes JSON."""
+        import json
+
+        from utils.debug.episode_writer import write_episode_html
+
+        episode_dir = tmp_path / "ep"
+        write_episode_html(
+            episode_dir,
+            self._make_session_meta(),
+            self._make_captures(),
+            [{"role": "user", "content": "hi"}],
+            tool_call_records=None,
+        )
+        data = json.loads((episode_dir / "episode_data.json").read_text())
+        assert data["schema_version"] == 2
+        assert data["tool_calls"] == []
+        assert len(data["llm_calls"]) == 2
+        assert data["messages"] == [{"role": "user", "content": "hi"}]
+
+    def test_build_episode_data_copies_v2_meta(self):
+        from utils.debug.episode_writer import build_episode_data
+
+        meta = {
+            **self._make_session_meta(),
+            "signature": "device:offline:zha",
+            "subject_key": "dev1",
+            "finish_tool": "finish_device_availability",
+            "finish_args": {"outcome": "monitoring"},
+            "offered_tools": ["read_logs"],
+            "unrelated_key": "dropped",
+        }
+        data = build_episode_data(meta, [], [], None)
+        assert data["episode_id"] == 42
+        assert data["signature"] == "device:offline:zha"
+        assert data["subject_key"] == "dev1"
+        assert data["finish_args"] == {"outcome": "monitoring"}
+        assert data["offered_tools"] == ["read_logs"]
+        assert "unrelated_key" not in data
+        assert "stuck_reason" not in data  # absent keys are not invented
+        assert data["messages"] == []
 
     def test_thinking_block_rendered(self, tmp_path):
         from utils.debug.episode_writer import write_episode_html
@@ -387,6 +494,109 @@ class TestAgentLoopCaptureLLM:
         result = asyncio.run(loop.run("Hello"))
         assert result.outcome == "success"
         assert len(result.llm_captures) == 1
+
+    @staticmethod
+    def _tc(name, args):
+        return {"tool_calls": [{"function": {"name": name, "arguments": args}}]}
+
+    def test_v2_llm_fields_captured(self, db_path):
+        """Native thinking and Ollama token/timing stats land on the record."""
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        resp = self._tc("finish_chat", {"summary": "Done"})
+        resp["_thinking"] = "native reasoning text"
+        resp["_ollama_timing"] = {
+            "eval_ms": 321.0,
+            "load_ms": 12.0,
+            "input_tokens": 900,
+            "output_tokens": 40,
+        }
+        loop = self._make_loop(FakeToolCallingLLMClient([resp]), db_path)
+        rec = asyncio.run(loop.run("Hello")).llm_captures[0]
+        assert rec.thinking_native == "native reasoning text"
+        assert rec.thinking is None  # <think>-tag parse is separate
+        assert (rec.input_tokens, rec.output_tokens) == (900, 40)
+        assert (rec.eval_ms, rec.load_ms) == (321.0, 12.0)
+
+    def test_v2_llm_fields_none_without_provider_data(self, db_path):
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        llm = FakeToolCallingLLMClient([self._tc("finish_chat", {"summary": "x"})])
+        rec = asyncio.run(self._make_loop(llm, db_path).run("Hi")).llm_captures[0]
+        assert rec.thinking_native is None
+        assert rec.input_tokens is None and rec.eval_ms is None
+
+    def test_cached_repeat_records_cached_and_model_saw(self, db_path):
+        """A repeated identical call is marked cached; model_saw carries the
+        '[Repeated call …]' text the model received.  The first execution's
+        model_saw is None unless the guardrail changed the content."""
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        llm = FakeToolCallingLLMClient(
+            [
+                self._tc("recall", {"query": "server"}),
+                self._tc("recall", {"query": "server"}),
+                self._tc("finish_chat", {"summary": "Done"}),
+            ]
+        )
+        result = asyncio.run(self._make_loop(llm, db_path).run("Hello"))
+        first, second = [r for r in result.tool_call_records if r.name == "recall"]
+        assert first.cached is False
+        assert second.cached is True
+        assert second.model_saw is not None
+        assert second.model_saw.startswith("[Repeated call")
+        raw_first = first.output if first.success else f"Error: {first.error}"
+        assert first.model_saw is None or first.model_saw != raw_first
+        tool_msgs = [m for m in result.debug_messages if m.get("role") == "tool"]
+        assert tool_msgs[1]["content"] == second.model_saw
+
+    def test_v2_session_meta_and_messages(self, db_path, pueo_dirs):
+        """The loop exposes v2 meta + full history and writes them to JSON."""
+        import json
+
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        llm = FakeToolCallingLLMClient(
+            [
+                self._tc("recall", {"query": "server"}),
+                self._tc("finish_chat", {"summary": "All done"}),
+            ]
+        )
+        loop = self._make_loop(llm, db_path)
+        result = asyncio.run(
+            loop.run("Hello", signature="chat:general", subject_key="subj-1")
+        )
+        meta = result.debug_session_meta
+        assert meta["schema_version"] == 2
+        assert meta["signature"] == "chat:general"
+        assert meta["subject_key"] == "subj-1"
+        assert meta["finish_tool"] == "finish_chat"
+        assert meta["finish_args"] == {"summary": "All done"}
+        assert meta["steps"] == len(result.steps)
+        assert meta["started_at"].endswith("Z") and meta["ended_at"].endswith("Z")
+        assert meta["duration_seconds"] >= 0
+        assert "finish_chat" in meta["offered_tools"]
+        assert meta["system_prompt"]
+        assert meta["provider"] in ("local", "cloud", "openai_compat")
+        roles = [m["role"] for m in result.debug_messages]
+        assert roles[0] == "system" and "tool" in roles and "assistant" in roles
+
+        data = json.loads(
+            (Path(result.debug_log_path).parent / "episode_data.json").read_text()
+        )
+        assert data["schema_version"] == 2
+        assert data["signature"] == "chat:general"
+        assert data["finish_args"] == {"summary": "All done"}
+        assert any(m.get("name") == "recall" for m in data["messages"])
+
+    def test_no_meta_when_capture_off(self, db_path):
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        llm = FakeToolCallingLLMClient([self._tc("finish_chat", {"summary": "x"})])
+        loop = self._make_loop(llm, db_path, capture_llm=False)
+        result = asyncio.run(loop.run("Hi"))
+        assert result.debug_session_meta == {}
+        assert result.debug_messages == []
 
     def test_capture_has_correct_seq(self, db_path):
         from utils.llm.ollama_client import FakeToolCallingLLMClient
@@ -907,3 +1117,139 @@ class TestRecordOneShot:
                 "SELECT input_summary FROM llm_one_shot_calls"
             ).fetchone()
         assert len(row[0]) <= 500
+
+
+# ---------------------------------------------------------------------------
+# Schema-v2 pure helpers (#1055)
+# ---------------------------------------------------------------------------
+
+
+class TestEpisodeV2Helpers:
+    def test_model_saw_none_when_unchanged(self):
+        from utils.agent.agent_loop import _model_saw
+
+        assert _model_saw("same", "same") is None
+        assert _model_saw("raw", "trimmed") == "trimmed"
+
+    def _step(self, name, args):
+        from utils.agent.tool_registry import AgentStep, ToolCall, ToolResult
+
+        return AgentStep(
+            step_number=1,
+            tool_call=ToolCall(name=name, arguments=args),
+            tool_result=ToolResult(tool_name=name, success=True, output=""),
+            timestamp=0.0,
+        )
+
+    def test_finish_call_picks_last_finish(self):
+        from utils.agent.agent_loop import _finish_call
+
+        steps = [
+            self._step("read_logs", {}),
+            self._step("finish_device_availability", {"outcome": "monitoring"}),
+            self._step("read_logs", {"x": 1}),
+        ]
+        assert _finish_call(steps, "finish_repair") == (
+            "finish_device_availability",
+            {"outcome": "monitoring"},
+        )
+        assert _finish_call([self._step("custom_end", {"a": 1})], "custom_end") == (
+            "custom_end",
+            {"a": 1},
+        )
+        assert _finish_call([self._step("read_logs", {})], "finish_repair") == (
+            "",
+            {},
+        )
+
+    def test_iso_utc(self):
+        from utils.agent.agent_loop import _iso_utc
+
+        assert _iso_utc(0) == "1970-01-01T00:00:00Z"
+
+    def test_build_debug_session_meta(self):
+        from utils.agent.agent_loop import build_debug_session_meta
+
+        meta = build_debug_session_meta(
+            episode_id="ep1",
+            outcome="stuck",
+            model="m",
+            provider="cloud",
+            trigger="repair_poll",
+            session_type="repair_issue",
+            signature="repair:x:y",
+            subject_key="s",
+            initial_context="ctx",
+            started_at=100.0,
+            ended_at=112.5,
+            steps=[self._step("finish_repair", {"outcome": "failed"})],
+            terminal_tool_name="finish_repair",
+            episode_stub={"summary": "gave up"},
+            stuck_reason="host_sleep",
+            top_retrieved_signature="repair:x:*",
+            system_prompt="SYS",
+            offered_tools=["read_logs", "finish_repair"],
+        )
+        assert meta["schema_version"] == 2
+        assert meta["session_id"] == "ep1"
+        assert meta["duration_seconds"] == 12.5
+        assert meta["steps"] == 1
+        assert meta["finish_tool"] == "finish_repair"
+        assert meta["finish_args"] == {"outcome": "failed"}
+        assert meta["episode_stub"] == {"summary": "gave up"}
+        assert meta["stuck_reason"] == "host_sleep"
+        assert meta["started_at"] == "1970-01-01T00:01:40Z"
+        assert meta["provider"] == "cloud"
+
+    def test_build_debug_session_meta_no_stub(self):
+        from utils.agent.agent_loop import build_debug_session_meta
+
+        meta = build_debug_session_meta(
+            episode_id="e",
+            outcome="exhausted",
+            model="m",
+            provider="local",
+            trigger="t",
+            session_type="t",
+            signature="",
+            subject_key="",
+            initial_context="",
+            started_at=1.0,
+            ended_at=1.0,
+            steps=[],
+            terminal_tool_name="finish_repair",
+            episode_stub=None,
+            stuck_reason="",
+            top_retrieved_signature="",
+            system_prompt="",
+            offered_tools=[],
+        )
+        assert meta["episode_stub"] is None
+        assert meta["finish_tool"] == "" and meta["finish_args"] == {}
+
+    def test_chat_episode_meta_overrides_trigger(self):
+        from web.dashboard import _chat_episode_meta
+
+        meta = _chat_episode_meta(
+            {"trigger": "manual", "session_type": "chat", "signature": "chat:x"},
+            session_id=7,
+            outcome="success",
+            model="qwen",
+            agent_episode_id="uuid-1",
+        )
+        assert meta["trigger"] == "chat"
+        assert meta["session_type"] == "chat"
+        assert meta["session_id"] == 7
+        assert meta["agent_episode_id"] == "uuid-1"
+        assert meta["signature"] == "chat:x"
+        assert meta["model"] == "qwen"
+
+    def test_chat_episode_meta_without_loop_meta(self):
+        from web.dashboard import _chat_episode_meta
+
+        meta = _chat_episode_meta(
+            {}, session_id=1, outcome="failed", model="m", agent_episode_id=None
+        )
+        assert meta["provider"] == "local"
+        assert meta["timestamp"]
+        assert meta["agent_episode_id"] == ""

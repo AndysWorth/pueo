@@ -85,6 +85,84 @@ def _format_step_trace(steps: list["AgentStep"]) -> str:
     return "\n".join(lines) if lines else "  (no tool calls)"
 
 
+def _model_saw(raw: str, sent: str) -> str | None:
+    """Return the tool message the model received, or None when unchanged."""
+    return sent if sent != raw else None
+
+
+def _finish_call(
+    steps: list["AgentStep"], terminal_tool_name: str
+) -> tuple[str, dict[str, Any]]:
+    """Return (name, args) of the last terminal/finish_* call, or ("", {})."""
+    for s in reversed(steps):
+        name = s.tool_call.name
+        if name == terminal_tool_name or name.startswith("finish_"):
+            return name, dict(s.tool_call.arguments)
+    return "", {}
+
+
+def _iso_utc(epoch: float) -> str:
+    import datetime as _dt
+
+    return (
+        _dt.datetime.fromtimestamp(epoch, tz=_dt.timezone.utc)
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z")
+    )
+
+
+def build_debug_session_meta(
+    *,
+    episode_id: str,
+    outcome: str,
+    model: str,
+    provider: str,
+    trigger: str,
+    session_type: str,
+    signature: str,
+    subject_key: str,
+    initial_context: str,
+    started_at: float,
+    ended_at: float,
+    steps: list["AgentStep"],
+    terminal_tool_name: str,
+    episode_stub: dict[str, Any] | None,
+    stuck_reason: str,
+    top_retrieved_signature: str,
+    system_prompt: str,
+    offered_tools: list[str],
+) -> dict[str, Any]:
+    """Build the schema-v2 debug episode session meta (pure)."""
+    import datetime as _dt
+
+    finish_tool, finish_args = _finish_call(steps, terminal_tool_name)
+    return {
+        "schema_version": 2,
+        "session_id": episode_id,
+        "outcome": outcome,
+        "model": model,
+        "provider": provider,
+        # Legacy local-time display stamp, kept for v1 readers.
+        "timestamp": _dt.datetime.fromtimestamp(ended_at).strftime("%Y-%m-%d %H:%M:%S"),
+        "trigger": trigger,
+        "session_type": session_type,
+        "signature": signature,
+        "subject_key": subject_key,
+        "initial_context": initial_context,
+        "started_at": _iso_utc(started_at),
+        "ended_at": _iso_utc(ended_at),
+        "duration_seconds": round(ended_at - started_at, 2),
+        "steps": len(steps),
+        "stuck_reason": stuck_reason,
+        "top_retrieved_signature": top_retrieved_signature,
+        "finish_tool": finish_tool,
+        "finish_args": finish_args,
+        "episode_stub": dict(episode_stub) if episode_stub else None,
+        "system_prompt": system_prompt,
+        "offered_tools": list(offered_tools),
+    }
+
+
 # Tools exempt from the repeat guard: side-effect tools and terminal tools.
 _REPEAT_GUARD_EXEMPT_TOOLS: frozenset[str] = frozenset(
     {"discard_result", "request_escalation", "remember"}
@@ -1084,6 +1162,7 @@ class AgentLoop:
         steps: list[AgentStep] = []
         tool_call_count = 0
         start_time = time.monotonic()
+        _started_wall = time.time()
         outcome: str = "exhausted"
         episode_stub: Optional[dict] = None
 
@@ -1203,33 +1282,55 @@ class AgentLoop:
             self._llm_captures[-1].outcome_path = "exhaustion_fallback"
 
         debug_log_path: Optional[str] = None
+        _session_meta: dict[str, Any] = {}
+        _debug_messages: list[dict[str, Any]] = []
+        if self._capture_llm:
+            _provider = "local"
+            try:
+                from utils.llm.llm_factory import _provider_name
+
+                _provider = _provider_name()
+            except Exception:  # nosec B110
+                pass
+            _session_meta = build_debug_session_meta(
+                episode_id=self._episode_id,
+                outcome=outcome,
+                model=self._model,
+                provider=_provider,
+                trigger=self._trigger,
+                session_type=self._activity_type or self._trigger,
+                signature=self._signature,
+                subject_key=self._subject_key,
+                initial_context=self._raw_initial_context,
+                started_at=_started_wall,
+                ended_at=time.time(),
+                steps=steps,
+                terminal_tool_name=self._terminal_tool_name,
+                episode_stub=episode_stub,
+                stuck_reason=self._stuck_reason,
+                top_retrieved_signature=self._top_retrieved_signature,
+                system_prompt=str(self._system_prompt),
+                offered_tools=[t["function"]["name"] for t in tools if "function" in t],
+            )
+            # Full history (system, user, assistant and tool-role messages);
+            # shallow-copied so later mutation of the live list can't leak in.
+            _debug_messages = [dict(m) for m in messages]
         if self._capture_llm and self._llm_captures:
             try:
                 from utils.debug.episode_writer import write_episode_html
                 from paths import get_dirs as _get_dirs
-                import datetime as _datetime
 
                 _ep_dir = (
                     _get_dirs().data_dir
                     / "debug_episodes"
                     / f"{self._trigger}_{self._episode_id}"
                 )
-                _session_meta = {
-                    "session_id": self._episode_id,
-                    "outcome": outcome,
-                    "model": self._model,
-                    "provider": "local",
-                    "timestamp": _datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "trigger": self._trigger,
-                    "initial_context": self._raw_initial_context,
-                }
-                _conv = [m for m in messages if m.get("role") in ("user", "assistant")]
                 await asyncio.to_thread(
                     write_episode_html,
                     _ep_dir,
                     _session_meta,
                     self._llm_captures,
-                    _conv,
+                    _debug_messages,
                     list(self._tool_call_records),
                 )
                 debug_log_path = str(_ep_dir / "index.html")
@@ -1251,6 +1352,8 @@ class AgentLoop:
             debug_log_path=debug_log_path,
             top_retrieved_signature=self._top_retrieved_signature,
             stuck_reason=self._stuck_reason,
+            debug_session_meta=_session_meta,
+            debug_messages=_debug_messages,
         )
 
     async def _enqueue_distillation(
@@ -1698,6 +1801,11 @@ class AgentLoop:
                         thinking=_thinking,
                         nudges_injected=list(_pending_nudges),
                         duration_ms=_latency_ms,
+                        thinking_native=_thinking_text or None,
+                        input_tokens=_timing.get("input_tokens"),
+                        output_tokens=_timing.get("output_tokens"),
+                        eval_ms=_timing.get("eval_ms"),
+                        load_ms=_timing.get("load_ms"),
                     )
                 )
                 _pending_nudges = []
@@ -1858,19 +1966,20 @@ class AgentLoop:
                         f" {_cached_text}"
                     )
                     _tc_duration_ms = round((time.time() - ts) * 1000, 1)
+                    _cached_rec: ToolCallRecord | None = None
                     if self._capture_llm:
-                        self._tool_call_records.append(
-                            ToolCallRecord(
-                                seq=tool_call_count,
-                                name=tool_call.name,
-                                args=dict(tool_call.arguments),
-                                output=_cached_text,
-                                error=None,
-                                success=True,
-                                discard_previous=False,
-                                duration_ms=_tc_duration_ms,
-                            )
+                        _cached_rec = ToolCallRecord(
+                            seq=tool_call_count,
+                            name=tool_call.name,
+                            args=dict(tool_call.arguments),
+                            output=_cached_text,
+                            error=None,
+                            success=True,
+                            discard_previous=False,
+                            duration_ms=_tc_duration_ms,
+                            cached=True,
                         )
+                        self._tool_call_records.append(_cached_rec)
                     step = AgentStep(
                         step_number=tool_call_count,
                         tool_call=tool_call,
@@ -1885,6 +1994,8 @@ class AgentLoop:
                         await self._timeline_callback(tool_call.name, _sl)
                     if LLM_PROVIDER != "local":
                         result_text = sanitize_update_context(result_text)
+                    if _cached_rec is not None:
+                        _cached_rec.model_saw = _model_saw(_cached_text, result_text)
                     messages.append(
                         {
                             "role": "tool",
@@ -1904,21 +2015,19 @@ class AgentLoop:
                     await self._pre_step_callback(tool_call)
                 tool_result = await self._executor.execute(tool_call)
                 _tc_duration_ms = round((time.time() - ts) * 1000, 1)
+                _tc_rec: ToolCallRecord | None = None
                 if self._capture_llm:
-                    self._tool_call_records.append(
-                        ToolCallRecord(
-                            seq=tool_call_count,
-                            name=tool_call.name,
-                            args=dict(tool_call.arguments),
-                            output=tool_result.output if tool_result.success else "",
-                            error=(
-                                tool_result.error if not tool_result.success else None
-                            ),
-                            success=tool_result.success,
-                            discard_previous=tool_result.discard_previous,
-                            duration_ms=_tc_duration_ms,
-                        )
+                    _tc_rec = ToolCallRecord(
+                        seq=tool_call_count,
+                        name=tool_call.name,
+                        args=dict(tool_call.arguments),
+                        output=tool_result.output if tool_result.success else "",
+                        error=(tool_result.error if not tool_result.success else None),
+                        success=tool_result.success,
+                        discard_previous=tool_result.discard_previous,
+                        duration_ms=_tc_duration_ms,
                     )
+                    self._tool_call_records.append(_tc_rec)
                 tool_call_count += 1
 
                 step = AgentStep(
@@ -1941,6 +2050,7 @@ class AgentLoop:
                     if tool_result.success
                     else f"Error: {tool_result.error}"
                 )
+                _raw_result_text = result_text
                 remaining_budget = self._max_tool_calls - tool_call_count
                 result_text = guardrail.process(
                     tool_name=tool_call.name,
@@ -1953,6 +2063,8 @@ class AgentLoop:
                     self._seen_calls[_call_sig] = (tool_call_count, result_text)
                 if LLM_PROVIDER != "local":
                     result_text = sanitize_update_context(result_text)
+                if _tc_rec is not None:
+                    _tc_rec.model_saw = _model_saw(_raw_result_text, result_text)
                 messages.append(
                     {
                         "role": "tool",

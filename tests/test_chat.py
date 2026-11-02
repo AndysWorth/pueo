@@ -1890,6 +1890,105 @@ class TestDurableToolHistory:
         assert len(summary_rows) == 1
 
 
+class TestChatDebugEpisodeV2:
+    """Chat turns write a schema-v2 episode keyed trigger/session_type=chat (#1055)."""
+
+    @pytest.fixture
+    def ctx(self, monkeypatch, tmp_path, pueo_dirs):
+        import web.dashboard as dashboard
+
+        path = str(tmp_path / "test_agent.db")
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
+        monkeypatch.setattr(dashboard, "DB_PATH", path)
+        monkeypatch.setattr(dashboard, "_debug_level_enabled", 1)
+        ha_agent_advanced.init_local_database()
+        with sqlite3.connect(path) as conn:
+            sid = conn.execute(
+                "INSERT INTO chat_sessions (title, created_at) VALUES ('t', 0)"
+            ).lastrowid
+        return dashboard, sid, pueo_dirs
+
+    def _run(self, monkeypatch, dashboard, sid, result, prior=None):
+        from utils.agent.agent_loop import AgentLoop
+
+        async def _fake_run(self_, message, **kw):  # noqa: ARG001
+            return result
+
+        monkeypatch.setattr(AgentLoop, "run", _fake_run)
+        asyncio.run(dashboard._run_chat_loop(sid, "What is up?", prior or []))
+
+    def _capture(self):
+        from utils.debug.capture import LLMCallRecord
+
+        return LLMCallRecord(
+            seq=1,
+            request_messages=[],
+            request_tools=[],
+            response_content="",
+            response_tool_calls=[],
+            thinking=None,
+            nudges_injected=[],
+            duration_ms=1.0,
+        )
+
+    def _load(self, dirs, sid):
+        import json as _json
+
+        ep = dirs.data_dir / "debug_episodes" / f"session_{sid}"
+        return _json.loads((ep / "episode_data.json").read_text())
+
+    def test_uses_loop_meta_and_full_messages(self, ctx, monkeypatch):
+        from utils.agent.tool_registry import AgentLoopResult
+
+        dashboard, sid, dirs = ctx
+        msgs = [
+            {"role": "system", "content": "SYS"},
+            {"role": "user", "content": "What is up?"},
+            {"role": "assistant", "content": "", "tool_calls": []},
+            {"role": "tool", "content": "out", "name": "recall"},
+        ]
+        result = AgentLoopResult(
+            outcome="success",
+            episode_id="agent-uuid",
+            episode_stub={"summary": "Fine."},
+            llm_captures=[self._capture()],
+            debug_session_meta={
+                "schema_version": 2,
+                "trigger": "manual",
+                "signature": "chat:general",
+                "finish_args": {"summary": "Fine."},
+            },
+            debug_messages=msgs,
+        )
+        self._run(monkeypatch, dashboard, sid, result)
+        data = self._load(dirs, sid)
+        assert data["trigger"] == "chat"
+        assert data["session_type"] == "chat"
+        assert data["episode_id"] == sid
+        assert data["agent_episode_id"] == "agent-uuid"
+        assert data["signature"] == "chat:general"
+        assert data["messages"] == msgs
+        assert data["tool_calls"] == []
+
+    def test_falls_back_to_prior_plus_message(self, ctx, monkeypatch):
+        from utils.agent.tool_registry import AgentLoopResult
+
+        dashboard, sid, dirs = ctx
+        result = AgentLoopResult(
+            outcome="failed",
+            episode_stub={"summary": "x"},
+            llm_captures=[self._capture()],
+        )
+        prior = [{"role": "user", "content": "earlier"}]
+        self._run(monkeypatch, dashboard, sid, result, prior)
+        data = self._load(dirs, sid)
+        assert data["trigger"] == "chat"
+        assert data["messages"] == [
+            {"role": "user", "content": "earlier"},
+            {"role": "user", "content": "What is up?"},
+        ]
+
+
 # ---------------------------------------------------------------------------
 # TestTimelineCallback
 # ---------------------------------------------------------------------------
