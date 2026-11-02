@@ -383,7 +383,7 @@
             {{ s.title or ('Session ' ~ s.id) }}
           </span>
           {% if s.debug_log_path %}
-          <a class="session-debug-link" href="/debug-episodes/session_{{ s.id }}/index.html"
+          <a class="session-debug-link" href="/episodes/{{ s.id }}"
              target="_blank" title="View debug episode"
              onclick="event.stopPropagation()">🐛</a>
           {% endif %}

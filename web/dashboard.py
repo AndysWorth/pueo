@@ -4834,12 +4834,22 @@ async def _run_chat_loop(
         decrement_active_chat()
 
 
+def _load_episode_rows() -> list[Any]:
+    """Every debug episode folder joined with session_outcomes (sync)."""
+    from utils.debug.episode_list import join_session_outcomes, scan_episode_dirs
+
+    rows = scan_episode_dirs(_get_dirs().data_dir / "debug_episodes")
+    return join_session_outcomes(rows, DB_PATH)
+
+
 @app.get("/episodes", response_class=HTMLResponse)
 async def episodes_tab(
     request: Request,
-    trigger: str = Query(default=""),
+    session_type: str = Query(default=""),
     outcome: str = Query(default=""),
 ) -> HTMLResponse:
+    """All debug episodes (every outcome), newest first, each linking to
+    ``/episodes/{id}``."""
     import config as _config
 
     if _debug_level_enabled < 1 and not _config.DEVELOPMENT_MODE:
@@ -4847,29 +4857,21 @@ async def episodes_tab(
             status_code=404,
             detail="Episodes requires debug_level >= 1 or development_mode: true",
         )
-    from utils.repair.repair_episode import load_episodes
+    from utils.debug.episode_list import filter_rows, format_started, outcome_options
 
-    episodes = await asyncio.to_thread(load_episodes, DB_PATH)
-    if trigger:
-        episodes = [ep for ep in episodes if ep.trigger == trigger]
-    if outcome == "passed":
-        episodes = [ep for ep in episodes if ep.verification_result]
-    elif outcome == "failed":
-        episodes = [ep for ep in episodes if not ep.verification_result]
-    debug_root = _get_dirs().data_dir / "debug_episodes"
-    debug_urls: dict[str, str] = {}
-    for ep in episodes:
-        ep_dir_name = f"{ep.trigger}_{ep.id}"
-        if (debug_root / ep_dir_name).is_dir():
-            debug_urls[ep.id] = f"/debug-episodes/{ep_dir_name}/index.html"
+    all_rows = await asyncio.to_thread(_load_episode_rows)
+    rows = filter_rows(all_rows, outcome=outcome, session_type=session_type)
     return templates.TemplateResponse(
         request,
         "episodes.html",
         {
-            "episodes": episodes,
-            "filter_trigger": trigger,
+            "rows": rows,
+            "total": len(all_rows),
+            "started": {r.folder: format_started(r) for r in rows},
+            "outcome_options": outcome_options(all_rows),
+            "session_types": sorted({r.session_type for r in all_rows}),
+            "filter_session_type": session_type,
             "filter_outcome": outcome,
-            "debug_urls": debug_urls,
         },
     )
 

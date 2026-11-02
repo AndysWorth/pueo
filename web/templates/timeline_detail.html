@@ -37,6 +37,10 @@
   <div class="msg-heading">{{ event.message }}</div>
 
   {% set detail = event.detail %}
+  {% if detail and detail.get('episode_id') and (debug_level_enabled or dev_mode) %}
+  <p style="margin:0 0 0.75rem;"><a class="episode-link" href="/episodes/{{ detail.get('episode_id') }}"
+     style="font-size:0.85rem;color:#1a73e8;text-decoration:none;">Open episode transcript →</a></p>
+  {% endif %}
 
   {% if detail %}
   <details open>

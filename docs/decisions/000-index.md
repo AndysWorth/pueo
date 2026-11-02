@@ -27,7 +27,7 @@ One row per ADR. Open the linked file for context, rationale, and consequences.
 | [021](021-dashboard-entity-monitor.md) | Dashboard entity monitor | Accepted | `ha_lovelace_monitor.py`; benign suppression; `should_send_card` gate |
 | [022](022-adaptive-llm-timeout.md) | Adaptive LLM timeout | Accepted | P95-based per-call timeout; `llm_calls` SQLite table; `llm_stats.expected_timeout_ms()` |
 | [023](023-external-api-resilience.md) | External API resilience | Accepted | Schema drift detection; `.get()` + structured log for required fields |
-| [024](024-debug-level-system.md) | Debug level system | Accepted | `DEBUG_LEVEL` integer 0–3; debug episode recording and replay |
+| [024](024-debug-level-system.md) | Debug level system | Accepted | `DEBUG_LEVEL` integer 0–3; debug episode recording and replay; amended #1059: schema v2 `episode_data.json`, one chronological page per episode (`/episodes/{id}`), all-outcome `/episodes` list |
 | [025](025-serialized-work-queue.md) | Serialized work queue | Accepted | `PueoWorkQueue`; `WorkItem`; priority levels; dedup key |
 | [026](026-no-concurrent-llm-ha.md) | No concurrent LLM/HA | Accepted | One LLM call and one HA write at a time; enforced via `PueoWorkQueue` |
 | [027](027-model-capability-configuration.md) | Model capability configuration | Accepted | `derive_call_options()`; `think=False` in production; dynamic model scoring |

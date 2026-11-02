@@ -55,6 +55,14 @@ A new `llm_one_shot_calls` table (V33 migration) captures every direct LLM call 
 - One-shot table rows at L0 are written only when `DEBUG_LEVEL >= 1` (the function is a no-op otherwise), so production systems at the default level see no overhead.
 - V33 migration adds `llm_one_shot_calls` to both `ha_agent_advanced.py` and `ha_agent_sandbox_engine.py` (dual-migration pattern per project convention).
 
+## Amendment (2026-11-02, #1055 #1057 #1059): episode schema v2 and one-page report
+
+The original HTML report split a session into three lists, hid content behind collapsed blocks and side pages, and truncated output at 2–3 k characters. The `/episodes` tab read only `repair_episodes`, which holds successes, so failed, stuck and exhausted sessions were invisible.
+
+- **Schema v2** (`episode_writer.build_episode_data`, `schema_version: 2`): `episode_data.json` is always written and is the single source. It adds session metadata (session type, signature, subject_key, provider, UTC start/end, duration, stuck reason, top retrieved signature, finish tool + args, system prompt, offered tools, full message history), per-call native thinking, tokens and Ollama eval/load ms, and per-tool `cached` and `model_saw` (only when the guardrail-trimmed content differs). Side files are no longer written. v1 files remain readable by the replayer and the renderer.
+- **Report** (`utils/debug/episode_report.py`): `build_episode_view` (pure) + `render_episode_html` produce one self-contained page — header and conclusion, "After the session" (verification, HITL card, runbook usage, learned entries, facts — joined read-only by `utils/debug/episode_extras.py`), starting-context blocks, then one block per LLM call showing only that call's new messages and its paired tool calls in full. No `<details>`, nothing truncated. The static `index.html` uses the same renderer without DB extras.
+- **Routes:** `GET /episodes` lists every debug episode folder (`utils/debug/episode_list.py`, parse cached per file mtime/size) joined with `session_outcomes`, with outcome (incl. "Not success") and session-type filters; each row links to `GET /episodes/{id}`. The chat turn's `manual_<uuid>` twin is hidden behind its `session_<id>` folder. HITL cards carrying `episode_id`, timeline events carrying `episode_id`, and the chat session list link to `/episodes/{id}`. `/episodes/export` (anonymized `repair_episodes` YAML) is unchanged. All are gated by `debug_level >= 1` or `development_mode`.
+
 ## Related decisions
 - [ADR 003 — Structured LLM output](003-structured-llm-output.md): one-shot calls all use Pydantic schema enforcement; `record_one_shot()` stores both the raw prompt and the validated response.
 - [ADR 005 — asyncio over agentic framework](005-asyncio-over-agentic-framework.md): `record_one_shot()` is called via `asyncio.create_task(asyncio.to_thread(...))` to avoid blocking event loop.

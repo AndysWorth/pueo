@@ -245,11 +245,11 @@ Install via HACS: search "HA Upgrade Advisor". Pueo detects it automatically thr
 
 ## 🔁 Episode Replay
 
-Every production agent session (repair, notification triage, update analysis, Lovelace investigation) automatically records a debug episode — a snapshot of every LLM response and tool result in the session — in `~/Library/Application Support/Pueo/data/debug_episodes/`. Episodes are retained for 30 days (configurable via `debug_episode_retention_days` in `config.yaml`).
+With `debug_level >= 1`, every agent session (repair, notification triage, update analysis, device availability, chat, …) records a debug episode — every LLM call, tool result and the session's conclusion — in `~/Library/Application Support/Pueo/debug_episodes/<trigger>_<episode_id>/episode_data.json`. Episodes are retained for 30 days (configurable via `debug_episode_retention_days` in `config.yaml`).
 
 **Why replay matters:** when you upgrade to a new Ollama model, change a prompt, or refactor the agent loop, you can verify that Pueo would produce the same outcome on previously seen incidents rather than discovering regressions in production.
 
-**Finding an episode ID:** browse `~/Library/Application Support/Pueo/data/debug_episodes/`, check the dashboard Episodes tab (in dev mode), or query the `repair_episodes` SQLite table.
+**Finding an episode ID:** the dashboard Episodes tab lists every episode (all outcomes) and opens each as one chronological page at `/episodes/<id>`; HITL cards and timeline events link there too. The ID is also the folder-name suffix under `~/Library/Application Support/Pueo/debug_episodes/`.
 
 **Deterministic replay** — replays stored LLM responses and tool results exactly, then reports whether the outcome matches:
 

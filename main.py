@@ -2032,7 +2032,7 @@ def main() -> None:
         "--episode-id",
         metavar="UUID",
         default=None,
-        help="episode UUID to replay; find IDs in ~/Library/Application Support/Pueo/data/debug_episodes/ or the dashboard Episodes tab",
+        help="episode UUID to replay; find IDs in ~/Library/Application Support/Pueo/debug_episodes/ (folder suffix) or the dashboard Episodes tab",
     )
     parser.add_argument(
         "--fresh",
