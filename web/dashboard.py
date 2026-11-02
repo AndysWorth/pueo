@@ -99,6 +99,23 @@ templates.env.filters["epoch_to_iso"] = lambda ts: (
 )
 
 
+def humanize_age(seconds: int) -> str:
+    """Render an age in the largest units that fit: s, min, h (+min), d (+h)."""
+    s = max(0, int(seconds))
+    if s < 60:
+        return f"{s} s"
+    if s < 3600:
+        return f"{s // 60} min"
+    if s < 86400:
+        h, m = divmod(s // 60, 60)
+        return f"{h} h {m} min" if m else f"{h} h"
+    d, h = divmod(s // 3600, 24)
+    return f"{d} d {h} h" if h else f"{d} d"
+
+
+templates.env.filters["humanize_age"] = humanize_age
+
+
 _debug_level_enabled: int = DEBUG_LEVEL
 
 

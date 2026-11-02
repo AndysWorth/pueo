@@ -14,7 +14,7 @@
     <div class="card-header">
       <span class="badge badge-{{ r.status | lower }}">{{ r.status }}</span>
       <span class="subject">{{ r.subject }}</span>
-      <span class="elapsed">{{ r.elapsed_seconds }}s ago</span>
+      <span class="elapsed" title="{{ r.elapsed_seconds }} s">{{ r.sent_at | epoch_to_iso }} · {{ r.elapsed_seconds | humanize_age }} ago</span>
       {% if r.payload.get("episode_id") and (debug_level_enabled or dev_mode) %}
       <a class="episode-link" href="/episodes/{{ r.payload.get('episode_id') }}" target="_blank"
          title="Open the full session transcript" style="font-size:0.78rem;color:#1a73e8;text-decoration:none;white-space:nowrap;">Episode ↗</a>
