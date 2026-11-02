@@ -3,6 +3,7 @@
 
 import asyncio
 import importlib
+import json
 import sqlite3
 import subprocess
 import sys
@@ -4386,6 +4387,133 @@ class TestServeDebugEpisodeRoute:
         client = TestClient(dashboard.app, raise_server_exceptions=False)
         resp = client.get("/debug-episodes/..%2Fsecret/index.html")
         assert resp.status_code in (400, 404)
+
+    def _dirs(self, tmp_path, monkeypatch):
+        import web.dashboard as dashboard
+        from paths import PueoDirectories
+
+        fake_dirs = PueoDirectories(
+            data_dir=tmp_path,
+            state_dir=tmp_path,
+            cache_dir=tmp_path,
+            log_dir=tmp_path,
+            config_dir=tmp_path,
+            runtime_dir=tmp_path,
+            resources_dir=tmp_path,
+        )
+        monkeypatch.setattr(dashboard, "_get_dirs", lambda: fake_dirs)
+
+    def test_serves_json_and_txt_with_content_types(self, tmp_path, monkeypatch):
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        ep_path = tmp_path / "debug_episodes" / "repair_poll_abc"
+        ep_path.mkdir(parents=True)
+        (ep_path / "episode_data.json").write_text("{}")
+        (ep_path / "tool_1_output.txt").write_text("out")
+        self._dirs(tmp_path, monkeypatch)
+        monkeypatch.setattr(dashboard, "_debug_level_enabled", 1)
+        client = TestClient(dashboard.app)
+        resp = client.get("/debug-episodes/repair_poll_abc/episode_data.json")
+        assert resp.headers["content-type"] == "application/json"
+        resp = client.get("/debug-episodes/repair_poll_abc/tool_1_output.txt")
+        assert resp.headers["content-type"].startswith("text/plain")
+        resp = client.get("/debug-episodes/repair_poll_abc/missing.html")
+        assert resp.status_code == 404
+
+
+class TestEpisodePageRoute:
+    """GET /episodes/{episode_id} — the chronological episode page (#1057)."""
+
+    _EP = "11111111-2222-3333-4444-555555555555"
+
+    def _setup(self, tmp_path, monkeypatch, level=1):
+        import web.dashboard as dashboard
+        from paths import PueoDirectories
+
+        fake_dirs = PueoDirectories(
+            data_dir=tmp_path,
+            state_dir=tmp_path,
+            cache_dir=tmp_path,
+            log_dir=tmp_path,
+            config_dir=tmp_path,
+            runtime_dir=tmp_path,
+            resources_dir=tmp_path,
+        )
+        monkeypatch.setattr(dashboard, "_get_dirs", lambda: fake_dirs)
+        monkeypatch.setattr(dashboard, "_debug_level_enabled", level)
+        db = tmp_path / "state.db"
+        conn = sqlite3.connect(db)
+        with conn:
+            conn.execute(
+                "CREATE TABLE session_outcomes (episode_id TEXT PRIMARY KEY,"
+                " signature TEXT, session_type TEXT, subject_key TEXT,"
+                " conclusion_json TEXT, created_at TEXT, verification TEXT,"
+                " verified_at TEXT, verified_by TEXT, correction TEXT,"
+                " distilled_at TEXT, card_id TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO session_outcomes (episode_id, signature, verification,"
+                " verified_by) VALUES (?, 'repair:x', 'success', 'user')",
+                (self._EP,),
+            )
+        conn.close()
+        monkeypatch.setattr(dashboard, "DB_PATH", str(db))
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path / "hitl"))
+        ep_dir = tmp_path / "debug_episodes" / f"repair_poll_{self._EP}"
+        ep_dir.mkdir(parents=True)
+        (ep_dir / "episode_data.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "episode_id": self._EP,
+                    "trigger": "repair_poll",
+                    "outcome": "success",
+                    "llm_calls": [],
+                    "tool_calls": [],
+                }
+            )
+        )
+
+    def test_returns_page_with_extras(self, tmp_path, monkeypatch):
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        self._setup(tmp_path, monkeypatch)
+        resp = TestClient(dashboard.app).get(f"/episodes/{self._EP}")
+        assert resp.status_code == 200
+        assert "repair:x" in resp.text  # signature joined from session_outcomes
+        assert "<th>Verification</th><td>success</td>" in resp.text
+
+    def test_unknown_episode_404(self, tmp_path, monkeypatch):
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        self._setup(tmp_path, monkeypatch)
+        resp = TestClient(dashboard.app).get("/episodes/does-not-exist")
+        assert resp.status_code == 404
+
+    def test_gated_when_debug_off(self, tmp_path, monkeypatch):
+        import config
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        self._setup(tmp_path, monkeypatch, level=0)
+        monkeypatch.setattr(config, "DEVELOPMENT_MODE", False)
+        resp = TestClient(dashboard.app).get(f"/episodes/{self._EP}")
+        assert resp.status_code == 404
+
+    def test_export_route_not_shadowed(self, tmp_path, monkeypatch):
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        self._setup(tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            "utils.repair.repair_episode.load_episodes", lambda *a, **k: []
+        )
+        resp = TestClient(dashboard.app).get("/episodes/export")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("application/x-yaml")
 
 
 class TestLogsHaApps:
