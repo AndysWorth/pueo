@@ -2964,7 +2964,7 @@ async def dismiss_notification(card_id: str) -> RedirectResponse:
 
     watch_dir = Path(NOTIFY_WATCH_DIR)
     json_path = watch_dir / f"{card_id}.json"
-    if json_path.exists() and _status(card_id, watch_dir) == "PENDING":
+    if json_path.exists() and _status(card_id, watch_dir) in ("PENDING", "APPROVED"):
         data = json.loads(json_path.read_text())
         ha_nid = data.get("payload", {}).get("ha_notification_id", "")
         if ha_nid:
