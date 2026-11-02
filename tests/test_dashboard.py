@@ -1880,6 +1880,32 @@ class TestDismissNotificationRoute:
         client.post("/dismiss-notification/notif_http_login", follow_redirects=False)
         assert not fake_rest.service_calls
 
+    def test_dismiss_after_wrong_still_dismisses(self, tmp_path, monkeypatch):
+        """Dismiss works after 'Pueo got this wrong' has already set the card to APPROVED."""
+        import utils.ha.ha_rest_client
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+        from utils.ha.ha_rest_client import FakeHARestClient
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        fake_rest = FakeHARestClient()
+        monkeypatch.setattr(
+            utils.ha.ha_rest_client, "HARestClient", lambda *a, **kw: fake_rest
+        )
+        self._write_notification_card(tmp_path, "notif_http_login", "http_login")
+        # Simulate "Pueo got this wrong" having already been clicked
+        (tmp_path / "notif_http_login.approved").touch()
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        response = client.post(
+            "/dismiss-notification/notif_http_login", follow_redirects=False
+        )
+        assert response.status_code == 303
+        assert (
+            "persistent_notification",
+            "dismiss",
+            {"notification_id": "http_login"},
+        ) in fake_rest.service_calls
+
     def test_dismiss_after_reoccurrence(self, tmp_path, monkeypatch):
         """Dismiss works on a new card occurrence even when stale .approved file exists."""
         import asyncio as _asyncio
