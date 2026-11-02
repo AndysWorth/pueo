@@ -330,6 +330,49 @@ _GITHUB_API_URL = (
     "https://api.github.com/repos/home-assistant/core/releases/tags/{version}"
 )
 
+
+def _enumerate_intermediate_core_versions(
+    installed_version: str, target_version: str
+) -> list[str]:
+    """Enumerate HA Core milestone versions between installed (exclusive) and target (inclusive).
+
+    Returns intermediate minor x.0 releases plus the target. If installed and target
+    share the same minor (or differ only by patch), returns only the target.
+
+    Examples::
+        installed=2026.1.2, target=2026.3.1 → ["2026.2.0", "2026.3.1"]
+        installed=2026.2.0, target=2026.3.1 → ["2026.3.1"]
+        installed=2026.3.0, target=2026.3.1 → ["2026.3.1"]
+    """
+
+    def _parse_core(v: str) -> Optional[tuple[int, int]]:
+        parts = v.split(".")
+        if len(parts) >= 2 and len(parts[0]) == 4 and parts[0].startswith("20"):
+            try:
+                return (int(parts[0]), int(parts[1]))
+            except ValueError:
+                pass
+        return None
+
+    iv = _parse_core(installed_version)
+    tv = _parse_core(target_version)
+    if iv is None or tv is None:
+        return [target_version]
+
+    iy, im = iv
+    ty, tm = tv
+    versions: list[str] = []
+    curr_y, curr_m = iy, im + 1
+    while (curr_y, curr_m) < (ty, tm):
+        versions.append(f"{curr_y}.{curr_m}.0")
+        curr_m += 1
+        if curr_m > 12:
+            curr_m = 1
+            curr_y += 1
+    versions.append(target_version)
+    return versions
+
+
 # Match github.com HTML release URLs and rewrite them to the API form so the
 # JSON body field (release notes) is directly accessible.
 _GITHUB_RELEASE_HTML_RE = re.compile(
