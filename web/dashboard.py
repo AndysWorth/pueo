@@ -4299,11 +4299,20 @@ async def serve_debug_episode(ep_dir: str, filename: str) -> Response:
         raise HTTPException(status_code=400, detail="Invalid episode directory")
     safe_filename = Path(filename).name
     file_path = _get_dirs().data_dir / "debug_episodes" / ep_dir / safe_filename
-    if not file_path.exists():
+    if not await asyncio.to_thread(file_path.is_file):
         raise HTTPException(status_code=404, detail="Episode file not found")
-    return Response(
-        content=file_path.read_bytes(), media_type="text/html; charset=utf-8"
-    )
+    content = await asyncio.to_thread(file_path.read_bytes)
+    return Response(content=content, media_type=_debug_file_media_type(safe_filename))
+
+
+def _debug_file_media_type(filename: str) -> str:
+    """Content type for a debug episode file (legacy side files included)."""
+    suffix = Path(filename).suffix.lower()
+    if suffix == ".json":
+        return "application/json"
+    if suffix == ".txt":
+        return "text/plain; charset=utf-8"
+    return "text/html; charset=utf-8"
 
 
 @app.get("/chat/events")
@@ -4894,6 +4903,41 @@ async def export_episodes(
         media_type="application/x-yaml",
         headers={"Content-Disposition": "attachment; filename=repair-episodes.yaml"},
     )
+
+
+def _render_episode_page(episode_id: str) -> str | None:
+    """Load, join and render one debug episode (sync; run via to_thread)."""
+    from utils.debug.episode_extras import find_episode_dir, load_episode_extras
+    from utils.debug.episode_report import build_episode_view, render_episode_html
+
+    ep_dir = find_episode_dir(_get_dirs().data_dir / "debug_episodes", episode_id)
+    if ep_dir is None:
+        return None
+    data = json.loads((ep_dir / "episode_data.json").read_text(encoding="utf-8"))
+    extras = load_episode_extras(
+        DB_PATH,
+        str(data.get("episode_id") or episode_id),
+        Path(NOTIFY_WATCH_DIR),
+        data.get("started_at"),
+    )
+    return render_episode_html(build_episode_view(data, extras))
+
+
+# Registered after /episodes/export so "export" is never taken as an id.
+@app.get("/episodes/{episode_id}", response_class=HTMLResponse)
+async def episode_page(episode_id: str) -> HTMLResponse:
+    """One debug episode as a single chronological page, with DB extras."""
+    import config as _config
+
+    if _debug_level_enabled < 1 and not _config.DEVELOPMENT_MODE:
+        raise HTTPException(
+            status_code=404,
+            detail="Episodes requires debug_level >= 1 or development_mode: true",
+        )
+    page = await asyncio.to_thread(_render_episode_page, episode_id)
+    if page is None:
+        raise HTTPException(status_code=404, detail="Episode not found")
+    return HTMLResponse(page)
 
 
 @app.get("/logs", response_class=HTMLResponse)

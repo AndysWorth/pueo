@@ -1,7 +1,7 @@
 """Tests for the debug mode overhaul (issue #574) and debug level system (issue #578).
 
 Covers:
-- utils/debug/episode_writer.py HTML structure
+- utils/debug/episode_writer.py bundle (index.html via episode_report)
 - AgentLoop capture_llm=True: captures in result, nudge pass-back
 - GET/POST /api/debug-mode: enable/disable/verbose states + level field
 - config.py DEBUG_LEVEL, DEBUG_MODE / DEBUG_VERBOSE defaults and YAML loading
@@ -107,8 +107,8 @@ class TestEpisodeWriter:
             episode_dir, self._make_session_meta(), self._make_captures(), []
         )
         html = (episode_dir / "index.html").read_text()
-        assert "Call 1" in html
-        assert "Call 2" in html
+        assert "LLM call 1" in html
+        assert "LLM call 2" in html
 
     def test_nudge_highlighted_in_html(self, tmp_path):
         from utils.debug.episode_writer import write_episode_html
@@ -213,9 +213,9 @@ class TestEpisodeWriter:
         html = (episode_dir / "index.html").read_text()
         assert "NATIVE_REASONING" in html
         assert "1200→34 tok" in html
-        assert "cached (repeat)" in html
+        assert "cached (repeat call)" in html
         saw_len = len("[Repeated call] raw output")
-        assert f"Model saw ({saw_len} of 10 chars)" in html
+        assert f"Model saw {saw_len} of 10 chars" in html
 
     def test_episode_data_json_written_without_tool_calls(self, tmp_path):
         """A session with LLM calls but no tool calls still writes JSON."""
@@ -287,19 +287,20 @@ class TestEpisodeWriter:
         episode_dir = tmp_path / "ep"
         write_episode_html(episode_dir, self._make_session_meta(), [], [])
         html = (episode_dir / "index.html").read_text()
-        assert "no captures" in html.lower()
+        assert "No LLM calls were recorded" in html
 
-    def test_system_messages_excluded_from_conversation(self, tmp_path):
+    def test_system_prompt_only_in_appendix(self, tmp_path):
         from utils.debug.episode_writer import write_episode_html
 
         episode_dir = tmp_path / "ep"
         conv = [
-            {"role": "system", "content": "TOP SECRET SYSTEM PROMPT"},
+            {"role": "system", "content": "SYSTEM PROMPT TEXT"},
             {"role": "user", "content": "Hello"},
         ]
         write_episode_html(episode_dir, self._make_session_meta(), [], conv)
         html = (episode_dir / "index.html").read_text()
-        assert "TOP SECRET SYSTEM PROMPT" not in html
+        assert html.count("SYSTEM PROMPT TEXT") == 1
+        assert html.index("SYSTEM PROMPT TEXT") > html.index('id="appendix"')
         assert "Hello" in html
 
     def test_html_is_self_contained(self, tmp_path):
@@ -314,8 +315,8 @@ class TestEpisodeWriter:
         assert "cdn.jsdelivr.net" not in html
         assert "cdnjs.cloudflare.com" not in html
 
-    def test_build_index_shows_tool_name_in_thread(self, tmp_path):
-        """role='tool' rows show 'tool: <name>' in the role column."""
+    def test_tool_message_without_record_rendered(self, tmp_path):
+        """A tool message with no record or LLM call still appears, flagged."""
         from utils.debug.episode_writer import write_episode_html
 
         conv = [
@@ -325,10 +326,12 @@ class TestEpisodeWriter:
         episode_dir = tmp_path / "ep"
         write_episode_html(episode_dir, self._make_session_meta(), [], conv)
         html = (episode_dir / "index.html").read_text()
-        assert "tool: read_config" in html
+        assert "read_config" in html
+        assert "home_assistant: true" in html
+        assert "no tool record" in html
 
-    def test_build_index_tool_call_log_section(self, tmp_path):
-        """Tool Call Log section appears when tool_call_records is provided."""
+    def test_records_without_llm_calls_rendered(self, tmp_path):
+        """Tool records are shown even when no LLM call claimed them."""
         from utils.debug.episode_writer import write_episode_html
         from utils.debug.capture import ToolCallRecord
 
@@ -359,14 +362,15 @@ class TestEpisodeWriter:
             episode_dir, self._make_session_meta(), [], [], tool_call_records=records
         )
         html = (episode_dir / "index.html").read_text()
-        assert "Tool Call Log" in html
+        assert "Tool calls without a recorded LLM call" in html
         assert "read_config" in html
         assert "apply_fix" in html
+        assert "Backup required" in html
         assert "previous result discarded" in html
-        assert "Tool calls:" in html
+        assert "<th>Tool calls</th><td>2</td>" in html
 
-    def test_build_index_no_tool_call_log_when_records_none(self, tmp_path):
-        """Tool Call Log section is absent when tool_call_records is None."""
+    def test_no_unpaired_section_when_records_none(self, tmp_path):
+        """No unpaired-tools section and a zero tool count without records."""
         from utils.debug.episode_writer import write_episode_html
 
         episode_dir = tmp_path / "ep"
@@ -374,8 +378,8 @@ class TestEpisodeWriter:
             episode_dir, self._make_session_meta(), [], [], tool_call_records=None
         )
         html = (episode_dir / "index.html").read_text()
-        assert "Tool Call Log" not in html
-        assert "Tool calls:" not in html
+        assert "Tool calls without a recorded LLM call" not in html
+        assert "<th>Tool calls</th><td>0</td>" in html
 
 
 # ---------------------------------------------------------------------------
