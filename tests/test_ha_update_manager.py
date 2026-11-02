@@ -4797,3 +4797,432 @@ class TestFetchUrlGitHubReleaseRewrite:
         url = "https://github.com/o/r/releases/download/18.4/sha256sums"
         _, requested = self._fetch(executor, url, "x")
         assert requested == url
+
+
+# ---------------------------------------------------------------------------
+# _enumerate_intermediate_core_versions
+# ---------------------------------------------------------------------------
+
+
+class TestEnumerateIntermediateCoreVersions:
+    """_enumerate_intermediate_core_versions returns correct milestone lists."""
+
+    def _call(self, installed, target):
+        from agents.ha_update_manager import _enumerate_intermediate_core_versions
+
+        return _enumerate_intermediate_core_versions(installed, target)
+
+    def test_same_minor_no_intermediate(self):
+        assert self._call("2026.3.0", "2026.3.1") == ["2026.3.1"]
+
+    def test_adjacent_minor_no_intermediate(self):
+        assert self._call("2026.2.0", "2026.3.1") == ["2026.3.1"]
+
+    def test_one_skipped_minor(self):
+        assert self._call("2026.1.2", "2026.3.1") == ["2026.2.0", "2026.3.1"]
+
+    def test_two_skipped_minors(self):
+        assert self._call("2026.1.0", "2026.4.0") == [
+            "2026.2.0",
+            "2026.3.0",
+            "2026.4.0",
+        ]
+
+    def test_year_boundary(self):
+        assert self._call("2025.11.0", "2026.2.0") == [
+            "2025.12.0",
+            "2026.1.0",
+            "2026.2.0",
+        ]
+
+    def test_non_core_installed_falls_through(self):
+        assert self._call("3.2.0", "2026.3.1") == ["2026.3.1"]
+
+    def test_non_core_target_falls_through(self):
+        assert self._call("2026.1.0", "3.2.1") == ["3.2.1"]
+
+
+# ---------------------------------------------------------------------------
+# _get_update_release_notes — multi-version range
+# ---------------------------------------------------------------------------
+
+
+class TestGetUpdateReleaseNotesMultiVersion:
+    """Multi-version range fetch prepends intermediate milestone notes."""
+
+    def _make_executor(self, installed_version: str, latest_version: str):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, MagicMock
+
+        from utils.agent.tool_executor import ToolExecutor
+
+        notifier = MagicMock()
+        notifier.send = AsyncMock()
+        executor = ToolExecutor(
+            ha_ssh_client=MagicMock(),
+            gate=MagicMock(),
+            notifier=notifier,
+            db_path=":memory:",
+        )
+        update = SimpleNamespace(
+            entity_id="update.home_assistant_core_update",
+            component="core",
+            installed_version=installed_version,
+            latest_version=latest_version,
+            release_url=None,
+            release_summary=None,
+        )
+        executor.set_update_status(update)
+        return executor
+
+    def test_two_versions_concatenated(self, tmp_path, pueo_dirs):
+        """Skipping one minor: intermediate notes prepended with header."""
+        import asyncio
+        from unittest.mock import patch, AsyncMock
+
+        import config as _cfg
+
+        call_log: list[str] = []
+
+        async def _fake_fetch(version, cache_dir, **kwargs):
+            call_log.append(version)
+            return f"Notes for {version}"
+
+        executor = self._make_executor("2026.1.2", "2026.3.1")
+        with (
+            patch.object(_cfg, "HA_UPDATE_RELEASE_NOTES_CACHE_DIR", str(tmp_path)),
+            patch(
+                "agents.ha_update_manager.fetch_release_notes_cached",
+                side_effect=_fake_fetch,
+            ),
+        ):
+            result = asyncio.run(executor._get_update_release_notes("2026.3.1"))
+
+        assert result.success
+        assert "2026.2" in result.output
+        assert "2026.3.1" in result.output
+        assert "---" in result.output
+        assert call_log == ["2026.2.0", "2026.3.1"]
+
+    def test_same_minor_single_fetch(self, tmp_path, pueo_dirs):
+        """Patch release: only the target version is fetched."""
+        import asyncio
+        from unittest.mock import patch, AsyncMock
+
+        import config as _cfg
+
+        call_log: list[str] = []
+
+        async def _fake_fetch(version, cache_dir, **kwargs):
+            call_log.append(version)
+            return f"Notes for {version}"
+
+        executor = self._make_executor("2026.3.0", "2026.3.1")
+        with (
+            patch.object(_cfg, "HA_UPDATE_RELEASE_NOTES_CACHE_DIR", str(tmp_path)),
+            patch(
+                "agents.ha_update_manager.fetch_release_notes_cached",
+                side_effect=_fake_fetch,
+            ),
+        ):
+            result = asyncio.run(executor._get_update_release_notes("2026.3.1"))
+
+        assert result.success
+        assert call_log == ["2026.3.1"]
+        assert "---" not in result.output
+
+    def test_non_core_no_multi_version(self, tmp_path, pueo_dirs):
+        """Non-Core (add-on) updates are never multi-versioned."""
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from utils.agent.tool_executor import ToolExecutor
+        import config as _cfg
+
+        call_log: list[str] = []
+
+        async def _fake_fetch(version, cache_dir, **kwargs):
+            call_log.append(version)
+            return f"Notes for {version}"
+
+        notifier = MagicMock()
+        notifier.send = AsyncMock()
+        executor = ToolExecutor(
+            ha_ssh_client=MagicMock(),
+            gate=MagicMock(),
+            notifier=notifier,
+            db_path=":memory:",
+        )
+        update = SimpleNamespace(
+            entity_id="update.mosquitto_broker_update",
+            component="mosquitto_broker",
+            installed_version="6.2.0",
+            latest_version="6.3.0",
+            release_url=None,
+            release_summary=None,
+        )
+        executor.set_update_status(update)
+        with (
+            patch.object(_cfg, "HA_UPDATE_RELEASE_NOTES_CACHE_DIR", str(tmp_path)),
+            patch(
+                "agents.ha_update_manager.fetch_release_notes_cached",
+                side_effect=_fake_fetch,
+            ),
+        ):
+            result = asyncio.run(executor._get_update_release_notes("6.3.0"))
+
+        assert result.success
+        assert call_log == ["6.3.0"]
+
+
+# ---------------------------------------------------------------------------
+# _check_config_against_breaking_change — recursive grep
+# ---------------------------------------------------------------------------
+
+
+class TestCheckConfigRecursiveGrep:
+    """_check_config_against_breaking_change searches packages/ and integrations/."""
+
+    def _make_executor(self, ssh):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from utils.agent.tool_executor import ToolExecutor
+
+        notifier = MagicMock()
+        notifier.send = AsyncMock()
+        executor = ToolExecutor(
+            ha_ssh_client=ssh,
+            gate=MagicMock(),
+            notifier=notifier,
+            db_path=":memory:",
+        )
+        return executor
+
+    def test_grep_command_includes_packages_dir(self, pueo_dirs):
+        import asyncio
+
+        from utils.ha.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(command_results={"grep": (0, "not found", "")})
+        executor = self._make_executor(ssh)
+        asyncio.run(
+            executor._check_config_against_breaking_change(
+                "recorder", "recorder key removed"
+            )
+        )
+        assert any(
+            "/config/packages/" in cmd for cmd in ssh.commands_run
+        ), "grep should include /config/packages/"
+
+    def test_grep_command_includes_integrations_dir(self, pueo_dirs):
+        import asyncio
+
+        from utils.ha.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(command_results={"grep": (0, "not found", "")})
+        executor = self._make_executor(ssh)
+        asyncio.run(
+            executor._check_config_against_breaking_change(
+                "mqtt", "mqtt config removed"
+            )
+        )
+        assert any(
+            "/config/integrations/" in cmd for cmd in ssh.commands_run
+        ), "grep should include /config/integrations/"
+
+    def test_secret_files_excluded(self, pueo_dirs):
+        import asyncio
+
+        from utils.ha.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(command_results={"grep": (0, "not found", "")})
+        executor = self._make_executor(ssh)
+        asyncio.run(
+            executor._check_config_against_breaking_change("key", "key renamed")
+        )
+        cmd = ssh.commands_run[-1]
+        assert "--exclude='*secret*'" in cmd
+        assert "--exclude='*password*'" in cmd
+
+    def test_match_in_packages_reported_present(self, pueo_dirs):
+        import asyncio
+
+        from utils.ha.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(
+            command_results={
+                "grep": (
+                    0,
+                    "/config/packages/lights.yaml:12:  recorder:",
+                    "",
+                )
+            }
+        )
+        executor = self._make_executor(ssh)
+        result = asyncio.run(
+            executor._check_config_against_breaking_change(
+                "recorder", "recorder key removed"
+            )
+        )
+        assert result.success
+        assert "PRESENT" in result.output
+        assert "lights.yaml" in result.output
+
+
+# ---------------------------------------------------------------------------
+# check_automation_references tool
+# ---------------------------------------------------------------------------
+
+
+class TestCheckAutomationReferences:
+    """check_automation_references searches automation YAML files."""
+
+    def _make_executor(self, ssh):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from utils.agent.tool_executor import ToolExecutor
+
+        notifier = MagicMock()
+        notifier.send = AsyncMock()
+        return ToolExecutor(
+            ha_ssh_client=ssh,
+            gate=MagicMock(),
+            notifier=notifier,
+            db_path=":memory:",
+        )
+
+    def test_found_in_automations_yaml(self, pueo_dirs):
+        import asyncio
+
+        from utils.ha.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(
+            command_results={
+                "grep": (
+                    0,
+                    "/config/automations.yaml:5:  service: light.turn_on",
+                    "",
+                )
+            }
+        )
+        executor = self._make_executor(ssh)
+        result = asyncio.run(
+            executor._check_automation_references("light.turn_on", "service removed")
+        )
+        assert result.success
+        assert "FOUND" in result.output
+        assert "light.turn_on" in result.output
+
+    def test_not_found_returns_not_found(self, pueo_dirs):
+        import asyncio
+
+        from utils.ha.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(command_results={"grep": (0, "not found", "")})
+        executor = self._make_executor(ssh)
+        result = asyncio.run(
+            executor._check_automation_references("deprecated.service")
+        )
+        assert result.success
+        assert "NOT FOUND" in result.output
+
+    def test_empty_pattern_returns_error(self, pueo_dirs):
+        import asyncio
+
+        from utils.ha.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient()
+        executor = self._make_executor(ssh)
+        result = asyncio.run(executor._check_automation_references(""))
+        assert not result.success
+        assert "required" in result.error
+
+    def test_no_ssh_client_returns_error(self, pueo_dirs):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+
+        from utils.agent.tool_executor import ToolExecutor
+
+        notifier = MagicMock()
+        notifier.send = AsyncMock()
+        executor = ToolExecutor(
+            ha_ssh_client=None,
+            gate=MagicMock(),
+            notifier=notifier,
+            db_path=":memory:",
+        )
+        result = asyncio.run(executor._check_automation_references("light.turn_on"))
+        assert not result.success
+        assert "SSH" in result.error
+
+    def test_searches_automations_subdirectory(self, pueo_dirs):
+        import asyncio
+
+        from utils.ha.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(command_results={"grep": (0, "not found", "")})
+        executor = self._make_executor(ssh)
+        asyncio.run(executor._check_automation_references("deprecated.scene"))
+        cmd = ssh.commands_run[-1]
+        assert "/config/automations/" in cmd
+
+    def test_searches_packages_directory(self, pueo_dirs):
+        import asyncio
+
+        from utils.ha.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(command_results={"grep": (0, "not found", "")})
+        executor = self._make_executor(ssh)
+        asyncio.run(executor._check_automation_references("deprecated.scene"))
+        cmd = ssh.commands_run[-1]
+        assert "/config/packages/" in cmd
+
+    def test_dispatched_via_execute(self, pueo_dirs):
+        import asyncio
+
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_registry import ToolCall
+
+        ssh = FakeSSHClient(command_results={"grep": (0, "not found", "")})
+        executor = self._make_executor(ssh)
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="check_automation_references",
+                    arguments={
+                        "pattern": "light.turn_on",
+                        "breaking_change_desc": "removed",
+                    },
+                )
+            )
+        )
+        assert result.success
+        assert "NOT FOUND" in result.output
+
+
+# ---------------------------------------------------------------------------
+# tool_registry — check_automation_references registered
+# ---------------------------------------------------------------------------
+
+
+class TestCheckAutomationReferencesRegistry:
+    def test_registered_in_update_analysis_registry(self):
+        from utils.agent.tool_registry import build_update_analysis_registry
+
+        reg = build_update_analysis_registry()
+        assert "check_automation_references" in reg
+
+    def test_schema_has_pattern_required(self):
+        from utils.agent.tool_registry import CHECK_AUTOMATION_REFERENCES
+
+        params = CHECK_AUTOMATION_REFERENCES.parameters
+        assert "pattern" in params["properties"]
+        assert "pattern" in params["required"]
+
+    def test_schema_breaking_change_desc_optional(self):
+        from utils.agent.tool_registry import CHECK_AUTOMATION_REFERENCES
+
+        params = CHECK_AUTOMATION_REFERENCES.parameters
+        assert "breaking_change_desc" in params["properties"]
+        assert "breaking_change_desc" not in params.get("required", [])

@@ -16,6 +16,12 @@ a GitHub release via `fetch_ha_docs` if notes are unavailable.
 
 **HACS update with incompatibility note in HA Core release notes**
 - Check whether the HACS integration is affected by any recent HA Core breaking changes.
+- If the integration provides custom services that may have changed, call
+  `check_automation_references(pattern, description)` to verify whether any automations
+  reference them.
+- When `check_config_against_breaking_change` or `check_automation_references` returns
+  matches, classify each matched line as `likely affected`, `likely safe`, or `unclear`.
+  Count the check as a finding only if at least one line is `likely affected` or `unclear`.
 - If affected: `instance_impact="high"`, note the specific conflict.
 
 **Integration is downloaded but not loaded (unloaded)**

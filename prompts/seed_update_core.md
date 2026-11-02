@@ -28,17 +28,26 @@ releases (2026.9.x → 2026.10.x) may carry breaking changes.
    - Produce a numbered checklist of ALL breaking changes mentioned, including ones that may
      not affect this install. Mark each as "affects this install: yes/no/unknown" — verify below.
 
-2. For each potentially-affecting breaking change:
-   `check_config_against_breaking_change(config_key, description)` — does this install use
-   the deprecated key or removed API?
+2. For each potentially-affecting breaking change that mentions a YAML config key:
+   `check_config_against_breaking_change(config_key, description)` — searches
+   `/config/configuration.yaml`, `/config/packages/`, and `/config/integrations/`.
+   - When matches are returned, classify each matched line as `likely affected`,
+     `likely safe`, or `unclear`. Count the check as a finding only if at least one
+     line is `likely affected` or `unclear`. If all lines are `likely safe`, state it
+     as a non-finding.
 
-3. `query_knowledge(query_type="procedural")` — cross-check renamed/removed config keys
+3. For breaking changes that affect service calls or entity platforms (common in minor
+   releases): `check_automation_references(pattern, description)` — searches
+   `automations.yaml`, `automations/*.yaml`, and `packages/**/*.yaml`.
+   Apply the same line classification rule as step 2.
+
+4. `query_knowledge(query_type="procedural")` — cross-check renamed/removed config keys
    against the `ha_best_practices` deprecated-API table.
 
-4. If release notes mention CLI command changes: `get_pueo_command_catalog` to check whether
+5. If release notes mention CLI command changes: `get_pueo_command_catalog` to check whether
    Pueo's SSH command set is affected.
 
-5. `read_file("/config/configuration.yaml")` only if you need to verify a specific config key
+6. `read_file("/config/configuration.yaml")` only if you need to verify a specific config key
    flagged by a breaking change.
 
 ## Output guidance

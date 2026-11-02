@@ -869,6 +869,11 @@ class ToolExecutor:
                     config_key=args.get("config_key", ""),
                     breaking_change_desc=args.get("breaking_change_desc", ""),
                 )
+            if name == "check_automation_references":
+                return await self._check_automation_references(
+                    pattern=args.get("pattern", ""),
+                    breaking_change_desc=args.get("breaking_change_desc", ""),
+                )
             if name == "finish_update_analysis":
                 self._capture_declared_runbook(args)
                 return await self._finish_update_analysis(
@@ -5859,6 +5864,41 @@ class ToolExecutor:
             if self._ws_client is not None:
                 _ws_fetcher = self._ws_client.get_update_release_notes
 
+            # For HA Core upgrades that skip minor versions, prepend intermediate
+            # milestone notes so breaking changes from skipped versions are visible.
+            from agents.ha_update_manager import _enumerate_intermediate_core_versions
+
+            _installed = ""
+            if self._pending_update_status is not None:
+                _installed = self._pending_update_status.installed_version or ""
+            _is_ha_core_ver = _bare_version[:4].isdigit() and _bare_version.startswith(
+                "20"
+            )
+            if (
+                _is_ha_core_ver
+                and _installed
+                and _installed[:4].isdigit()
+                and _installed.startswith("20")
+            ):
+                _versions_to_fetch = _enumerate_intermediate_core_versions(
+                    _installed, _bare_version
+                )
+            else:
+                _versions_to_fetch = [_bare_version]
+
+            _inter_parts: list[str] = []
+            for _iv in _versions_to_fetch[:-1]:
+                try:
+                    _iv_notes = await fetch_release_notes_cached(
+                        _iv,
+                        _cfg.HA_UPDATE_RELEASE_NOTES_CACHE_DIR,
+                    )
+                    if _iv_notes.startswith("STUB:"):
+                        _iv_notes = _iv_notes[len("STUB:") :].lstrip()
+                    _inter_parts.append(f"# {_iv}\n\n{_iv_notes}")
+                except Exception:  # nosec B110
+                    pass
+
             notes = await fetch_release_notes_cached(
                 _bare_version,
                 _cfg.HA_UPDATE_RELEASE_NOTES_CACHE_DIR,
@@ -5881,6 +5921,13 @@ class ToolExecutor:
                     )
             elif not notes.startswith(_UNAVAILABLE_SENTINEL):
                 self._release_notes_obtained = True
+
+            if _inter_parts:
+                notes = (
+                    "\n\n---\n\n".join(_inter_parts)
+                    + f"\n\n---\n\n# {_bare_version}\n\n{notes}"
+                )
+
             return ToolResult(
                 tool_name="get_update_release_notes",
                 success=True,
@@ -5924,9 +5971,15 @@ class ToolExecutor:
                 error="No SSH client available; cannot read live config",
             )
         try:
+            # Search root config plus packages/ and integrations/ subdirs.
+            # Skip files whose names suggest secrets to avoid leaking sensitive data.
             _, content, _ = await self._ha_ssh.run(
-                f"grep -n '{config_key}' /config/configuration.yaml 2>/dev/null"
-                " || echo 'not found'",
+                f"grep -rn --include='*.yaml' "
+                f"--exclude='*secret*' --exclude='*credential*' "
+                f"--exclude='*token*' --exclude='*password*' --exclude='*passwd*' "
+                f"'{config_key}' "
+                f"/config/configuration.yaml /config/packages/ /config/integrations/ "
+                f"2>/dev/null || echo 'not found'",
                 check=False,
             )
             present = content.strip() and "not found" not in content
@@ -5943,6 +5996,56 @@ class ToolExecutor:
         except Exception as exc:
             return ToolResult(
                 tool_name="check_config_against_breaking_change",
+                success=False,
+                output="",
+                error=str(exc),
+            )
+
+    async def _check_automation_references(
+        self, pattern: str, breaking_change_desc: str = ""
+    ) -> ToolResult:
+        """Search automation YAML files for deprecated service calls or entity platforms."""
+        if not pattern:
+            return ToolResult(
+                tool_name="check_automation_references",
+                success=False,
+                output="",
+                error="pattern is required",
+            )
+        if self._ha_ssh is None:
+            return ToolResult(
+                tool_name="check_automation_references",
+                success=False,
+                output="",
+                error="No SSH client available; cannot read live automations",
+            )
+        try:
+            _, content, _ = await self._ha_ssh.run(
+                f"grep -rn --include='*.yaml' "
+                f"--exclude='*secret*' --exclude='*credential*' "
+                f"--exclude='*token*' --exclude='*password*' --exclude='*passwd*' "
+                f"'{pattern}' "
+                f"/config/automations.yaml /config/automations/ /config/packages/ "
+                f"2>/dev/null || echo 'not found'",
+                check=False,
+            )
+            found = content.strip() and "not found" not in content
+            status = "FOUND" if found else "NOT FOUND"
+            desc_line = (
+                f"Pattern: {breaking_change_desc}\n" if breaking_change_desc else ""
+            )
+            return ToolResult(
+                tool_name="check_automation_references",
+                success=True,
+                output=(
+                    f"Automation references '{pattern}': {status}\n"
+                    f"{desc_line}"
+                    f"Grep output: {content[:500]}"
+                ),
+            )
+        except Exception as exc:
+            return ToolResult(
+                tool_name="check_automation_references",
                 success=False,
                 output="",
                 error=str(exc),

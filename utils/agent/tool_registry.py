@@ -2340,7 +2340,8 @@ CHECK_CONFIG_AGAINST_BREAKING_CHANGE = ToolDefinition(
     name="check_config_against_breaking_change",
     description=(
         "Check whether a specific config key mentioned in the release notes is present "
-        "in the live HA configuration.yaml. Returns 'PRESENT' or 'NOT FOUND' with context. "
+        "in the live HA configuration or packages/integrations subdirectories. "
+        "Returns 'PRESENT' or 'NOT FOUND' with file:line context. "
         "Call once per breaking change that mentions a YAML config key."
     ),
     parameters={
@@ -2356,6 +2357,33 @@ CHECK_CONFIG_AGAINST_BREAKING_CHANGE = ToolDefinition(
             },
         },
         "required": ["config_key", "breaking_change_desc"],
+    },
+)
+
+CHECK_AUTOMATION_REFERENCES = ToolDefinition(
+    name="check_automation_references",
+    description=(
+        "Search automation YAML files for deprecated service calls or entity platforms "
+        "mentioned in release notes. Targets automations.yaml, automations/*.yaml, and "
+        "packages/**/*.yaml. Returns matched lines with file:line context. "
+        "Call for breaking changes that affect service calls or entity platforms."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "pattern": {
+                "type": "string",
+                "description": (
+                    "The service call or entity platform to search for "
+                    "(e.g. 'light.turn_on', 'homeassistant.scene')."
+                ),
+            },
+            "breaking_change_desc": {
+                "type": "string",
+                "description": "The breaking change description (for context in the result).",
+            },
+        },
+        "required": ["pattern"],
     },
 )
 
@@ -2725,6 +2753,7 @@ def build_update_analysis_registry() -> ToolRegistry:
         GET_UPDATE_RELEASE_NOTES,
         GET_PUEO_COMMAND_CATALOG,
         CHECK_CONFIG_AGAINST_BREAKING_CHANGE,
+        CHECK_AUTOMATION_REFERENCES,
         READ_FILE,
         RUN_HA_COMMAND,
         FETCH_HA_DOCS,
