@@ -2012,6 +2012,52 @@ class TestDismissNotificationRoute:
         assert "Reject" in response.text
         assert "Defer" in response.text
 
+    def _card_with_episode(self, tmp_path):
+        import json as _json
+        import time as _time
+
+        (tmp_path / "dev-ep1.json").write_text(
+            _json.dumps(
+                {
+                    "notification_id": "dev-ep1",
+                    "subject": "Device offline",
+                    "body": "Investigated",
+                    "payload": {
+                        "card_type": "device_availability",
+                        "episode_id": "ep-uuid-42",
+                    },
+                    "sent_at": int(_time.time()) - 10,
+                }
+            )
+        )
+
+    def test_card_with_episode_id_links_episode_page(self, tmp_path, monkeypatch):
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setitem(
+            dashboard.templates.env.globals, "debug_level_enabled", True
+        )
+        self._card_with_episode(tmp_path)
+        html = TestClient(dashboard.app).get("/queue").text
+        assert 'href="/episodes/ep-uuid-42"' in html
+
+    def test_card_episode_link_hidden_when_episodes_disabled(
+        self, tmp_path, monkeypatch
+    ):
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setitem(
+            dashboard.templates.env.globals, "debug_level_enabled", False
+        )
+        monkeypatch.setitem(dashboard.templates.env.globals, "dev_mode", False)
+        self._card_with_episode(tmp_path)
+        html = TestClient(dashboard.app).get("/queue").text
+        assert "/episodes/ep-uuid-42" not in html
+
     def test_informational_card_shows_acknowledge_button(self, tmp_path, monkeypatch):
         import json as _json
         import time as _time
@@ -4980,6 +5026,23 @@ class TestTimelineRoutes:
         assert "component" in html
         assert "core" in html
 
+    def test_timeline_detail_links_episode(self, tl_setup, monkeypatch):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+        from utils.core.timeline import write_timeline_event
+
+        monkeypatch.setitem(
+            dashboard.templates.env.globals, "debug_level_enabled", True
+        )
+        eid = write_timeline_event(
+            "INFO",
+            "agent_loop",
+            "Repair — stuck",
+            {"outcome": "stuck", "episode_id": "ep-9"},
+        )
+        html = TestClient(dashboard.app).get(f"/timeline/{eid}").text
+        assert 'href="/episodes/ep-9"' in html
+
     def test_timeline_detail_missing_id_returns_404(self, tl_setup):
         from fastapi.testclient import TestClient
         import web.dashboard as dashboard
@@ -7209,35 +7272,6 @@ class TestEpisodesTab:
         resp = client.get("/episodes")
         assert resp.status_code == 200
 
-    def test_empty_episodes_shows_message(self, db_path):
-        from starlette.testclient import TestClient
-        import web.dashboard as dashboard
-
-        client = TestClient(dashboard.app, raise_server_exceptions=True)
-        html = client.get("/episodes").text
-        assert "no repair episodes" in html.lower()
-
-    def test_episode_row_renders_trigger_and_model(self, db_path):
-        from starlette.testclient import TestClient
-        import web.dashboard as dashboard
-
-        self._insert_episode(db_path)
-        client = TestClient(dashboard.app, raise_server_exceptions=True)
-        html = client.get("/episodes").text
-        assert "ha_log" in html
-        assert "qwen2.5-coder:7b" in html
-
-    def test_trigger_filter_limits_results(self, db_path):
-        from starlette.testclient import TestClient
-        import web.dashboard as dashboard
-
-        self._insert_episode(db_path, id="ep1", trigger="ha_log")
-        self._insert_episode(db_path, id="ep2", trigger="netalertx")
-        client = TestClient(dashboard.app, raise_server_exceptions=True)
-        html = client.get("/episodes?trigger=netalertx").text
-        assert "netalertx" in html
-        assert html.count("ha_log") <= 2  # may appear in select options
-
     def test_export_endpoint_returns_yaml(self, db_path):
         from starlette.testclient import TestClient
         import web.dashboard as dashboard
@@ -7327,20 +7361,9 @@ class TestEpisodesTab:
         resp = client.get("/episodes/export")
         assert resp.status_code == 200
 
-    def test_episodes_tab_includes_debug_url_when_dir_exists(
-        self, db_path, tmp_path, monkeypatch
-    ):
+    def _dirs(self, tmp_path, monkeypatch):
         import web.dashboard as dashboard
         from paths import PueoDirectories
-        from pathlib import Path
-        from starlette.testclient import TestClient
-
-        ep_id = "abc-123-uuid"
-        ep_trigger = "ha_log"
-        ep_dir_name = f"{ep_trigger}_{ep_id}"
-        debug_root = tmp_path / "debug_episodes" / ep_dir_name
-        debug_root.mkdir(parents=True)
-        (debug_root / "index.html").write_text("<html>debug</html>")
 
         fake_dirs = PueoDirectories(
             data_dir=tmp_path,
@@ -7352,12 +7375,90 @@ class TestEpisodesTab:
             resources_dir=tmp_path,
         )
         monkeypatch.setattr(dashboard, "_get_dirs", lambda: fake_dirs)
-        self._insert_episode(db_path, id=ep_id, trigger=ep_trigger)
-        client = TestClient(dashboard.app, raise_server_exceptions=True)
-        html = client.get("/episodes").text
-        assert "View debug episode" in html
-        expected_href = f"/debug-episodes/{ep_dir_name}/index.html"
-        assert expected_href in html
+        return tmp_path / "debug_episodes"
+
+    @staticmethod
+    def _write_ep(root, folder, **data):
+        import json
+
+        d = root / folder
+        d.mkdir(parents=True)
+        (d / "episode_data.json").write_text(json.dumps(data))
+
+    def test_empty_episodes_shows_message(self, db_path, tmp_path, monkeypatch):
+        from starlette.testclient import TestClient
+        import web.dashboard as dashboard
+
+        self._dirs(tmp_path, monkeypatch)
+        html = TestClient(dashboard.app).get("/episodes").text
+        assert "no debug episodes recorded" in html.lower()
+
+    def test_lists_non_success_outcomes_with_links(
+        self, db_path, tmp_path, monkeypatch
+    ):
+        from starlette.testclient import TestClient
+        import web.dashboard as dashboard
+
+        root = self._dirs(tmp_path, monkeypatch)
+        self._write_ep(
+            root,
+            "repair_poll_aaa-1",
+            schema_version=2,
+            trigger="repair_poll",
+            session_type="repair_issue",
+            signature="repair:core:restart_required",
+            outcome="stuck",
+            started_at="2026-11-02T10:00:00Z",
+            model="m-stuck",
+        )
+        self._write_ep(
+            root,
+            "update_poll_bbb-2",
+            trigger="update_poll",
+            outcome="success",
+            timestamp="2026-10-20 14:35:37",
+            model="m-v1",
+        )
+        html = TestClient(dashboard.app).get("/episodes").text
+        assert 'href="/episodes/aaa-1"' in html
+        assert 'href="/episodes/bbb-2"' in html
+        assert "repair:core:restart_required" in html
+        assert ">stuck<" in html
+        assert "m-v1" in html  # v1 file still listed
+
+    def test_outcome_filter(self, db_path, tmp_path, monkeypatch):
+        from starlette.testclient import TestClient
+        import web.dashboard as dashboard
+
+        root = self._dirs(tmp_path, monkeypatch)
+        self._write_ep(root, "a_ok-1", outcome="success", model="model-ok")
+        self._write_ep(root, "a_bad-2", outcome="failed", model="model-bad")
+        client = TestClient(dashboard.app)
+        html = client.get("/episodes?outcome=failed").text
+        assert "model-bad" in html and "model-ok" not in html
+        html = client.get("/episodes?outcome=non_success").text
+        assert "model-bad" in html and "model-ok" not in html
+        html = client.get("/episodes?outcome=success&session_type=nope").text
+        assert "No episodes match these filters" in html
+
+    def test_verification_joined_from_session_outcomes(
+        self, db_path, tmp_path, monkeypatch
+    ):
+        import sqlite3
+        from starlette.testclient import TestClient
+        import web.dashboard as dashboard
+
+        root = self._dirs(tmp_path, monkeypatch)
+        self._write_ep(root, "device_poll_ccc-3", outcome="needs_action")
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO session_outcomes (episode_id, signature,"
+                " verification, verified_by) VALUES"
+                " ('ccc-3', 'device:offline:zwave_js', 'success', 'user')"
+            )
+        html = TestClient(dashboard.app).get("/episodes").text
+        assert "device:offline:zwave_js" in html
+        assert "(user)" in html
 
 
 # ---------------------------------------------------------------------------
