@@ -16,17 +16,23 @@ failures). This runbook owns the verdict for these notifications.
    - `inventory_available` / `netalertx_status`: whether the NetAlertX inventory was
      actually read. When `inventory_available=false`, a null `netalertx_name` means
      **"inventory unavailable"**, not "not in inventory".
-   - `is_pueo_host`: the IP belongs to the machine running Pueo.
+   - `network_scope`: computed in code — `pueo_host` (the machine running Pueo),
+     `lan` (private range, IPv6 link-local/ULA, or the home network's IPv6 /64), or
+     `external`. **The verdict's location comes from this field, never from the
+     address's shape** — home-network IPv6 addresses look public but are `lan`.
+   - `is_pueo_host`: same as `network_scope="pueo_host"`.
    - `hostname`, `dhcp_hostname`, `ha_device_name`, `netalertx_name`: any of these
      identifies the device.
    - `mac_is_randomized`, `mac_vendor`: context only (see below).
 
 ## Verdicts
 
-### Pueo host (`is_pueo_host=true`)
-- Likely Pueo itself or a dev script with a stale or wrong HA token.
-- `requires_hitl=false`, `dismiss_now=true`. Recommended action: check the HA token
-  Pueo and any dev scripts use.
+### Pueo host (`network_scope="pueo_host"`)
+- Use the UA to say which client on that machine it was. A Python / `curl` UA means Pueo
+  itself or a dev script with a stale or wrong HA token, so recommend checking those tokens.
+  A browser UA (Chrome, Safari, Firefox) means a Home Assistant tab on that machine whose
+  login session expired, so recommend reloading the tab and signing in again.
+- `requires_hitl=false`, `dismiss_now=true`.
 
 ### Known device (any name field set)
 - Routine: the user's own client re-authenticating (app update, token expiry).
@@ -36,13 +42,13 @@ failures). This runbook owns the verdict for these notifications.
 ### HA companion app user agent
 - **Signal**: the auth line or notification text itself contains a companion-app user
   agent (`io.robbie.HomeAssistant` for iOS, `io.homeassistant.companion.android` for
-  Android) and the source IP is RFC-1918.
+  Android) and `network_scope` is `lan` or `pueo_host`.
 - Expected behaviour (token refresh or re-login). `requires_hitl=false`,
   `dismiss_now=true`.
 - Quote the UA from the log line. Never infer an owner's name from the UA string:
   `io.robbie` is the app's bundle id, not a person.
 
-### Unidentified device on the LAN (RFC-1918 IP, no name field set)
+### Unidentified device on the LAN (`network_scope="lan"`, no name field set)
 - A randomized MAC alone is **not** evidence of an intruder — it is the iOS/Android
   default for private Wi-Fi addresses.
 - When `inventory_available=false`: severity **HIGH**, `requires_hitl=true`. Recommended
@@ -52,7 +58,7 @@ failures). This runbook owns the verdict for these notifications.
 - When `inventory_available=true` and the device is absent from it: severity HIGH,
   `requires_hitl=true`; recommend identifying the device and reviewing HA users and 2FA.
 
-### External source (non-RFC-1918 IP)
+### External source (`network_scope="external"` only)
 - `severity_override="CRITICAL"`, `requires_hitl=true`. Someone outside the LAN is
   reaching HA's login endpoint. Recommend reviewing exposure (port forwarding, reverse
   proxy), enabling 2FA, and `ip_ban_enabled` / `login_attempts_threshold` in `http:`.

@@ -9130,6 +9130,257 @@ class TestExtractIpFromMessage:
 
         assert extract_ip_from_message("Source: 192.168.1.1 connected") is None
 
+    def test_extracts_ipv6_from_ha_message(self):
+        """HA's real http-login text for an IPv6 source (#1061)."""
+        from agents.ha_notification_manager import extract_ip_from_message
+
+        msg = (
+            "Login attempt or request with invalid authentication from "
+            "2601:18c:9301:6b92:2c87:8355:1cbc:5749 "
+            "(2601:18c:9301:6b92:2c87:8355:1cbc:5749). See the log for details."
+        )
+        assert extract_ip_from_message(msg) == "2601:18c:9301:6b92:2c87:8355:1cbc:5749"
+
+    def test_strips_trailing_period(self):
+        from agents.ha_notification_manager import extract_ip_from_message
+
+        assert extract_ip_from_message("Login from 10.0.0.5.") == "10.0.0.5"
+
+    def test_skips_non_ip_word_after_from(self):
+        from agents.ha_notification_manager import extract_ip_from_message
+
+        msg = "Request from cafe failed; retried from fe80::1"
+        assert extract_ip_from_message(msg) == "fe80::1"
+
+    def test_rejects_invalid_octets(self):
+        from agents.ha_notification_manager import extract_ip_from_message
+
+        assert extract_ip_from_message("Login from 999.1.1.1") is None
+
+
+# ── ha_notification_manager — IPv6-aware source identification (#1061) ───────────
+
+
+class TestNetworkScope:
+    _LOCAL = {
+        "10.0.0.176",
+        "127.0.0.1",
+        "::1",
+        "fe80::102b:76f7:a2b7:26cc",
+        "2601:18c:9301:6b92:2c87:8355:1cbc:5749",
+    }
+
+    def _scope(self, ip, local=None):
+        from agents.ha_notification_manager import classify_network_scope
+
+        return classify_network_scope(ip, self._LOCAL if local is None else local)
+
+    def test_own_ipv6_temporary_address_is_pueo_host(self):
+        assert self._scope("2601:18c:9301:6b92:2c87:8355:1cbc:5749") == "pueo_host"
+
+    def test_own_ipv4_is_pueo_host(self):
+        assert self._scope("10.0.0.176") == "pueo_host"
+
+    def test_loopback_is_pueo_host(self):
+        assert self._scope("127.0.0.1", local=set()) == "pueo_host"
+        assert self._scope("::1", local=set()) == "pueo_host"
+
+    def test_ipv4_mapped_own_address_is_pueo_host(self):
+        assert self._scope("::ffff:10.0.0.176") == "pueo_host"
+
+    def test_same_slash64_is_lan(self):
+        assert self._scope("2601:18c:9301:6b92::d4b5") == "lan"
+
+    def test_other_slash64_is_external(self):
+        assert self._scope("2601:18c:9301:6b93::d4b5") == "external"
+
+    def test_global_ipv6_without_local_prefix_is_external(self):
+        assert (
+            self._scope("2601:18c:9301:6b92::d4b5", local={"10.0.0.176"}) == "external"
+        )
+
+    def test_link_local_local_addr_gives_no_prefix(self):
+        """A host with only a link-local IPv6 must not treat fe80::/64 as its /64."""
+        local = {"fe80::1"}
+        assert self._scope("2601:18c:9301:6b92::d4b5", local=local) == "external"
+
+    def test_private_ranges_are_lan(self):
+        for ip in ("192.168.1.5", "172.20.0.4", "10.9.9.9", "169.254.3.3"):
+            assert self._scope(ip, local=set()) == "lan", ip
+        for ip in ("fe80::abcd", "fd12:3456::1"):
+            assert self._scope(ip, local=set()) == "lan", ip
+
+    def test_public_ipv4_is_external(self):
+        assert self._scope("8.8.8.8") == "external"
+        assert self._scope("172.32.0.1") == "external"
+
+    def test_unparseable_is_unknown(self):
+        assert self._scope("not-an-ip") == "unknown"
+
+    def test_ignores_unparseable_local_entries(self):
+        assert self._scope("10.0.0.176", local={"garbage", "10.0.0.176"}) == "pueo_host"
+
+
+class TestInterfaceAndNeighborParsing:
+    _IFCONFIG = """en0: flags=8863<UP,BROADCAST> mtu 1500
+\tether 4a:b5:a6:8a:b5:fc
+\tinet6 fe80::102b:76f7:a2b7:26cc%en0 prefixlen 64 secured scopeid 0xe
+\tinet 10.0.0.176 netmask 0xffffff00 broadcast 10.0.0.255
+\tinet6 2601:18c:9301:6b92:2c87:8355:1cbc:5749 prefixlen 64 deprecated autoconf temporary
+"""
+    _IP_ADDR = (
+        "2: eth0    inet 192.168.1.20/24 brd 192.168.1.255 scope global eth0\n"
+        "2: eth0    inet6 2001:db8::20/64 scope global dynamic\n"
+    )
+
+    def test_ifconfig_includes_ipv6_and_ipv4(self):
+        from agents.ha_notification_manager import _parse_interface_addresses
+
+        addrs = _parse_interface_addresses(self._IFCONFIG)
+        assert addrs == {
+            "fe80::102b:76f7:a2b7:26cc",
+            "10.0.0.176",
+            "2601:18c:9301:6b92:2c87:8355:1cbc:5749",
+        }
+
+    def test_ip_o_addr_format(self):
+        from agents.ha_notification_manager import _parse_interface_addresses
+
+        assert _parse_interface_addresses(self._IP_ADDR) == {
+            "192.168.1.20",
+            "2001:db8::20",
+        }
+
+    def test_get_local_interface_addresses_unions_commands(self, monkeypatch):
+        import subprocess
+
+        from agents.ha_notification_manager import _get_local_interface_addresses
+
+        def fake_check_output(cmd, **kwargs):
+            if cmd == ["ifconfig"]:
+                return self._IFCONFIG
+            raise FileNotFoundError(cmd[0])
+
+        monkeypatch.setattr(subprocess, "check_output", fake_check_output)
+        addrs = _get_local_interface_addresses()
+        assert "2601:18c:9301:6b92:2c87:8355:1cbc:5749" in addrs
+        assert "10.0.0.176" in addrs
+
+    def test_get_local_interface_addresses_linux_fallback(self, monkeypatch):
+        import subprocess
+
+        from agents.ha_notification_manager import _get_local_interface_addresses
+
+        def fake_check_output(cmd, **kwargs):
+            if cmd[0] == "ip":
+                return self._IP_ADDR
+            raise FileNotFoundError(cmd[0])
+
+        monkeypatch.setattr(subprocess, "check_output", fake_check_output)
+        assert _get_local_interface_addresses() == {"192.168.1.20", "2001:db8::20"}
+
+    def test_ndp_output_maps_ipv6_to_padded_mac(self):
+        from agents.ha_notification_manager import _parse_neighbor_mac
+
+        ndp = (
+            "Neighbor                         Linklayer Address  Netif Expire    St\n"
+            "2601:18c:9301:6b92::3c8b         (incomplete)       en0 expired   N\n"
+            "2601:18c:9301:6b92::76b4         e4:5f:1:a2:b1:91   en0 23h59m43s S\n"
+            "fe80::1%en0                      aa:bb:cc:dd:ee:01  en0 10s       R\n"
+        )
+        assert (
+            _parse_neighbor_mac(ndp, "2601:18c:9301:6b92::76b4") == "e4:5f:01:a2:b1:91"
+        )
+        assert _parse_neighbor_mac(ndp, "fe80::1") == "aa:bb:cc:dd:ee:01"
+        assert _parse_neighbor_mac(ndp, "2601:18c:9301:6b92::3c8b") is None
+        assert _parse_neighbor_mac(ndp, "2601:18c:9301:6b92::9999") is None
+
+    def test_ip_neigh_output(self):
+        from agents.ha_notification_manager import _parse_neighbor_mac
+
+        out = "2001:db8::5 dev eth0 lladdr 52:ea:9d:13:80:c8 REACHABLE\n"
+        assert _parse_neighbor_mac(out, "2001:db8::5") == "52:ea:9d:13:80:c8"
+
+    def test_neighbor_invalid_target_returns_none(self):
+        from agents.ha_notification_manager import _parse_neighbor_mac
+
+        assert _parse_neighbor_mac("fe80::1 aa:bb:cc:dd:ee:ff", "nope") is None
+
+    def test_ipv6_arp_info_tries_ndp_then_ip_neigh(self, monkeypatch):
+        from agents import ha_notification_manager
+        from agents.ha_notification_manager import _get_arp_info
+
+        calls = []
+
+        class _Proc:
+            def __init__(self, out):
+                self._out = out
+
+            async def communicate(self):
+                return (self._out, b"")
+
+        async def fake_exec(*args, **kwargs):
+            calls.append(args[0])
+            if args[0] == "ndp":
+                return _Proc(b"")
+            return _Proc(b"2001:db8::5 dev eth0 lladdr 52:ea:9d:13:80:c8 STALE\n")
+
+        monkeypatch.setattr(
+            ha_notification_manager.asyncio, "create_subprocess_exec", fake_exec
+        )
+        result = asyncio.run(_get_arp_info("2001:db8::5"))
+        assert calls == ["ndp", "ip"]
+        assert result["mac_address"] == "52:ea:9d:13:80:c8"
+        assert result["mac_is_randomized"] is True
+
+    def test_arp_never_runs_for_invalid_ip(self, monkeypatch):
+        from agents import ha_notification_manager
+        from agents.ha_notification_manager import _get_arp_info
+
+        calls = []
+
+        async def fake_exec(*args, **kwargs):
+            calls.append(args)
+            raise AssertionError("must not run")
+
+        monkeypatch.setattr(
+            ha_notification_manager.asyncio, "create_subprocess_exec", fake_exec
+        )
+        result = asyncio.run(_get_arp_info("-a; rm"))
+        assert calls == []
+        assert result["mac_address"] is None
+
+    def test_ipv6_arp_info_no_neighbor(self, monkeypatch):
+        from agents import ha_notification_manager
+        from agents.ha_notification_manager import _get_arp_info
+
+        async def failing_exec(*args, **kwargs):
+            raise FileNotFoundError(args[0])
+
+        monkeypatch.setattr(
+            ha_notification_manager.asyncio, "create_subprocess_exec", failing_exec
+        )
+        result = asyncio.run(_get_arp_info("2001:db8::5"))
+        assert result["mac_address"] is None
+
+    def test_ios_companion_on_ipv6_link_local_lowers_severity(self):
+        from agents.ha_notification_manager import classify_notification
+
+        msg = "Login attempt from fe80::1 (io.robbie.HomeAssistant/2026.10)"
+        assert classify_notification("http-login", msg) == ("security", "MEDIUM")
+
+    def test_ios_companion_on_public_ip_keeps_high(self):
+        from agents.ha_notification_manager import classify_notification
+
+        msg = "Login attempt from 8.8.8.8 (io.robbie.HomeAssistant/2026.10)"
+        assert classify_notification("http-login", msg) == ("security", "HIGH")
+
+    def test_ios_companion_without_ip_keeps_high(self):
+        from agents.ha_notification_manager import classify_notification
+
+        msg = "Login attempt (io.robbie.HomeAssistant/2026.10)"
+        assert classify_notification("http-login", msg) == ("security", "HIGH")
+
 
 # ── ha_notification_manager — enrich_http_login ──────────────────────────────────
 
@@ -9441,6 +9692,146 @@ class TestEnrichHttpLogin:
         ctx = asyncio.run(enrich_http_login("192.168.1.5"))
         assert "is_pueo_host" in ctx
         assert ctx["is_pueo_host"] is False
+
+    def test_interface_lookup_failure_still_classifies(self, monkeypatch):
+        import agents.ha_notification_manager as notif_mod
+        from agents.ha_notification_manager import enrich_http_login
+
+        def boom():
+            raise OSError("no ifconfig")
+
+        monkeypatch.setattr(notif_mod, "_get_local_interface_addresses", boom)
+        ctx = asyncio.run(enrich_http_login("192.168.1.5"))
+        assert ctx["network_scope"] == "lan"
+        assert ctx["is_pueo_host"] is False
+
+    def test_pueo_host_ipv6_temporary_address(self, monkeypatch):
+        """The 2026-11-01 false alarm: the host's own IPv6 privacy address (#1061)."""
+        import agents.ha_notification_manager as notif_mod
+        from agents.ha_notification_manager import enrich_http_login
+
+        ip = "2601:18c:9301:6b92:2c87:8355:1cbc:5749"
+        monkeypatch.setattr(
+            notif_mod, "_get_local_interface_addresses", lambda: {"10.0.0.176", ip}
+        )
+        ctx = asyncio.run(enrich_http_login(ip))
+        assert ctx["network_scope"] == "pueo_host"
+        assert ctx["is_pueo_host"] is True
+
+    def test_network_scope_external_for_public_ip(self):
+        from agents.ha_notification_manager import enrich_http_login
+
+        ctx = asyncio.run(enrich_http_login("1.2.3.4"))
+        assert ctx["network_scope"] == "external"
+
+    def _with_mac(self, monkeypatch, mac):
+        import agents.ha_notification_manager as notif_mod
+
+        async def fake_lookup(ip):
+            return mac
+
+        monkeypatch.setattr(notif_mod, "_lookup_mac", fake_lookup)
+
+    def test_netalertx_matched_by_mac_for_ipv6(self, monkeypatch):
+        """NetAlertX stores IPv4 only; an IPv6 source matches by neighbor MAC."""
+        from agents.ha_notification_manager import enrich_http_login
+
+        self._with_mac(monkeypatch, "52:ea:9d:13:80:c8")
+
+        class FakeNAX:
+            async def get_devices(self):
+                return [
+                    {"devLastIP": "10.0.0.1", "devMac": "aa:aa:aa:aa:aa:aa"},
+                    {
+                        "devLastIP": "10.0.0.168",
+                        "devMac": "52:EA:9D:13:80:C8",
+                        "devName": "iPhony!",
+                    },
+                ]
+
+        ctx = asyncio.run(
+            enrich_http_login("2601:18c:9301:6b92::d4b5", netalertx_client=FakeNAX())
+        )
+        assert ctx["netalertx_name"] == "iPhony!"
+        assert ctx["netalertx_match"] == "mac"
+        assert ctx["is_known_device"] is True
+
+    def test_netalertx_ip_match_beats_mac(self, monkeypatch):
+        from agents.ha_notification_manager import enrich_http_login
+
+        self._with_mac(monkeypatch, "52:ea:9d:13:80:c8")
+
+        class FakeNAX:
+            async def get_devices(self):
+                return [
+                    {"devMac": "52:ea:9d:13:80:c8", "devName": "By MAC"},
+                    {"devPrimaryIPv6": "2001:db8::5", "devName": "By IPv6"},
+                ]
+
+        ctx = asyncio.run(enrich_http_login("2001:db8::5", netalertx_client=FakeNAX()))
+        assert ctx["netalertx_name"] == "By IPv6"
+        assert ctx["netalertx_match"] == "ip"
+
+    def test_netalertx_no_mac_no_match(self):
+        from agents.ha_notification_manager import enrich_http_login
+
+        class FakeNAX:
+            async def get_devices(self):
+                return [{"devMac": "52:ea:9d:13:80:c8", "devName": "Phone"}]
+
+        ctx = asyncio.run(enrich_http_login("2001:db8::5", netalertx_client=FakeNAX()))
+        assert ctx["netalertx_name"] is None
+        assert ctx["netalertx_match"] is None
+
+    def test_ws_matched_by_mac_connection(self, monkeypatch):
+        from agents.ha_notification_manager import enrich_http_login
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        self._with_mac(monkeypatch, "52:ea:9d:13:80:c8")
+        ws = FakeHAWebSocketClient(
+            devices=[
+                {"id": "d0", "name": "Bad", "connections": [["zigbee"]]},
+                {
+                    "id": "d1",
+                    "name": "Phone",
+                    "connections": [["mac", "52:EA:9D:13:80:C8"]],
+                },
+            ]
+        )
+        ctx = asyncio.run(enrich_http_login("2001:db8::5", ws_client=ws))
+        assert ctx["ha_device_name"] == "Phone"
+
+    def test_ws_ip_connection_matches_ipv6(self):
+        from agents.ha_notification_manager import enrich_http_login
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        ws = FakeHAWebSocketClient(
+            devices=[{"id": "d1", "name": "TV", "connections": [["ip", "2001:DB8::5"]]}]
+        )
+        ctx = asyncio.run(enrich_http_login("2001:db8::5", ws_client=ws))
+        assert ctx["ha_device_name"] == "TV"
+
+    def test_dhcp_probe_skipped_for_ipv6(self, monkeypatch):
+        import agents.ha_notification_manager as notif_mod
+        from agents.ha_notification_manager import enrich_http_login
+
+        probed = []
+
+        async def fake_gw():
+            return "10.0.0.1"
+
+        async def fake_dhcp(gw, ip):
+            probed.append(ip)
+            return "host"
+
+        monkeypatch.setattr(notif_mod, "_get_default_gateway", fake_gw)
+        monkeypatch.setattr(notif_mod, "_try_router_dhcp_hostname", fake_dhcp)
+        ctx = asyncio.run(enrich_http_login("2001:db8::5"))
+        assert probed == []
+        assert ctx["dhcp_hostname"] is None
+        ctx = asyncio.run(enrich_http_login("10.0.0.50"))
+        assert probed == ["10.0.0.50"]
+        assert ctx["dhcp_hostname"] == "host"
 
 
 # ── ha_notification_manager — _run_notification_investigation ────────────────────

@@ -1261,7 +1261,7 @@ INVESTIGATE_DEVICE = ToolDefinition(
         "properties": {
             "ip": {
                 "type": "string",
-                "description": "IPv4 address to investigate (e.g. '192.168.1.42')",
+                "description": "IPv4 or IPv6 address (e.g. '192.168.1.42')",
             },
         },
         "required": ["ip"],
@@ -2256,7 +2256,7 @@ GET_DEVICE_INFO = ToolDefinition(
         "properties": {
             "ip": {
                 "type": "string",
-                "description": "The IPv4 address to look up.",
+                "description": "The IPv4 or IPv6 address to look up.",
             },
         },
         "required": ["ip"],

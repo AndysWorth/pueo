@@ -486,6 +486,17 @@ class TestInvestigateDevice:
         assert result.success is False
         assert "Invalid IP" in result.error
 
+    def test_ipv6_ip_accepted(self):
+        """IPv6 sources (link-local or global) are investigated, not rejected (#1061)."""
+        for ip in ("fe80::102b:76f7:a2b7:26cc", "2601:18c:9301:6b92::d4b5"):
+            result = self._run(ip)
+            assert result.success is True, ip
+
+    def test_malformed_ipv4_rejected(self):
+        result = self._run("999.1.1.1")
+        assert result.success is False
+        assert "Invalid IP" in result.error
+
     def test_randomized_mac_flag_propagated(self):
         enriched = dict(self._ENRICHED)
         enriched["mac_is_randomized"] = True
