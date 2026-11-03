@@ -65,7 +65,8 @@ a new flow next to a disabled entry for the same thing.
 - **Options:** review polling intervals and anything that stores data under `/config`
   or downloads media. On small hosts, prefer the lower setting.
 - **Areas:** HA's "assign area" dialog after setup is UI-only and not part of the flow.
-  List area assignments as a follow-up (`get_area_layout` shows the areas).
+  Check each new device's area first (a re-add may have restored it). List the
+  missing ones as a follow-up (`get_area_layout` shows the areas).
 - **Recorder and noise:** name the high-churn or never-used entities the user may want
   to disable or exclude from the recorder.
 - **Dashboards and automations:** suggest a card. Offer an automation only via
@@ -77,5 +78,8 @@ a new flow next to a disabled entry for the same thing.
   state (not `unavailable`/`unknown`) after the first update interval, and
   `read_logs` shows no new errors from the domain's logger.
 - Rollback = delete the new entries. The backup taken before the write restores
-  `.storage` if more is needed. A delete-and-re-add loses entity history, so say so
-  before proposing one.
+  `.storage` if more is needed.
+- Delete-and-re-add: HA keeps deleted entities and devices in its registries for a
+  while. A re-add that produces the same unique_ids usually gets the old entity IDs and
+  device areas back. Snapshot the entity IDs before deleting, compare afterwards, and
+  re-assign areas only for devices that came back without one.

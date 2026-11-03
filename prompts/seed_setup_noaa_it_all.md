@@ -45,9 +45,20 @@ nothing and logs an error: remove it, don't fix it.
   Enabling it runs `async_migrate_entry`, which splits it into Weather, Surf and
   Hurricane entries and keeps entity IDs and history.
 - If the user prefers a clean re-add: delete the old entry first. Otherwise step 3
-  aborts `already_configured`. Entity history and device areas are lost, so plan to
-  re-assign the area. Check the new entity IDs before telling the user that dashboards
-  and automations still work. Compare them with `check_automation_references`.
+  aborts `already_configured`.
+  - Re-adding the same coordinates and office soon after the delete restored every old
+    `noaa_box_*` entity ID and the devices' area. The new version added 11 more
+    entities (observed 2026-11-03, a v1 entry re-added on 0.11.1).
+  - Still compare the entity IDs before and after rather than assume.
+
+## Expected gaps (not setup faults)
+
+- `sensor.noaa_<office>_weather_humidity`/`_dewpoint` read `unknown` when the
+  observation station (`station_id` attribute) reports null for them. Check
+  `api.weather.gov/stations/<id>/observations/latest`.
+- `sensor.noaa_<office>_space_aurora_next_time` is `unknown` when no aurora is
+  forecast.
+- `sensor.noaa_tides*` belongs to the core `noaa_tides` integration, not this one.
 
 ## Options (Weather entries only)
 
