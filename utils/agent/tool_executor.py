@@ -914,6 +914,9 @@ class ToolExecutor:
                     fact_if_yes=args.get("fact_if_yes"),
                     prediction=args.get("prediction"),
                 )
+            if name == "finish_setup_plan":
+                self._capture_declared_runbook(args)
+                return await self._finish_setup_plan(args)
             if name == "inspect_custom_integration":
                 return await self._inspect_custom_integration(args.get("domain", ""))
             if name == "probe_config_flow":
@@ -1283,7 +1286,16 @@ class ToolExecutor:
     # Session families whose query_knowledge results are limited to their own runbooks.
     # Chat (and unsigned triggers) see every runbook.
     _SCOPED_FAMILIES: frozenset[str] = frozenset(
-        {"device", "host", "repair", "update", "notification", "lovelace", "log"}
+        {
+            "device",
+            "host",
+            "repair",
+            "update",
+            "notification",
+            "lovelace",
+            "log",
+            "setup",
+        }
     )
 
     def _session_family(self) -> str:
@@ -2941,6 +2953,95 @@ class ToolExecutor:
                     await self._rest_client.abort_config_flow(flow_id)
                 except Exception:  # nosec B110
                     pass
+
+    async def _finish_setup_plan(self, args: dict) -> ToolResult:
+        """Send an integration setup plan card and mark the investigation complete."""
+        import sqlite3 as _sqlite3
+
+        from utils.hitl.card_types import CARD_TYPE_INTEGRATION_SETUP
+        from utils.hitl.hitl_tracker import mark_card_sent, stable_nid
+
+        domain = args.get("domain", "")
+        summary = args.get("summary", "")
+        outcome = args.get("outcome", "plan_ready")
+        create_hitl_card = args.get("create_hitl_card", True)
+        steps = args.get("steps", [])
+        needs_user_input = args.get("needs_user_input") or []
+        additional_entries = args.get("additional_entries") or []
+        options = args.get("options") or {}
+        post_setup = args.get("post_setup") or []
+        prerequisites_met = args.get("prerequisites_met", True)
+        blocked_reason = args.get("prerequisites_blocked_reason", "")
+        verification_question = args.get("verification_question")
+
+        if not create_hitl_card:
+            return ToolResult(
+                tool_name="finish_setup_plan",
+                success=True,
+                output=summary or f"Setup plan complete for {domain}.",
+            )
+
+        card_key = f"integration_setup:{domain}"
+        _db = self._db_path
+        if _db:
+            with _sqlite3.connect(_db) as _conn:
+                mark_card_sent(
+                    _conn,
+                    card_key,
+                    CARD_TYPE_INTEGRATION_SETUP,
+                    f"Integration setup plan: {domain}",
+                )
+
+        _payload: dict = {
+            "notification_id": stable_nid(card_key),
+            "card_type": CARD_TYPE_INTEGRATION_SETUP,
+            "suppression_key": card_key,
+            "domain": domain,
+            "outcome": outcome,
+            "prerequisites_met": prerequisites_met,
+            "steps": steps,
+            "needs_user_input": needs_user_input,
+            "additional_entries": additional_entries,
+            "options": options,
+            "post_setup": post_setup,
+            "episode_id": self._episode_id,
+        }
+        if not prerequisites_met and blocked_reason:
+            _payload["prerequisites_blocked_reason"] = blocked_reason
+        if verification_question and outcome == "plan_ready":
+            _payload["verification_question"] = verification_question
+            _payload["signature"] = self._session_signature
+
+        _my_ha_link = (
+            f"https://my.home-assistant.io/redirect/config_flow_start/?domain={domain}"
+        )
+        _payload["my_ha_link"] = _my_ha_link
+
+        subject = f"Pueo: Integration setup plan — {domain}"
+        await self._notifier.send(
+            subject=subject,
+            body=summary,
+            payload=_payload,
+        )
+        self._mark_card_queued(_payload["notification_id"])
+        try:
+            from utils.core.timeline import write_timeline_event
+
+            await asyncio.to_thread(
+                write_timeline_event,
+                "INFO",
+                "setup_investigation",
+                f"Integration setup plan: {domain} — {outcome}",
+                {"domain": domain, "outcome": outcome},
+            )
+        except Exception:  # nosec B110
+            pass
+        return ToolResult(
+            tool_name="finish_setup_plan",
+            success=True,
+            output=summary,
+            awaiting_approval=True,
+        )
 
     async def _fetch_url(self, url: str) -> ToolResult:
         """GET an external URL for diagnostic verification (read-only, private IPs blocked)."""

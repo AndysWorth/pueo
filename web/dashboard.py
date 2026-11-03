@@ -43,6 +43,7 @@ from utils.hitl.card_types import (
     CARD_TYPE_HA_COMMAND,
     CARD_TYPE_HA_REPAIR,
     CARD_TYPE_HOST_HEALTH,
+    CARD_TYPE_INTEGRATION_SETUP,
     CARD_TYPE_NETALERTX_HEAL,
     CARD_TYPE_NETALERTX_MIGRATE,
     CARD_TYPE_NETALERTX_SWITCH,
@@ -3640,6 +3641,63 @@ async def companion_setup_card(domain: str, request: Request) -> RedirectRespons
                 mark_card_sent(conn, k, CARD_TYPE_COMPANION_SETUP, f"hacs_unloaded:{k}")
 
     await asyncio.to_thread(_mark)
+    return RedirectResponse(url="/queue", status_code=303)
+
+
+@app.post("/setup/{nid}")
+async def start_setup_investigation(nid: str) -> RedirectResponse:
+    """Queue an integration setup investigation for the domain in the given card."""
+    import config as _config
+    from utils.agent.work_queue import PRIORITY_NORMAL, WorkItem, get_work_queue_or_none
+    from utils.hitl.notify import get_notifier
+
+    watch_dir = Path(NOTIFY_WATCH_DIR)
+    json_path = watch_dir / f"{nid}.json"
+    if not json_path.exists():
+        raise HTTPException(status_code=404, detail="Card not found")
+    data = json.loads(json_path.read_text())
+    payload = data.get("payload", {})
+    domain = payload.get("domain", "")
+    if not domain:
+        raise HTTPException(status_code=400, detail="Card has no domain")
+
+    card_key = payload.get("suppression_key", f"hacs_unloaded:{domain}")
+    notifier = get_notifier(
+        _config.NOTIFIER, _config.NOTIFY_URL, _config.NOTIFY_WATCH_DIR
+    )
+
+    from utils.ha.integration_setup_investigation import run_setup_investigation
+
+    _d = domain
+    _ck = card_key
+    _wq = get_work_queue_or_none()
+    if _wq is not None:
+        asyncio.create_task(
+            _wq.submit(
+                WorkItem(
+                    priority=PRIORITY_NORMAL,
+                    activity_type="setup_investigation",
+                    description=f"Integration setup: {_d}",
+                    dedup_key=f"setup:{_d}",
+                    suppress_while_running=frozenset(),
+                    coro_factory=lambda: run_setup_investigation(
+                        domain=_d,
+                        notifier=notifier,
+                        db_path=_config.DB_PATH,
+                        triggering_card_key=_ck,
+                    ),
+                )
+            )
+        )
+    else:
+        asyncio.create_task(
+            run_setup_investigation(
+                domain=_d,
+                notifier=notifier,
+                db_path=_config.DB_PATH,
+                triggering_card_key=_ck,
+            )
+        )
     return RedirectResponse(url="/queue", status_code=303)
 
 

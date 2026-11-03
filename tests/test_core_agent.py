@@ -20779,3 +20779,151 @@ class TestResolveAddonSlug:
         # No "ha apps list --raw-json" output → will raise on json.loads
         result = asyncio.run(_resolve_addon_slug("matter_server", client))
         assert result is None
+
+
+class TestFinishSetupPlanDispatch:
+    """Terminal tool dispatch for finish_setup_plan."""
+
+    def _make_executor(self):
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+
+        return ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(auto_execute_result=True),
+            notifier=FakeNotifier(),
+        )
+
+    def test_no_card_returns_success(self):
+        """create_hitl_card=False returns success immediately, no notifier call."""
+        from utils.agent.tool_registry import ToolCall
+
+        executor = self._make_executor()
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="finish_setup_plan",
+                    arguments={
+                        "domain": "noaa_it_all",
+                        "outcome": "plan_ready",
+                        "steps": [],
+                        "summary": "Done.",
+                        "prerequisites_met": True,
+                        "create_hitl_card": False,
+                    },
+                )
+            )
+        )
+        assert result.success
+        assert result.tool_name == "finish_setup_plan"
+        assert not result.awaiting_approval
+
+    def _make_executor_with_db(self, notifier, tmp_path):
+        from agents import ha_agent_advanced
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.ha.ssh_client import FakeSSHClient
+
+        db = str(tmp_path / "test.db")
+        ha_agent_advanced.DB_PATH = db
+        ha_agent_advanced.init_local_database()
+        return ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(auto_execute_result=True),
+            notifier=notifier,
+            db_path=db,
+        )
+
+    def test_with_card_sends_notification(self, tmp_path):
+        """create_hitl_card=True sends a card and returns awaiting_approval=True."""
+        from utils.agent.tool_registry import ToolCall
+        from utils.hitl.notify import FakeNotifier
+
+        notifier = FakeNotifier()
+        executor = self._make_executor_with_db(notifier, tmp_path)
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="finish_setup_plan",
+                    arguments={
+                        "domain": "noaa_it_all",
+                        "outcome": "plan_ready",
+                        "steps": [
+                            {
+                                "step_id": "user",
+                                "answers": {"location": "home"},
+                                "rationale": "user wanted home",
+                                "evidence_step": "probe_config_flow",
+                            }
+                        ],
+                        "summary": "Plan ready.",
+                        "prerequisites_met": True,
+                        "create_hitl_card": True,
+                    },
+                )
+            )
+        )
+        assert result.success
+        assert result.awaiting_approval
+        assert len(notifier.sent) == 1
+        sent = notifier.sent[0]
+        assert sent["payload"]["card_type"] == "integration_setup"
+        assert sent["payload"]["domain"] == "noaa_it_all"
+        assert sent["payload"]["outcome"] == "plan_ready"
+
+    def test_blocked_outcome_includes_blocked_reason(self, tmp_path):
+        """outcome=blocked sets prerequisites_blocked_reason in payload."""
+        from utils.agent.tool_registry import ToolCall
+        from utils.hitl.notify import FakeNotifier
+
+        notifier = FakeNotifier()
+        executor = self._make_executor_with_db(notifier, tmp_path)
+        asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="finish_setup_plan",
+                    arguments={
+                        "domain": "noaa_it_all",
+                        "outcome": "blocked",
+                        "steps": [],
+                        "summary": "Blocked.",
+                        "prerequisites_met": False,
+                        "prerequisites_blocked_reason": "HA version too old",
+                        "create_hitl_card": True,
+                    },
+                )
+            )
+        )
+        assert len(notifier.sent) == 1
+        payload = notifier.sent[0]["payload"]
+        assert payload["prerequisites_blocked_reason"] == "HA version too old"
+        assert not payload["prerequisites_met"]
+
+    def test_my_ha_link_in_payload(self, tmp_path):
+        """my_ha_link is set to the My HA config-flow redirect URL."""
+        from utils.agent.tool_registry import ToolCall
+        from utils.hitl.notify import FakeNotifier
+
+        notifier = FakeNotifier()
+        executor = self._make_executor_with_db(notifier, tmp_path)
+        asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="finish_setup_plan",
+                    arguments={
+                        "domain": "noaa_it_all",
+                        "outcome": "plan_ready",
+                        "steps": [],
+                        "summary": "Ready.",
+                        "prerequisites_met": True,
+                        "create_hitl_card": True,
+                    },
+                )
+            )
+        )
+        assert len(notifier.sent) == 1
+        link = notifier.sent[0]["payload"]["my_ha_link"]
+        assert "noaa_it_all" in link
+        assert "my.home-assistant.io" in link

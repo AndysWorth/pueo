@@ -7930,7 +7930,7 @@ class TestPromptNoVerdictRules:
         )
 
     def test_finds_task_prompts(self):
-        assert len(self._agent_prompts()) == 9  # agent_core + 8 task_*.md
+        assert len(self._agent_prompts()) == 10  # agent_core + 9 task_*.md
 
     def test_no_per_type_verdicts(self):
         import re
@@ -8009,6 +8009,7 @@ class TestLoadAgentPrompt:
             "device": "finish_device_availability",
             "host": "finish_host_health",
             "update": "finish_update_analysis",
+            "setup": "finish_setup_plan",
         }
         for task in _VALID_TASKS:
             tool = terminal_tools[task]
