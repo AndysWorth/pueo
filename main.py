@@ -1108,12 +1108,13 @@ async def supervisor_main(config_path: Path) -> None:
             """Send one-time cards for HACS integrations downloaded but not set up.
 
             Companions in COMPANION_DOMAINS get an actionable CARD_TYPE_COMPANION_SETUP
-            card.  Unknown HACS domains keep the existing informational host_health card.
+            card.  Other HACS domains get a CARD_TYPE_INTEGRATION_SETUP card with a
+            "Help me set this up" button that launches a setup investigation.
             """
             from utils.ha.companion_setup import COMPANION_DOMAINS
             from utils.hitl.card_types import (
                 CARD_TYPE_COMPANION_SETUP,
-                CARD_TYPE_HOST_HEALTH,
+                CARD_TYPE_INTEGRATION_SETUP,
             )
             from utils.hitl.hitl_tracker import (
                 mark_card_resolved,
@@ -1168,11 +1169,12 @@ async def supervisor_main(config_path: Path) -> None:
                             "conversation_agents": conversation_agents,
                         }
                     else:
-                        ct = CARD_TYPE_HOST_HEALTH
+                        ct = CARD_TYPE_INTEGRATION_SETUP
                         body = (
                             f"The {domain} integration is downloaded via HACS but has "
-                            "no config entry — it isn't running. Remove it in HACS or "
-                            "add the integration to use it."
+                            "no config entry — it isn't running. Click "
+                            '"Help me set this up" to have Pueo research and plan the '
+                            "setup, or remove it in HACS."
                         )
                         extra_payload = {"informational": True}
 

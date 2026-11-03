@@ -3150,3 +3150,156 @@ def build_device_availability_tool_registry() -> ToolRegistry:
     ):
         reg.register(tool)
     return reg
+
+
+FINISH_SETUP_PLAN = ToolDefinition(
+    name="finish_setup_plan",
+    description=(
+        "Report the integration setup plan and close the setup session. "
+        "Call once the plan is complete. Set create_hitl_card=true to send the plan "
+        "to the user for review before Pueo touches HA."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "domain": {
+                "type": "string",
+                "description": "Integration domain being set up (e.g. 'noaa_it_all').",
+            },
+            "prerequisites_met": {
+                "type": "boolean",
+                "description": "True if HA version, pending updates, and entry state all allow proceeding.",
+            },
+            "prerequisites_blocked_reason": {
+                "type": "string",
+                "description": "Why prerequisites are not met. Required when prerequisites_met=false.",
+            },
+            "steps": {
+                "type": "array",
+                "description": "Ordered config-flow steps with planned answers and evidence.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "step_id": {
+                            "type": "string",
+                            "description": "Flow step id (e.g. 'user', 'location', 'office').",
+                        },
+                        "answers": {
+                            "type": "object",
+                            "description": "Field → planned value for this step.",
+                        },
+                        "rationale": {
+                            "type": "string",
+                            "description": "One sentence explaining why these answers were chosen.",
+                        },
+                        "evidence_step": {
+                            "type": "string",
+                            "description": "Name of the tool call whose output supports these answers.",
+                        },
+                    },
+                    "required": ["step_id", "answers", "rationale"],
+                },
+            },
+            "needs_user_input": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Field names that require a secret the user must supply. When non-empty, set outcome='advise_only'.",
+            },
+            "additional_entries": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Extra entries the flow will auto-create (e.g. 'NOAA Hurricane').",
+            },
+            "options": {
+                "type": "object",
+                "description": "Post-setup options to review (key: field name, value: recommended setting).",
+            },
+            "post_setup": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Follow-up actions for the user after the entry is created (areas, recorder, dashboards).",
+            },
+            "outcome": {
+                "type": "string",
+                "enum": ["plan_ready", "advise_only", "blocked"],
+                "description": (
+                    "plan_ready: complete plan, ready for approval; "
+                    "advise_only: needs_user_input is non-empty, manual setup link provided; "
+                    "blocked: prerequisites not met."
+                ),
+            },
+            "summary": {
+                "type": "string",
+                "description": "2–4 sentence plain-English summary of the plan and next steps.",
+            },
+            "create_hitl_card": {
+                "type": "boolean",
+                "description": "True to send the plan as a card the user can review. Almost always true.",
+            },
+            "runbook_followed": {
+                "type": "string",
+                "description": (
+                    "The strategy_id (shown as [id=…] on retrieved knowledge chunks) "
+                    "of the runbook you actually followed. Pass 'none' if none applied."
+                ),
+            },
+            "verification_question": {
+                "type": "string",
+                "description": (
+                    "One yes/no question (≤120 chars) whose Yes confirms the plan worked. "
+                    "Example: 'Did noaa_it_all load successfully with real temperature data?' "
+                    "Omit when outcome is blocked or advise_only."
+                ),
+            },
+            "deviated_from_runbook": {
+                "type": "object",
+                "description": (
+                    "Set when your investigation departed from the pre-injected runbook "
+                    "and the departure produced a better result."
+                ),
+                "properties": {
+                    "rule": {"type": "string"},
+                    "why": {"type": "string"},
+                },
+                "required": ["rule", "why"],
+            },
+        },
+        "required": [
+            "domain",
+            "prerequisites_met",
+            "steps",
+            "outcome",
+            "summary",
+            "create_hitl_card",
+        ],
+    },
+)
+
+
+def build_setup_tool_registry() -> ToolRegistry:
+    """Registry for integration setup planning sessions.
+
+    Read-only SSH + REST tools to inspect the integration, probe the flow,
+    and retrieve knowledge. No write tools — the plan is sent for user
+    approval; execution is handled by S4's card executor.
+    """
+    reg = ToolRegistry()
+    for tool in (
+        READ_CONFIG,
+        QUERY_KNOWLEDGE,
+        GET_HA_PROFILE,
+        GET_CONFIG_ENTRIES_ALL,
+        GET_AREA_LAYOUT,
+        INSPECT_CUSTOM_INTEGRATION,
+        PROBE_CONFIG_FLOW,
+        FETCH_URL,
+        FETCH_HA_DOCS,
+        READ_SOURCE,
+        RECALL,
+        REMEMBER_GROUNDED,
+        REQUEST_ESCALATION,
+        DISCARD_RESULT,
+        FINISH_SETUP_PLAN,
+    ):
+        reg.register(tool)
+    return reg

@@ -676,3 +676,83 @@ class TestGetSentinelIssues:
             "properties": {},
             "required": [],
         }
+
+
+class TestSetupRegistry:
+    def test_setup_registry_has_finish_setup_plan(self):
+        from utils.agent.tool_registry import build_setup_tool_registry
+
+        reg = build_setup_tool_registry()
+        assert "finish_setup_plan" in reg
+
+    def test_setup_registry_has_probe_tools(self):
+        from utils.agent.tool_registry import build_setup_tool_registry
+
+        reg = build_setup_tool_registry()
+        assert "inspect_custom_integration" in reg
+        assert "probe_config_flow" in reg
+        assert "get_config_entries_all" in reg
+        assert "get_ha_profile" in reg
+        assert "fetch_url" in reg
+
+    def test_finish_setup_plan_schema(self):
+        from utils.agent.tool_registry import FINISH_SETUP_PLAN
+
+        props = FINISH_SETUP_PLAN.parameters.get("properties", {})
+        required = FINISH_SETUP_PLAN.parameters.get("required", [])
+        assert "domain" in props
+        assert "prerequisites_met" in props
+        assert "steps" in props
+        assert "outcome" in props
+        assert "summary" in props
+        assert "create_hitl_card" in props
+        assert "domain" in required
+        assert "prerequisites_met" in required
+        assert "steps" in required
+        assert "outcome" in required
+
+    def test_finish_setup_plan_outcome_enum(self):
+        from utils.agent.tool_registry import FINISH_SETUP_PLAN
+
+        props = FINISH_SETUP_PLAN.parameters["properties"]
+        outcome_enum = props["outcome"]["enum"]
+        assert "plan_ready" in outcome_enum
+        assert "advise_only" in outcome_enum
+        assert "blocked" in outcome_enum
+
+    def test_setup_registry_token_budget(self):
+        """finish_setup_plan schema must stay under a reasonable per-registry ceiling."""
+        import json
+
+        from utils.agent.tool_registry import build_setup_tool_registry
+        from utils.core.context import estimate_tokens
+
+        tokens = estimate_tokens(
+            json.dumps(build_setup_tool_registry().get_ollama_tools())
+        )
+        CEILING = 6_000
+        assert (
+            tokens <= CEILING
+        ), f"Setup registry schema is {tokens} tokens (ceiling {CEILING})."
+
+    def test_setup_task_in_valid_tasks(self):
+        from utils.core.prompts import _VALID_TASKS
+
+        assert "setup" in _VALID_TASKS
+
+    def test_setup_in_scoped_families(self):
+        from utils.agent.tool_executor import ToolExecutor
+
+        assert "setup" in ToolExecutor._SCOPED_FAMILIES
+
+    def test_card_type_integration_setup_defined(self):
+        from utils.hitl.card_types import CARD_TYPE_INTEGRATION_SETUP
+
+        assert CARD_TYPE_INTEGRATION_SETUP == "integration_setup"
+
+    def test_load_agent_prompt_setup(self):
+        from utils.core.prompts import load_agent_prompt
+
+        prompt = load_agent_prompt("setup", "finish_setup_plan")
+        assert "finish_setup_plan" in prompt
+        assert "probe_config_flow" in prompt

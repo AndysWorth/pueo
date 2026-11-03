@@ -271,6 +271,51 @@ trigger: {{ r.payload.get("trigger", []) | tojson(indent=2) }}
         {% endif %}
       </div>
       {% endif %}
+      {% if ct == "integration_setup" %}
+      <div style="margin:0.75rem 0;">
+        <p style="margin:0 0 0.4rem;"><strong>Integration:</strong> <code>{{ r.payload.get("domain", "") }}</code></p>
+        {% if not r.payload.get("informational") %}
+        {% set steps = r.payload.get("steps", []) %}
+        {% if r.payload.get("prerequisites_blocked_reason") %}
+        <p style="margin:0 0 0.4rem;color:#b00;font-size:0.88rem;"><strong>Blocked:</strong> {{ r.payload.get("prerequisites_blocked_reason") }}</p>
+        {% endif %}
+        {% if steps %}
+        <details open>
+          <summary><span class="section-label label-evidence">PLAN</span>Proposed config-flow steps ({{ steps | length }})</summary>
+          <ol style="margin:0.5rem 0 0 0;padding-left:1.4rem;font-size:0.88rem;">
+            {% for step in steps %}
+            <li style="margin-bottom:0.5rem;">
+              <strong>{{ step.get("step_id", "") }}</strong>
+              {% if step.get("answers") %}
+              — {% for k, v in step.answers.items() %}<code>{{ k }}: {{ v }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
+              {% endif %}
+              {% if step.get("rationale") %}
+              <br><span style="color:#555;font-size:0.82rem;">{{ step.get("rationale") }}</span>
+              {% endif %}
+            </li>
+            {% endfor %}
+          </ol>
+        </details>
+        {% endif %}
+        {% if r.payload.get("additional_entries") %}
+        <p style="margin:0.5rem 0 0;font-size:0.88rem;"><strong>Auto-created entries:</strong> {{ r.payload.get("additional_entries") | join(", ") }}</p>
+        {% endif %}
+        {% if r.payload.get("needs_user_input") %}
+        <p style="margin:0.5rem 0 0;font-size:0.88rem;color:#8a6500;"><strong>Requires your input:</strong> {{ r.payload.get("needs_user_input") | join(", ") }} — complete manually via <a href="{{ r.payload.get('my_ha_link', '#') }}" target="_blank" rel="noopener">HA config flow</a></p>
+        {% endif %}
+        {% if r.payload.get("post_setup") %}
+        <details style="margin-top:0.5rem;">
+          <summary><span class="section-label label-evidence">POST-SETUP</span>Recommended follow-up steps</summary>
+          <ul style="margin:0.4rem 0 0 0;padding-left:1.4rem;font-size:0.88rem;">
+            {% for item in r.payload.get("post_setup", []) %}
+            <li>{{ item }}</li>
+            {% endfor %}
+          </ul>
+        </details>
+        {% endif %}
+        {% endif %}
+      </div>
+      {% endif %}
       {% if ct == "unregistered_entity" %}
       <div style="margin:0.75rem 0;">
         <p style="margin:0 0 0.4rem;">
@@ -631,7 +676,10 @@ trigger: {{ r.payload.get("trigger", []) | tojson(indent=2) }}
       {% endif %}
       {% else %}
       <p style="font-size:0.78rem;color:#666;margin-top:0.6rem;">
-        {% if ct == "host_health" and r.payload.get("informational") %}
+        {% if ct == "integration_setup" and r.payload.get("informational") %}
+        <strong style="color:#222;">Help me set this up</strong> — Research and plan the config-flow steps; you approve before anything is written &nbsp;·&nbsp;
+        <strong style="color:#222;">Acknowledge</strong> — Dismiss without investigating
+        {% elif ct == "host_health" and r.payload.get("informational") %}
         <strong style="color:#222;">Acknowledge</strong> — Mark as Known Issue; Pueo will re-investigate if the underlying data changes
         {% else %}
         <strong style="color:#222;">Acknowledge</strong> — Mark as seen and remove from queue; full details remain in the Timeline
@@ -642,7 +690,14 @@ trigger: {{ r.payload.get("trigger", []) | tojson(indent=2) }}
         <br><strong style="color:#222;">Pueo was right</strong> — Acknowledge and confirm the analysis; only confirmed sessions teach Pueo
         {% endif %}
       </p>
-      {% if ct == "host_health" and r.payload.get("informational") %}
+      {% if ct == "integration_setup" and r.payload.get("informational") %}
+      <form method="POST" action="/setup/{{ r.notification_id }}" style="display:inline;">
+        <button class="btn btn-approve" type="submit">Help me set this up</button>
+      </form>
+      <form method="POST" action="/acknowledge/{{ r.notification_id }}" style="display:inline;">
+        <button class="btn" style="background:#6c757d;color:#fff;border:none;padding:0.35rem 0.9rem;border-radius:4px;cursor:pointer;font-size:0.875rem;" type="submit">Acknowledge</button>
+      </form>
+      {% elif ct == "host_health" and r.payload.get("informational") %}
       <form method="POST" action="/acknowledge/{{ r.notification_id }}">
         <button class="btn btn-approve" type="submit">Acknowledge</button>
       </form>

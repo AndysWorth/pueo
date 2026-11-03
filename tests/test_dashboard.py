@@ -10596,3 +10596,166 @@ class TestTopRetrievedSignature:
 
         r = AgentLoopResult(outcome="success")
         assert r.top_retrieved_signature == ""
+
+
+# ── Integration setup route ───────────────────────────────────────────────────
+
+
+class TestStartSetupInvestigationRoute:
+    """Tests for POST /setup/{nid} endpoint."""
+
+    @pytest.fixture()
+    def watch_dir(self, tmp_path):
+        d = tmp_path / "hitl"
+        d.mkdir()
+        return d
+
+    def _write_card(self, watch_dir, nid, payload):
+        import json as _json
+        import time
+
+        card = {
+            "notification_id": nid,
+            "subject": "Test card",
+            "body": "body",
+            "payload": payload,
+            "sent_at": int(time.time()),
+        }
+        (watch_dir / f"{nid}.json").write_text(_json.dumps(card))
+
+    def test_redirects_to_queue(self, watch_dir, monkeypatch):
+        """POST /setup/{nid} redirects to /queue on success."""
+        import asyncio
+
+        import utils.ha.integration_setup_investigation as inv_mod
+        import web.dashboard as dashboard
+
+        launched = []
+
+        async def _fake_run(*args, **kwargs):
+            launched.append(kwargs)
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+        monkeypatch.setattr(inv_mod, "run_setup_investigation", _fake_run)
+        self._write_card(
+            watch_dir,
+            "s-1",
+            {"card_type": "integration_setup", "domain": "noaa_it_all"},
+        )
+
+        result = asyncio.run(dashboard.start_setup_investigation("s-1"))
+        assert result.status_code == 303
+        assert result.headers["location"] == "/queue"
+
+    def test_missing_card_returns_404(self, watch_dir, monkeypatch):
+        """POST /setup/{nid} returns 404 when the card JSON is absent."""
+        import asyncio
+
+        import web.dashboard as dashboard
+        from fastapi import HTTPException
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(dashboard.start_setup_investigation("nonexistent"))
+        assert exc_info.value.status_code == 404
+
+    def test_missing_domain_returns_400(self, watch_dir, monkeypatch):
+        """POST /setup/{nid} returns 400 when the card has no domain."""
+        import asyncio
+
+        import web.dashboard as dashboard
+        from fastapi import HTTPException
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+        self._write_card(watch_dir, "s-bad", {"card_type": "integration_setup"})
+
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(dashboard.start_setup_investigation("s-bad"))
+        assert exc_info.value.status_code == 400
+
+    def test_submits_work_item_when_queue_present(self, watch_dir, monkeypatch):
+        """POST /setup/{nid} submits a WorkItem when PueoWorkQueue is available."""
+        import asyncio
+
+        import utils.agent.work_queue as wq_mod
+        import utils.ha.integration_setup_investigation as inv_mod
+        import web.dashboard as dashboard
+
+        submitted = []
+
+        class FakeQueue:
+            async def submit(self, item):
+                submitted.append(item)
+
+        async def _fake_run(*args, **kwargs):
+            pass
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+        monkeypatch.setattr(wq_mod, "_work_queue", FakeQueue())
+        monkeypatch.setattr(inv_mod, "run_setup_investigation", _fake_run)
+        self._write_card(
+            watch_dir,
+            "s-2",
+            {"card_type": "integration_setup", "domain": "noaa_it_all"},
+        )
+
+        asyncio.run(dashboard.start_setup_investigation("s-2"))
+        # Task is created; give event loop a tick to run it
+        asyncio.run(asyncio.sleep(0))
+        assert len(submitted) == 1
+        item = submitted[0]
+        assert item.activity_type == "setup_investigation"
+        assert item.dedup_key == "setup:noaa_it_all"
+
+    def test_suppression_key_from_card_payload(self, watch_dir, monkeypatch):
+        """card_key uses suppression_key field when present."""
+        import asyncio
+
+        import utils.ha.integration_setup_investigation as inv_mod
+        import web.dashboard as dashboard
+
+        captured = {}
+
+        async def _fake_run(*args, **kwargs):
+            captured.update(kwargs)
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+        monkeypatch.setattr(inv_mod, "run_setup_investigation", _fake_run)
+        self._write_card(
+            watch_dir,
+            "s-3",
+            {
+                "card_type": "integration_setup",
+                "domain": "noaa_it_all",
+                "suppression_key": "custom:noaa_it_all:key",
+            },
+        )
+
+        asyncio.run(dashboard.start_setup_investigation("s-3"))
+        asyncio.run(asyncio.sleep(0))
+        assert captured.get("triggering_card_key") == "custom:noaa_it_all:key"
+
+    def test_suppression_key_defaults_to_hacs_unloaded(self, watch_dir, monkeypatch):
+        """card_key defaults to hacs_unloaded:<domain> when suppression_key absent."""
+        import asyncio
+
+        import utils.ha.integration_setup_investigation as inv_mod
+        import web.dashboard as dashboard
+
+        captured = {}
+
+        async def _fake_run(*args, **kwargs):
+            captured.update(kwargs)
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+        monkeypatch.setattr(inv_mod, "run_setup_investigation", _fake_run)
+        self._write_card(
+            watch_dir,
+            "s-4",
+            {"card_type": "integration_setup", "domain": "noaa_it_all"},
+        )
+
+        asyncio.run(dashboard.start_setup_investigation("s-4"))
+        asyncio.run(asyncio.sleep(0))
+        assert captured.get("triggering_card_key") == "hacs_unloaded:noaa_it_all"

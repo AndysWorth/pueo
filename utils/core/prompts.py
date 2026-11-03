@@ -14,6 +14,7 @@ _VALID_TASKS = frozenset(
         "device",
         "host",
         "update",
+        "setup",
     }
 )
 
