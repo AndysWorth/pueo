@@ -1541,6 +1541,48 @@ REQUEST_ESCALATION = ToolDefinition(
     },
 )
 
+INSPECT_CUSTOM_INTEGRATION = ToolDefinition(
+    name="inspect_custom_integration",
+    description=(
+        "Read the local manifest.json, hacs.json, and translations "
+        "(strings.json or translations/en.json) for a custom integration installed in "
+        "/config/custom_components/<domain>/. Returns version, min HA version, "
+        "config_flow flag, requirements, and all config-flow step labels. "
+        "Use this before probe_config_flow to understand the flow steps."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "domain": {
+                "type": "string",
+                "description": "The custom integration domain (e.g. 'noaa_it_all', 'spook')",
+            }
+        },
+        "required": ["domain"],
+    },
+)
+
+PROBE_CONFIG_FLOW = ToolDefinition(
+    name="probe_config_flow",
+    description=(
+        "Start a config flow for an integration and return a summary of the first step "
+        "(menu options or form fields), then immediately abort — nothing is submitted. "
+        "Never call this for integrations that do not support config_flow. "
+        "Safe to call even when the first step is a menu: the probe never submits "
+        "a choice, so no entry is created."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "domain": {
+                "type": "string",
+                "description": "The integration domain to probe (e.g. 'noaa_it_all')",
+            }
+        },
+        "required": ["domain"],
+    },
+)
+
 DISCARD_RESULT = ToolDefinition(
     name="discard_result",
     description=(
@@ -2815,6 +2857,8 @@ def build_ha_tool_registry() -> ToolRegistry:
         GET_SPOOK_ISSUES,
         GET_SENTINEL_ISSUES,
         GET_STATISTICS,
+        INSPECT_CUSTOM_INTEGRATION,
+        PROBE_CONFIG_FLOW,
         DISCARD_RESULT,
     ):
         reg.register(tool)
@@ -2932,6 +2976,8 @@ def build_chat_tool_registry() -> ToolRegistry:
         GET_SENTINEL_ISSUES,
         GET_STATISTICS,
         RESOLVE_HITL_CARD,
+        INSPECT_CUSTOM_INTEGRATION,
+        PROBE_CONFIG_FLOW,
         DISCARD_RESULT,
     ):
         reg.register(tool)
