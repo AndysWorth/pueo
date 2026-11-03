@@ -2876,6 +2876,50 @@ class TestCoreRestartDownWatch:
 # ---------------------------------------------------------------------------
 
 
+class TestCoreRestartNoNotifier:
+    """execute_ha_core_restart with notifier=None logs a warning and does not raise (#1085)."""
+
+    def test_none_notifier_returns_true_without_raising(self):
+        import asyncio
+        from unittest.mock import patch
+
+        class _FakeSSH:
+            async def run(self, cmd, check=True):
+                await asyncio.sleep(0)
+                return (0, "", "")
+
+        async def _fake_down(*args, **kwargs):
+            return True
+
+        async def _fake_api(*args, **kwargs):
+            return True
+
+        with (
+            patch("agents.ha_update_manager._pause_loops_for_reboot"),
+            patch("agents.ha_update_manager._resume_loops_after_reboot"),
+            patch(
+                "agents.ha_update_manager._send_post_update_card",
+                side_effect=AssertionError("must not call"),
+            ),
+            patch("agents.ha_update_manager.HA_HOST", "ha.local"),
+            patch("agents.ha_update_manager.HA_API_PORT", 8123),
+            patch("agents.ha_update_manager.HA_API_TOKEN", "token"),
+        ):
+            from agents.ha_update_manager import execute_ha_core_restart
+
+            result = asyncio.run(
+                execute_ha_core_restart(
+                    _FakeSSH(),
+                    None,
+                    skip_backup=True,
+                    _down_poll=_fake_down,
+                    _api_poll=_fake_api,
+                )
+            )
+
+        assert result is True
+
+
 class TestPostUpdateCardWording:
     """restart/reboot synthetic components get correct human-readable wording."""
 

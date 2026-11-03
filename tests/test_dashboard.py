@@ -9656,6 +9656,60 @@ class TestExecuteCompanionSetup:
         nid, _ = self._run(tmp_path, monkeypatch, success=False)
         assert not (tmp_path / f"{nid}.in_progress").exists()
 
+    def test_notifier_is_not_none(self, tmp_path, monkeypatch):
+        """Dashboard executor must pass a real notifier to run_companion_setup (#1085)."""
+        import asyncio
+        import json as _json
+
+        import web.dashboard as dashboard
+        from utils.ha.companion_setup import CompanionSetupResult, Step
+        from unittest.mock import MagicMock
+
+        captured: list = []
+
+        async def _fake_run(domain, *, rest, ws, ssh, notifier=None, **kw):
+            captured.append(notifier)
+            return CompanionSetupResult(domain=domain, steps_done=[Step.VERIFY])
+
+        import utils.ha.companion_setup as cs_mod
+        import utils.ha.ha_rest_client as rest_mod
+        import utils.ha.ha_ws_client as ws_mod
+        import utils.ha.ssh_client as ssh_mod
+        import utils.hitl.notify as notify_mod
+        from utils.ha.ha_rest_client import FakeHARestClient
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+        from utils.ha.ssh_client import FakeSSHClient
+
+        monkeypatch.setattr(cs_mod, "run_companion_setup", _fake_run)
+        monkeypatch.setattr(
+            rest_mod, "HARestClient", lambda *a, **kw: FakeHARestClient()
+        )
+        monkeypatch.setattr(
+            ws_mod, "HAWebSocketClient", lambda *a, **kw: FakeHAWebSocketClient()
+        )
+        monkeypatch.setattr(ssh_mod, "AsyncSSHClient", lambda *a, **kw: FakeSSHClient())
+        fake_notifier = MagicMock()
+        monkeypatch.setattr(notify_mod, "get_notifier", lambda *a, **kw: fake_notifier)
+
+        import config as _cfg
+
+        monkeypatch.setattr(_cfg, "HA_HOST", "ha")
+        monkeypatch.setattr(_cfg, "HA_API_PORT", 8123)
+        monkeypatch.setattr(_cfg, "HA_API_TOKEN", "tok")
+        monkeypatch.setattr(_cfg, "HA_USER", "root")
+        monkeypatch.setattr(_cfg, "SSH_KEY_PATH", "/key")
+
+        nid = "companion-notifier"
+        json_path = tmp_path / f"{nid}.json"
+        data: dict = {"payload": {"card_type": "companion_setup", "domain": "spook"}}
+        json_path.write_text(_json.dumps(data))
+
+        asyncio.run(dashboard._execute_companion_setup(nid, data, json_path, tmp_path))
+
+        assert len(captured) == 1
+        assert captured[0] is not None
+        assert captured[0] is fake_notifier
+
     def test_companion_setup_in_dispatch_table(self):
         from utils.hitl.card_types import CARD_TYPE_COMPANION_SETUP
         import web.dashboard as dashboard

@@ -2193,7 +2193,7 @@ async def execute_ha_reboot(
 
 async def execute_ha_core_restart(
     ssh_client: SSHClientProtocol,
-    notifier: "NotifierProtocol",
+    notifier: Optional["NotifierProtocol"],
     _api_poll: Optional[Callable] = None,
     _down_poll: Optional[Callable] = None,
     skip_backup: bool = False,
@@ -2299,7 +2299,10 @@ async def execute_ha_core_restart(
             "HA Core did not come back online — check manually",
             activity="restart_execution",
         )
-    await _send_post_update_card(restart_update, notifier, success, "", "")
+    if notifier is None:
+        log.warning("ha_core_restart_no_notifier")
+    else:
+        await _send_post_update_card(restart_update, notifier, success, "", "")
 
     if not success:
         log.warning(

@@ -1389,10 +1389,15 @@ async def _execute_companion_setup(
         domain = payload.get("domain", "")
         agent_id = payload.get("agent_id") or None
 
+        from utils.hitl.notify import get_notifier
+
         ssh = AsyncSSHClient(_config.HA_HOST, _config.HA_USER, _config.SSH_KEY_PATH)
         rest = HARestClient(_config.HA_HOST, _config.HA_API_PORT, _config.HA_API_TOKEN)
         ws = HAWebSocketClient(
             _config.HA_HOST, _config.HA_API_PORT, _config.HA_API_TOKEN
+        )
+        notifier = get_notifier(
+            _config.NOTIFIER, _config.NOTIFY_URL, _config.NOTIFY_WATCH_DIR
         )
 
         result = await run_companion_setup(
@@ -1401,6 +1406,7 @@ async def _execute_companion_setup(
             rest=rest,
             ws=ws,
             ssh=ssh,
+            notifier=notifier,
         )
 
         if result.success:
