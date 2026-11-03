@@ -7,7 +7,6 @@ Every write goes through the backup chain (ADR 045).
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Any, Callable, Optional
@@ -321,34 +320,14 @@ async def _run_config_flow(
     rest: "HARestClientProtocol",
 ) -> str:
     """Start a config flow for domain and submit it. Returns entry_id."""
-    flow = await rest.start_config_flow(domain)
-    flow_type = flow.get("type", "")
+    from utils.ha.config_flow_driver import drive_config_flow
 
-    if flow_type == "invalid_handler":
-        # HA may need a moment after restart; retry once
-        await asyncio.sleep(3)
-        flow = await rest.start_config_flow(domain)
-        flow_type = flow.get("type", "")
-
-    flow_id = flow.get("flow_id", "")
-    if not flow_id and flow_type not in ("create_entry", "abort"):
-        raise RuntimeError(f"start_config_flow returned no flow_id: {flow!r}")
-
-    if flow_type == "form":
-        result = await rest.submit_config_flow(flow_id, flow_input)
-    elif flow_type in ("create_entry", "abort"):
-        result = flow
-    else:
-        result = await rest.submit_config_flow(flow_id, flow_input)
-
-    if result.get("type") == "abort":
-        abort_reason = result.get("reason", "unknown")
-        if abort_reason == "already_configured":
-            entries_raw = result.get("result", {})
-            return str(entries_raw.get("entry_id", ""))
-        raise RuntimeError(f"Config flow aborted: {abort_reason}")
-
-    return str(result.get("result", {}).get("entry_id", ""))
+    result = await drive_config_flow(rest, domain, plan={"*": flow_input})
+    if result.success:
+        return result.entry_ids[0] if result.entry_ids else ""
+    if result.abort_reason == "already_configured":
+        return ""
+    raise RuntimeError(f"Config flow failed: {result.error_message}")
 
 
 async def _run_options_flow(

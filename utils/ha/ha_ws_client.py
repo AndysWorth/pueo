@@ -401,6 +401,14 @@ class HAWebSocketClient:  # pragma: no cover
             if not msg.get("success"):
                 raise RuntimeError(f"hacs/repository/download failed: {msg}")
 
+    async def list_config_flows_in_progress(self) -> list[dict]:
+        """List in-progress config flows via config_entries/flow/progress.
+
+        REST GET /api/config/config_entries/flow returns 405 on HA 2026.x,
+        so WebSocket is the canonical source.
+        """
+        return await self._call("config_entries/flow/progress")  # type: ignore[return-value]
+
     async def get_lovelace_dashboards(self) -> list[dict]:
         """List all named dashboards via lovelace/dashboards/list."""
         ws = await self._connect_and_auth()
@@ -461,6 +469,7 @@ class FakeHAWebSocketClient:
         update_release_notes: dict[str, str | None] | None = None,
         conversation_agents: list[dict] | None = None,
         hacs_repositories: list[dict] | None = None,
+        flows_in_progress: list[dict] | None = None,
     ) -> None:
         self._devices: list[dict] = devices or []
         self._notifications: list[dict] = notifications or []
@@ -496,6 +505,7 @@ class FakeHAWebSocketClient:
         self._hacs_repositories: list[dict] = hacs_repositories or []
         self.hacs_add_calls: list[str] = []
         self.hacs_download_calls: list[str] = []
+        self._flows_in_progress: list[dict] = flows_in_progress or []
 
     async def get_device_registry(self) -> list[dict]:
         self.calls.append("get_device_registry")
@@ -626,3 +636,7 @@ class FakeHAWebSocketClient:
     async def hacs_download(self, repository_id: str) -> None:
         self.calls.append(f"hacs_download:{repository_id}")
         self.hacs_download_calls.append(repository_id)
+
+    async def list_config_flows_in_progress(self) -> list[dict]:
+        self.calls.append("list_config_flows_in_progress")
+        return list(self._flows_in_progress)
