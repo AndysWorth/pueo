@@ -20,7 +20,7 @@ Every step of the provisioning chain is fixed:
 1. `execute_remote_backup()` → `record_backup_slug()` — the safety invariant; `/config/custom_components` is a write.
 2. HACS WS `hacs/repositories/add` — only if the repo is not already in HACS (idempotent).
 3. HACS WS `hacs/repository/download {repository: <id>}` — only if not yet downloaded.
-4. `ha core restart` via `execute_ha_core_restart(skip_backup=True)` — only if the integration is not yet loaded. **The TCP down-watch is started before the blocking SSH call** (see ADR feedback: `feedback-repair-executor-inert-ssh`).
+4. `ha core restart` via `execute_ha_core_restart(skip_backup=True)` — only if the integration is not yet loaded **and not yet known to HA** (`integration_known` via WS `manifest/get`). The `known_to_ha` probe allows a retry after a successful restart to skip a redundant second restart even when Spook does not appear in `/api/config` components (it only loads after a config entry exists). Fail-safe: a probe error means `known_to_ha=False` and the restart is included. **The TCP down-watch is started before the blocking SSH call** (see ADR feedback: `feedback-repair-executor-inert-ssh`). Amended 2026-11-03 (Closes #1087).
 5. REST `POST /api/config/config_entries/flow {"handler": domain}` → submit the flow input.
 6. For upgrade_advisor: REST `POST /api/config/config_entries/options/flow {"handler": entry_id}` → submit Pueo's fixed options.
 7. Verify: re-read config entries and confirm the domain is present.

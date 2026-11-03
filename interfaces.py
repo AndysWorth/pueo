@@ -117,6 +117,7 @@ class HAWebSocketClientProtocol(Protocol):
     async def disable_config_entry(
         self, entry_id: str, disabled_by: str | None
     ) -> None: ...
+    async def integration_known(self, domain: str) -> bool: ...
 
 
 class HAEventSubscriberProtocol(Protocol):
