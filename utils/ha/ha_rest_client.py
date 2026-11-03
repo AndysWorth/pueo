@@ -257,6 +257,15 @@ class HARestClient:  # pragma: no cover
             resp.raise_for_status()
             return resp.json()  # type: ignore[no-any-return]
 
+    async def abort_config_flow(self, flow_id: str) -> None:
+        base = self._base_url.removesuffix("/api")
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            resp = await client.delete(
+                f"{base}/api/config/config_entries/flow/{flow_id}",
+                headers=self._headers,
+            )
+            resp.raise_for_status()
+
     async def start_options_flow(self, entry_id: str) -> dict:
         base = self._base_url.removesuffix("/api")
         async with httpx.AsyncClient(timeout=self._timeout) as client:
@@ -432,6 +441,9 @@ class FakeHARestClient:
             f"submit:{flow_id}",
             {"type": "create_entry", "result": {"entry_id": f"entry-{flow_id}"}},
         )
+
+    async def abort_config_flow(self, flow_id: str) -> None:
+        self.deleted.append(f"/api/config/config_entries/flow/{flow_id}")
 
     async def start_options_flow(self, entry_id: str) -> dict:
         self.posted.append(
