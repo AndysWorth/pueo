@@ -3243,6 +3243,20 @@ FINISH_SETUP_PLAN = ToolDefinition(
                     "of the runbook you actually followed. Pass 'none' if none applied."
                 ),
             },
+            "entry_action": {
+                "type": "string",
+                "enum": ["add", "enable", "re_add"],
+                "description": (
+                    "add: run a new config flow (no existing entry); "
+                    "enable: re-enable an existing disabled entry (requires entry_id); "
+                    "re_add: delete the existing entry then run a new config flow (requires entry_id). "
+                    "Default is 'add'."
+                ),
+            },
+            "entry_id": {
+                "type": "string",
+                "description": "Required when entry_action is 'enable' or 're_add'. The entry_id of the existing config entry.",
+            },
             "verification_question": {
                 "type": "string",
                 "description": (

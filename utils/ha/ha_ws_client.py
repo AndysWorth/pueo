@@ -409,6 +409,19 @@ class HAWebSocketClient:  # pragma: no cover
         """
         return await self._call("config_entries/flow/progress")  # type: ignore[return-value]
 
+    async def disable_config_entry(
+        self, entry_id: str, disabled_by: str | None
+    ) -> None:
+        """Enable or disable a config entry via WS config_entries/disable.
+
+        Pass disabled_by=None to enable the entry; pass "user" to disable it.
+        """
+        await self._call(
+            "config_entries/disable",
+            entry_id=entry_id,
+            disabled_by=disabled_by,
+        )
+
     async def get_lovelace_dashboards(self) -> list[dict]:
         """List all named dashboards via lovelace/dashboards/list."""
         ws = await self._connect_and_auth()
@@ -506,6 +519,7 @@ class FakeHAWebSocketClient:
         self.hacs_add_calls: list[str] = []
         self.hacs_download_calls: list[str] = []
         self._flows_in_progress: list[dict] = flows_in_progress or []
+        self.disable_entry_calls: list[tuple[str, str | None]] = []
 
     async def get_device_registry(self) -> list[dict]:
         self.calls.append("get_device_registry")
@@ -640,3 +654,9 @@ class FakeHAWebSocketClient:
     async def list_config_flows_in_progress(self) -> list[dict]:
         self.calls.append("list_config_flows_in_progress")
         return list(self._flows_in_progress)
+
+    async def disable_config_entry(
+        self, entry_id: str, disabled_by: str | None
+    ) -> None:
+        self.calls.append(f"disable_config_entry:{entry_id}:{disabled_by}")
+        self.disable_entry_calls.append((entry_id, disabled_by))

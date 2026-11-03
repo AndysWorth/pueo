@@ -10759,3 +10759,347 @@ class TestStartSetupInvestigationRoute:
         asyncio.run(dashboard.start_setup_investigation("s-4"))
         asyncio.run(asyncio.sleep(0))
         assert captured.get("triggering_card_key") == "hacs_unloaded:noaa_it_all"
+
+
+# ── Integration setup executor ─────────────────────────────────────────────────
+
+
+class TestExecuteIntegrationSetup:
+    """Tests for _execute_integration_setup and _verify_integration_setup."""
+
+    @pytest.fixture()
+    def watch_dir(self, tmp_path):
+        d = tmp_path / "hitl"
+        d.mkdir()
+        return d
+
+    def _write_card(self, watch_dir, nid, payload):
+        import time
+
+        card = {
+            "notification_id": nid,
+            "subject": "Test",
+            "body": "body",
+            "payload": payload,
+            "sent_at": int(time.time()),
+        }
+        (watch_dir / f"{nid}.json").write_text(json.dumps(card))
+
+    def _patch_all(
+        self, monkeypatch, watch_dir, *, slug="bk1", flow_entry_ids=None, verified=True
+    ):
+        import web.dashboard as dashboard
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+        from utils.ha.ha_rest_client import FakeHARestClient
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+
+        async def _fake_backup(**_kwargs):
+            return slug
+
+        def _fake_record(s):
+            pass
+
+        async def _fake_sleep(_t):
+            pass
+
+        monkeypatch.setattr(
+            "agents.ha_agent_sandbox_engine.execute_remote_backup", _fake_backup
+        )
+        monkeypatch.setattr(
+            "agents.ha_agent_sandbox_engine.record_backup_slug", _fake_record
+        )
+        monkeypatch.setattr(
+            dashboard, "_verify_integration_setup", lambda *a: _async(verified)
+        )
+
+        entry_ids = flow_entry_ids or ["entry-flow-noaa"]
+        rest = FakeHARestClient(
+            flow_responses={
+                "start:noaa_it_all": {
+                    "flow_id": "flow-1",
+                    "type": "form",
+                    "step_id": "user",
+                },
+                "submit:flow-1": {
+                    "type": "create_entry",
+                    "result": {"entry_id": entry_ids[0]},
+                },
+            }
+        )
+        ws = FakeHAWebSocketClient()
+
+        monkeypatch.setattr(
+            "utils.ha.ha_rest_client.HARestClient",
+            lambda *a, **kw: rest,
+        )
+        monkeypatch.setattr(
+            "utils.ha.ha_ws_client.HAWebSocketClient",
+            lambda *a, **kw: ws,
+        )
+        monkeypatch.setattr(
+            "utils.ha.ssh_client.AsyncSSHClient",
+            lambda *a, **kw: object(),
+        )
+        monkeypatch.setattr(asyncio, "sleep", _fake_sleep)
+
+        async def _fake_verify_card(*a, **kw):
+            pass
+
+        monkeypatch.setattr(dashboard, "_verify_card_execution", _fake_verify_card)
+
+        return rest, ws
+
+    def test_add_happy_path(self, watch_dir, monkeypatch):
+        """add: backup → drive_config_flow → verify → approved marker written."""
+        import web.dashboard as dashboard
+
+        rest, ws = self._patch_all(monkeypatch, watch_dir, verified=True)
+        self._write_card(
+            watch_dir,
+            "s-add",
+            {
+                "card_type": "integration_setup",
+                "domain": "noaa_it_all",
+                "entry_action": "add",
+                "steps": [
+                    {
+                        "step_id": "user",
+                        "answers": {"menu": "location"},
+                        "rationale": "r",
+                    }
+                ],
+                "options": {},
+                "episode_id": "ep-1",
+            },
+        )
+        data = json.loads((watch_dir / "s-add.json").read_text())
+        json_path = watch_dir / "s-add.json"
+
+        asyncio.run(
+            dashboard._execute_integration_setup("s-add", data, json_path, watch_dir)
+        )
+
+        assert (watch_dir / "s-add.approved").exists()
+        assert not (watch_dir / "s-add.rejected").exists()
+
+    def test_enable_happy_path(self, watch_dir, monkeypatch):
+        """enable: backup → ws.disable_config_entry(None) → verify → approved."""
+        import web.dashboard as dashboard
+
+        rest, ws = self._patch_all(monkeypatch, watch_dir, verified=True)
+        self._write_card(
+            watch_dir,
+            "s-en",
+            {
+                "card_type": "integration_setup",
+                "domain": "noaa_it_all",
+                "entry_action": "enable",
+                "entry_id": "entry-123",
+                "steps": [],
+                "episode_id": "ep-2",
+            },
+        )
+        data = json.loads((watch_dir / "s-en.json").read_text())
+        json_path = watch_dir / "s-en.json"
+
+        asyncio.run(
+            dashboard._execute_integration_setup("s-en", data, json_path, watch_dir)
+        )
+
+        assert (watch_dir / "s-en.approved").exists()
+        assert ws.disable_entry_calls == [("entry-123", None)]
+
+    def test_re_add_happy_path(self, watch_dir, monkeypatch):
+        """re_add: backup → delete existing entry → drive_config_flow → verify."""
+        import web.dashboard as dashboard
+
+        rest, ws = self._patch_all(monkeypatch, watch_dir, verified=True)
+        self._write_card(
+            watch_dir,
+            "s-ra",
+            {
+                "card_type": "integration_setup",
+                "domain": "noaa_it_all",
+                "entry_action": "re_add",
+                "entry_id": "old-entry",
+                "steps": [
+                    {
+                        "step_id": "user",
+                        "answers": {"menu": "location"},
+                        "rationale": "r",
+                    }
+                ],
+                "episode_id": "ep-3",
+            },
+        )
+        data = json.loads((watch_dir / "s-ra.json").read_text())
+        json_path = watch_dir / "s-ra.json"
+
+        asyncio.run(
+            dashboard._execute_integration_setup("s-ra", data, json_path, watch_dir)
+        )
+
+        assert (watch_dir / "s-ra.approved").exists()
+        assert "/api/config/config_entries/entry/old-entry" in rest.deleted
+
+    def test_backup_failure_marks_rejected(self, watch_dir, monkeypatch):
+        """When backup raises, card is rejected without touching HA."""
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+
+        async def _fail_backup(**_):
+            raise RuntimeError("Backup failed: disk full")
+
+        async def _fake_sleep(_t):
+            pass
+
+        async def _fake_verify(*a, **kw):
+            pass
+
+        monkeypatch.setattr(
+            "agents.ha_agent_sandbox_engine.execute_remote_backup", _fail_backup
+        )
+        monkeypatch.setattr(
+            "agents.ha_agent_sandbox_engine.record_backup_slug", lambda s: None
+        )
+        monkeypatch.setattr(asyncio, "sleep", _fake_sleep)
+        monkeypatch.setattr(dashboard, "_verify_card_execution", _fake_verify)
+        monkeypatch.setattr(
+            "utils.ha.ha_rest_client.HARestClient",
+            lambda *a, **kw: object(),
+        )
+        monkeypatch.setattr(
+            "utils.ha.ha_ws_client.HAWebSocketClient",
+            lambda *a, **kw: object(),
+        )
+        monkeypatch.setattr(
+            "utils.ha.ssh_client.AsyncSSHClient",
+            lambda *a, **kw: object(),
+        )
+
+        self._write_card(
+            watch_dir,
+            "s-bk",
+            {
+                "card_type": "integration_setup",
+                "domain": "noaa_it_all",
+                "entry_action": "add",
+                "steps": [{"step_id": "user", "answers": {}, "rationale": "r"}],
+                "episode_id": "ep-4",
+            },
+        )
+        data = json.loads((watch_dir / "s-bk.json").read_text())
+        json_path = watch_dir / "s-bk.json"
+
+        asyncio.run(
+            dashboard._execute_integration_setup("s-bk", data, json_path, watch_dir)
+        )
+
+        assert (watch_dir / "s-bk.rejected").exists()
+        updated = json.loads(json_path.read_text())
+        assert "Backup failed" in updated.get("fix_error", "")
+
+    def test_enable_without_entry_id_rejected(self, watch_dir, monkeypatch):
+        """enable with no entry_id in payload → precondition fail → rejected."""
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+        monkeypatch.setattr(asyncio, "sleep", lambda t: _async(None))
+        monkeypatch.setattr(
+            dashboard, "_verify_card_execution", lambda *a, **kw: _async(None)
+        )
+        monkeypatch.setattr(
+            "utils.ha.ha_rest_client.HARestClient", lambda *a, **kw: object()
+        )
+        monkeypatch.setattr(
+            "utils.ha.ha_ws_client.HAWebSocketClient", lambda *a, **kw: object()
+        )
+        monkeypatch.setattr(
+            "utils.ha.ssh_client.AsyncSSHClient", lambda *a, **kw: object()
+        )
+        monkeypatch.setattr(
+            "agents.ha_agent_sandbox_engine.execute_remote_backup",
+            lambda **_: _async("bk"),
+        )
+        monkeypatch.setattr(
+            "agents.ha_agent_sandbox_engine.record_backup_slug", lambda s: None
+        )
+
+        self._write_card(
+            watch_dir,
+            "s-neid",
+            {
+                "card_type": "integration_setup",
+                "domain": "noaa_it_all",
+                "entry_action": "enable",
+                "steps": [],
+                "episode_id": "ep-5",
+            },
+        )
+        data = json.loads((watch_dir / "s-neid.json").read_text())
+        json_path = watch_dir / "s-neid.json"
+
+        asyncio.run(
+            dashboard._execute_integration_setup("s-neid", data, json_path, watch_dir)
+        )
+
+        assert (watch_dir / "s-neid.rejected").exists()
+
+    def test_verify_integration_setup_true(self, monkeypatch):
+        """Returns True when a loaded entry exists and a live entity is found."""
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+        import web.dashboard as dashboard
+
+        ws = FakeHAWebSocketClient(
+            config_entries=[{"domain": "noaa_it_all", "state": "loaded"}],
+            states=[{"platform": "noaa_it_all", "state": "20"}],
+        )
+
+        result = asyncio.run(dashboard._verify_integration_setup(ws, "noaa_it_all"))
+        assert result is True
+
+    def test_verify_integration_setup_no_loaded_entry(self, monkeypatch):
+        """Returns False when no loaded entry exists."""
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+        import web.dashboard as dashboard
+
+        ws = FakeHAWebSocketClient(
+            config_entries=[{"domain": "noaa_it_all", "state": "not_loaded"}],
+            states=[{"platform": "noaa_it_all", "state": "20"}],
+        )
+
+        result = asyncio.run(dashboard._verify_integration_setup(ws, "noaa_it_all"))
+        assert result is False
+
+    def test_verify_integration_setup_all_unavailable(self):
+        """Returns False when all entities are unavailable."""
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+        import web.dashboard as dashboard
+
+        ws = FakeHAWebSocketClient(
+            config_entries=[{"domain": "noaa_it_all", "state": "loaded"}],
+            states=[{"platform": "noaa_it_all", "state": "unavailable"}],
+        )
+
+        result = asyncio.run(dashboard._verify_integration_setup(ws, "noaa_it_all"))
+        assert result is False
+
+    def test_integration_setup_in_card_dispatch(self):
+        """CARD_TYPE_INTEGRATION_SETUP is wired into _CARD_DISPATCH."""
+        import web.dashboard as dashboard
+        from utils.hitl.card_types import CARD_TYPE_INTEGRATION_SETUP
+
+        assert CARD_TYPE_INTEGRATION_SETUP in dashboard._CARD_DISPATCH
+        assert (
+            dashboard._CARD_DISPATCH[CARD_TYPE_INTEGRATION_SETUP]
+            is dashboard._execute_integration_setup
+        )
+
+
+def _async(value):
+    async def _inner(*_a, **_kw):
+        return value
+
+    return _inner()

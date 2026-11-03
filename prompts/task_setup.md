@@ -14,7 +14,10 @@ can review and approve every step before anything is written to HA.
 2. **Existing entries** — call `get_config_entries_all` and filter on the domain. A
    disabled or ignored entry changes the path (see seed runbook). Never plan a new
    config flow next to an entry for the same location — it will abort with
-   `already_configured`.
+   `already_configured`. Set `entry_action` accordingly: `"add"` for no existing entry,
+   `"enable"` for a disabled entry (pass its `entry_id`), `"re_add"` to delete and
+   recreate (pass its `entry_id`). Ask the user why they disabled it before recommending
+   re-add over enable — enable preserves history and entity IDs.
 
 3. **Learn the flow** — call `probe_config_flow(domain)` to see the live first step and
    available options. Use the translations from `inspect_custom_integration` for step

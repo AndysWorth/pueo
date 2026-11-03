@@ -1455,6 +1455,158 @@ async def _execute_companion_setup(
         (watch_dir / f"{nid}.in_progress").unlink(missing_ok=True)
 
 
+async def _execute_integration_setup(
+    nid: str,
+    data: dict,
+    json_path: Path,
+    watch_dir: Path,
+) -> None:
+    """Run the integration setup chain for an approved CARD_TYPE_INTEGRATION_SETUP card.
+
+    Order: preconditions (no backup) → backup → action → settle → verify.
+    Actions: add (drive_config_flow), enable (WS disable with disabled_by=null),
+    re_add (delete existing entry + drive_config_flow).
+    """
+    import config as _config
+    from agents.ha_agent_sandbox_engine import execute_remote_backup, record_backup_slug
+    from utils.ha.config_flow_driver import drive_config_flow
+    from utils.ha.ha_rest_client import HARestClient
+    from utils.ha.ha_ws_client import HAWebSocketClient
+    from utils.ha.ssh_client import AsyncSSHClient
+
+    (watch_dir / f"{nid}.in_progress").touch()
+    payload = data.get("payload", {})
+    domain = payload.get("domain", "")
+    entry_action = payload.get("entry_action", "add")
+    entry_id = payload.get("entry_id", "")
+    steps_list: list[dict] = payload.get("steps", [])
+    options: dict = payload.get("options") or {}
+
+    try:
+        # Preconditions — must run before the backup
+        if entry_action in ("enable", "re_add") and not entry_id:
+            raise ValueError(
+                f"entry_action={entry_action!r} requires entry_id in card payload"
+            )
+        if entry_action in ("add", "re_add") and not steps_list:
+            raise ValueError("Setup plan has no steps — cannot drive config flow")
+
+        rest = HARestClient(_config.HA_HOST, _config.HA_API_PORT, _config.HA_API_TOKEN)
+        ws = HAWebSocketClient(
+            _config.HA_HOST, _config.HA_API_PORT, _config.HA_API_TOKEN
+        )
+        ssh = AsyncSSHClient(_config.HA_HOST, _config.HA_USER, _config.SSH_KEY_PATH)
+
+        # Backup — mandatory before any write
+        slug = await execute_remote_backup(ssh_client=ssh)
+        record_backup_slug(slug)
+
+        # Action
+        new_entry_ids: list[str] = []
+        if entry_action == "enable":
+            await ws.disable_config_entry(entry_id, disabled_by=None)
+            new_entry_ids = [entry_id]
+        else:
+            if entry_action == "re_add":
+                await rest.delete_config_entry(entry_id)
+
+            plan = {s["step_id"]: s.get("answers", {}) for s in steps_list}
+            flow_result = await drive_config_flow(rest, domain, plan)
+            if not flow_result.success:
+                raise RuntimeError(f"Config flow failed: {flow_result.error_message}")
+            new_entry_ids = flow_result.entry_ids
+
+            # Options flow when planned and there is a new entry to configure
+            if options and new_entry_ids:
+                options_entry_id = new_entry_ids[0]
+                try:
+                    opts_resp = await rest.start_options_flow(options_entry_id)
+                    opts_flow_id = opts_resp.get("flow_id", "")
+                    if opts_flow_id and opts_resp.get("type") == "form":
+                        await rest.submit_options_flow(opts_flow_id, options)
+                except Exception as _opts_exc:  # nosec B110
+                    log.warning(
+                        "setup_options_flow_failed",
+                        nid=nid,
+                        domain=domain,
+                        error=str(_opts_exc),
+                    )
+
+        # Settle then verify
+        await asyncio.sleep(10)
+        verified = await _verify_integration_setup(ws, domain)
+
+        if verified:
+            data["fix_applied"] = True
+            json_path.write_text(json.dumps(data, indent=2))
+            (watch_dir / f"{nid}.approved").touch()
+            try:
+                from utils.core.timeline import write_timeline_event
+
+                await asyncio.to_thread(
+                    write_timeline_event,
+                    "INFO",
+                    "integration_setup",
+                    f"Integration {domain} set up ({entry_action})",
+                    {
+                        "domain": domain,
+                        "entry_action": entry_action,
+                        "entry_ids": new_entry_ids,
+                    },
+                )
+            except Exception:  # nosec B110  # pragma: no cover
+                pass
+            await _verify_card_execution(payload)
+        else:
+            raise RuntimeError(
+                f"Post-setup verification failed: no loaded {domain!r} entries or no live entities"
+            )
+
+    except Exception as exc:
+        error_msg = str(exc)
+        data["fix_error"] = error_msg
+        json_path.write_text(json.dumps(data, indent=2))
+        (watch_dir / f"{nid}.rejected").touch()
+        try:
+            from utils.core.timeline import write_timeline_event
+
+            await asyncio.to_thread(
+                write_timeline_event,
+                "ERROR",
+                "integration_setup",
+                f"Integration {domain} setup failed: {error_msg}",
+                {"domain": domain},
+            )
+        except Exception:  # nosec B110  # pragma: no cover
+            pass
+        await _verify_card_execution(payload, "failure")
+    finally:
+        (watch_dir / f"{nid}.in_progress").unlink(missing_ok=True)
+
+
+async def _verify_integration_setup(ws: Any, domain: str) -> bool:
+    """Return True when the domain has at least one loaded entry and one live entity."""
+    try:
+        entries = await ws.get_all_config_entries()
+        loaded = [
+            e
+            for e in entries
+            if e.get("domain") == domain and e.get("state") == "loaded"
+        ]
+        if not loaded:
+            return False
+        entity_states = await ws.get_states()
+        live = [
+            s
+            for s in entity_states
+            if s.get("platform") == domain
+            and s.get("state") not in ("unavailable", "unknown", None)
+        ]
+        return bool(live)
+    except Exception:  # nosec B110
+        return False
+
+
 async def _execute_ha_command(
     nid: str,
     data: dict,
@@ -2243,6 +2395,7 @@ _CARD_DISPATCH: dict[
     CARD_TYPE_DASHBOARD_ENTITY: _execute_dashboard_entity_fix,
     CARD_TYPE_UNREGISTERED_ENTITY: _execute_unregistered_entity,
     CARD_TYPE_COMPANION_SETUP: _execute_companion_setup,
+    CARD_TYPE_INTEGRATION_SETUP: _execute_integration_setup,
     CARD_TYPE_CONFIG_ENTRY_RELOAD: _execute_config_entry_reload,
     CARD_TYPE_HA_COMMAND: _execute_ha_command,
     CARD_TYPE_SERVICE_CALL: _execute_service_call,
