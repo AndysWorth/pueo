@@ -705,7 +705,14 @@ class TestIntegrationKnown:
     def test_manifest_found_returns_true(self, monkeypatch):
         """manifest/get success → True."""
         ws = _MockWs(
-            [{"id": 1, "type": "result", "success": True, "result": {"domain": "spook"}}]
+            [
+                {
+                    "id": 1,
+                    "type": "result",
+                    "success": True,
+                    "result": {"domain": "spook"},
+                }
+            ]
         )
         _patch_connect(monkeypatch, ws)
         client = _make_client()
