@@ -914,6 +914,10 @@ class ToolExecutor:
                     fact_if_yes=args.get("fact_if_yes"),
                     prediction=args.get("prediction"),
                 )
+            if name == "inspect_custom_integration":
+                return await self._inspect_custom_integration(args.get("domain", ""))
+            if name == "probe_config_flow":
+                return await self._probe_config_flow(args.get("domain", ""))
             if name == "discard_result":
                 reason = args.get("reason", "")
                 log.info("discard_result", extra={"reason": reason[:200]})
@@ -2801,6 +2805,142 @@ class ToolExecutor:
                 error=str(exc),
             )
         return ToolResult(tool_name="fetch_ha_docs", success=True, output=content)
+
+    async def _inspect_custom_integration(self, domain: str) -> ToolResult:
+        """Read manifest, hacs.json, and translations for a custom component."""
+        import json as _json
+
+        if "/" in domain or ".." in domain:
+            return ToolResult(
+                tool_name="inspect_custom_integration",
+                success=False,
+                output="",
+                error="Invalid domain name",
+            )
+
+        base = f"/config/custom_components/{domain}"
+        parts: list[str] = []
+
+        # manifest.json — required
+        try:
+            raw = await self._ha_ssh.read_file(f"{base}/manifest.json")
+            m = _json.loads(raw)
+            parts.append(f"=== {base}/manifest.json ===")
+            parts.append(f"domain: {m.get('domain', domain)}")
+            if m.get("version"):
+                parts.append(f"version: {m['version']}")
+            if m.get("homeassistant"):
+                parts.append(f"min_ha_version (manifest): {m['homeassistant']}")
+            parts.append(f"config_flow: {m.get('config_flow', False)}")
+            if m.get("iot_class"):
+                parts.append(f"iot_class: {m['iot_class']}")
+            if m.get("requirements"):
+                parts.append(f"requirements: {', '.join(m['requirements'])}")
+            if m.get("dependencies"):
+                parts.append(f"dependencies: {', '.join(m['dependencies'])}")
+        except Exception as exc:
+            return ToolResult(
+                tool_name="inspect_custom_integration",
+                success=False,
+                output="",
+                error=f"Could not read manifest.json: {exc}",
+            )
+
+        # hacs.json — optional, may carry its own min_ha_version
+        try:
+            raw = await self._ha_ssh.read_file(f"{base}/hacs.json")
+            h = _json.loads(raw)
+            if h.get("homeassistant"):
+                parts.append(f"min_ha_version (hacs.json): {h['homeassistant']}")
+        except Exception:  # nosec B110 — hacs.json is optional
+            pass
+
+        # translations: strings.json or translations/en.json
+        translations: dict | None = None
+        for tpath in (f"{base}/strings.json", f"{base}/translations/en.json"):
+            try:
+                raw = await self._ha_ssh.read_file(tpath)
+                translations = _json.loads(raw)
+                parts.append(f"\n=== {tpath} ===")
+                break
+            except Exception:  # nosec B110
+                pass
+
+        if translations is not None:
+            steps = translations.get("config", {}).get("step", {})
+            if steps:
+                parts.append("Config flow steps:")
+                for step_id, step_data in steps.items():
+                    parts.append(f"  {step_id}:")
+                    for opt_key, opt_label in step_data.get("menu_options", {}).items():
+                        parts.append(f"    menu_option: {opt_key} → {opt_label}")
+                    for field_key, field_label in step_data.get("data", {}).items():
+                        parts.append(f"    field: {field_key} → {field_label}")
+
+        output = "\n".join(parts)
+        if len(output) > 8000:
+            output = output[:8000]
+        return ToolResult(
+            tool_name="inspect_custom_integration", success=True, output=output
+        )
+
+    async def _probe_config_flow(self, domain: str) -> ToolResult:
+        """Start a config flow, return the first step summary, always abort."""
+        if "/" in domain or ".." in domain:
+            return ToolResult(
+                tool_name="probe_config_flow",
+                success=False,
+                output="",
+                error="Invalid domain name",
+            )
+
+        if not self._rest_client:
+            return ToolResult(
+                tool_name="probe_config_flow",
+                success=False,
+                output="",
+                error="REST client not available",
+            )
+
+        import json as _json
+
+        from utils.ha.config_flow_driver import summarize_flow_step
+
+        flow_id = ""
+        try:
+            resp = await self._rest_client.start_config_flow(domain)
+            flow_id = resp.get("flow_id", "")
+
+            # Load translations for labelled step summary when SSH is available
+            translations: dict | None = None
+            base = f"/config/custom_components/{domain}"
+            for tpath in (f"{base}/strings.json", f"{base}/translations/en.json"):
+                try:
+                    raw = await self._ha_ssh.read_file(tpath)
+                    translations = _json.loads(raw)
+                    break
+                except Exception:  # nosec B110
+                    pass
+
+            summary = summarize_flow_step(resp, translations)
+            return ToolResult(
+                tool_name="probe_config_flow",
+                success=True,
+                output=f"First step (flow_id={flow_id!r}):\n{summary}",
+            )
+        except Exception as exc:
+            return ToolResult(
+                tool_name="probe_config_flow",
+                success=False,
+                output="",
+                error=str(exc),
+            )
+        finally:
+            if flow_id and self._rest_client:
+                try:
+                    await self._rest_client.abort_config_flow(flow_id)
+                except Exception:  # nosec B110
+                    pass
 
     async def _fetch_url(self, url: str) -> ToolResult:
         """GET an external URL for diagnostic verification (read-only, private IPs blocked)."""
