@@ -214,6 +214,16 @@ _SEED_PROMPTS: list[tuple[str, str, str]] = [
         "NetAlertX investigation — method",
         "netalertx unreachable, netalertx API down, SCAN_SUBNETS drift, app.conf SyntaxError, NetAlertX restart, NetAlertX config, read_netalertx_conf, slug path, availability",
     ),
+    (
+        "seed_setup_integration.md",
+        "Integration setup — method",
+        "set up integration, configure integration, add integration, HACS integration not loaded, downloaded but not set up, re-enable disabled integration, re-add integration, config flow, already_configured",
+    ),
+    (
+        "seed_setup_noaa_it_all.md",
+        "noaa_it_all (NOAA It All) setup",
+        "noaa_it_all, NOAA It All, NWS forecast office, NOAA weather setup, surf forecast office, radar loop history, NOAA Hurricane entry",
+    ),
 ]
 
 # Signature family (first signature segment) of seeds that have no ``signature:``

@@ -97,6 +97,11 @@ def sig_device_post_restart() -> str:
     return "device:offline:post_restart"
 
 
+def sig_setup(domain: str) -> str:
+    """setup:integration:<domain> — set up, re-enable or re-add an integration."""
+    return f"setup:integration:{_part(domain)}"
+
+
 def sig_netalertx(category: str, issue_key: str = "*") -> str:
     """netalertx:<category>:<issue_key>  (issue_key defaults to wildcard '*')"""
     key = issue_key if issue_key == "*" else _part(issue_key)

@@ -7593,6 +7593,7 @@ class TestSeedRegistry:
             sig_netalertx,
             sig_notification,
             sig_repair,
+            sig_setup,
             sig_update,
         )
 
@@ -7620,6 +7621,8 @@ class TestSeedRegistry:
             sig_device_availability("econet"),
             sig_device_post_restart(),
             sig_netalertx("availability"),
+            sig_setup("noaa_it_all"),
+            sig_setup("spook"),
         ]
 
     def test_every_seed_file_registered_or_retired(self):
@@ -7641,6 +7644,26 @@ class TestSeedRegistry:
         from utils.knowledge.strategy_seeder import _SEED_PROMPTS
 
         assert "seed_spook.md" in {f for f, _, _ in _SEED_PROMPTS}
+
+    def test_setup_seeds_registered(self):
+        from utils.knowledge.strategy_seeder import _SEED_PROMPTS
+
+        registered = {f for f, _, _ in _SEED_PROMPTS}
+        assert {"seed_setup_integration.md", "seed_setup_noaa_it_all.md"} <= registered
+
+    def test_setup_domain_seed_beats_family_seed(self):
+        """setup:integration:noaa_it_all wins over setup:integration:* for noaa_it_all."""
+        from utils.knowledge.runbook_distiller import _sig_specificity
+        from utils.knowledge.runbook_signature import sig_setup
+
+        sig = sig_setup("noaa_it_all")
+        specific = _sig_specificity("setup:integration:noaa_it_all", sig)
+        family = _sig_specificity("setup:integration:*", sig)
+        assert specific[0] and family[0]
+        assert specific > family
+        assert not _sig_specificity(
+            "setup:integration:noaa_it_all", sig_setup("spook")
+        )[0]
 
     def test_security_notification_seed_retired(self):
         from utils.knowledge.strategy_seeder import _RETIRED_SEED_PROMPTS
