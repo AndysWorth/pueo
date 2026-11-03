@@ -183,7 +183,7 @@
       {% else %}
       {% set ct = r.payload.get("card_type", "") %}
       {% set has_fix = r.payload.get("pending_fix_yaml") %}
-      {% set is_actionable = ct in ("repair", "update", "netalertx_heal", "netalertx_setup", "netalertx_uninstall", "netalertx_migrate", "netalertx_switch", "resource_action", "disk_recovery", "code_proposal", "open_pr", "ha_repair", "cloud_escalation", "dashboard_entity", "unregistered_entity", "config_entry_reload", "ha_command", "service_call", "automation_create", "companion_setup", "device_recurring") or (ct == "host_health" and not r.payload.get("informational")) or (ct == "device_offline" and r.payload.get("has_fix")) or has_fix %}
+      {% set is_actionable = ct in ("repair", "update", "netalertx_heal", "netalertx_setup", "netalertx_uninstall", "netalertx_migrate", "netalertx_switch", "resource_action", "disk_recovery", "code_proposal", "open_pr", "ha_repair", "cloud_escalation", "dashboard_entity", "unregistered_entity", "config_entry_reload", "ha_command", "service_call", "automation_create", "companion_setup", "device_recurring") or (ct == "host_health" and not r.payload.get("informational")) or (ct == "device_offline" and r.payload.get("has_fix")) or (ct == "integration_setup" and not r.payload.get("informational") and r.payload.get("outcome") == "plan_ready" and not r.payload.get("needs_user_input")) or has_fix %}
       {% if r.payload.get("prediction_text") %}
       <p style="font-size:0.8rem;color:#555;margin:0 0 0.5rem;">Pueo predicts this will <strong>{{ r.payload.get("prediction_text") }}</strong> and will check that itself.</p>
       {% endif %}
@@ -312,6 +312,12 @@ trigger: {{ r.payload.get("trigger", []) | tojson(indent=2) }}
             {% endfor %}
           </ul>
         </details>
+        {% endif %}
+        {% if r.payload.get("my_ha_link") and r.payload.get("outcome") == "plan_ready" %}
+        <p style="margin:0.5rem 0 0;font-size:0.82rem;color:#555;">
+          Set up manually instead: <a href="{{ r.payload.get('my_ha_link') }}" target="_blank" rel="noopener">Open HA config flow ↗</a>
+          &nbsp;·&nbsp; Rollback: restore from the backup Pueo takes before touching HA.
+        </p>
         {% endif %}
         {% endif %}
       </div>
@@ -557,6 +563,15 @@ trigger: {{ r.payload.get("trigger", []) | tojson(indent=2) }}
         {% elif ct == "companion_setup" %}
           {% set hint_approve = "Create HA backup → download via HACS → restart HA → configure the integration" %}
           {% set hint_reject = "Skip; the companion stays downloaded but unconfigured" %}
+        {% elif ct == "integration_setup" %}
+          {% if r.payload.get("entry_action") == "enable" %}
+            {% set hint_approve = "Create HA backup → re-enable the disabled config entry → verify the integration loads with live entities" %}
+          {% elif r.payload.get("entry_action") == "re_add" %}
+            {% set hint_approve = "Create HA backup → delete the existing entry → drive a new config flow with the planned answers → verify" %}
+          {% else %}
+            {% set hint_approve = "Create HA backup → drive the config flow with the planned answers → verify the integration loads with live entities" %}
+          {% endif %}
+          {% set hint_reject = "Skip; you can set up the integration manually via " + r.payload.get("my_ha_link", "#") %}
         {% elif ct == "host_health" %}
           {% set hint_approve = "Acknowledge this host-health finding and dismiss the card" %}
           {% set hint_reject = "Dismiss; no further action taken" %}

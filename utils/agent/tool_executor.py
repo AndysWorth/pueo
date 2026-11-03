@@ -2973,6 +2973,8 @@ class ToolExecutor:
         prerequisites_met = args.get("prerequisites_met", True)
         blocked_reason = args.get("prerequisites_blocked_reason", "")
         verification_question = args.get("verification_question")
+        entry_action = args.get("entry_action", "add")
+        entry_id = args.get("entry_id", "")
 
         if not create_hitl_card:
             return ToolResult(
@@ -3005,7 +3007,10 @@ class ToolExecutor:
             "options": options,
             "post_setup": post_setup,
             "episode_id": self._episode_id,
+            "entry_action": entry_action,
         }
+        if entry_id:
+            _payload["entry_id"] = entry_id
         if not prerequisites_met and blocked_reason:
             _payload["prerequisites_blocked_reason"] = blocked_reason
         if verification_question and outcome == "plan_ready":
