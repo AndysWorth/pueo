@@ -409,6 +409,19 @@ class HAWebSocketClient:  # pragma: no cover
         """
         return await self._call("config_entries/flow/progress")  # type: ignore[return-value]
 
+    async def integration_known(self, domain: str) -> bool:
+        """Return True if HA can serve the integration manifest (found after a restart).
+
+        Uses WS manifest/get. Returns False on any error or if the integration is not found.
+        Fail-safe: an error means we cannot confirm the integration is known, so we return False
+        to ensure the restart step is not skipped when it may still be needed.
+        """
+        try:
+            await self._call("manifest/get", integration=domain)
+            return True
+        except Exception:  # nosec B110
+            return False
+
     async def disable_config_entry(
         self, entry_id: str, disabled_by: str | None
     ) -> None:
@@ -483,6 +496,7 @@ class FakeHAWebSocketClient:
         conversation_agents: list[dict] | None = None,
         hacs_repositories: list[dict] | None = None,
         flows_in_progress: list[dict] | None = None,
+        known_integrations: set[str] | None = None,
     ) -> None:
         self._devices: list[dict] = devices or []
         self._notifications: list[dict] = notifications or []
@@ -519,6 +533,7 @@ class FakeHAWebSocketClient:
         self.hacs_add_calls: list[str] = []
         self.hacs_download_calls: list[str] = []
         self._flows_in_progress: list[dict] = flows_in_progress or []
+        self._known_integrations: set[str] = known_integrations or set()
         self.disable_entry_calls: list[tuple[str, str | None]] = []
 
     async def get_device_registry(self) -> list[dict]:
@@ -660,3 +675,7 @@ class FakeHAWebSocketClient:
     ) -> None:
         self.calls.append(f"disable_config_entry:{entry_id}:{disabled_by}")
         self.disable_entry_calls.append((entry_id, disabled_by))
+
+    async def integration_known(self, domain: str) -> bool:
+        self.calls.append(f"integration_known:{domain}")
+        return domain in self._known_integrations

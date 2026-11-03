@@ -38,6 +38,7 @@ class CompanionState:
     loaded: bool = False
     has_config_entry: bool = False
     repo_id: str = ""
+    known_to_ha: bool = False
 
 
 @dataclass
@@ -103,7 +104,7 @@ def plan_steps(state: CompanionState) -> list[Step]:
         steps.append(Step.ADD_CUSTOM_REPO)
     if not state.downloaded:
         steps.append(Step.DOWNLOAD)
-    if not state.loaded:
+    if not state.loaded and not state.known_to_ha:
         steps.append(Step.RESTART)
     if not state.has_config_entry:
         steps.append(Step.CONFIG_FLOW)
@@ -152,6 +153,12 @@ async def _observe_state(
     except Exception:  # nosec B110
         pass
 
+    known_to_ha = False
+    try:
+        known_to_ha = await ws.integration_known(domain)
+    except Exception:  # nosec B110
+        pass
+
     return CompanionState(
         domain=domain,
         in_hacs_repo_list=in_hacs,
@@ -159,6 +166,7 @@ async def _observe_state(
         loaded=loaded,
         has_config_entry=has_entry,
         repo_id=repo_id,
+        known_to_ha=known_to_ha,
     )
 
 

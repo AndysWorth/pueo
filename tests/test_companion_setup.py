@@ -190,6 +190,39 @@ class TestPlanSteps:
         )
         assert plan_steps(state) == plan_steps(state)
 
+    def test_known_to_ha_skips_restart(self):
+        """Downloaded and known_to_ha=True means HA already discovered it; no restart."""
+        state = self._state(
+            in_hacs_repo_list=True,
+            downloaded=True,
+            loaded=False,
+            known_to_ha=True,
+        )
+        steps = plan_steps(state)
+        assert Step.RESTART not in steps
+        assert Step.CONFIG_FLOW in steps
+
+    def test_not_known_to_ha_requires_restart(self):
+        """Downloaded but not known and not loaded means restart is still needed."""
+        state = self._state(
+            in_hacs_repo_list=True,
+            downloaded=True,
+            loaded=False,
+            known_to_ha=False,
+        )
+        steps = plan_steps(state)
+        assert Step.RESTART in steps
+
+    def test_loaded_takes_precedence_over_known_to_ha(self):
+        """loaded=True alone is sufficient to skip restart."""
+        state = self._state(
+            in_hacs_repo_list=True,
+            downloaded=True,
+            loaded=True,
+            known_to_ha=False,
+        )
+        assert Step.RESTART not in plan_steps(state)
+
 
 # ---------------------------------------------------------------------------
 # run_companion_setup — chain ordering via fakes
@@ -492,6 +525,22 @@ class TestFakeWSCompanionMethods:
         ws = FakeHAWebSocketClient()
         asyncio.run(ws.hacs_download("12345"))
         assert ws.hacs_download_calls == ["12345"]
+
+    def test_integration_known_returns_true_when_in_set(self):
+        ws = FakeHAWebSocketClient(known_integrations={"spook"})
+        result = asyncio.run(ws.integration_known("spook"))
+        assert result is True
+        assert any("integration_known:spook" in c for c in ws.calls)
+
+    def test_integration_known_returns_false_when_absent(self):
+        ws = FakeHAWebSocketClient(known_integrations={"other"})
+        result = asyncio.run(ws.integration_known("spook"))
+        assert result is False
+
+    def test_integration_known_defaults_false(self):
+        ws = FakeHAWebSocketClient()
+        result = asyncio.run(ws.integration_known("spook"))
+        assert result is False
 
 
 # ---------------------------------------------------------------------------

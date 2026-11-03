@@ -694,3 +694,52 @@ class TestValidateAutomationConfig:
         assert "validate_automation_config" in fake.calls
         assert len(fake.validate_automation_calls) == 1
         assert fake.validate_automation_calls[0]["trigger"] is not None
+
+
+# ---------------------------------------------------------------------------
+# integration_known — manifest/get probe for restart-signal fix (#1087)
+# ---------------------------------------------------------------------------
+
+
+class TestIntegrationKnown:
+    def test_manifest_found_returns_true(self, monkeypatch):
+        """manifest/get success → True."""
+        ws = _MockWs(
+            [{"id": 1, "type": "result", "success": True, "result": {"domain": "spook"}}]
+        )
+        _patch_connect(monkeypatch, ws)
+        client = _make_client()
+        result = asyncio.run(client.integration_known("spook"))
+        assert result is True
+        sent = json.loads(ws._sent[0])
+        assert sent["type"] == "manifest/get"
+        assert sent["integration"] == "spook"
+        assert ws.closed
+
+    def test_manifest_not_found_returns_false(self, monkeypatch):
+        """manifest/get failure (integration not found) → False."""
+        ws = _MockWs(
+            [
+                {
+                    "id": 1,
+                    "type": "result",
+                    "success": False,
+                    "error": {"code": "integration_not_found", "message": "not found"},
+                }
+            ]
+        )
+        _patch_connect(monkeypatch, ws)
+        client = _make_client()
+        result = asyncio.run(client.integration_known("spook"))
+        assert result is False
+
+    def test_connection_error_returns_false(self, monkeypatch):
+        """Any exception during the WS call → False (fail-safe)."""
+
+        async def _failing_connect(self):
+            raise OSError("connection refused")
+
+        monkeypatch.setattr(HAWebSocketClient, "_connect_and_auth", _failing_connect)
+        client = _make_client()
+        result = asyncio.run(client.integration_known("spook"))
+        assert result is False
