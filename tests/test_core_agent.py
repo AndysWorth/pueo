@@ -20927,3 +20927,32 @@ class TestFinishSetupPlanDispatch:
         link = notifier.sent[0]["payload"]["my_ha_link"]
         assert "noaa_it_all" in link
         assert "my.home-assistant.io" in link
+
+
+# ── Post-update repair scan ───────────────────────────────────────────────────
+
+
+class TestPostUpdateRepairScan:
+    def test_uses_wake_not_run_now(self, monkeypatch):
+        """_post_update_repair_scan uses wake() — repair_poll is sleep-first."""
+        from unittest.mock import MagicMock
+
+        import agents.ha_update_manager as _um
+        import utils.agent.supervisor as _sup
+
+        mock_sv = MagicMock()
+        monkeypatch.setattr(_sup, "get_supervisor_instance", lambda: mock_sv)
+
+        asyncio.run(_um._post_update_repair_scan(settle_seconds=0))
+
+        mock_sv.wake.assert_called_once_with("repair_poll")
+        mock_sv.run_now.assert_not_called()
+
+    def test_handles_supervisor_unavailable(self, monkeypatch):
+        """_post_update_repair_scan does not raise when the supervisor is None."""
+        import agents.ha_update_manager as _um
+        import utils.agent.supervisor as _sup
+
+        monkeypatch.setattr(_sup, "get_supervisor_instance", lambda: None)
+
+        asyncio.run(_um._post_update_repair_scan(settle_seconds=0))
