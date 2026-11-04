@@ -2358,6 +2358,41 @@ async def poll_for_repairs(
                 record_repair_seen, _digest_key_d, translation_key=_tkey_d or None
             )
 
+            # Known cleanup keys: build a deterministic card — no LLM needed.
+            from utils.ha.spook_digest import build_spook_digest_payload as _bdp
+
+            _det_payload = _bdp(_tkey_d, _tkey_d_issues)
+            if _det_payload is not None:
+                from agents.ha_agent_advanced import mark_repair_hitl_sent as _mrhs
+
+                await asyncio.to_thread(_mrhs, _digest_key_d)
+                _det_title = f"Spook: {_tkey_d} ({len(_tkey_d_issues)} item(s))"
+                await _notifier.send(
+                    subject=_det_title,
+                    body=_det_payload["body"],
+                    payload=_det_payload,
+                )
+                log.info(
+                    "spook_digest_dispatched",
+                    translation_key=_tkey_d,
+                    issue_count=len(_tkey_d_issues),
+                    digest_key=_digest_key_d,
+                    deterministic=True,
+                )
+                try:
+                    from utils.core.timeline import write_timeline_event as _wte_d
+
+                    _wte_d(
+                        "INFO",
+                        "repair_poll",
+                        f"Spook {_tkey_d}: deterministic card sent"
+                        f" ({len(_tkey_d_issues)} item(s))",
+                        {"translation_key": _tkey_d, "digest_key": _digest_key_d},
+                    )
+                except Exception:  # nosec B110
+                    pass
+                continue
+
             _tkey_snap_d = _tkey_d
             _dkey_snap_d = _digest_key_d
             _issues_snap_d = list(_tkey_d_issues)

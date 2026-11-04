@@ -383,6 +383,20 @@ trigger: {{ r.payload.get("trigger", []) | tojson(indent=2) }}
         {% if _name %}<p style="margin:0 0 0.3rem;"><strong>Name:</strong> {{ _name }}</p>{% endif %}
       </div>
       {% endif %}
+      {% if ct == "spook_digest" and r.payload.get("items") %}
+      <div style="margin:0.75rem 0;">
+        <p style="margin:0 0 0.4rem;font-size:0.88rem;"><strong>{{ r.payload.get("description", "Spook cleanup items") }}</strong></p>
+        <ul style="margin:0 0 0.5rem;padding-left:1.2rem;font-size:0.88rem;">
+          {% for item in r.payload.items %}
+          <li>
+            <code style="font-size:0.82rem;">{{ item.get("label", item.get("issue_id", "")) }}</code>
+            {% if item.get("is_fixable") %}<span style="color:#2e7d32;font-size:0.78rem;"> — Spook can fix</span>{% else %}<span style="color:#8a6500;font-size:0.78rem;"> — manual action needed</span>{% endif %}
+            {% if item.get("learn_more_url") %}&nbsp;<a href="{{ item.learn_more_url }}" target="_blank" rel="noopener" style="font-size:0.78rem;">learn more ↗</a>{% endif %}
+          </li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% endif %}
       {% if ct == "disk_recovery" %}
       <div style="margin:0.75rem 0;">
         {% set da = r.payload.get("disk_analysis", {}) %}
