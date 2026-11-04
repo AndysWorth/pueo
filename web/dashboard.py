@@ -964,7 +964,7 @@ async def _post_reboot_repair_scan(settle_seconds: int = 20) -> None:
 
         sv = get_supervisor_instance()
         if sv is not None:
-            sv.run_now("repair_poll")
+            sv.wake("repair_poll")
             log.info("post_reboot_repair_scan_triggered")
     except (
         Exception
@@ -4373,8 +4373,10 @@ async def service_start() -> JSONResponse:
 
 # These loops sleep before their first work cycle (no immediate run on start).
 # wake() interrupts the sleep; run_now() would cancel the coroutine and the
-# bootstrap guard would immediately skip them if collections are non-empty.
-_WAKE_ONLY_LOOPS: frozenset[str] = frozenset({"rag_refresh"})
+# restarted task would go straight back to sleep for the full interval.
+_WAKE_ONLY_LOOPS: frozenset[str] = frozenset(
+    {"rag_refresh", "repair_poll", "notification_poll"}
+)
 
 _PUEO_DIR = _get_dirs().resources_dir
 

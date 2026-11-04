@@ -132,7 +132,7 @@ async def _post_update_repair_scan(settle_seconds: int = 5) -> None:
 
         sv = get_supervisor_instance()
         if sv is not None:
-            sv.run_now("repair_poll")
+            sv.wake("repair_poll")
             log.info("post_update_repair_scan_triggered")
     except Exception as exc:  # nosec B110 — best-effort; scheduled poll is fallback
         log.warning("post_update_repair_scan_failed", error=str(exc))
