@@ -388,7 +388,7 @@ trigger: {{ r.payload.get("trigger", []) | tojson(indent=2) }}
       <div style="margin:0.75rem 0;">
         <p style="margin:0 0 0.4rem;font-size:0.88rem;"><strong>{{ r.payload.get("description", "Spook cleanup items") }}</strong></p>
         <table style="border-collapse:collapse;width:100%;font-size:0.88rem;">
-          {% for item in r.payload.items %}
+          {% for item in r.payload["items"] %}
           {% set _iid = item.get("issue_id", "") %}
           {% set _done = _iid in _spook_resolved %}
           <tr style="border-bottom:1px solid #eee;">
