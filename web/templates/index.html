@@ -419,6 +419,22 @@ trigger: {{ r.payload.get("trigger", []) | tojson(indent=2) }}
         </p>
       </div>
       {% endif %}
+      {% if ct == "integration_bug" %}
+      <div style="margin:0.75rem 0;">
+        <p style="margin:0 0 0.4rem;font-size:0.88rem;">
+          <strong>{{ r.payload.get("integration_name", r.payload.get("domain", "")) }}</strong>
+          {% if r.payload.get("version") %}<span style="color:#666;font-size:0.82rem;">(v{{ r.payload.get("version") }})</span>{% endif %}
+          raised <code>{{ r.payload.get("exception", "an exception") }}</code>
+          at <code>{{ r.payload.get("file_line", "") }}</code>.
+        </p>
+        <p style="margin:0 0 0.3rem;font-size:0.85rem;">
+          Check HACS for an update or report the issue upstream.
+          {% if r.payload.get("issue_tracker") %}
+          <a href="{{ r.payload.get('issue_tracker') }}" target="_blank" rel="noopener">Report issue ↗</a>
+          {% endif %}
+        </p>
+      </div>
+      {% endif %}
       {% if ct == "disk_recovery" %}
       <div style="margin:0.75rem 0;">
         {% set da = r.payload.get("disk_analysis", {}) %}
@@ -732,6 +748,8 @@ trigger: {{ r.payload.get("trigger", []) | tojson(indent=2) }}
         <strong style="color:#222;">Acknowledge</strong> — Dismiss without investigating
         {% elif ct == "host_health" and r.payload.get("informational") %}
         <strong style="color:#222;">Acknowledge</strong> — Mark as Known Issue; Pueo will re-investigate if the underlying data changes
+        {% elif ct == "integration_bug" %}
+        <strong style="color:#222;">Acknowledge</strong> — Dismiss this notification; check HACS or the issue tracker for a fix
         {% else %}
         <strong style="color:#222;">Acknowledge</strong> — Mark as seen and remove from queue; full details remain in the Timeline
         {% endif %}
