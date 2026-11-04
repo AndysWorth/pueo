@@ -27,6 +27,7 @@ async def run_cloud_escalation(
     incident_id: str,
     timeline_callback: Optional[Callable[[str, str], Awaitable[None]]] = None,
     knowledge_store: Optional["KnowledgeStoreClientProtocol"] = None,
+    ha_ws_client: Optional[Any] = None,  # HAWebSocketClientProtocol
 ) -> "AgentLoopResult":
     """Run AgentLoop with ClaudeAPIClient. Raises BillingCapError if caps exceeded."""
     from utils.agent.agent_loop import AgentLoop
@@ -48,6 +49,7 @@ async def run_cloud_escalation(
         ha_ssh_client=ha_ssh_client,
         gate=gate,
         notifier=notifier,
+        ha_ws_client=ha_ws_client,
     )
     loop = AgentLoop(
         llm_client=llm,

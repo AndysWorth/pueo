@@ -36,7 +36,8 @@ Silently returning `ha_device_name: null` when the data was available is a corre
 - Any future `ToolExecutor` method that calls a shared function must use `self._ws_client` (and any other stored client), not `None`
 - Adding a new shared function that requires a new client type → add the client to `ToolExecutor.__init__` (and a `set_*` method if deferred injection is needed)
 - Code review checklist: "does this shared function receive the same args in chat as in the automated pipeline?"
-- `dashboard.py` line 2522 constructs a one-shot audit `ToolExecutor` with no WS client — this is intentional; that executor is used only for `--mode audit` where no `HA_API_TOKEN` is available
+- `dashboard.py` constructs a one-shot audit `ToolExecutor` with no WS client — intentional; that executor is used only for `--mode audit` where no `HA_API_TOKEN` is available
+- `TestToolExecutorWSClientGuard` in `tests/test_utils.py` enforces this rule structurally: it AST-scans `agents/`, `utils/`, and `web/` and fails if any `ToolExecutor(...)` call omits `ha_ws_client=` without an explicit allowlist entry or a `set_ws_client` call in the same function. Add an allowlist entry for intentionally WS-less constructors (code-proposal loop, audit executor, `config_analysis`).
 
 ## Related decisions
 - [ADR 010 — Agent self-awareness](010-agent-self-awareness.md): `read_source` was similarly added to all registries so the same self-inspection capability is available in all agent modes. That ADR established the precedent; this ADR generalises it to client availability, not just tool registration.
