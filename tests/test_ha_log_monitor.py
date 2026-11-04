@@ -1,8 +1,13 @@
 """Unit tests for ha_log_monitor — _LogStreamState, source routing, sparkline helpers."""
 
+import asyncio
 import sqlite3
 import sys
+import time
 from pathlib import Path
+from typing import Any
+from unittest import mock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -785,3 +790,183 @@ class TestRecurrenceFingerprint:
         from agents.ha_log_monitor import _LOG_RECURRENCE_WINDOW
 
         assert _LOG_RECURRENCE_WINDOW == 7 * 24 * 3600
+
+
+# ---------------------------------------------------------------------------
+# Spook digest dedup fix — issue #1089
+# ---------------------------------------------------------------------------
+
+
+def _make_digest_db(tmp_path: Path, *, with_sent_digest: bool = False) -> str:
+    """Create a test DB, optionally pre-seeding a sent Spook digest row."""
+    db_path = str(tmp_path / "digest_test.db")
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(_HITL_DDL)
+        conn.execute(_HA_REPAIR_DDL)
+        if with_sent_digest:
+            now = time.time()
+            conn.execute(
+                "INSERT INTO ha_repair_history"
+                " (issue_key, translation_key, domain,"
+                "  first_seen_at, last_seen_at, hitl_sent_at)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    "spook/digest:empty_areas",
+                    "empty_areas",
+                    "spook",
+                    now - 100,
+                    now - 50,
+                    now - 50,
+                ),
+            )
+    return db_path
+
+
+class _FakeSpookIssue:
+    """Minimal stand-in for HARepairIssue with a Spook domain."""
+
+    def __init__(self, tkey: str = "empty_areas") -> None:
+        self.issue_key = f"spook-issue-uuid-{tkey}"
+        self.issue_id = self.issue_key
+        self.domain = "spook"
+        self.severity = "warning"
+        self.translation_key = tkey
+        self.breaks_in_ha_version = None
+        self.data: dict = {}
+
+
+def _run_one_repair_poll(
+    db_path: str,
+    spook_issues: list,
+    *,
+    monkeypatch: Any,
+    resolved_calls: list,
+    verify_calls: list,
+) -> None:
+    """Run exactly one iteration of poll_for_repairs with the given issue list.
+
+    Mocks out every external dependency so no network or real DB access occurs.
+    resolved_calls and verify_calls are populated by the mock side-effects.
+    """
+    # supervised_sleep: return immediately on first call, cancel on second
+    _sleep_count = [0]
+
+    async def _fake_sleep(*a: Any, **kw: Any) -> None:
+        _sleep_count[0] += 1
+        if _sleep_count[0] > 1:
+            raise asyncio.CancelledError()
+
+    # get_ha_repair_issues: return the provided list
+    async def _fake_get_issues(_client: Any) -> list:
+        return list(spook_issues)
+
+    # mark_repair_resolved: record the key and update the DB
+    def _fake_mark_resolved(key: str) -> None:
+        resolved_calls.append(key)
+        with sqlite3.connect(db_path) as _c:
+            _c.execute(
+                "UPDATE ha_repair_history SET resolved_at = ? WHERE issue_key = ?",
+                (time.time(), key),
+            )
+
+    # resolve_session_outcome: record and no-op (no session_outcomes table)
+    def _fake_resolve_session(key: str, verification: str, by: str, **kw: Any) -> None:
+        verify_calls.append(key)
+
+    # record_repair_seen: no-op to avoid needing the full schema
+    def _fake_record_seen(*a: Any, **kw: Any) -> None:
+        pass
+
+    with (
+        mock.patch(
+            "utils.agent.supervisor.supervised_sleep",
+            side_effect=_fake_sleep,
+        ),
+        mock.patch(
+            "utils.ha.ha_rest_client.get_ha_repair_issues",
+            side_effect=_fake_get_issues,
+        ),
+        mock.patch(
+            "agents.ha_agent_advanced.mark_repair_resolved",
+            side_effect=_fake_mark_resolved,
+        ),
+        mock.patch(
+            "agents.ha_agent_advanced.resolve_session_outcome",
+            side_effect=_fake_resolve_session,
+        ),
+        mock.patch(
+            "agents.ha_agent_advanced.record_repair_seen",
+            side_effect=_fake_record_seen,
+        ),
+        mock.patch(
+            "utils.agent.work_queue.get_work_queue_or_none",
+            return_value=None,
+        ),
+        mock.patch(
+            "agents.ha_log_monitor._run_spook_digest_investigation",
+            new=AsyncMock(),
+        ),
+    ):
+        from utils.hitl.notify import FakeNotifier
+
+        try:
+            asyncio.run(
+                __import__(
+                    "agents.ha_log_monitor", fromlist=["poll_for_repairs"]
+                ).poll_for_repairs(
+                    ha_ws_client=MagicMock(),
+                    ha_rest_client=MagicMock(),
+                    notifier=FakeNotifier(),
+                    db_path=db_path,
+                )
+            )
+        except asyncio.CancelledError:
+            pass
+
+
+class TestSpookDigestDedup:
+    """Regression tests for the Spook digest false-resolve loop (issue #1089).
+
+    Before the fix, a sent digest key was absent from active_keys on the second
+    poll (because _spook_unsent_by_tkey was empty once all issues were sent),
+    causing the reconcile to falsely mark the digest resolved every poll.
+    """
+
+    def test_live_digest_not_resolved_on_second_poll(self, tmp_path, pueo_dirs):
+        """A sent digest whose underlying Spook issues are still live must not be resolved."""
+        db_path = _make_digest_db(tmp_path, with_sent_digest=True)
+        resolved: list = []
+        verify: list = []
+
+        _run_one_repair_poll(
+            db_path,
+            [_FakeSpookIssue("empty_areas")],
+            monkeypatch=None,
+            resolved_calls=resolved,
+            verify_calls=verify,
+        )
+
+        assert (
+            "spook/digest:empty_areas" not in resolved
+        ), "digest must not be falsely resolved while its Spook issue is still live"
+        assert (
+            "spook/digest:empty_areas" not in verify
+        ), "no verification must be recorded while the digest is still live"
+
+    def test_digest_resolved_when_issues_gone(self, tmp_path, pueo_dirs):
+        """When no Spook issues exist, a previously-sent digest must be resolved."""
+        db_path = _make_digest_db(tmp_path, with_sent_digest=True)
+        resolved: list = []
+        verify: list = []
+
+        _run_one_repair_poll(
+            db_path,
+            [],  # all issues gone
+            monkeypatch=None,
+            resolved_calls=resolved,
+            verify_calls=verify,
+        )
+
+        assert (
+            "spook/digest:empty_areas" in resolved
+        ), "digest must be resolved once all its underlying Spook issues are gone"
