@@ -1105,6 +1105,36 @@ class TestExtractProcedureFacts:
         out = "No issues, but here is a lot of detail " + "x" * 300
         assert extract_procedure_facts([_step("get_text", 1, output=out)]) == []
 
+    def test_dns_error_suppressed(self):
+        from utils.knowledge.runbook_distiller import extract_procedure_facts
+
+        steps = [
+            _step(
+                "get_spook_issues",
+                1,
+                {},
+                output="",
+                success=False,
+                error="[Errno 8] nodename nor servname provided, or not known",
+            )
+        ]
+        assert extract_procedure_facts(steps) == []
+
+    def test_unknown_tool_suppressed(self):
+        from utils.knowledge.runbook_distiller import extract_procedure_facts
+
+        steps = [
+            _step(
+                "get_spook_diagnostics",
+                1,
+                {},
+                output="",
+                success=False,
+                error="Unknown tool: get_spook_diagnostics",
+            )
+        ]
+        assert extract_procedure_facts(steps) == []
+
 
 def _prefs_db(tmp_path):
     db = str(tmp_path / "prefs.db")
@@ -1431,6 +1461,35 @@ class TestGateItem:
         text = "get_recorder_schema shows configuration.yaml uses keep_days"
         evidence = self.EVIDENCE + "\nlog: get_recorder_schema() deprecated"
         assert self._gate(text, evidence=evidence) == "unknown_tool"
+
+    def test_negative_search_rejected(self):
+        text = "query_knowledge returned no matches for spook diagnostics"
+        evidence = self.EVIDENCE + "\nquery_knowledge returned no matches for spook"
+        assert self._gate(text, evidence=evidence) == "negative_search"
+
+    def test_negative_search_not_found_in_logs(self):
+        text = "the error was not found in logs during the check_config run"
+        evidence = (
+            self.EVIDENCE + "\ncheck_config_against_breaking_change not found in logs"
+        )
+        assert self._gate(text, evidence=evidence) == "negative_search"
+
+    def test_ha_version_fact_rejected(self):
+        # Fires even when seed is not a wildcard (wildcard=False), where version_pinned
+        # would not fire.
+        text = "Home Assistant 2026.9.0 introduced the compact config UI uses keep_days"
+        evidence = self.EVIDENCE + "\nHome Assistant 2026.9.0 introduced compact config"
+        assert self._gate(text, evidence=evidence, wildcard=False) == "ha_version_fact"
+
+    def test_haos_version_fact_rejected(self):
+        text = "HAOS 14.1 is running configuration.yaml uses keep_days"
+        evidence = self.EVIDENCE + "\nHAOS 14.1 running on the host"
+        assert self._gate(text, evidence=evidence, wildcard=False) == "ha_version_fact"
+
+    def test_addon_version_not_blocked(self):
+        # Add-on versions are not HA/OS/Supervisor — should still pass.
+        text = "mosquitto 7.1.3 notes configuration.yaml uses keep_days"
+        assert self._gate(text, wildcard=False) is None
 
 
 class TestWriteEntries:

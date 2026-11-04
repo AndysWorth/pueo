@@ -1057,7 +1057,8 @@ SWITCH_MODEL = ToolDefinition(
 READ_SOURCE = ToolDefinition(
     name="read_source",
     description=(
-        "Read a source file from the Pueo repository. "
+        "Read a source file from the Pueo repository (not HA config files). "
+        "Use read_file for files under /config on the HA host. "
         "Allowed extensions: .py, .yaml, .md, .toml, .txt. "
         "Returns up to 8000 characters."
     ),
