@@ -1988,8 +1988,15 @@ async def poll_for_repairs(
 
         active_keys: set[str] = set()
         _spook_unsent_by_tkey: dict[str, list] = {}
+        # Tracks ALL live Spook tkeys (sent or not) so their digest keys stay
+        # in active_keys even after the digest card has been sent.  Without this
+        # the reconcile falsely marks a digest resolved on every poll after the
+        # first dispatch, because _spook_unsent_by_tkey is empty once sent.
+        _live_spook_tkeys: set[str] = set()
         for issue in issues:
             active_keys.add(issue.issue_key)
+            if issue.domain == "spook":
+                _live_spook_tkeys.add(issue.translation_key or "")
             record_repair_seen(issue.issue_key, translation_key=issue.translation_key)
             import sqlite3 as _sqlite3
 
@@ -2277,6 +2284,12 @@ async def poll_for_repairs(
                     await _run_investigation()
 
         # ── Spook digest dispatch ─────────────────────────────────────────────
+        # Pre-populate active_keys for every live Spook tkey so the reconcile
+        # never falsely resolves a digest that is already sent but still live.
+        for _live_tkey in _live_spook_tkeys:
+            _live_dk = f"spook/digest:{_live_tkey}" if _live_tkey else "spook/digest:"
+            active_keys.add(_live_dk)
+
         # For each translation_key that has at least one new Spook issue, dispatch
         # a single digest investigation (or skip if a digest was already sent).
         for _tkey_d, _tkey_d_issues in _spook_unsent_by_tkey.items():
