@@ -971,9 +971,10 @@ def _make_digest_db(tmp_path: Path, *, with_sent_digest: bool = False) -> str:
 class _FakeSpookIssue:
     """Minimal stand-in for HARepairIssue with a Spook domain."""
 
-    def __init__(self, tkey: str = "empty_areas") -> None:
-        self.issue_key = f"spook-issue-uuid-{tkey}"
-        self.issue_id = self.issue_key
+    def __init__(self, tkey: str = "empty_areas", issue_id: str = "") -> None:
+        _id = issue_id or f"spook-issue-uuid-{tkey}"
+        self.issue_key = _id
+        self.issue_id = _id
         self.domain = "spook"
         self.severity = "warning"
         self.translation_key = tkey
@@ -1116,3 +1117,280 @@ class TestSpookDigestDedup:
         assert (
             "spook/digest:empty_areas" in resolved
         ), "digest must be resolved once all its underlying Spook issues are gone"
+
+
+class TestSpookDigestPayload:
+    """Unit tests for build_spook_digest_payload (utils/ha/spook_digest.py)."""
+
+    def test_known_key_returns_payload(self):
+        from utils.ha.spook_digest import build_spook_digest_payload
+
+        issue = _FakeSpookIssue(tkey="empty_areas", issue_id="spook/empty_areas-1")
+        issue.data = {
+            "translation_placeholders": {"area": "Aiden's Room"},
+            "is_fixable": True,
+            "learn_more_url": "https://spook.boo/repairs/empty_areas",
+        }
+        payload = build_spook_digest_payload("empty_areas", [issue])
+
+        assert payload is not None
+        assert payload["card_type"] == "spook_digest"
+        assert payload["translation_key"] == "empty_areas"
+        assert len(payload["items"]) == 1
+        assert payload["items"][0]["label"] == "Aiden's Room"
+        assert payload["items"][0]["is_fixable"] is True
+        assert (
+            payload["items"][0]["learn_more_url"]
+            == "https://spook.boo/repairs/empty_areas"
+        )
+
+    def test_unknown_key_returns_none(self):
+        from utils.ha.spook_digest import build_spook_digest_payload
+
+        issue = _FakeSpookIssue(tkey="unknown_engines")
+        payload = build_spook_digest_payload("unknown_engines", [issue])
+
+        assert payload is None, "unknown_engines must go through the LLM path"
+
+    def test_missing_placeholders_falls_back_to_issue_id(self):
+        from utils.ha.spook_digest import build_spook_digest_payload
+
+        issue = _FakeSpookIssue(tkey="unused_labels", issue_id="spook/unused_labels-7")
+        issue.data = {}  # no translation_placeholders
+        payload = build_spook_digest_payload("unused_labels", [issue])
+
+        assert payload is not None
+        assert payload["items"][0]["label"] == "spook/unused_labels-7"
+
+    def test_all_known_keys_accepted(self):
+        from utils.ha.spook_digest import KNOWN_CLEANUP_KEYS, build_spook_digest_payload
+
+        for tkey in KNOWN_CLEANUP_KEYS:
+            issue = _FakeSpookIssue(tkey=tkey)
+            issue.data = {}
+            payload = build_spook_digest_payload(tkey, [issue])
+            assert payload is not None, f"expected payload for known key: {tkey}"
+
+    def test_multiple_issues_all_in_items(self):
+        from utils.ha.spook_digest import build_spook_digest_payload
+
+        issues = []
+        for i in range(3):
+            iss = _FakeSpookIssue(tkey="unused_blueprints", issue_id=f"bp-{i}")
+            iss.data = {
+                "translation_placeholders": {"blueprint": f"Blueprint {i}"},
+                "is_fixable": True,
+            }
+            issues.append(iss)
+        payload = build_spook_digest_payload("unused_blueprints", issues)
+
+        assert payload is not None
+        assert len(payload["items"]) == 3
+        assert payload["items"][1]["label"] == "Blueprint 1"
+
+    def test_suppression_key_and_notification_id_stable(self):
+        from utils.ha.spook_digest import build_spook_digest_payload
+        from utils.hitl.hitl_tracker import stable_nid
+
+        issue = _FakeSpookIssue(tkey="orphaned_statistics")
+        issue.data = {}
+        payload = build_spook_digest_payload("orphaned_statistics", [issue])
+
+        assert payload is not None
+        assert payload["suppression_key"] == "spook/digest:orphaned_statistics"
+        assert payload["notification_id"] == stable_nid(
+            "spook/digest:orphaned_statistics"
+        )
+
+    def test_body_includes_items(self):
+        from utils.ha.spook_digest import build_spook_digest_payload
+
+        issue = _FakeSpookIssue(tkey="empty_areas")
+        issue.data = {
+            "translation_placeholders": {"area": "Upstairs"},
+            "is_fixable": True,
+        }
+        payload = build_spook_digest_payload("empty_areas", [issue])
+
+        assert payload is not None
+        assert "empty_areas" in payload["body"]
+        assert "Upstairs" in payload["body"]
+
+
+class TestSpookDigestHybridRouting:
+    """Known Spook cleanup keys must bypass the LLM work queue in poll_for_repairs."""
+
+    def test_known_key_sends_deterministic_card_not_llm(self, tmp_path, pueo_dirs):
+        """empty_areas is a known cleanup key — it must not trigger _run_spook_digest_investigation."""
+        db_path = _make_digest_db(tmp_path, with_sent_digest=False)
+
+        llm_investigations: list = []
+        sent_cards: list = []
+        mark_sent_calls: list = []
+
+        async def _fake_get_issues(_client: Any) -> list:
+            issue = _FakeSpookIssue(tkey="empty_areas")
+            issue.data = {
+                "translation_placeholders": {"area": "Aiden's Room"},
+                "is_fixable": True,
+            }
+            return [issue]
+
+        async def _fake_send(*, subject: str, body: str, payload: dict) -> None:
+            sent_cards.append(payload)
+
+        def _fake_mark_sent(key: str) -> None:
+            mark_sent_calls.append(key)
+
+        def _fake_record_seen(*a: Any, **kw: Any) -> None:
+            pass
+
+        def _fake_resolve(*a: Any, **kw: Any) -> None:
+            pass
+
+        _sleep_count = [0]
+
+        async def _fake_sleep(*a: Any, **kw: Any) -> None:
+            _sleep_count[0] += 1
+            if _sleep_count[0] > 1:
+                raise asyncio.CancelledError()
+
+        with (
+            mock.patch(
+                "utils.agent.supervisor.supervised_sleep", side_effect=_fake_sleep
+            ),
+            mock.patch(
+                "utils.ha.ha_rest_client.get_ha_repair_issues",
+                side_effect=_fake_get_issues,
+            ),
+            mock.patch(
+                "agents.ha_agent_advanced.mark_repair_resolved",
+                side_effect=_fake_resolve,
+            ),
+            mock.patch(
+                "agents.ha_agent_advanced.resolve_session_outcome",
+                side_effect=_fake_resolve,
+            ),
+            mock.patch(
+                "agents.ha_agent_advanced.record_repair_seen",
+                side_effect=_fake_record_seen,
+            ),
+            mock.patch(
+                "agents.ha_agent_advanced.mark_repair_hitl_sent",
+                side_effect=_fake_mark_sent,
+            ),
+            mock.patch(
+                "utils.agent.work_queue.get_work_queue_or_none", return_value=None
+            ),
+            mock.patch(
+                "agents.ha_log_monitor._run_spook_digest_investigation",
+                side_effect=lambda *a, **kw: llm_investigations.append(kw),
+            ),
+        ):
+            from utils.hitl.notify import FakeNotifier
+
+            notifier = FakeNotifier()
+            notifier.send = _fake_send  # type: ignore[method-assign]
+            try:
+                asyncio.run(
+                    __import__(
+                        "agents.ha_log_monitor", fromlist=["poll_for_repairs"]
+                    ).poll_for_repairs(
+                        ha_ws_client=MagicMock(),
+                        ha_rest_client=MagicMock(),
+                        notifier=notifier,
+                        db_path=db_path,
+                    )
+                )
+            except asyncio.CancelledError:
+                pass
+
+        assert llm_investigations == [], "known key must NOT trigger LLM investigation"
+        assert (
+            len(sent_cards) == 1
+        ), "known key must send exactly one deterministic card"
+        assert sent_cards[0]["card_type"] == "spook_digest"
+        assert sent_cards[0]["translation_key"] == "empty_areas"
+        assert len(mark_sent_calls) == 1
+        assert mark_sent_calls[0] == "spook/digest:empty_areas"
+
+    def test_unknown_key_routes_to_llm(self, tmp_path, pueo_dirs):
+        """unknown_engines is not a known cleanup key — it must trigger LLM investigation."""
+        db_path = _make_digest_db(tmp_path, with_sent_digest=False)
+
+        llm_investigations: list = []
+        sent_cards: list = []
+
+        async def _fake_get_issues(_client: Any) -> list:
+            issue = _FakeSpookIssue(tkey="unknown_engines")
+            issue.data = {}
+            return [issue]
+
+        async def _fake_send(*, subject: str, body: str, payload: dict) -> None:
+            sent_cards.append(payload)
+
+        def _fake_record_seen(*a: Any, **kw: Any) -> None:
+            pass
+
+        def _fake_resolve(*a: Any, **kw: Any) -> None:
+            pass
+
+        _sleep_count = [0]
+
+        async def _fake_sleep(*a: Any, **kw: Any) -> None:
+            _sleep_count[0] += 1
+            if _sleep_count[0] > 1:
+                raise asyncio.CancelledError()
+
+        with (
+            mock.patch(
+                "utils.agent.supervisor.supervised_sleep", side_effect=_fake_sleep
+            ),
+            mock.patch(
+                "utils.ha.ha_rest_client.get_ha_repair_issues",
+                side_effect=_fake_get_issues,
+            ),
+            mock.patch(
+                "agents.ha_agent_advanced.mark_repair_resolved",
+                side_effect=_fake_resolve,
+            ),
+            mock.patch(
+                "agents.ha_agent_advanced.resolve_session_outcome",
+                side_effect=_fake_resolve,
+            ),
+            mock.patch(
+                "agents.ha_agent_advanced.record_repair_seen",
+                side_effect=_fake_record_seen,
+            ),
+            mock.patch(
+                "utils.agent.work_queue.get_work_queue_or_none", return_value=None
+            ),
+            mock.patch(
+                "agents.ha_log_monitor._run_spook_digest_investigation",
+                new=AsyncMock(
+                    side_effect=lambda *a, **kw: llm_investigations.append(kw)
+                ),
+            ),
+        ):
+            from utils.hitl.notify import FakeNotifier
+
+            notifier = FakeNotifier()
+            notifier.send = _fake_send  # type: ignore[method-assign]
+            try:
+                asyncio.run(
+                    __import__(
+                        "agents.ha_log_monitor", fromlist=["poll_for_repairs"]
+                    ).poll_for_repairs(
+                        ha_ws_client=MagicMock(),
+                        ha_rest_client=MagicMock(),
+                        notifier=notifier,
+                        db_path=db_path,
+                    )
+                )
+            except asyncio.CancelledError:
+                pass
+
+        assert (
+            len(llm_investigations) == 1
+        ), "unknown key must trigger LLM investigation"
+        assert sent_cards == [], "unknown key must NOT send a deterministic card"

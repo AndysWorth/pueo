@@ -207,7 +207,7 @@ _SEED_PROMPTS: list[tuple[str, str, str]] = [
     (
         "seed_spook.md",
         "Spook repair digest — method",
-        "Spook repair issues, dead_entity, missing_entity, Spook first load, many repairs at once",
+        "Spook repair issues, empty_areas, unused_labels, unused_blueprints, orphaned_statistics, unknown_engines, voice pipeline, Spook first load",
     ),
     (
         "seed_netalertx.md",

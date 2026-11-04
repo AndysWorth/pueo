@@ -4,35 +4,48 @@ signature: repair:spook:*
 # Spook repair digest — method
 
 Use this runbook when one or more Spook repair issues share the same `translation_key`.
-Spook's first load can create dozens of issues at once; Pueo groups them by type and
-sends a single card.
+Spook's first load can create issues at once; Pueo groups them by translation key and
+sends a single card per group.
 
-## What Spook repairs mean
+Known cleanup keys (`empty_areas`, `unused_labels`, `unused_blueprints`,
+`orphaned_statistics`) receive a deterministic card built directly from
+`translation_placeholders` — no LLM investigation needed; this runbook applies only
+when the LLM path is triggered, which is only for `unknown_engines` and any other
+unrecognised keys.
 
-| `translation_key` | Meaning | Typical fix |
+## What Spook repair keys mean
+
+| `translation_key` | Meaning | Typical action |
 |---|---|---|
-| `dead_entity` | Entity referenced in an automation, script, dashboard, or template no longer exists | Remove or update the reference |
-| `missing_entity` | Entity that Spook tracks is not present in the entity registry | Check if the integration providing it was removed or renamed |
-| `domain_*` | A domain-level issue (deprecated service, renamed domain) | Update the automation/script to use the current domain or service |
-| `invalid_*` | Invalid YAML, template syntax, or action in an automation | Open the automation editor and fix the flagged node |
-| `deprecated_*` | Automation or service call uses a deprecated API | Migrate to the replacement as described in Spook's issue text |
+| `empty_areas` | An area has no entities assigned to it | Delete the area or move entities into it |
+| `unused_labels` | A label is not assigned to any entity | Delete the label |
+| `unused_blueprints` | A blueprint exists but no automation uses it | Delete the blueprint |
+| `orphaned_statistics` | Long-term statistics exist for a sensor that no longer exists | Let Spook clean up via its repair flow |
+| `unknown_engines` | A voice pipeline references a speech/wakeword engine that is not installed (STT, TTS, wake word) | Check whether the app is installed; if removed on purpose, delete or reassign the pipeline |
 
-## Investigation
+## Investigation (for `unknown_engines` and other unrecognised keys)
 
-1. `get_spook_issues` — fetch full issue details including affected entity ids, domains,
-   automation or script titles, and dashboard paths.
-2. Check whether the affected entities still exist: the issue data from `get_spook_issues`
-   includes the entity id and any referencing automations or scripts — read it directly.
-3. If the issue involves an automation or script, `read_config()` to see the relevant
-   YAML block.
-4. State the root cause explicitly before calling the terminal tool.
+1. `query_knowledge` — look up the translation_key to retrieve any prior runbook.
+2. The initial context already contains `translation_placeholders` from the HA repair
+   issue data (injected by the poll). Read them directly.
+3. For `unknown_engines`:
+   a. `run_ha_command("ha apps list")` — check whether the referenced STT, TTS or
+      wake-word app is listed and running.
+   b. `get_ha_components` — verify whether the matching HA integration is loaded.
+   c. If neither the app nor the integration exists, the pipeline references a removed
+      engine. Advise deleting or reassigning the voice pipeline.
+4. For any other unknown key: `get_spook_issues` to retrieve full issue details, then
+   read the placeholders and Spook's issue text to determine what cleanup is needed.
+5. State the root cause explicitly before calling the terminal tool.
 
-## Action
+## Verdict rules (seeds own these; do not add to agent_core.md)
 
-- Most Spook issues require a user-side YAML or UI edit. Set `requires_hitl=true` and
-  `action="dismiss"`.
-- Include the affected entity ids, the automation or script names, and the exact change
-  the user must make.
-- Group all issues with the same `translation_key` into one card — do not send N cards.
-- If you cannot determine the fix from the issue data alone, say so in `human_explanation`
-  and ask the user to check the Spook dashboard at `/config/repairs`.
+- `unknown_engines`: if the referenced engines are absent (no matching app, no loaded
+  integration), set `requires_hitl=true`, `action="dismiss"`, and advise the user to
+  delete or reassign the voice pipeline that references those engines.
+- `unknown_engines`: if the app exists and is running, the issue is a transient Spook
+  startup false positive — `requires_hitl=false` and dismiss the repair issue.
+- For any cleanup key where every referenced item is fixable via Spook's repair flow:
+  set `requires_hitl=true` and explain each item clearly.
+- If the issue count is high (> 5) and all items are the same type, describe the pattern
+  and recommend bulk cleanup rather than listing each item individually.
