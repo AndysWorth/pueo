@@ -284,7 +284,9 @@ _TERMINAL_TOOL_PREFIX = "finish_"
 
 # Errors about Pueo's own setup or a transient stall, not about how a tool behaves.
 _ENVIRONMENT_ERROR_RE = re.compile(
-    r"client not available|not configured|timed out|timeout", re.I
+    r"client not available|not configured|timed out|timeout"
+    r"|errno 8|nodename nor servname|unknown tool:",
+    re.I,
 )
 # Config entry ids (32-hex or ULID) and UUIDs vary per instance; normalise them
 # so the same quirk dedupes across sessions.
@@ -1308,6 +1310,17 @@ _VERDICT_KINDS = ("decision_rule", "pitfall")
 _OVERLAP_THRESHOLD = 0.6
 _RENDER_MAX_PER_KIND = 8
 _VERSION_RE = re.compile(r"\b\d+\.\d+(?:\.\d+)?\b")
+# Facts that only report absence of results add no actionable knowledge.
+_NEGATIVE_SEARCH_RE = re.compile(
+    r"returned no (?:matches|results)|not found in (?:logs|results|output)"
+    r"|no results (?:found|returned)",
+    re.I,
+)
+# HA/OS/Supervisor version facts are already in the environment profile; don't record them.
+_HA_ENV_VERSION_RE = re.compile(
+    r"\b(?:home[\s\-]?assistant|haos|ha\s+os|supervisor)\s+\d+\.\d+",
+    re.I,
+)
 # snake_case words not part of a dotted id (sensor.noaa_tides_2) or a longer word.
 _TOOL_TOKEN_RE = re.compile(r"(?<![\w.])([a-z][a-z0-9]*(?:_[a-z0-9]+)+)(?!\w|\.\w)")
 _LEARNED_TITLE_PREFIX = "Learned: "
@@ -1407,6 +1420,12 @@ _PUEO_MECHANICS_PHRASES = frozenset(
         "autonomy gate",
         "auto-apply",
         "the distillation",
+        # Infrastructure failures that should never become runbook knowledge.
+        "client not available",
+        "event subscriber not available",
+        "errno 8",
+        "nodename nor servname",
+        "unknown tool",
     }
 )
 _FINISH_TOOL_RE = re.compile(r"\bfinish_\w+\b")
@@ -1465,6 +1484,10 @@ def _gate_item(
         return "seed_overlap"
     if wildcard_seed and _VERSION_RE.search(text):
         return "version_pinned"
+    if _NEGATIVE_SEARCH_RE.search(text):
+        return "negative_search"
+    if _HA_ENV_VERSION_RE.search(text):
+        return "ha_version_fact"
     if _unknown_tools(text, known_tools):
         return "unknown_tool"
     return None
