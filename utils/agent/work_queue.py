@@ -165,6 +165,13 @@ class PueoWorkQueue:
             )
             try:
                 await item.coro_factory()
+            except asyncio.CancelledError:
+                log.info(
+                    "work_queue_cancelled",
+                    activity=item.activity_type,
+                    description=item.description,
+                )
+                raise
             except Exception as exc:
                 log.error(
                     "work_queue_item_failed",
