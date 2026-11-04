@@ -23,6 +23,7 @@ async def run_host_health_investigation(
     knowledge_store: Optional[Any] = None,
     ha_rest_client: Optional[Any] = None,
     ssh_client: Optional[Any] = None,  # SSHClientProtocol
+    ha_ws_client: Optional[Any] = None,  # HAWebSocketClientProtocol
 ) -> None:
     """Run an AgentLoop to investigate a host-health finding and create a HITL card.
 
@@ -51,6 +52,7 @@ async def run_host_health_investigation(
         gate=gate,
         notifier=notifier,
         ha_rest_client=ha_rest_client,
+        ha_ws_client=ha_ws_client,
         knowledge_store=knowledge_store,
         db_path=db_path,
     )

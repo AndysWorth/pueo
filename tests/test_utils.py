@@ -10875,3 +10875,125 @@ class TestRepeatGuard:
         assert result.outcome == "success"
         # Both read_config calls with different args count → terminal step_number == 3
         assert result.steps[-1].step_number == 3
+
+
+class TestToolExecutorWSClientGuard:
+    """Every ToolExecutor(...) call passes ha_ws_client= or is followed by set_ws_client
+    — except for an explicit allowlist of intentionally WS-less sites (ADR 017).
+
+    This test scans agents/, utils/, and web/ with the AST to prevent silent regressions.
+    """
+
+    # Sites where omitting ha_ws_client is intentional.
+    # Format: "relative/path.py:<lineno>" — the line of the ToolExecutor( call.
+    _ALLOWLIST = frozenset(
+        {
+            # config_analysis uses FakeAutonomyGate/FakeNotifier for read-only YAML checking.
+            "utils/agent/config_analysis.py",
+            # Code-proposal loop: operates on Pueo source, not HA live state.
+            "agents/ha_agent_sandbox_engine.py:_run_code_proposal_loop",
+            # Sandbox/repair engine main(): WS not threaded from trigger_remediation_pipeline.
+            "agents/ha_agent_sandbox_engine.py:main",
+            # dashboard.py audit ToolExecutor is explicitly documented in ADR 017.
+            "web/dashboard.py",
+        }
+    )
+
+    def _repo_root(self):
+        from pathlib import Path
+
+        return Path(__file__).parent.parent
+
+    def _scan_file(self, path):
+        """Return (lineno, func_name) for ToolExecutor( calls that lack ha_ws_client
+        and are not covered by a set_ws_client call in the same enclosing function."""
+        import ast
+
+        src = path.read_text(encoding="utf-8")
+        try:
+            tree = ast.parse(src, filename=str(path))
+        except SyntaxError:
+            return []
+
+        # Collect function nodes with their line ranges and whether they call set_ws_client.
+        func_nodes: list[tuple[ast.FunctionDef | ast.AsyncFunctionDef, bool]] = []
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                has_set_ws = any(
+                    isinstance(n, ast.Call)
+                    and isinstance(n.func, ast.Attribute)
+                    and n.func.attr == "set_ws_client"
+                    for n in ast.walk(node)
+                )
+                func_nodes.append((node, has_set_ws))
+
+        def _enclosing_func(
+            lineno: int,
+        ) -> "tuple[ast.FunctionDef | ast.AsyncFunctionDef, bool] | None":
+            """Return the innermost function node containing lineno."""
+            best: "tuple[ast.FunctionDef | ast.AsyncFunctionDef, bool] | None" = None
+            for fn, has_ws in func_nodes:
+                start = fn.lineno
+                end = fn.end_lineno if fn.end_lineno is not None else fn.lineno
+                if start <= lineno <= end:
+                    if best is None or fn.lineno > best[0].lineno:
+                        best = (fn, has_ws)
+            return best
+
+        violations = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if not (isinstance(func, ast.Name) and func.id == "ToolExecutor"):
+                continue
+
+            kw_names = {kw.arg for kw in node.keywords if kw.arg}
+            if "ha_ws_client" in kw_names:
+                continue
+
+            lineno = node.lineno
+            enc = _enclosing_func(lineno)
+            if enc is not None:
+                fn_node, has_set_ws = enc
+                func_name = fn_node.name
+                if has_set_ws:
+                    continue  # deferred injection via set_ws_client — OK
+            else:
+                func_name = ""
+            violations.append((lineno, func_name))
+        return violations
+
+    def test_all_toolexecutor_sites_have_ws_client(self):
+        """No ToolExecutor( call outside the allowlist omits ha_ws_client."""
+        import os
+        from pathlib import Path
+
+        root = self._repo_root()
+        scan_dirs = ["agents", "utils", "web"]
+
+        failures = []
+        for d in scan_dirs:
+            for py_file in sorted(Path(root / d).rglob("*.py")):
+                rel = str(py_file.relative_to(root))
+                # Skip test files and __pycache__
+                if os.sep + "__pycache__" in str(py_file):
+                    continue
+
+                violations = self._scan_file(py_file)
+                for lineno, func_name in violations:
+                    # Allow if the file or file:func matches any allowlist entry.
+                    file_key = rel.replace(os.sep, "/")
+                    func_key = f"{file_key}:{func_name}"
+                    if any(
+                        file_key == entry or func_key == entry
+                        for entry in self._ALLOWLIST
+                    ):
+                        continue
+                    failures.append(f"{rel}:{lineno} (in {func_name})")
+
+        assert (
+            not failures
+        ), "ToolExecutor(...) calls missing ha_ws_client= (ADR 017):\n" + "\n".join(
+            f"  {f}" for f in failures
+        )

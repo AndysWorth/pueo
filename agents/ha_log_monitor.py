@@ -853,6 +853,8 @@ async def _run_spook_digest_investigation(
     llm_client: Optional["LLMClientProtocol"] = None,
     knowledge_store: Optional[Any] = None,
     ha_rest_client: Optional["HARestClientProtocol"] = None,
+    ha_ws_client: Optional["HAWebSocketClientProtocol"] = None,
+    event_subscriber: Optional["HAEventSubscriberProtocol"] = None,
 ) -> None:
     """Run one AgentLoop for all Spook issues sharing a translation_key.
 
@@ -886,11 +888,14 @@ async def _run_spook_digest_investigation(
         gate=gate,
         notifier=notifier,
         ha_rest_client=ha_rest_client,
+        ha_ws_client=ha_ws_client,
         knowledge_store=knowledge_store,
         db_path=db_path,
         pending_repair_issue=synthetic_issue,
         post_update_ssh_client=ssh,
     )
+    if event_subscriber is not None:
+        executor.set_event_subscriber(event_subscriber)
     try:
         from utils.ha.ha_environment import load_environment_profile as _lep
 
@@ -903,13 +908,27 @@ async def _run_spook_digest_investigation(
     registry = build_ha_tool_registry()
     system_prompt = load_agent_prompt("repair_issue", "finish_repair_issue")
 
-    issue_lines = "\n".join(f"  - issue_id: {i.issue_id}" for i in issues)
-    initial_context = (
+    from utils.core.context import truncate_to_budget
+
+    def _fmt_issue(i: "HARepairIssue") -> str:
+        lines = [f"  - issue_id: {i.issue_id}"]
+        if i.data.get("translation_placeholders"):
+            lines.append(f"    placeholders: {i.data['translation_placeholders']}")
+        if i.data.get("learn_more_url"):
+            lines.append(f"    learn_more_url: {i.data['learn_more_url']}")
+        if i.data.get("is_fixable") is not None:
+            lines.append(f"    is_fixable: {i.data['is_fixable']}")
+        if i.data.get("severity"):
+            lines.append(f"    severity: {i.data['severity']}")
+        return "\n".join(lines)
+
+    issue_lines = "\n".join(_fmt_issue(i) for i in issues)
+    initial_context = truncate_to_budget(
         f"Spook repair digest — translation_key: {translation_key or '(none)'}\n"
         f"Issue count: {len(issues)}\n"
         f"Issues:\n{issue_lines}\n\n"
-        "Call get_spook_issues to see full details including affected entities.\n"
-        "Produce one HITL card covering all issues with this translation_key."
+        "Produce one HITL card covering all issues with this translation_key.",
+        max_tokens=1200,
     )
 
     from utils.agent.supervisor import (
@@ -964,6 +983,8 @@ async def _run_repair_issue_investigation(
     ha_rest_client: Optional[HARestClientProtocol] = None,
     ssh_client: Optional[SSHClientProtocol] = None,
     gate: Optional[AutonomyGate] = None,
+    ha_ws_client: Optional[HAWebSocketClientProtocol] = None,
+    event_subscriber: Optional[HAEventSubscriberProtocol] = None,
 ) -> None:
     """Run an AgentLoop to investigate an HA repair issue and create a HITL card.
 
@@ -990,11 +1011,14 @@ async def _run_repair_issue_investigation(
         gate=gate,
         notifier=notifier,
         ha_rest_client=ha_rest_client,
+        ha_ws_client=ha_ws_client,
         knowledge_store=knowledge_store,
         db_path=db_path,
         pending_repair_issue=issue,
         post_update_ssh_client=ssh,
     )
+    if event_subscriber is not None:
+        executor.set_event_subscriber(event_subscriber)
     try:
         from utils.ha.ha_environment import load_environment_profile as _lep
 
@@ -1007,6 +1031,8 @@ async def _run_repair_issue_investigation(
     registry = build_ha_tool_registry()
     system_prompt = load_agent_prompt("repair_issue", "finish_repair_issue")
 
+    from utils.core.context import truncate_to_budget
+
     initial_context = (
         f"HA repair issue:\n"
         f"Domain: {issue.domain}\n"
@@ -1017,6 +1043,13 @@ async def _run_repair_issue_investigation(
     )
     if issue.breaks_in_ha_version:
         initial_context += f"Breaks in HA version: {issue.breaks_in_ha_version}\n"
+    if issue.data.get("translation_placeholders"):
+        initial_context += f"Placeholders: {issue.data['translation_placeholders']}\n"
+    if issue.data.get("learn_more_url"):
+        initial_context += f"Learn more: {issue.data['learn_more_url']}\n"
+    if issue.data.get("is_fixable") is not None:
+        initial_context += f"Is fixable: {issue.data['is_fixable']}\n"
+    initial_context = truncate_to_budget(initial_context, max_tokens=800)
 
     from utils.agent.supervisor import (
         decrement_active_agent,
@@ -2243,6 +2276,8 @@ async def poll_for_repairs(
                 _llm_snap = llm_client
                 _db_snap = db_path
                 _rest_snap = _rest
+                _ws_snap = _client
+                _sub_snap = event_subscriber
 
                 async def _run_investigation(
                     _issue: HARepairIssue = _issue_snap,
@@ -2250,6 +2285,8 @@ async def poll_for_repairs(
                     _llm_ref: Optional[LLMClientProtocol] = _llm_snap,
                     _db_ref: str = _db_snap,
                     _rest_ref: HARestClientProtocol = _rest_snap,
+                    _ws_ref: Optional[HAWebSocketClientProtocol] = _ws_snap,
+                    _sub_ref: Optional[HAEventSubscriberProtocol] = _sub_snap,
                 ) -> None:
                     await _run_repair_issue_investigation(
                         issue=_issue,
@@ -2258,6 +2295,8 @@ async def poll_for_repairs(
                         llm_client=_llm_ref,
                         knowledge_store=knowledge_store,
                         ha_rest_client=_rest_ref,
+                        ha_ws_client=_ws_ref,
+                        event_subscriber=_sub_ref,
                     )
 
                 from utils.agent.work_queue import (
@@ -2326,6 +2365,8 @@ async def poll_for_repairs(
             _llm_snap_d = llm_client
             _db_snap_d = db_path
             _rest_snap_d = _rest
+            _ws_snap_d = _client
+            _sub_snap_d = event_subscriber
 
             async def _run_spook_digest_coro(
                 _tk: str = _tkey_snap_d,
@@ -2335,6 +2376,8 @@ async def poll_for_repairs(
                 _l: Optional[LLMClientProtocol] = _llm_snap_d,
                 _db: str = _db_snap_d,
                 _r: HARestClientProtocol = _rest_snap_d,
+                _ws: Optional[HAWebSocketClientProtocol] = _ws_snap_d,
+                _sub: Optional[HAEventSubscriberProtocol] = _sub_snap_d,
             ) -> None:
                 await _run_spook_digest_investigation(
                     translation_key=_tk,
@@ -2345,6 +2388,8 @@ async def poll_for_repairs(
                     llm_client=_l,
                     knowledge_store=knowledge_store,
                     ha_rest_client=_r,
+                    ha_ws_client=_ws,
+                    event_subscriber=_sub,
                 )
 
             from utils.agent.work_queue import (

@@ -235,6 +235,7 @@ async def run_investigation(
     ha_rest_client: Optional[HARestClientProtocol] = None,
     max_tool_calls: int = 20,
     max_wall_seconds: float = 180.0,
+    ha_ws_client: Optional[Any] = None,  # HAWebSocketClientProtocol
 ) -> InvestigationReport:
     """Run a read-only investigation agent loop and return a structured report.
 
@@ -263,6 +264,7 @@ async def run_investigation(
         notifier=notifier,
         knowledge_store=knowledge_store,
         ha_rest_client=ha_rest_client,
+        ha_ws_client=ha_ws_client,
     )
 
     from utils.agent.supervisor import (

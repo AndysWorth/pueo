@@ -507,6 +507,152 @@ class TestRepairIssueGateInjection:
 
 
 # ---------------------------------------------------------------------------
+# WS-client + event-subscriber injection (ADR 017) + placeholder pre-inject
+# ---------------------------------------------------------------------------
+
+
+class _FakeRepairIssueWS:
+    """Minimal HARepairIssue-like object with rich data fields."""
+
+    issue_key = "ws-test-uuid"
+    issue_id = "ws-test-uuid"
+    domain = "spook"
+    severity = "warning"
+    translation_key = "empty_areas"
+    breaks_in_ha_version = None
+    data = {
+        "translation_placeholders": {"areas": "Attic, Basement"},
+        "learn_more_url": "https://my.home-assistant.io/redirect/spook",
+        "is_fixable": True,
+        "severity": "warning",
+    }
+
+
+class TestRepairIssueWSInjection:
+    """_run_repair_issue_investigation threads ha_ws_client and event_subscriber
+    into ToolExecutor (ADR 017)."""
+
+    def _run(self, tmp_path, ha_ws_client=None, event_subscriber=None):
+        import asyncio
+        from unittest import mock
+        from unittest.mock import AsyncMock, MagicMock
+
+        from utils.agent.tool_registry import AgentLoopResult
+
+        db_path = _make_repair_db(tmp_path)
+        fake_result = AgentLoopResult(outcome="success")
+
+        with (
+            mock.patch("utils.agent.agent_loop.AgentLoop") as MockLoop,
+            mock.patch("utils.agent.supervisor.increment_active_agent"),
+            mock.patch("utils.agent.supervisor.decrement_active_agent"),
+            mock.patch("utils.agent.supervisor.publish_activity_done"),
+            mock.patch(
+                "utils.agent.supervisor.make_activity_timeline_callback",
+                return_value=None,
+            ),
+            mock.patch(
+                "utils.llm.llm_factory.make_llm_client", return_value=MagicMock()
+            ),
+        ):
+            mock_instance = MagicMock()
+            mock_instance.run = AsyncMock(return_value=fake_result)
+            MockLoop.return_value = mock_instance
+
+            from agents.ha_log_monitor import _run_repair_issue_investigation
+            from utils.hitl.notify import FakeNotifier
+
+            asyncio.run(
+                _run_repair_issue_investigation(
+                    issue=_FakeRepairIssueWS(),
+                    notifier=FakeNotifier(),
+                    db_path=db_path,
+                    ha_ws_client=ha_ws_client,
+                    event_subscriber=event_subscriber,
+                )
+            )
+        return MockLoop
+
+    def test_ws_client_injected_into_executor(self, tmp_path, pueo_dirs):
+        """ha_ws_client= is forwarded to ToolExecutor._ws_client."""
+        ws = object()
+        MockLoop = self._run(tmp_path, ha_ws_client=ws)
+        executor = MockLoop.call_args.kwargs["tool_executor"]
+        assert executor._ws_client is ws
+
+    def test_event_subscriber_set_on_executor(self, tmp_path, pueo_dirs):
+        """event_subscriber is passed to executor.set_event_subscriber()."""
+        sub = object()
+        MockLoop = self._run(tmp_path, event_subscriber=sub)
+        executor = MockLoop.call_args.kwargs["tool_executor"]
+        assert executor._event_subscriber is sub
+
+    def test_no_ws_client_leaves_none(self, tmp_path, pueo_dirs):
+        """When ha_ws_client is omitted, executor._ws_client stays None."""
+        MockLoop = self._run(tmp_path)
+        executor = MockLoop.call_args.kwargs["tool_executor"]
+        assert executor._ws_client is None
+
+
+class TestRepairIssuePlaceholderPreInject:
+    """_run_repair_issue_investigation pre-injects translation_placeholders,
+    learn_more_url, and is_fixable from HARepairIssue.data into initial_context."""
+
+    def test_placeholders_in_initial_context(self, tmp_path, pueo_dirs):
+        import asyncio
+        from unittest import mock
+        from unittest.mock import AsyncMock, MagicMock
+
+        from utils.agent.tool_registry import AgentLoopResult
+
+        db_path = _make_repair_db(tmp_path)
+        fake_result = AgentLoopResult(outcome="success")
+        captured: list[str] = []
+
+        with (
+            mock.patch("utils.agent.agent_loop.AgentLoop") as MockLoop,
+            mock.patch("utils.agent.supervisor.increment_active_agent"),
+            mock.patch("utils.agent.supervisor.decrement_active_agent"),
+            mock.patch("utils.agent.supervisor.publish_activity_done"),
+            mock.patch(
+                "utils.agent.supervisor.make_activity_timeline_callback",
+                return_value=None,
+            ),
+            mock.patch(
+                "utils.llm.llm_factory.make_llm_client", return_value=MagicMock()
+            ),
+        ):
+            mock_instance = MagicMock()
+            mock_instance.run = AsyncMock(return_value=fake_result)
+            MockLoop.return_value = mock_instance
+
+            from agents.ha_log_monitor import _run_repair_issue_investigation
+            from utils.hitl.notify import FakeNotifier
+
+            async def _capture(**kw):
+                captured.append(kw.get("initial_context", ""))
+                return fake_result
+
+            mock_instance.run = _capture  # type: ignore[method-assign]
+
+            asyncio.run(
+                _run_repair_issue_investigation(
+                    issue=_FakeRepairIssueWS(),
+                    notifier=FakeNotifier(),
+                    db_path=db_path,
+                )
+            )
+
+        assert captured, "AgentLoop.run must have been called"
+        ctx = captured[0]
+        assert (
+            "Attic, Basement" in ctx
+        ), "translation_placeholders must appear in context"
+        assert "Learn more" in ctx, "learn_more_url must appear in context"
+        assert "Is fixable" in ctx, "is_fixable must appear in context"
+
+
+# ---------------------------------------------------------------------------
 # Replay protection (#975)
 # ---------------------------------------------------------------------------
 
