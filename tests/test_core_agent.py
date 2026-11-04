@@ -14782,6 +14782,31 @@ class TestHARepairDB:
         is_new = record_repair_seen("homeassistant/reboot_required")
         assert is_new is False
 
+    def test_record_repair_seen_clears_resolved_at_on_reactivation(self, db_path):
+        """record_repair_seen clears resolved_at when a resolved row re-appears."""
+        import sqlite3
+
+        from agents.ha_agent_advanced import mark_repair_resolved, record_repair_seen
+
+        record_repair_seen("spook/digest:empty_areas", translation_key="empty_areas")
+        mark_repair_resolved("spook/digest:empty_areas")
+
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT resolved_at FROM ha_repair_history"
+                " WHERE issue_key='spook/digest:empty_areas'"
+            ).fetchone()
+        assert row[0] is not None  # confirmed resolved
+
+        record_repair_seen("spook/digest:empty_areas", translation_key="empty_areas")
+
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT resolved_at FROM ha_repair_history"
+                " WHERE issue_key='spook/digest:empty_areas'"
+            ).fetchone()
+        assert row[0] is None  # re-activated: resolved_at cleared
+
     def test_mark_repair_hitl_sent_sets_timestamp(self, db_path):
         import sqlite3
 

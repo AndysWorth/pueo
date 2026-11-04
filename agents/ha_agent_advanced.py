@@ -772,7 +772,7 @@ def record_repair_seen(issue_key: str, translation_key: str | None = None) -> bo
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         row = cursor.execute(
-            "SELECT first_seen_at FROM ha_repair_history WHERE issue_key = ?",
+            "SELECT first_seen_at, resolved_at FROM ha_repair_history WHERE issue_key = ?",
             (issue_key,),
         ).fetchone()
         if row is None:
@@ -783,6 +783,15 @@ def record_repair_seen(issue_key: str, translation_key: str | None = None) -> bo
             )
             conn.commit()
             return True
+        # Row exists: re-activate if it was previously resolved so the dedup checks
+        # (_check_digest_sent, _check_repair_already_sent) can see it again.  A
+        # false-reconcile from a transient empty WS response sets resolved_at on
+        # digest rows; clearing it here restores normal dedup on the next cycle.
+        if row[1] is not None:
+            cursor.execute(
+                "UPDATE ha_repair_history SET resolved_at = NULL WHERE issue_key = ?",
+                (issue_key,),
+            )
         if translation_key is not None:
             cursor.execute(
                 "UPDATE ha_repair_history SET translation_key = ? WHERE issue_key = ?",
