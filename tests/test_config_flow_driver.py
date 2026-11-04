@@ -7,6 +7,7 @@ import pytest
 from utils.ha.config_flow_driver import (
     FlowResult,
     drive_config_flow,
+    drive_repair_flow,
     summarize_flow_step,
 )
 from utils.ha.ha_rest_client import FakeHARestClient
@@ -462,3 +463,118 @@ class TestFlowResult:
         )
         d = r._asdict()
         assert json.loads(json.dumps(d)) == d
+
+
+# ---------------------------------------------------------------------------
+# drive_repair_flow
+# ---------------------------------------------------------------------------
+
+
+class TestDriveRepairFlowHappyPath:
+    def test_single_confirm_step_succeeds(self):
+        """Typical Spook repair: start returns form, submit returns create_entry."""
+        fake = FakeHARestClient(
+            flow_responses={
+                "repair_start:spook:empty_areas/areas_1": {
+                    "flow_id": "rf-1",
+                    "type": "form",
+                    "step_id": "confirm",
+                },
+                "repair_submit:rf-1": {"type": "create_entry"},
+            }
+        )
+        result = _run(drive_repair_flow(fake, "spook", "empty_areas/areas_1"))
+        assert result.success is True
+        assert result.abort_reason == ""
+        assert result.error_message == ""
+        # start + submit
+        assert any("/api/repairs/issues/fix" in p for p, _ in fake.posted)
+        assert any("/api/repairs/issues/fix/rf-1" in p for p, _ in fake.posted)
+
+    def test_immediate_create_entry_on_start(self):
+        """Flow that resolves immediately without a confirm step."""
+        fake = FakeHARestClient(
+            flow_responses={
+                "repair_start:spook:iss1": {"flow_id": "rf-2", "type": "create_entry"},
+            }
+        )
+        result = _run(drive_repair_flow(fake, "spook", "iss1"))
+        assert result.success is True
+
+    def test_abort_on_start(self):
+        fake = FakeHARestClient(
+            flow_responses={
+                "repair_start:spook:iss2": {
+                    "flow_id": "rf-3",
+                    "type": "abort",
+                    "reason": "already_fixed",
+                },
+            }
+        )
+        result = _run(drive_repair_flow(fake, "spook", "iss2"))
+        assert result.success is False
+        assert result.abort_reason == "already_fixed"
+
+
+class TestDriveRepairFlowAbortPaths:
+    def test_step_errors_causes_abort(self):
+        fake = FakeHARestClient(
+            flow_responses={
+                "repair_start:spook:iss3": {
+                    "flow_id": "rf-4",
+                    "type": "form",
+                    "step_id": "confirm",
+                },
+                "repair_submit:rf-4": {
+                    "type": "form",
+                    "step_id": "confirm",
+                    "errors": {"base": "unknown_error"},
+                },
+            }
+        )
+        result = _run(drive_repair_flow(fake, "spook", "iss3"))
+        assert result.success is False
+        assert result.abort_reason == "step_errors"
+        # abort_repair_flow should be called
+        assert any("/api/repairs/issues/fix/rf-4" in p for p in fake.deleted)
+
+    def test_unexpected_type_causes_failure(self):
+        fake = FakeHARestClient(
+            flow_responses={
+                "repair_start:spook:iss4": {
+                    "flow_id": "rf-5",
+                    "type": "external",
+                },
+            }
+        )
+        result = _run(drive_repair_flow(fake, "spook", "iss4"))
+        assert result.success is False
+        assert "external" in result.error_message
+
+    def test_exception_aborts_and_returns_failure(self):
+        class _RaisingClient(FakeHARestClient):
+            async def start_repair_flow(self, domain: str, issue_id: str) -> dict:
+                raise RuntimeError("connection refused")
+
+        result = _run(drive_repair_flow(_RaisingClient(), "spook", "iss5"))
+        assert result.success is False
+        assert "connection refused" in result.error_message
+
+
+class TestIgnoreRepairIssueWS:
+    """Test FakeHAWebSocketClient.ignore_repair_issue stubs."""
+
+    def test_records_call(self):
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        fake = FakeHAWebSocketClient()
+        _run(fake.ignore_repair_issue("spook", "empty_areas/areas_1", ignore=True))
+        assert ("spook", "empty_areas/areas_1", True) in fake.ignored_repairs
+        assert any("ignore_repair_issue" in c for c in fake.calls)
+
+    def test_unignore_records_false(self):
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        fake = FakeHAWebSocketClient()
+        _run(fake.ignore_repair_issue("spook", "iss_x", ignore=False))
+        assert ("spook", "iss_x", False) in fake.ignored_repairs

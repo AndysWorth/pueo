@@ -6594,8 +6594,7 @@ class TestExecuteQueuedHARepair:
     ):
         import asyncio
         from agents import ha_agent_advanced
-        import utils.ha.ha_rest_client as hrc
-        from unittest.mock import AsyncMock, MagicMock
+        from unittest.mock import MagicMock
 
         import web.dashboard as dashboard
 
@@ -6606,19 +6605,22 @@ class TestExecuteQueuedHARepair:
         json_path = watch_dir / f"{nid}.json"
         data = __import__("json").loads(json_path.read_text())
 
-        mock_dismiss = AsyncMock()
         mock_resolve = MagicMock()
-        fake_rest = hrc.FakeHARestClient()
+        import utils.ha.ha_ws_client as _ws_mod
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
 
-        monkeypatch.setattr(hrc, "HARestClient", lambda *a, **kw: fake_rest)
-        monkeypatch.setattr(hrc, "dismiss_ha_repair_issue", mock_dismiss)
+        fake_ws = FakeHAWebSocketClient()
+        monkeypatch.setattr(_ws_mod, "HAWebSocketClient", lambda *a, **kw: fake_ws)
         monkeypatch.setattr(ha_agent_advanced, "mark_repair_resolved", mock_resolve)
 
         asyncio.run(
             dashboard._execute_queued_ha_repair(nid, data, json_path, watch_dir)
         )
 
-        mock_dismiss.assert_called_once()
+        # dismiss now uses WS ignore_repair_issue instead of REST DELETE
+        assert (
+            "ignore_repair_issue:homeassistant/reboot_required:ignore=True"
+        ) in fake_ws.calls
         mock_resolve.assert_called_once_with("homeassistant/reboot_required")
         assert (watch_dir / f"{nid}.approved").exists()
         assert not (watch_dir / f"{nid}.in_progress").exists()
@@ -11157,3 +11159,387 @@ def _async(value):
         return value
 
     return _inner()
+
+
+class TestSpookDigestRoutes:
+    """Tests for /spook/{nid}/{issue_id}/fix and /spook/{nid}/{issue_id}/ignore."""
+
+    @pytest.fixture()
+    def watch_dir(self, tmp_path):
+        d = tmp_path / "hitl"
+        d.mkdir()
+        return d
+
+    def _write_card(self, watch_dir, nid, items=None):
+        import time
+
+        items = items or [
+            {
+                "issue_id": "empty_areas/areas_1",
+                "label": "Aiden's Room",
+                "is_fixable": True,
+                "learn_more_url": "",
+            },
+            {
+                "issue_id": "empty_areas/areas_2",
+                "label": "Upstairs",
+                "is_fixable": True,
+                "learn_more_url": "",
+            },
+        ]
+        card = {
+            "notification_id": nid,
+            "subject": "Spook: empty_areas",
+            "body": "2 items",
+            "payload": {
+                "card_type": "spook_digest",
+                "translation_key": "empty_areas",
+                "suppression_key": "spook/digest:empty_areas",
+                "description": "Empty areas",
+                "items": items,
+            },
+            "sent_at": int(time.time()),
+        }
+        (watch_dir / f"{nid}.json").write_text(json.dumps(card))
+
+    def test_fix_route_redirects_and_queues_work(
+        self, tmp_path, monkeypatch, watch_dir
+    ):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+        import utils.agent.work_queue as wq_mod
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+        self._write_card(watch_dir, "spk1")
+        queued = []
+
+        class FakeQueue:
+            async def submit(self, item):
+                queued.append(item)
+                return True
+
+        monkeypatch.setattr(wq_mod, "_work_queue", FakeQueue())
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.post(
+            "/spook/spk1/empty_areas/areas_1/fix", follow_redirects=False
+        )
+        assert resp.status_code == 303
+        assert len(queued) == 1
+        assert "spook fix" in queued[0].description
+
+    def test_ignore_route_redirects_and_queues_work(
+        self, tmp_path, monkeypatch, watch_dir
+    ):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+        import utils.agent.work_queue as wq_mod
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+        self._write_card(watch_dir, "spk2")
+        queued = []
+
+        class FakeQueue:
+            async def submit(self, item):
+                queued.append(item)
+                return True
+
+        monkeypatch.setattr(wq_mod, "_work_queue", FakeQueue())
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.post(
+            "/spook/spk2/empty_areas%2Fareas_1/ignore", follow_redirects=False
+        )
+        assert resp.status_code == 303
+        assert len(queued) == 1
+        assert "spook ignore" in queued[0].description
+
+    def test_fix_route_404s_on_missing_card(self, tmp_path, monkeypatch, watch_dir):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+        import utils.agent.work_queue as wq_mod
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+        monkeypatch.setattr(wq_mod, "_work_queue", None)
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.post("/spook/nonexistent/iss/fix", follow_redirects=False)
+        assert resp.status_code == 303
+
+    def test_fix_route_rejects_wrong_card_type(self, tmp_path, monkeypatch, watch_dir):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+        import utils.agent.work_queue as wq_mod
+        import time
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+        monkeypatch.setattr(wq_mod, "_work_queue", None)
+        (watch_dir / "other1.json").write_text(
+            json.dumps(
+                {
+                    "notification_id": "other1",
+                    "subject": "s",
+                    "body": "b",
+                    "payload": {"card_type": "ha_repair"},
+                    "sent_at": int(time.time()),
+                }
+            )
+        )
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.post("/spook/other1/iss/fix", follow_redirects=False)
+        assert resp.status_code == 303
+
+    def test_in_progress_guard_returns_busy(self, tmp_path, monkeypatch, watch_dir):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+        import utils.agent.work_queue as wq_mod
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+        monkeypatch.setattr(wq_mod, "_work_queue", None)
+        self._write_card(watch_dir, "spk3")
+        (watch_dir / "spk3.in_progress").touch()
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.post("/spook/spk3/iss/fix", follow_redirects=False)
+        assert resp.status_code == 303
+        assert "busy=1" in resp.headers["location"]
+
+    def test_spook_dispatch_wired(self):
+        import web.dashboard as dashboard
+        from utils.hitl.card_types import CARD_TYPE_SPOOK_DIGEST
+
+        assert CARD_TYPE_SPOOK_DIGEST in dashboard._CARD_DISPATCH
+        assert (
+            dashboard._CARD_DISPATCH[CARD_TYPE_SPOOK_DIGEST]
+            is dashboard._execute_spook_item
+        )
+
+
+class TestExecuteSpookItem:
+    """Tests for _execute_spook_item execution function."""
+
+    @pytest.fixture()
+    def watch_dir(self, tmp_path):
+        d = tmp_path / "hitl"
+        d.mkdir()
+        return d
+
+    def _make_data(self, nid, items=None, resolved=None):
+        items = items or [
+            {
+                "issue_id": "iss1",
+                "label": "Aiden's Room",
+                "is_fixable": True,
+                "learn_more_url": "",
+            },
+        ]
+        payload = {
+            "card_type": "spook_digest",
+            "translation_key": "empty_areas",
+            "suppression_key": "spook/digest:empty_areas",
+            "description": "Empty area",
+            "items": items,
+        }
+        if resolved:
+            payload["_resolved"] = resolved
+        return {
+            "notification_id": nid,
+            "subject": "Spook",
+            "body": "b",
+            "payload": payload,
+            "sent_at": 0,
+        }
+
+    def _patch_ignore(self, monkeypatch, *, issue_ids_present=None):
+        """Patch WS client so ignore_repair_issue succeeds."""
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+        from utils.ha.ha_rest_client import HARepairIssue
+
+        issue_ids_present = issue_ids_present or ["iss1"]
+        fake_ws = FakeHAWebSocketClient(
+            repair_issues=[
+                {"domain": "spook", "issue_id": iid, "severity": "warning"}
+                for iid in issue_ids_present
+            ]
+        )
+
+        import utils.ha.ha_ws_client as _ws_mod
+        import utils.ha.ha_rest_client as _rest_mod
+
+        monkeypatch.setattr(_ws_mod, "HAWebSocketClient", lambda *a, **kw: fake_ws)
+        monkeypatch.setattr(_rest_mod, "HARestClient", lambda *a, **kw: object())
+        return fake_ws
+
+    def test_ignore_single_item_closes_card(self, tmp_path, monkeypatch, watch_dir):
+        import asyncio
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+        import agents.ha_agent_advanced as _adv
+
+        monkeypatch.setattr(_adv, "mark_repair_resolved", lambda k: None)
+        fake_ws = self._patch_ignore(monkeypatch)
+
+        nid = "spk_ign1"
+        data = self._make_data(nid)
+        json_path = watch_dir / f"{nid}.json"
+        json_path.write_text(json.dumps(data))
+
+        asyncio.run(
+            dashboard._execute_spook_item(
+                nid, "ignore", "iss1", data, json_path, watch_dir
+            )
+        )
+        assert (watch_dir / f"{nid}.approved").exists()
+        assert ("spook", "iss1", True) in fake_ws.ignored_repairs
+
+    def test_ignore_one_of_two_items_does_not_close_card(
+        self, tmp_path, monkeypatch, watch_dir
+    ):
+        import asyncio
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+        import agents.ha_agent_advanced as _adv
+
+        monkeypatch.setattr(_adv, "mark_repair_resolved", lambda k: None)
+        items = [
+            {
+                "issue_id": "iss1",
+                "label": "A",
+                "is_fixable": True,
+                "learn_more_url": "",
+            },
+            {
+                "issue_id": "iss2",
+                "label": "B",
+                "is_fixable": True,
+                "learn_more_url": "",
+            },
+        ]
+        self._patch_ignore(monkeypatch, issue_ids_present=["iss1", "iss2"])
+
+        nid = "spk_ign2"
+        data = self._make_data(nid, items=items)
+        json_path = watch_dir / f"{nid}.json"
+        json_path.write_text(json.dumps(data))
+
+        asyncio.run(
+            dashboard._execute_spook_item(
+                nid, "ignore", "iss1", data, json_path, watch_dir
+            )
+        )
+        # Only one item resolved — card stays open
+        assert not (watch_dir / f"{nid}.approved").exists()
+        # _resolved is updated in payload
+        saved = json.loads(json_path.read_text())
+        assert "iss1" in saved["payload"].get("_resolved", [])
+
+    def test_ignore_second_item_closes_card(self, tmp_path, monkeypatch, watch_dir):
+        import asyncio
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+        import agents.ha_agent_advanced as _adv
+
+        monkeypatch.setattr(_adv, "mark_repair_resolved", lambda k: None)
+        items = [
+            {
+                "issue_id": "iss1",
+                "label": "A",
+                "is_fixable": True,
+                "learn_more_url": "",
+            },
+            {
+                "issue_id": "iss2",
+                "label": "B",
+                "is_fixable": True,
+                "learn_more_url": "",
+            },
+        ]
+        self._patch_ignore(monkeypatch, issue_ids_present=["iss2"])
+
+        nid = "spk_ign3"
+        data = self._make_data(nid, items=items, resolved=["iss1"])
+        json_path = watch_dir / f"{nid}.json"
+        json_path.write_text(json.dumps(data))
+
+        asyncio.run(
+            dashboard._execute_spook_item(
+                nid, "ignore", "iss2", data, json_path, watch_dir
+            )
+        )
+        assert (watch_dir / f"{nid}.approved").exists()
+
+    def test_unknown_action_writes_error_and_rejects(
+        self, tmp_path, monkeypatch, watch_dir
+    ):
+        import asyncio
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+        self._patch_ignore(monkeypatch)
+
+        nid = "spk_bad"
+        data = self._make_data(nid)
+        json_path = watch_dir / f"{nid}.json"
+        json_path.write_text(json.dumps(data))
+
+        asyncio.run(
+            dashboard._execute_spook_item(
+                nid, "unknown", "iss1", data, json_path, watch_dir
+            )
+        )
+        assert (watch_dir / f"{nid}.rejected").exists()
+        saved = json.loads(json_path.read_text())
+        assert "fix_error" in saved
+
+    def test_fix_item_happy_path(self, tmp_path, monkeypatch, watch_dir):
+        import asyncio
+        import web.dashboard as dashboard
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+        from utils.ha.ha_rest_client import FakeHARestClient
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+        import agents.ha_agent_advanced as _adv
+
+        monkeypatch.setattr(_adv, "mark_repair_resolved", lambda k: None)
+
+        fake_ws = FakeHAWebSocketClient(
+            repair_issues=[
+                {
+                    "domain": "spook",
+                    "issue_id": "iss1",
+                    "severity": "warning",
+                    "is_fixable": True,
+                }
+            ]
+        )
+        fake_rest = FakeHARestClient(
+            flow_responses={"repair_submit:repair-flow-iss1": {"type": "create_entry"}}
+        )
+        import utils.ha.ha_ws_client as _ws_mod
+        import utils.ha.ha_rest_client as _rest_mod
+        import agents.ha_agent_sandbox_engine as _sandbox
+
+        monkeypatch.setattr(_ws_mod, "HAWebSocketClient", lambda *a, **kw: fake_ws)
+        monkeypatch.setattr(_rest_mod, "HARestClient", lambda *a, **kw: fake_rest)
+
+        async def _fake_backup(**_kwargs):
+            return "bk-slug"
+
+        def _fake_record(s):
+            pass
+
+        monkeypatch.setattr(_sandbox, "execute_remote_backup", _fake_backup)
+        monkeypatch.setattr(_sandbox, "record_backup_slug", _fake_record)
+
+        nid = "spk_fix1"
+        data = self._make_data(nid)
+        json_path = watch_dir / f"{nid}.json"
+        json_path.write_text(json.dumps(data))
+
+        asyncio.run(
+            dashboard._execute_spook_item(
+                nid, "fix", "iss1", data, json_path, watch_dir
+            )
+        )
+        assert (watch_dir / f"{nid}.approved").exists()

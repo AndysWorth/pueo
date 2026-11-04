@@ -203,3 +203,93 @@ async def drive_config_flow(
             abort_reason="exception",
             error_message=str(exc),
         )
+
+
+async def drive_repair_flow(
+    rest: "HARestClientProtocol",
+    domain: str,
+    issue_id: str,
+    *,
+    max_steps: int = _MAX_STEPS,
+) -> FlowResult:
+    """Walk a Spook / HA repair fix-flow to completion.
+
+    Most Spook repair flows are a single confirm step — start the flow,
+    then immediately POST an empty body to advance past the confirm step.
+    Aborts on unexpected step types, errors, or exceptions.
+    Returns FlowResult(success=True) when the flow yields create_entry.
+    """
+    flow_id = ""
+    try:
+        resp = await rest.start_repair_flow(domain, issue_id)
+        flow_id = resp.get("flow_id", "")
+
+        for _ in range(max_steps):
+            resp_type = resp.get("type", "")
+
+            if resp_type == "create_entry":
+                return FlowResult(
+                    success=True,
+                    entry_ids=[],
+                    abort_reason="",
+                    error_message="",
+                )
+
+            if resp_type == "abort":
+                abort_reason = resp.get("reason", "unknown")
+                return FlowResult(
+                    success=False,
+                    entry_ids=[],
+                    abort_reason=abort_reason,
+                    error_message=f"Repair flow aborted: {abort_reason}",
+                )
+
+            if resp_type not in ("form", "menu"):
+                return FlowResult(
+                    success=False,
+                    entry_ids=[],
+                    abort_reason="",
+                    error_message=f"Unexpected repair flow type: {resp_type!r}",
+                )
+
+            if not flow_id:
+                flow_id = resp.get("flow_id", flow_id)
+
+            if resp.get("errors"):
+                _log.warning(
+                    "drive_repair_flow: step errors step_id=%r errors=%r, aborting",
+                    resp.get("step_id"),
+                    resp.get("errors"),
+                )
+                await rest.abort_repair_flow(flow_id)
+                return FlowResult(
+                    success=False,
+                    entry_ids=[],
+                    abort_reason="step_errors",
+                    error_message=f"Repair flow step {resp.get('step_id')!r} returned errors: {resp.get('errors')}",
+                )
+
+            # Confirm steps take an empty submission; form steps also advance with {}.
+            resp = await rest.submit_repair_flow(flow_id, {})
+
+        if flow_id:
+            await rest.abort_repair_flow(flow_id)
+        return FlowResult(
+            success=False,
+            entry_ids=[],
+            abort_reason="max_steps",
+            error_message=f"Repair flow did not complete within {max_steps} steps",
+        )
+
+    except Exception as exc:
+        if flow_id:
+            try:
+                await rest.abort_repair_flow(flow_id)
+            except Exception:  # nosec B110
+                pass
+        return FlowResult(
+            success=False,
+            entry_ids=[],
+            abort_reason="exception",
+            error_message=str(exc),
+        )

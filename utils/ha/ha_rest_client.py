@@ -297,6 +297,40 @@ class HARestClient:  # pragma: no cover
             resp.raise_for_status()
             return resp.json()  # type: ignore[no-any-return]
 
+    async def start_repair_flow(self, domain: str, issue_id: str) -> dict:
+        """POST /api/repairs/issues/fix — start a repair fix flow."""
+        base = self._base_url.removesuffix("/api")
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            resp = await client.post(
+                f"{base}/api/repairs/issues/fix",
+                headers=self._headers,
+                json={"handler": domain, "issue_id": issue_id},
+            )
+            resp.raise_for_status()
+            return resp.json()  # type: ignore[no-any-return]
+
+    async def submit_repair_flow(self, flow_id: str, data: dict) -> dict:
+        """POST /api/repairs/issues/fix/{flow_id} — advance a repair fix flow."""
+        base = self._base_url.removesuffix("/api")
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            resp = await client.post(
+                f"{base}/api/repairs/issues/fix/{flow_id}",
+                headers=self._headers,
+                json=data,
+            )
+            resp.raise_for_status()
+            return resp.json()  # type: ignore[no-any-return]
+
+    async def abort_repair_flow(self, flow_id: str) -> None:
+        """DELETE /api/repairs/issues/fix/{flow_id} — abort a repair fix flow."""
+        base = self._base_url.removesuffix("/api")
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            resp = await client.delete(
+                f"{base}/api/repairs/issues/fix/{flow_id}",
+                headers=self._headers,
+            )
+            resp.raise_for_status()
+
 
 @dataclass
 class HARepairIssue:
@@ -471,3 +505,25 @@ class FakeHARestClient:
         return self._flow_responses.get(
             f"options_submit:{flow_id}", {"type": "create_entry"}
         )
+
+    async def start_repair_flow(self, domain: str, issue_id: str) -> dict:
+        self.posted.append(
+            ("/api/repairs/issues/fix", {"handler": domain, "issue_id": issue_id})
+        )
+        return self._flow_responses.get(
+            f"repair_start:{domain}:{issue_id}",
+            {
+                "flow_id": f"repair-flow-{issue_id}",
+                "type": "form",
+                "step_id": "confirm",
+            },
+        )
+
+    async def submit_repair_flow(self, flow_id: str, data: dict) -> dict:
+        self.posted.append((f"/api/repairs/issues/fix/{flow_id}", data))
+        return self._flow_responses.get(
+            f"repair_submit:{flow_id}", {"type": "create_entry"}
+        )
+
+    async def abort_repair_flow(self, flow_id: str) -> None:
+        self.deleted.append(f"/api/repairs/issues/fix/{flow_id}")

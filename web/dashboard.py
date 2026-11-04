@@ -50,6 +50,7 @@ from utils.hitl.card_types import (
     CARD_TYPE_OPEN_PR,
     CARD_TYPE_REPAIR,
     CARD_TYPE_RESOURCE_ACTION,
+    CARD_TYPE_SPOOK_DIGEST,
     CARD_TYPE_UNREGISTERED_ENTITY,
     CARD_TYPE_SERVICE_CALL,
     CARD_TYPE_AUTOMATION_CREATE,
@@ -979,7 +980,7 @@ async def _execute_queued_ha_repair(
 ) -> None:
     """Handle an approved HA repair card — reboot or dismiss."""
     import config as _config
-    from utils.ha.ha_rest_client import HARestClient, dismiss_ha_repair_issue
+    from utils.ha.ha_rest_client import HARestClient
     from utils.hitl.notify import get_notifier
     from utils.ha.ssh_client import AsyncSSHClient
 
@@ -1032,10 +1033,12 @@ async def _execute_queued_ha_repair(
                 json_path.write_text(json.dumps(data, indent=2))
                 (watch_dir / f"{nid}.rejected").touch()
         else:
-            rest = HARestClient(
+            from utils.ha.ha_ws_client import HAWebSocketClient
+
+            ws = HAWebSocketClient(
                 _config.HA_HOST, _config.HA_API_PORT, _config.HA_API_TOKEN
             )
-            await dismiss_ha_repair_issue(rest, domain, issue_id)
+            await ws.ignore_repair_issue(domain, issue_id, ignore=True)
             from agents.ha_agent_advanced import mark_repair_resolved
 
             mark_repair_resolved(issue_key)
@@ -2384,6 +2387,98 @@ async def _execute_unregistered_entity(
         (watch_dir / f"{nid}.in_progress").unlink(missing_ok=True)
 
 
+async def _execute_spook_item(
+    nid: str,
+    action: str,
+    issue_id: str,
+    data: dict,
+    json_path: Path,
+    watch_dir: Path,
+) -> None:
+    """Handle a per-item action on a CARD_TYPE_SPOOK_DIGEST card.
+
+    Fix path: backup → drive_repair_flow → verify gone → close card when done.
+    Ignore path: WS ignore → verify ignored → close card when done.
+
+    Both paths are MEDIUM risk; the fix path requires a backup first.
+    """
+    import config as _config
+    from agents.ha_agent_advanced import mark_repair_resolved
+    from agents.ha_agent_sandbox_engine import execute_remote_backup, record_backup_slug
+    from utils.ha.config_flow_driver import drive_repair_flow
+    from utils.ha.ha_rest_client import HARestClient, get_ha_repair_issues
+    from utils.ha.ha_ws_client import HAWebSocketClient
+
+    payload = data.get("payload", {})
+    tkey = payload.get("translation_key", "")
+    suppression_key = payload.get("suppression_key", f"spook/digest:{tkey}")
+    domain = "spook"
+
+    (watch_dir / f"{nid}.in_progress").touch()
+    try:
+        ws = HAWebSocketClient(
+            _config.HA_HOST, _config.HA_API_PORT, _config.HA_API_TOKEN
+        )
+        rest = HARestClient(_config.HA_HOST, _config.HA_API_PORT, _config.HA_API_TOKEN)
+
+        # Precondition: confirm the issue is still listed in HA.
+        live_issues = await get_ha_repair_issues(ws)
+        live_ids = {i.issue_id for i in live_issues}
+
+        if action == "fix":
+            if issue_id not in live_ids:
+                # Already gone — treat as success.
+                pass
+            else:
+                matching = next(
+                    (i for i in live_issues if i.issue_id == issue_id), None
+                )
+                if matching and not matching.data.get("is_fixable", True):
+                    raise RuntimeError(
+                        f"Issue {issue_id!r} is not fixable via the repair flow"
+                    )
+
+                # Backup before writing to HA.
+                slug = await execute_remote_backup()
+                await asyncio.to_thread(record_backup_slug, slug)
+
+                result = await drive_repair_flow(rest, domain, issue_id)
+                if not result.success:
+                    raise RuntimeError(f"Repair flow failed: {result.error_message}")
+
+        elif action == "ignore":
+            if issue_id not in live_ids:
+                pass
+            else:
+                await ws.ignore_repair_issue(domain, issue_id, ignore=True)
+
+        else:
+            raise RuntimeError(f"Unknown spook card action: {action!r}")
+
+        # Update the per-item resolved status inside payload (accessible from template).
+        items = payload.get("items", [])
+        resolved_ids: list[str] = list(payload.get("_resolved", []))
+        if issue_id not in resolved_ids:
+            resolved_ids.append(issue_id)
+        payload["_resolved"] = resolved_ids
+        data["payload"] = payload
+        json_path.write_text(json.dumps(data, indent=2))
+
+        # Close the card only when every item is resolved.
+        all_done = all(item.get("issue_id") in resolved_ids for item in items)
+        if all_done:
+            await asyncio.to_thread(mark_repair_resolved, suppression_key)
+            (watch_dir / f"{nid}.approved").touch()
+        # Individual item resolved — leave card open.
+
+    except Exception as exc:
+        data["fix_error"] = str(exc)
+        json_path.write_text(json.dumps(data, indent=2))
+        (watch_dir / f"{nid}.rejected").touch()
+    finally:
+        (watch_dir / f"{nid}.in_progress").unlink(missing_ok=True)
+
+
 _CARD_DISPATCH: dict[
     str,
     Any,
@@ -2406,6 +2501,7 @@ _CARD_DISPATCH: dict[
     CARD_TYPE_HA_COMMAND: _execute_ha_command,
     CARD_TYPE_SERVICE_CALL: _execute_service_call,
     CARD_TYPE_AUTOMATION_CREATE: _execute_automation_create,
+    CARD_TYPE_SPOOK_DIGEST: _execute_spook_item,
 }
 
 
@@ -2849,6 +2945,94 @@ async def acknowledge(nid: str) -> RedirectResponse:
         # Acknowledging means "seen", not "correct" (ADR 046); the session stays
         # pending until "Pueo was right"/"Pueo got this wrong" or the sweep.
         (watch_dir / f"{nid}.approved").touch()
+    return RedirectResponse(url="/queue", status_code=303)
+
+
+@app.post("/spook/{nid}/{issue_id:path}/fix")
+async def spook_fix_item(nid: str, issue_id: str) -> RedirectResponse:
+    """Apply Spook's repair flow for one item in a CARD_TYPE_SPOOK_DIGEST card.
+
+    Requires MEDIUM autonomy gate approval (routed via WorkItem).
+    Backup is taken inside _execute_spook_item before the repair flow runs.
+    """
+    from utils.agent.work_queue import PRIORITY_HIGH, WorkItem, get_work_queue_or_none
+
+    watch_dir = Path(NOTIFY_WATCH_DIR)
+    json_path = watch_dir / f"{nid}.json"
+    if not (json_path.exists() and _status(nid, watch_dir) == "PENDING"):
+        return RedirectResponse(url="/queue", status_code=303)
+
+    data = json.loads(json_path.read_text())
+    payload = data.get("payload", {})
+    if payload.get("card_type") != CARD_TYPE_SPOOK_DIGEST:
+        return RedirectResponse(url="/queue", status_code=303)
+
+    # Reject if already in progress for this card.
+    if (watch_dir / f"{nid}.in_progress").exists():
+        return RedirectResponse(url="/queue?busy=1", status_code=303)
+
+    _wq = get_work_queue_or_none()
+    _action, _iid = "fix", issue_id
+    if _wq is not None:
+        await _wq.submit(
+            WorkItem(
+                priority=PRIORITY_HIGH,
+                activity_type="card_execution",
+                description=f"Card {nid}: spook fix {issue_id}",
+                dedup_key=f"card_{nid}:{issue_id}",
+                suppress_while_running=frozenset(),
+                coro_factory=lambda: _execute_spook_item(
+                    nid, _action, _iid, data, json_path, watch_dir
+                ),
+            )
+        )
+    else:
+        asyncio.create_task(
+            _execute_spook_item(nid, _action, _iid, data, json_path, watch_dir)
+        )
+    return RedirectResponse(url="/queue", status_code=303)
+
+
+@app.post("/spook/{nid}/{issue_id:path}/ignore")
+async def spook_ignore_item(nid: str, issue_id: str) -> RedirectResponse:
+    """Ignore one item in a CARD_TYPE_SPOOK_DIGEST card via WS repairs/ignore_issue.
+
+    No backup required (no config file is written).
+    """
+    from utils.agent.work_queue import PRIORITY_HIGH, WorkItem, get_work_queue_or_none
+
+    watch_dir = Path(NOTIFY_WATCH_DIR)
+    json_path = watch_dir / f"{nid}.json"
+    if not (json_path.exists() and _status(nid, watch_dir) == "PENDING"):
+        return RedirectResponse(url="/queue", status_code=303)
+
+    data = json.loads(json_path.read_text())
+    payload = data.get("payload", {})
+    if payload.get("card_type") != CARD_TYPE_SPOOK_DIGEST:
+        return RedirectResponse(url="/queue", status_code=303)
+
+    if (watch_dir / f"{nid}.in_progress").exists():
+        return RedirectResponse(url="/queue?busy=1", status_code=303)
+
+    _wq = get_work_queue_or_none()
+    _action, _iid = "ignore", issue_id
+    if _wq is not None:
+        await _wq.submit(
+            WorkItem(
+                priority=PRIORITY_HIGH,
+                activity_type="card_execution",
+                description=f"Card {nid}: spook ignore {issue_id}",
+                dedup_key=f"card_{nid}:{issue_id}",
+                suppress_while_running=frozenset(),
+                coro_factory=lambda: _execute_spook_item(
+                    nid, _action, _iid, data, json_path, watch_dir
+                ),
+            )
+        )
+    else:
+        asyncio.create_task(
+            _execute_spook_item(nid, _action, _iid, data, json_path, watch_dir)
+        )
     return RedirectResponse(url="/queue", status_code=303)
 
 
