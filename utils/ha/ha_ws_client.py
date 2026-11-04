@@ -435,6 +435,17 @@ class HAWebSocketClient:  # pragma: no cover
             disabled_by=disabled_by,
         )
 
+    async def ignore_repair_issue(
+        self, domain: str, issue_id: str, ignore: bool = True
+    ) -> None:
+        """Ignore (or un-ignore) a repair issue via WS repairs/ignore_issue."""
+        await self._call(
+            "repairs/ignore_issue",
+            domain=domain,
+            issue_id=issue_id,
+            ignore=ignore,
+        )
+
     async def get_lovelace_dashboards(self) -> list[dict]:
         """List all named dashboards via lovelace/dashboards/list."""
         ws = await self._connect_and_auth()
@@ -535,6 +546,7 @@ class FakeHAWebSocketClient:
         self._flows_in_progress: list[dict] = flows_in_progress or []
         self._known_integrations: set[str] = known_integrations or set()
         self.disable_entry_calls: list[tuple[str, str | None]] = []
+        self.ignored_repairs: list[tuple[str, str, bool]] = []
 
     async def get_device_registry(self) -> list[dict]:
         self.calls.append("get_device_registry")
@@ -679,3 +691,9 @@ class FakeHAWebSocketClient:
     async def integration_known(self, domain: str) -> bool:
         self.calls.append(f"integration_known:{domain}")
         return domain in self._known_integrations
+
+    async def ignore_repair_issue(
+        self, domain: str, issue_id: str, ignore: bool = True
+    ) -> None:
+        self.calls.append(f"ignore_repair_issue:{domain}/{issue_id}:ignore={ignore}")
+        self.ignored_repairs.append((domain, issue_id, ignore))
