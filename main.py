@@ -1916,6 +1916,9 @@ async def supervisor_main(config_path: Path) -> None:
     loop = asyncio.get_running_loop()
 
     def _shutdown() -> None:
+        from utils.core.logging import get_logger as _gl
+
+        _gl("main").info("shutdown_requested", pid=os.getpid())
         # Mute uvicorn.error before cancellation so the expected CancelledErrors
         # from open SSE connections (listen_for_disconnect / lifespan) don't
         # flood the terminal.  They are normal shutdown noise, not real errors.
@@ -2105,7 +2108,13 @@ def main() -> None:
     if _fd_change is not None:
         from utils.core.logging import get_logger
 
-        get_logger("main").info("fd_limit_raised", old=_fd_change[0], new=_fd_change[1])
+        get_logger("main").info(
+            "fd_limit_raised",
+            old=_fd_change[0],
+            new=_fd_change[1],
+            pid=os.getpid(),
+            ppid=os.getppid(),
+        )
 
     if args.mode == "supervisor":
         import config as _cfg_sleep
