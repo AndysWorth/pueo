@@ -1394,3 +1394,142 @@ class TestSpookDigestHybridRouting:
             len(llm_investigations) == 1
         ), "unknown key must trigger LLM investigation"
         assert sent_cards == [], "unknown key must NOT send a deterministic card"
+
+
+# ---------------------------------------------------------------------------
+# S6: Custom-integration tracebacks — advise-only integration bug card
+# ---------------------------------------------------------------------------
+
+
+class TestExtractCustomComponentInfo:
+    """Pure-function tests for _extract_custom_component_info."""
+
+    def test_spook_frame(self, pueo_dirs):
+        from agents.ha_log_monitor import _extract_custom_component_info
+
+        block = [
+            "2026-11-03 21:15:00 ERROR (MainThread) [spook] Error doing job",
+            "Traceback (most recent call last):",
+            '  File "/config/custom_components/spook/ectoplasms/homeassistant/sensor.py", line 291, in async_update',
+            "KeyError: 'custom_components'",
+        ]
+        result = _extract_custom_component_info(block)
+        assert result is not None
+        domain, file_line = result
+        assert domain == "spook"
+        assert file_line == "ectoplasms/homeassistant/sensor.py:291"
+
+    def test_non_custom_component_returns_none(self, pueo_dirs):
+        from agents.ha_log_monitor import _extract_custom_component_info
+
+        block = [
+            "2026-11-03 ERROR Something broke",
+            '  File "/usr/local/lib/python3.12/site-packages/homeassistant/components/sensor.py", line 42, in update',
+            "AttributeError: some error",
+        ]
+        assert _extract_custom_component_info(block) is None
+
+    def test_empty_block_returns_none(self, pueo_dirs):
+        from agents.ha_log_monitor import _extract_custom_component_info
+
+        assert _extract_custom_component_info([]) is None
+
+    def test_uses_first_matching_frame(self, pueo_dirs):
+        from agents.ha_log_monitor import _extract_custom_component_info
+
+        block = [
+            '  File "/config/custom_components/domain_a/file.py", line 10, in foo',
+            '  File "/config/custom_components/domain_b/file.py", line 20, in bar',
+        ]
+        result = _extract_custom_component_info(block)
+        assert result is not None
+        assert result[0] == "domain_a"
+        assert result[1] == "file.py:10"
+
+    def test_longer_path_prefix(self, pueo_dirs):
+        from agents.ha_log_monitor import _extract_custom_component_info
+
+        block = [
+            '  File "/homeassistant/config/custom_components/myint/sensor.py", line 5, in update',
+        ]
+        result = _extract_custom_component_info(block)
+        assert result is not None
+        assert result[0] == "myint"
+        assert result[1] == "sensor.py:5"
+
+
+class TestIntegrationBugRouting:
+    """Custom-component tracebacks must route to advise-only card, not repair pipeline."""
+
+    @pytest.fixture
+    def routing_env(self, pueo_dirs, tmp_path, monkeypatch):
+        import config
+        from agents import ha_log_monitor
+        from agents.ha_log_monitor import LogEvaluation, _LogStreamState
+
+        monkeypatch.setattr(config, "DB_PATH", _make_prefs_db(tmp_path))
+        monkeypatch.setattr(
+            ha_log_monitor,
+            "_core_state",
+            _LogStreamState(loop_name="ha_log_monitor"),
+        )
+        monkeypatch.setattr(ha_log_monitor, "_init_sparkline_db", lambda s: None)
+        monkeypatch.setattr(ha_log_monitor, "_record_sparkline_line", lambda s, m: None)
+
+        return LogEvaluation(
+            is_actionable=True,
+            root_cause_summary="Spook sensor platform crashed",
+            confidence_score=0.9,
+        )
+
+    def test_custom_component_bypasses_repair_pipeline(self, routing_env, monkeypatch):
+        """An actionable traceback in a custom component sends the advise-only card and does not trigger the repair pipeline."""
+        from agents import ha_log_monitor
+        from agents.ha_log_monitor import tail_remote_log_stream
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.llm.ollama_client import FakeLLMClient
+
+        bug_card_calls: list[dict] = []
+        repair_pipeline_calls: list[bool] = []
+
+        async def _fake_bug_card(
+            domain: str,
+            file_line: str,
+            exc_class: Any,
+            client: Any,
+            notifier: Any,
+        ) -> None:
+            bug_card_calls.append({"domain": domain, "file_line": file_line})
+
+        async def _fake_repair() -> None:
+            repair_pipeline_calls.append(True)
+
+        monkeypatch.setattr(
+            ha_log_monitor, "_send_integration_bug_card", _fake_bug_card
+        )
+        monkeypatch.setattr(
+            ha_log_monitor, "trigger_remediation_pipeline", _fake_repair
+        )
+
+        llm = FakeLLMClient(routing_env.model_dump_json())
+        lines = [
+            "2026-11-03 21:15:00.000 ERROR (MainThread) [custom_components.spook] Error doing job",
+            "Traceback (most recent call last):",
+            '  File "/config/custom_components/spook/ectoplasms/homeassistant/sensor.py", line 291, in async_update',
+            "KeyError: 'custom_components'",
+        ]
+
+        with mock.patch(
+            "utils.agent.work_queue.get_work_queue_or_none", return_value=None
+        ):
+            asyncio.run(
+                tail_remote_log_stream(
+                    ssh_client=FakeSSHClient(stream_data=lines),
+                    llm_client=llm,
+                )
+            )
+
+        assert len(bug_card_calls) == 1, "must send exactly one integration-bug card"
+        assert bug_card_calls[0]["domain"] == "spook"
+        assert "sensor.py:291" in bug_card_calls[0]["file_line"]
+        assert repair_pipeline_calls == [], "repair pipeline must NOT be triggered"

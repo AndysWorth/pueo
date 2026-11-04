@@ -201,6 +201,30 @@ def _update_mark_auto_applied(
         mark_card_auto_applied(_conn, suppression_key, card_type, description)
 
 
+def _integration_bug_should_send(suppression_key: str) -> bool:
+    """Return True if an integration-bug card should be sent for suppression_key. Sync."""
+    from utils.hitl.hitl_tracker import should_send_card
+
+    with sqlite3.connect(_config.DB_PATH) as _conn:
+        return bool(should_send_card(_conn, suppression_key))
+
+
+def _integration_bug_mark_sent(
+    suppression_key: str, integration_name: str, domain: str
+) -> None:
+    """Record the integration-bug card as sent in hitl_suppression. Sync."""
+    from utils.hitl.card_types import CARD_TYPE_INTEGRATION_BUG
+    from utils.hitl.hitl_tracker import mark_card_sent
+
+    with sqlite3.connect(_config.DB_PATH) as _conn:
+        mark_card_sent(
+            _conn,
+            suppression_key,
+            CARD_TYPE_INTEGRATION_BUG,
+            f"Integration bug: {integration_name} ({domain})",
+        )
+
+
 def _update_already_analyzed(analyzed_key: str) -> bool:
     """Return True if this specific version was already analyzed with no card needed."""
     with sqlite3.connect(_config.DB_PATH) as _conn:
@@ -609,6 +633,11 @@ _HA_LOG_LOGGER_RE = re.compile(r"\[([A-Za-z][A-Za-z0-9_.]*)\]")
 _EXCEPTION_LINE_RE = re.compile(
     r"^([A-Za-z][A-Za-z0-9_.]*(?:Error|Exception|Warning|Fault)):"
 )
+# Matches Python traceback frame lines pointing into a custom component, e.g.
+# '  File "/config/custom_components/spook/sensor.py", line 291, in foo'
+_CUSTOM_COMPONENT_FRAME_RE = re.compile(
+    r'File "[^"]*custom_components/([^/"]+)(/[^"]*)", line (\d+)'
+)
 
 
 def _extract_logger(line: str) -> Optional[str]:
@@ -625,6 +654,24 @@ def _extract_exception_class(block: list[str]) -> Optional[str]:
         if m:
             result = m.group(1).rsplit(".", 1)[-1]
     return result
+
+
+def _extract_custom_component_info(
+    block: list[str],
+) -> Optional[tuple[str, str]]:
+    """Return (domain, 'relative/path.py:line') if any frame is in /config/custom_components/<domain>/.
+
+    Uses the first matching frame so the most-specific location is reported.
+    Returns None when no custom-component frame is found.
+    """
+    for line in block:
+        m = _CUSTOM_COMPONENT_FRAME_RE.search(line)
+        if m:
+            domain = m.group(1)
+            rel_path = m.group(2).lstrip("/")
+            lineno = m.group(3)
+            return domain, f"{rel_path}:{lineno}"
+    return None
 
 
 def _strip_log_timestamp(line: str) -> str:
@@ -1107,6 +1154,72 @@ async def _run_repair_issue_investigation(
         decrement_active_agent()
 
 
+async def _send_integration_bug_card(
+    domain: str,
+    file_line: str,
+    exc_class: Optional[str],
+    client: "SSHClientProtocol",
+    notifier: "NotifierProtocol",
+) -> None:
+    """Read manifest.json and send an advise-only card for a custom-component traceback.
+
+    Deduplicates by (domain, exc_class, file_line) so the same crash does not
+    flood the queue.  Gracefully degrades if the SSH read fails.
+    """
+    import json as _json
+
+    from utils.hitl.card_types import CARD_TYPE_INTEGRATION_BUG
+    from utils.hitl.hitl_tracker import stable_nid
+
+    _exc = exc_class or "unknown"
+    _fp = hashlib.sha256(f"{domain}:{_exc}:{file_line}".encode()).hexdigest()[:16]
+    _suppression_key = f"integration_bug:{_fp}"
+
+    _should_send = await asyncio.to_thread(
+        _integration_bug_should_send, _suppression_key
+    )
+    if not _should_send:
+        log.info("integration_bug_cooldown", domain=domain, fingerprint=_fp)
+        return
+
+    name = domain
+    version = ""
+    issue_tracker = ""
+    try:
+        raw = await client.read_file(
+            f"/config/custom_components/{domain}/manifest.json"
+        )
+        manifest = _json.loads(raw)
+        name = manifest.get("name", domain)
+        version = manifest.get("version", "")
+        issue_tracker = manifest.get("issue_tracker", "")
+    except Exception as e:  # nosec B110
+        log.warning("integration_bug_manifest_read_failed", domain=domain, error=str(e))
+
+    nid = stable_nid(_suppression_key)
+    await asyncio.to_thread(_integration_bug_mark_sent, _suppression_key, name, domain)
+    await notifier.send(
+        subject=f"Pueo: Integration bug — {name}",
+        body=(
+            f"{name} raised {_exc} at {file_line}. "
+            "Check HACS for an update or report the issue upstream."
+        ),
+        payload={
+            "notification_id": nid,
+            "suppression_key": _suppression_key,
+            "card_type": CARD_TYPE_INTEGRATION_BUG,
+            "domain": domain,
+            "integration_name": name,
+            "version": version,
+            "issue_tracker": issue_tracker,
+            "exception": _exc,
+            "file_line": file_line,
+            "informational": True,
+        },
+    )
+    log.info("integration_bug_card_sent", domain=domain, fingerprint=_fp, name=name)
+
+
 # ==========================================
 # STREAMING SSH CONNECTION LAYER
 # ==========================================
@@ -1236,11 +1349,15 @@ async def tail_remote_log_stream(
                 _buf_snap = list(_log_buffer)
                 _clean_snap = clean_line
                 _loop_name = state.loop_name
+                # Snapshot the error block so the custom-component check in _triage_coro
+                # sees the same lines that triggered this event.
+                _eb_snap = list(_error_block)
 
                 async def _triage_coro(
                     _buf: list = _buf_snap,
                     _cl: str = _clean_snap,
                     _ln: str = _loop_name,
+                    _eb: list = _eb_snap,
                 ) -> None:
                     import config as _lm_dbg
 
@@ -1282,6 +1399,17 @@ async def tail_remote_log_stream(
                         )
                     except Exception:  # nosec B110
                         pass
+                    # Custom-component tracebacks are integration bugs, not config
+                    # errors. Skip the sandbox repair pipeline and send an advise-only
+                    # card so the user can check HACS or report upstream.
+                    _ci = _extract_custom_component_info(_eb)
+                    if _ci is not None:
+                        _domain, _file_line = _ci
+                        _exc_cls = _extract_exception_class(_eb)
+                        await _send_integration_bug_card(
+                            _domain, _file_line, _exc_cls, client, _notifier
+                        )
+                        return
                     if not SELF_HEALING_ENABLED:
                         log.info(
                             "self_healing_disabled",
