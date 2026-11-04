@@ -6449,8 +6449,8 @@ class TestLoopRunNow:
         assert "rag_refresh" in woken
         assert run_now_called == []
 
-    def test_loop_run_now_other_loops_use_run_now(self, tmp_path, monkeypatch):
-        """loop_run_now uses run_now() for non-wake-only loops."""
+    def test_loop_run_now_repair_poll_uses_wake(self, tmp_path, monkeypatch):
+        """loop_run_now uses wake() for repair_poll (sleep-first loop)."""
         from fastapi.testclient import TestClient
 
         import web.dashboard as dashboard
@@ -6472,7 +6472,59 @@ class TestLoopRunNow:
         client = TestClient(dashboard.app)
         resp = client.post("/loops/repair_poll/run-now")
         assert resp.status_code == 200
-        assert run_now_called == ["repair_poll"]
+        assert "repair_poll" in woken
+        assert run_now_called == []
+
+    def test_loop_run_now_notification_poll_uses_wake(self, tmp_path, monkeypatch):
+        """loop_run_now uses wake() for notification_poll (sleep-first loop)."""
+        from fastapi.testclient import TestClient
+
+        import web.dashboard as dashboard
+        import utils.agent.supervisor as sup_mod
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+
+        woken: list[str] = []
+        run_now_called: list[str] = []
+
+        class _FakeSV:
+            def wake(self, name: str) -> None:
+                woken.append(name)
+
+            def run_now(self, name: str) -> None:
+                run_now_called.append(name)
+
+        monkeypatch.setattr(sup_mod, "get_supervisor_instance", lambda: _FakeSV())
+        client = TestClient(dashboard.app)
+        resp = client.post("/loops/notification_poll/run-now")
+        assert resp.status_code == 200
+        assert "notification_poll" in woken
+        assert run_now_called == []
+
+    def test_loop_run_now_other_loops_use_run_now(self, tmp_path, monkeypatch):
+        """loop_run_now uses run_now() for non-wake-only loops (e.g. ha_log_monitor)."""
+        from fastapi.testclient import TestClient
+
+        import web.dashboard as dashboard
+        import utils.agent.supervisor as sup_mod
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+
+        woken: list[str] = []
+        run_now_called: list[str] = []
+
+        class _FakeSV:
+            def wake(self, name: str) -> None:
+                woken.append(name)
+
+            def run_now(self, name: str) -> None:
+                run_now_called.append(name)
+
+        monkeypatch.setattr(sup_mod, "get_supervisor_instance", lambda: _FakeSV())
+        client = TestClient(dashboard.app)
+        resp = client.post("/loops/ha_log_monitor/run-now")
+        assert resp.status_code == 200
+        assert run_now_called == ["ha_log_monitor"]
         assert woken == []
 
 
@@ -6813,8 +6865,8 @@ class TestExecuteQueuedHARepair:
 
 
 class TestPostRebootRepairScan:
-    def test_calls_supervisor_run_now(self, monkeypatch):
-        """_post_reboot_repair_scan triggers run_now('repair_poll') on the supervisor."""
+    def test_calls_supervisor_wake(self, monkeypatch):
+        """_post_reboot_repair_scan wakes repair_poll (sleep-first loop)."""
         import asyncio
         from unittest.mock import MagicMock
 
@@ -6827,7 +6879,8 @@ class TestPostRebootRepairScan:
 
         asyncio.run(dashboard._post_reboot_repair_scan(settle_seconds=0))
 
-        mock_sv.run_now.assert_called_once_with("repair_poll")
+        mock_sv.wake.assert_called_once_with("repair_poll")
+        mock_sv.run_now.assert_not_called()
 
     def test_handles_supervisor_unavailable(self, monkeypatch):
         """_post_reboot_repair_scan does not raise when the supervisor is None."""
