@@ -13,6 +13,14 @@ class LovelaceConfigNotFound(Exception):
     """Raised when a named Lovelace dashboard has no stored config (file-mode or empty)."""
 
 
+class MarketplaceWarningNotAcceptedError(Exception):
+    """Raised when the HA Marketplace first-run warning has not been accepted.
+
+    The user must open Settings → Marketplace and accept the notice before
+    Pueo can install or manage integrations via the Marketplace API.
+    """
+
+
 class HAWebSocketClient:  # pragma: no cover
     """Short-lived WebSocket client for HA device registry queries.
 
@@ -326,10 +334,17 @@ class HAWebSocketClient:  # pragma: no cover
             msg = json.loads(ws.recv())
             if msg.get("type") != "auth_ok":
                 return []
-            ws.send(json.dumps({"id": 1, "type": "hacs/repositories/list"}))
+            # HA 2026.11+: built-in Marketplace replaces HACS (probe, then fallback)
+            ws.send(json.dumps({"id": 1, "type": "marketplace/repositories/list"}))
             msg = json.loads(ws.recv())
             if not msg.get("success"):
-                return []
+                if (msg.get("error") or {}).get("code") == "unknown_command":
+                    ws.send(json.dumps({"id": 2, "type": "hacs/repositories/list"}))
+                    msg = json.loads(ws.recv())
+                    if not msg.get("success"):
+                        return []
+                else:
+                    return []
             return msg.get("result", [])
 
     async def hacs_add_repository(self, repository: str) -> None:
@@ -352,12 +367,13 @@ class HAWebSocketClient:  # pragma: no cover
             ws.send(json.dumps({"type": "auth", "access_token": self._token}))
             msg = json.loads(ws.recv())
             if msg.get("type") != "auth_ok":
-                raise RuntimeError("HACS WS authentication failed")
+                raise RuntimeError("WS authentication failed")
+            # HA 2026.11+: built-in Marketplace replaces HACS (probe, then fallback)
             ws.send(
                 json.dumps(
                     {
                         "id": 1,
-                        "type": "hacs/repositories/add",
+                        "type": "marketplace/repositories/add",
                         "repository": repository,
                         "category": "integration",
                     }
@@ -365,7 +381,22 @@ class HAWebSocketClient:  # pragma: no cover
             )
             msg = json.loads(ws.recv())
             if not msg.get("success"):
-                raise RuntimeError(f"hacs/repositories/add failed: {msg}")
+                if (msg.get("error") or {}).get("code") == "unknown_command":
+                    ws.send(
+                        json.dumps(
+                            {
+                                "id": 2,
+                                "type": "hacs/repositories/add",
+                                "repository": repository,
+                                "category": "integration",
+                            }
+                        )
+                    )
+                    msg = json.loads(ws.recv())
+                    if not msg.get("success"):
+                        raise RuntimeError(f"hacs/repositories/add failed: {msg}")
+                else:
+                    raise RuntimeError(f"marketplace/repositories/add failed: {msg}")
 
     async def hacs_download(self, repository_id: str) -> None:
         """Download (install) a HACS repository by numeric repo id.
@@ -387,19 +418,40 @@ class HAWebSocketClient:  # pragma: no cover
             ws.send(json.dumps({"type": "auth", "access_token": self._token}))
             msg = json.loads(ws.recv())
             if msg.get("type") != "auth_ok":
-                raise RuntimeError("HACS WS authentication failed")
+                raise RuntimeError("WS authentication failed")
+            # HA 2026.11+: built-in Marketplace replaces HACS (probe, then fallback)
             ws.send(
                 json.dumps(
                     {
                         "id": 1,
-                        "type": "hacs/repository/download",
+                        "type": "marketplace/repository/install",
                         "repository": repository_id,
                     }
                 )
             )
             msg = json.loads(ws.recv())
             if not msg.get("success"):
-                raise RuntimeError(f"hacs/repository/download failed: {msg}")
+                err_code = (msg.get("error") or {}).get("code", "")
+                if err_code == "unknown_command":
+                    ws.send(
+                        json.dumps(
+                            {
+                                "id": 2,
+                                "type": "hacs/repository/download",
+                                "repository": repository_id,
+                            }
+                        )
+                    )
+                    msg = json.loads(ws.recv())
+                    if not msg.get("success"):
+                        raise RuntimeError(f"hacs/repository/download failed: {msg}")
+                elif err_code == "warning_not_accepted":
+                    raise MarketplaceWarningNotAcceptedError(
+                        "Accept the Marketplace notice in Settings → Marketplace "
+                        "before Pueo can install integrations."
+                    )
+                else:
+                    raise RuntimeError(f"marketplace/repository/install failed: {msg}")
 
     async def list_config_flows_in_progress(self) -> list[dict]:
         """List in-progress config flows via config_entries/flow/progress.
@@ -547,6 +599,7 @@ class FakeHAWebSocketClient:
         self._known_integrations: set[str] = known_integrations or set()
         self.disable_entry_calls: list[tuple[str, str | None]] = []
         self.ignored_repairs: list[tuple[str, str, bool]] = []
+        self._raise_marketplace_warning: bool = False
 
     async def get_device_registry(self) -> list[dict]:
         self.calls.append("get_device_registry")
@@ -677,6 +730,15 @@ class FakeHAWebSocketClient:
     async def hacs_download(self, repository_id: str) -> None:
         self.calls.append(f"hacs_download:{repository_id}")
         self.hacs_download_calls.append(repository_id)
+        if self._raise_marketplace_warning:
+            raise MarketplaceWarningNotAcceptedError(
+                "Accept the Marketplace notice in Settings → Marketplace "
+                "before Pueo can install integrations."
+            )
+
+    def set_raise_marketplace_warning(self, raise_it: bool = True) -> None:
+        """Configure hacs_download to raise MarketplaceWarningNotAcceptedError."""
+        self._raise_marketplace_warning = raise_it
 
     async def list_config_flows_in_progress(self) -> list[dict]:
         self.calls.append("list_config_flows_in_progress")

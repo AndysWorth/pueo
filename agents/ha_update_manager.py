@@ -355,16 +355,31 @@ PUEO_HA_DEPENDENCIES: dict[str, list[dict[str, str]]] = {
     ],
     "websocket_commands": [
         {
+            "cmd": "marketplace/repositories/list",
+            "feature": "Marketplace integration discovery and companion provisioning (HA 2026.11+)",
+            "note": "Falls back to hacs/repositories/list on older HA versions",
+        },
+        {
+            "cmd": "marketplace/repositories/add",
+            "feature": "Marketplace integration add (companion provisioning, HA 2026.11+)",
+            "note": "Falls back to hacs/repositories/add on older HA versions",
+        },
+        {
+            "cmd": "marketplace/repository/install",
+            "feature": "Marketplace integration install (companion provisioning, HA 2026.11+)",
+            "note": "Falls back to hacs/repository/download on older HA versions",
+        },
+        {
             "cmd": "hacs/repositories/list",
-            "feature": "HACS integration discovery and companion provisioning",
+            "feature": "HACS integration discovery (HA <2026.11 fallback)",
         },
         {
             "cmd": "hacs/repositories/add",
-            "feature": "HACS integration install (companion provisioning)",
+            "feature": "HACS integration add (HA <2026.11 fallback)",
         },
         {
             "cmd": "hacs/repository/download",
-            "feature": "HACS integration download (companion provisioning)",
+            "feature": "HACS integration download (HA <2026.11 fallback)",
         },
         {
             "cmd": "repairs/list_issues",
@@ -443,9 +458,14 @@ PUEO_HA_DEPENDENCIES: dict[str, list[dict[str, str]]] = {
     ],
     "integrations": [
         {
+            "domain": "marketplace",
+            "feature": "Marketplace integration discovery and companion provisioning (HA 2026.11+)",
+            "note": "Built-in replacement for HACS; hacs/* WS commands are gone on 2026.11+",
+        },
+        {
             "domain": "hacs",
-            "feature": "HACS integration discovery and companion provisioning",
-            "note": "Becomes built-in Marketplace in HA 2026.11+",
+            "feature": "HACS integration discovery and companion provisioning (HA <2026.11)",
+            "note": "Replaced by built-in Marketplace in HA 2026.11+; cannot be installed on 2026.11+",
         },
         {
             "domain": "spook",
@@ -460,8 +480,12 @@ PUEO_HA_DEPENDENCIES: dict[str, list[dict[str, str]]] = {
     ],
     "repair_id_patterns": [
         {
+            "pattern": "marketplace/restart_required_*",
+            "feature": "Marketplace restart-required repair detection in log monitor (HA 2026.11+)",
+        },
+        {
             "pattern": "hacs/restart_required_*",
-            "feature": "HACS restart-required repair detection in log monitor",
+            "feature": "HACS restart-required repair detection in log monitor (HA <2026.11)",
         },
     ],
     "ssh_file_paths": [
@@ -1773,7 +1797,7 @@ async def _check_hacs_install_via_ssh(
         data = json.loads(stdout.strip())
         issues = data.get("data", data).get("issues") or []
         return any(
-            issue.get("domain") == "hacs"
+            issue.get("domain") in {"hacs", "marketplace"}
             and "restart_required" in (issue.get("issue_id") or "")
             for issue in issues
         )

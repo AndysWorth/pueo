@@ -246,14 +246,30 @@ async def run_companion_setup(
             state = await _observe_state(domain, rest, ws)
 
         if Step.DOWNLOAD in steps:
-            _print_step(f"Downloading {domain} via HACS (repo_id={state.repo_id!r})…")
+            _print_step(
+                f"Downloading {domain} via Marketplace/HACS (repo_id={state.repo_id!r})…"
+            )
             if not state.repo_id:
                 return CompanionSetupResult(
                     domain=domain,
                     steps_done=steps_done,
-                    error=f"Could not find HACS repo_id for {spec.hacs_full_name}",
+                    error=f"Could not find repo_id for {spec.hacs_full_name}",
                 )
-            await ws.hacs_download(state.repo_id)
+            try:
+                await ws.hacs_download(state.repo_id)
+            except Exception as _dl_exc:
+                from utils.ha.ha_ws_client import MarketplaceWarningNotAcceptedError
+
+                if isinstance(_dl_exc, MarketplaceWarningNotAcceptedError):
+                    return CompanionSetupResult(
+                        domain=domain,
+                        steps_done=steps_done,
+                        error=(
+                            "Accept the Marketplace notice in Settings → Marketplace, "
+                            "then run companion setup again."
+                        ),
+                    )
+                raise
             steps_done.append(Step.DOWNLOAD)
             _print_step(f"Downloaded {domain}.")
 

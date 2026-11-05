@@ -2089,12 +2089,12 @@ async def poll_for_notifications(
             pass
 
 
-_HACS_RESTART_REQUIRED_RE = re.compile(r"hacs/restart_required_(\d+)")
+_HACS_RESTART_REQUIRED_RE = re.compile(r"(?:hacs|marketplace)/restart_required_(\d+)")
 
 
 def _hacs_repo_id_from_issue(issue: HARepairIssue) -> str:
-    """Extract the numeric HACS repo id from a hacs/restart_required_<id>_* issue key."""
-    if issue.domain != "hacs":
+    """Extract the numeric repo id from a hacs/restart_required_<id> or marketplace/restart_required_<id> issue key."""
+    if issue.domain not in {"hacs", "marketplace"}:
         return ""
     m = _HACS_RESTART_REQUIRED_RE.match(issue.issue_key)
     return m.group(1) if m else ""

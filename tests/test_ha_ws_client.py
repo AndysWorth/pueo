@@ -750,3 +750,38 @@ class TestIntegrationKnown:
         client = _make_client()
         result = asyncio.run(client.integration_known("spook"))
         assert result is False
+
+
+# ---------------------------------------------------------------------------
+# MarketplaceWarningNotAcceptedError — exception exists and is importable
+# ---------------------------------------------------------------------------
+
+
+class TestMarketplaceWarningNotAcceptedError:
+    def test_exception_exists(self):
+        from utils.ha.ha_ws_client import MarketplaceWarningNotAcceptedError
+
+        err = MarketplaceWarningNotAcceptedError("accept the warning")
+        assert "accept" in str(err)
+
+    def test_fake_ws_client_raises_on_flag(self):
+        import asyncio
+
+        from utils.ha.ha_ws_client import (
+            FakeHAWebSocketClient,
+            MarketplaceWarningNotAcceptedError,
+        )
+
+        ws = FakeHAWebSocketClient(hacs_repositories=[])
+        ws.set_raise_marketplace_warning(True)
+        with pytest.raises(MarketplaceWarningNotAcceptedError):
+            asyncio.run(ws.hacs_download("42"))
+
+    def test_fake_ws_client_no_raise_by_default(self):
+        import asyncio
+
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        ws = FakeHAWebSocketClient(hacs_repositories=[])
+        asyncio.run(ws.hacs_download("42"))
+        assert "hacs_download:42" in ws.calls
