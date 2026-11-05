@@ -10146,6 +10146,60 @@ class TestVerificationDigestCard:
             r.notification_id != "digest1" for r in dashboard._load_requests(tmp_path)
         )
 
+    def test_subject_updated_when_items_filtered(self, tmp_path, monkeypatch):
+        """Subject reflects remaining count when some items have been answered."""
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        # Two answered cards + one still open
+        self._card(tmp_path, "open1", {"card_type": "device_offline", "devices": [{}]})
+        self._card(tmp_path, "done1", {"card_type": "update", "user_verdict": "right"})
+        self._card(tmp_path, "done2", {"card_type": "update"})
+        (tmp_path / "done2.approved").touch()
+        self._digest(
+            tmp_path,
+            [
+                self._item("open1", can_turn_off=True),
+                self._item("done1"),
+                self._item("done2"),
+            ],
+        )
+        reqs = dashboard._load_requests(tmp_path)
+        digest = next(r for r in reqs if r.notification_id == "digest1")
+        assert "1 question to confirm" in digest.subject
+        assert "(3 when sent)" in digest.subject
+
+    def test_subject_unchanged_when_no_items_filtered(self, tmp_path, monkeypatch):
+        """Subject is not modified when all items remain pending."""
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        self._card(tmp_path, "open1", {"card_type": "device_offline", "devices": [{}]})
+        self._digest(tmp_path, [self._item("open1", can_turn_off=True)])
+        reqs = dashboard._load_requests(tmp_path)
+        digest = next(r for r in reqs if r.notification_id == "digest1")
+        assert digest.subject == "Subject digest1"
+
+    def test_root_cause_shown_in_digest(self, tmp_path, monkeypatch):
+        """root_cause is rendered as italic context above the question."""
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        self._card(tmp_path, "open1", {"card_type": "device_offline", "devices": [{}]})
+        self._digest(
+            tmp_path,
+            [
+                {
+                    **self._item("open1", can_turn_off=True),
+                    "root_cause": "MQTT broker lost connection",
+                }
+            ],
+        )
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/queue").text
+        assert "MQTT broker lost connection" in html
+
     def test_prediction_line_rendered(self, tmp_path, monkeypatch):
         from fastapi.testclient import TestClient
         import web.dashboard as dashboard

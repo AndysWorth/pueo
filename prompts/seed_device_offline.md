@@ -88,9 +88,9 @@ reading logs:
   fault.
 
 ## Prediction (lets Pueo check your conclusion itself)
-Give `finish_device_availability` a `prediction` whenever your conclusion implies what the
-devices will do next. Pueo watches the devices and verifies the session from what actually
-happens, without waiting for the user.
+You **must** set a `prediction` on every `finish_device_availability` call. Pueo watches
+the devices and verifies the session from what actually happens, without waiting for the
+user. Pick the best fit:
 - You reloaded the integration because its connection dropped:
   `{"kind": "recovers_after_reload", "within_minutes": 15}`.
 - The connection dropped or the vendor has an outage, and you expect it to come back by
@@ -98,8 +98,8 @@ happens, without waiting for the user.
   the evidence (for example the typical duration in a recurrence fact).
 - The device is off, unplugged or absent from the LAN:
   `{"kind": "stays_offline", "within_minutes": 60}`.
-
-Leave `prediction` out when the cause is unknown.
+- Cause is unclear or inconclusive: `{"kind": "stays_offline", "within_minutes": 120}` as
+  a conservative default.
 
 ## Verification question
 Ask one yes/no question the user can answer from what they know, e.g. "Was the Kasa plug

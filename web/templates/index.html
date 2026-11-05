@@ -154,6 +154,7 @@
       {% for it in r.payload.get("items", []) %}
       <div style="margin:0 0 0.5rem;padding:0.5rem 0.65rem;background:#f0f7f0;border:1px solid #c3dfc3;border-radius:4px;">
         <p style="font-size:0.78rem;margin:0 0 0.2rem;color:#555;">{{ it.subject }}</p>
+        {% if it.root_cause %}<p style="font-size:0.78rem;margin:0 0 0.25rem;color:#555;font-style:italic;">{{ it.root_cause }}</p>{% endif %}
         <p style="font-size:0.82rem;margin:0 0 0.4rem;color:#1a3a1a;"><strong>{{ it.question }}</strong></p>
         <form method="POST" action="/right/{{ it.nid }}" style="display:inline;">
           <input type="hidden" name="return_to" value="/queue">
