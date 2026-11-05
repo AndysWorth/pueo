@@ -2574,6 +2574,99 @@ class TestHABlogScraper:
         assert len(result) <= 15000
 
 
+class TestGenericHtmlExtractor:
+    """Tests for _GenericHtmlExtractor / html_to_text."""
+
+    def test_extracts_article_over_body(self):
+        from utils.knowledge.ha_blog_scraper import html_to_text
+
+        html = (
+            "<html><body>"
+            "<nav>Nav link nav link</nav>"
+            "<article><p>Real content.</p></article>"
+            "<footer>Footer text</footer>"
+            "</body></html>"
+        )
+        result = html_to_text(html)
+        assert "Real content." in result
+        assert "Nav link" not in result
+        assert "Footer text" not in result
+
+    def test_falls_back_to_main_when_no_article(self):
+        from utils.knowledge.ha_blog_scraper import html_to_text
+
+        html = (
+            "<html><body>"
+            "<header>Site header</header>"
+            "<main><p>Main content.</p></main>"
+            "</body></html>"
+        )
+        result = html_to_text(html)
+        assert "Main content." in result
+        assert "Site header" not in result
+
+    def test_falls_back_to_body_when_no_article_or_main(self):
+        from utils.knowledge.ha_blog_scraper import html_to_text
+
+        html = "<html><body><p>Body only.</p></body></html>"
+        result = html_to_text(html)
+        assert "Body only." in result
+
+    def test_skips_script_and_style(self):
+        from utils.knowledge.ha_blog_scraper import html_to_text
+
+        html = (
+            "<html><body><article>"
+            "<script>alert('xss')</script>"
+            "<style>.x{color:red}</style>"
+            "<p>Visible.</p>"
+            "</article></body></html>"
+        )
+        result = html_to_text(html)
+        assert "Visible." in result
+        assert "alert" not in result
+        assert "color:red" not in result
+
+    def test_fragment_starts_at_matching_id(self):
+        from utils.knowledge.ha_blog_scraper import html_to_text
+
+        html = (
+            "<html><body><article>"
+            "<h2 id='intro'>Introduction</h2><p>Intro.</p>"
+            "<h2 id='breaking-changes'>Breaking changes</h2><p>BC details.</p>"
+            "</article></body></html>"
+        )
+        result = html_to_text(html, fragment="breaking-changes")
+        assert "BC details." in result
+        assert "Intro." not in result
+
+    def test_fragment_with_no_match_returns_empty(self):
+        from utils.knowledge.ha_blog_scraper import html_to_text
+
+        html = "<html><body><article><p>Content.</p></article></body></html>"
+        result = html_to_text(html, fragment="nonexistent")
+        assert result == ""
+
+    def test_headings_formatted(self):
+        from utils.knowledge.ha_blog_scraper import html_to_text
+
+        html = (
+            "<html><body><article>"
+            "<h2>Section A</h2><p>Text A.</p>"
+            "<h3>Subsection</h3><p>Text B.</p>"
+            "</article></body></html>"
+        )
+        result = html_to_text(html)
+        assert "## Section A" in result
+        assert "### Subsection" in result
+
+    def test_empty_html_returns_empty_string(self):
+        from utils.knowledge.ha_blog_scraper import html_to_text
+
+        assert html_to_text("") == ""
+        assert html_to_text("<html><head></head><body></body></html>") == ""
+
+
 class TestParseReleaseSections:
     def test_embeds_all_sections_not_just_breaking(self):
         from utils.knowledge.ha_release_notes_scraper import parse_release_sections

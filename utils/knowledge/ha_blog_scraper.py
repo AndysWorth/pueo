@@ -8,6 +8,7 @@ file with the article text so scrape_cached_release_notes() can embed it.
 from __future__ import annotations
 
 import re
+import urllib.parse
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Callable, Optional
@@ -20,6 +21,121 @@ _BC_SECTION_RE = re.compile(
     r"(?:^|\n)##\s+(?:Backward[- ]incompatible|Breaking)\s+changes?\b",
     re.IGNORECASE,
 )
+
+
+class _GenericHtmlExtractor(HTMLParser):
+    """Convert any HTML page's main content to plain text.
+
+    Container priority: <article> > <main> > <body>.  Buffers each separately
+    so the best non-empty container wins in ``result()``.  Skips
+    nav/header/footer/aside/script/style regardless of container.
+
+    ``start_id``: when set, output begins at the first element whose ``id``
+    attribute matches (URL-decoded, case-insensitive).  Content seen before
+    that element is discarded.
+    """
+
+    _SKIP_TAGS = frozenset(
+        {"script", "style", "nav", "header", "footer", "aside", "noscript", "template"}
+    )
+    _HEADING_MAP = {
+        "h1": "# ",
+        "h2": "## ",
+        "h3": "### ",
+        "h4": "#### ",
+        "h5": "##### ",
+    }
+    _CONTAINERS = ("article", "main", "body")
+
+    def __init__(self, start_id: str = "") -> None:
+        super().__init__()
+        self._tag_stack: list[str] = []
+        self._skip_depth = 0
+        self._buffers: dict[str, list[str]] = {c: [] for c in self._CONTAINERS}
+        self._active_containers: list[str] = []
+        self._start_id = urllib.parse.unquote(start_id).lower()
+        self._found_start = not bool(start_id)
+
+    def _current_buf(self) -> Optional[list[str]]:
+        return (
+            self._buffers[self._active_containers[-1]]
+            if self._active_containers
+            else None
+        )
+
+    def _write(self, text: str) -> None:
+        buf = self._current_buf()
+        if buf is not None:
+            buf.append(text)
+
+    def handle_starttag(self, tag: str, attrs: list) -> None:
+        self._tag_stack.append(tag)
+        if tag in self._SKIP_TAGS:
+            self._skip_depth += 1
+            return
+        if self._skip_depth > 0:
+            return
+        if tag in self._CONTAINERS:
+            self._active_containers.append(tag)
+            return
+        if not self._active_containers:
+            return
+        if self._start_id:
+            elem_id = urllib.parse.unquote(dict(attrs).get("id", "")).lower()
+            if elem_id == self._start_id:
+                self._found_start = True
+                for buf in self._buffers.values():
+                    buf.clear()
+        if not self._found_start:
+            return
+        if tag in self._HEADING_MAP:
+            self._write(f"\n\n{self._HEADING_MAP[tag]}")
+        elif tag == "summary":
+            self._write("\n\n### ")
+        elif tag == "p":
+            self._write("\n\n")
+        elif tag == "li":
+            self._write("\n- ")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in self._SKIP_TAGS:
+            if self._skip_depth > 0:
+                self._skip_depth -= 1
+        if self._tag_stack and self._tag_stack[-1] == tag:
+            self._tag_stack.pop()
+        if (
+            tag in self._CONTAINERS
+            and self._active_containers
+            and self._active_containers[-1] == tag
+        ):
+            self._active_containers.pop()
+
+    def handle_data(self, data: str) -> None:
+        if self._skip_depth > 0 or not self._active_containers or not self._found_start:
+            return
+        text = data.strip()
+        if text:
+            self._write(text + " ")
+
+    def result(self) -> str:
+        for container in self._CONTAINERS:
+            buf = self._buffers[container]
+            if any(s.strip() for s in buf):
+                text = "".join(buf)
+                text = re.sub(r"\n{3,}", "\n\n", text)
+                return text.strip()
+        return ""
+
+
+def html_to_text(html: str, fragment: str = "") -> str:
+    """Extract the main content of an HTML page as plain text.
+
+    Uses ``_GenericHtmlExtractor``.  ``fragment`` is the URL fragment (without
+    ``#``); when non-empty, output starts at the element with that id.
+    """
+    extractor = _GenericHtmlExtractor(start_id=fragment)
+    extractor.feed(html)
+    return extractor.result()
 
 
 class _ArticleExtractor(HTMLParser):

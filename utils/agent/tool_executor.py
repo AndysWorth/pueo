@@ -3110,11 +3110,14 @@ class ToolExecutor:
         timeout = int(getattr(_config_mod, "DIAGNOSTIC_WAN_TIMEOUT_SECONDS", 60))
         req = urllib.request.Request(url, headers={"User-Agent": "pueo-diagnostic/1.0"})
         try:
-            raw = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: urllib.request.urlopen(
-                    req, timeout=timeout
-                ).read(),  # nosec B310
+
+            def _do_fetch() -> tuple[str, bytes]:
+                resp = urllib.request.urlopen(req, timeout=timeout)  # nosec B310
+                ct = resp.headers.get("Content-Type", "")
+                return ct, resp.read()
+
+            content_type, raw = await asyncio.get_event_loop().run_in_executor(
+                None, _do_fetch
             )
         except Exception as exc:
             return ToolResult(
@@ -3151,6 +3154,13 @@ class ToolExecutor:
                     self._release_notes_obtained = True
             except Exception:  # nosec B110
                 pass
+        elif "text/html" in content_type:
+            from utils.knowledge.ha_blog_scraper import html_to_text as _html_to_text
+
+            fragment = parsed.fragment or ""
+            extracted = _html_to_text(text, fragment=fragment)
+            if extracted:
+                text = extracted
         text = text[:_MAX_FETCH_URL_CHARS]
         self._fetched_urls[url] = text
         return ToolResult(tool_name="fetch_url", success=True, output=text)
