@@ -44,8 +44,15 @@ releases (2026.9.x → 2026.10.x) may carry breaking changes.
 4. `query_knowledge(query_type="procedural")` — cross-check renamed/removed config keys
    against the `ha_best_practices` deprecated-API table.
 
-5. If release notes mention CLI command changes: `get_pueo_command_catalog` to check whether
-   Pueo's SSH command set is affected.
+5. For any minor or major release (e.g. 2026.10.x → 2026.11.0): **always** call
+   `get_pueo_command_catalog`. Compare every removed, renamed, or replaced integration,
+   API command, or service mentioned in the release notes against the catalog entries.
+   For each match, add one entry to `pueo_command_risks` naming the affected command/path
+   and the Pueo feature that uses it (e.g. `"hacs/* WS commands → HACS discovery and
+   companion provisioning"`). If no catalog entries match the notes, `pueo_command_risks`
+   stays empty.
+   For patch releases (e.g. 2026.11.0 → 2026.11.1), call only when the notes explicitly
+   mention CLI or API changes.
 
 6. `read_file("/config/configuration.yaml")` only if you need to verify a specific config key
    flagged by a breaking change.

@@ -6237,14 +6237,39 @@ class ToolExecutor:
             )
 
     async def _get_pueo_command_catalog(self) -> ToolResult:
-        """Return the list of SSH commands Pueo uses with HA."""
-        from agents.ha_update_manager import PUEO_SSH_COMMANDS
+        """Return the full Pueo HA dependency manifest grouped by API type."""
+        from agents.ha_update_manager import PUEO_HA_DEPENDENCIES
 
-        catalog = "\n".join(f"  - {cmd}" for cmd in PUEO_SSH_COMMANDS)
+        lines: list[str] = []
+        section_labels = {
+            "ssh_commands": "SSH commands",
+            "websocket_commands": "WebSocket commands",
+            "rest_paths": "REST paths",
+            "integrations": "HA integrations relied on",
+            "repair_id_patterns": "Repair ID patterns",
+            "ssh_file_paths": "SSH file paths",
+        }
+        for section, label in section_labels.items():
+            entries = PUEO_HA_DEPENDENCIES.get(section, [])
+            if not entries:
+                continue
+            lines.append(f"\n{label}:")
+            for entry in entries:
+                key = (
+                    entry.get("cmd")
+                    or entry.get("path")
+                    or entry.get("domain")
+                    or entry.get("pattern", "")
+                )
+                feature = entry.get("feature", "")
+                note = entry.get("note", "")
+                note_str = f" ({note})" if note else ""
+                lines.append(f"  - {key}: {feature}{note_str}")
+
         return ToolResult(
             tool_name="get_pueo_command_catalog",
             success=True,
-            output=f"Pueo SSH command catalog:\n{catalog}",
+            output="Pueo HA dependency catalog:" + "\n".join(lines),
         )
 
     async def _check_config_against_breaking_change(

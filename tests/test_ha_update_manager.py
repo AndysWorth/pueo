@@ -5814,3 +5814,119 @@ class TestFetchReleaseNotesCachedCoreGAStub:
         assert result.success
         assert "WARNING" in result.output
         assert "INCOMPLETE" not in result.output  # prefix stripped
+
+
+# ---------------------------------------------------------------------------
+# Pueo HA dependency manifest (S4 — #1124)
+# ---------------------------------------------------------------------------
+
+
+class TestPueoHADependenciesManifest:
+    """PUEO_HA_DEPENDENCIES structure and get_pueo_command_catalog output."""
+
+    def test_manifest_has_required_sections(self):
+        from agents.ha_update_manager import PUEO_HA_DEPENDENCIES
+
+        required = {
+            "ssh_commands",
+            "websocket_commands",
+            "rest_paths",
+            "integrations",
+            "repair_id_patterns",
+            "ssh_file_paths",
+        }
+        assert required <= set(PUEO_HA_DEPENDENCIES.keys())
+
+    def test_ssh_commands_includes_core_commands(self):
+        from agents.ha_update_manager import PUEO_HA_DEPENDENCIES, PUEO_SSH_COMMANDS
+
+        cmds = {e["cmd"] for e in PUEO_HA_DEPENDENCIES["ssh_commands"]}
+        for legacy in PUEO_SSH_COMMANDS:
+            assert legacy in cmds, f"Legacy command {legacy!r} missing from manifest"
+
+    def test_websocket_commands_includes_hacs_and_repairs(self):
+        from agents.ha_update_manager import PUEO_HA_DEPENDENCIES
+
+        cmds = [e["cmd"] for e in PUEO_HA_DEPENDENCIES["websocket_commands"]]
+        hacs_cmds = [c for c in cmds if c.startswith("hacs/")]
+        repairs_cmds = [c for c in cmds if c.startswith("repairs/")]
+        assert hacs_cmds, "No hacs/* WebSocket commands in manifest"
+        assert repairs_cmds, "No repairs/* WebSocket commands in manifest"
+
+    def test_integrations_includes_hacs(self):
+        from agents.ha_update_manager import PUEO_HA_DEPENDENCIES
+
+        domains = {e["domain"] for e in PUEO_HA_DEPENDENCIES["integrations"]}
+        assert "hacs" in domains
+
+    def test_repair_id_patterns_includes_hacs_restart_required(self):
+        from agents.ha_update_manager import PUEO_HA_DEPENDENCIES
+
+        patterns = [e["pattern"] for e in PUEO_HA_DEPENDENCIES["repair_id_patterns"]]
+        assert any("hacs/restart_required" in p for p in patterns)
+
+    def test_every_entry_has_feature_field(self):
+        from agents.ha_update_manager import PUEO_HA_DEPENDENCIES
+
+        for section, entries in PUEO_HA_DEPENDENCIES.items():
+            for entry in entries:
+                assert (
+                    "feature" in entry
+                ), f"Entry in section '{section}' missing 'feature': {entry}"
+
+    def test_catalog_tool_output_contains_all_sections(self):
+        import asyncio
+
+        from unittest.mock import MagicMock
+        from utils.agent.tool_executor import ToolExecutor
+
+        executor = ToolExecutor(
+            ha_ssh_client=MagicMock(),
+            gate=MagicMock(),
+            notifier=MagicMock(),
+            db_path=":memory:",
+        )
+        result = asyncio.run(executor._get_pueo_command_catalog())
+
+        assert result.success
+        output = result.output
+        assert "SSH commands" in output
+        assert "WebSocket commands" in output
+        assert "REST paths" in output
+        assert "integrations" in output.lower()
+        assert "Repair ID patterns" in output
+
+    def test_catalog_tool_output_includes_hacs_ws(self):
+        import asyncio
+
+        from unittest.mock import MagicMock
+        from utils.agent.tool_executor import ToolExecutor
+
+        executor = ToolExecutor(
+            ha_ssh_client=MagicMock(),
+            gate=MagicMock(),
+            notifier=MagicMock(),
+            db_path=":memory:",
+        )
+        result = asyncio.run(executor._get_pueo_command_catalog())
+
+        assert "hacs/" in result.output
+        assert "repairs/" in result.output
+
+    def test_catalog_tool_output_includes_feature_descriptions(self):
+        import asyncio
+
+        from unittest.mock import MagicMock
+        from utils.agent.tool_executor import ToolExecutor
+
+        executor = ToolExecutor(
+            ha_ssh_client=MagicMock(),
+            gate=MagicMock(),
+            notifier=MagicMock(),
+            db_path=":memory:",
+        )
+        result = asyncio.run(executor._get_pueo_command_catalog())
+
+        # Every line with an entry should include the feature name
+        assert "HACS" in result.output
+        assert "companion provisioning" in result.output
