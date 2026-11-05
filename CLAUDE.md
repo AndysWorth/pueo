@@ -84,7 +84,7 @@ Agent scripts in `agents/` are runnable directly for debugging; under `superviso
 
 **Log monitor detail:** runs `ha core logs --follow` over SSH to stream live HA logs from the supervisor journal (modern HA does not reliably write to `/config/home-assistant.log`). Two-layer triage: fast regex pre-filter (`CRITICAL_LOG_PATTERN`) then Ollama `LogEvaluation` with `confidence_score > 0.7` threshold. High-confidence actionable errors trigger the repair pipeline. Reconnects automatically on stream failure. Each reconnect replays HA's backlog, so a per-source timestamp watermark (persisted in `user_prefs` as `log_monitor:watermark:<source>`) skips critical lines already triaged (`log_line_replay_skip`); lines without a parseable timestamp fail open (#975).
 
-**Setup session (`utils/ha/integration_setup_investigation.py`):** triggered by the "Help me set this up" button on a `hacs_unloaded` card. `run_setup_investigation()` reads local integration files via `inspect_custom_integration`, probes the live config flow (start → summarize first step → always abort via DELETE, never submits), and calls `finish_setup_plan` with a step plan and `entry_action` (`add`/`re_add`/`enable`). When `needs_user_input` is non-empty the card is advise-only with no Approve button. On approval: fallible preconditions → backup → `drive_config_flow` (authority: `utils/ha/config_flow_driver.py`) → options flow (if planned) → 10 s settle → verify loaded entry + healthy entities + no domain errors → `_verify_card_execution`. Always requires approval at every autonomy level. See ADR 053.
+**Setup session (`utils/ha/integration_setup_investigation.py`):** see `docs/key-patterns.md` § Assisted integration setup and ADR 053.
 
 **Repair pipeline (`ha_agent_sandbox_engine.py`):** When Ollama returns `is_valid=False` with a `recommended_fix_yaml`:
 1. Run `validate_proposed_fix()` — abort if the proposed YAML removes critical keys or is suspiciously large
@@ -158,6 +158,7 @@ Every code change follows this procedure in order. Never commit directly to `mai
    - Architecture change → add/update a decision record in `docs/decisions/`
    - Public interface changed → update this file if the pattern is documented here
    - Dependency added/changed → update `requirements.txt` or `requirements-dev.txt`
+   - `docs/key-patterns.md` holds rules + pointers (≤38k chars, enforced by `tests/test_docs.py`); put how-it-works detail in the ADR or a `docs/<subsystem>.md` and link it
 9. **Migrations and schema changes** — flag separately from code changes. Test against a real local copy of `ha_agent_state.db`. Document the rollback path (which migration version to revert to) before proceeding.
 10. **Security review** — invoke `/security-review` when the change meaningfully touches SSH transport, external HTTP calls, credential handling, or production file writes.
 
