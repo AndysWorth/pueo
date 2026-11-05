@@ -15,6 +15,12 @@ from typing import Callable, Optional
 _BLOG_URL_RE = re.compile(r"https://www\.home-assistant\.io/blog/[^\s]+")
 _STUB_THRESHOLD = 500
 
+# Matches the "Backward-incompatible changes" (or "Breaking changes") heading.
+_BC_SECTION_RE = re.compile(
+    r"(?:^|\n)##\s+(?:Backward[- ]incompatible|Breaking)\s+changes?\b",
+    re.IGNORECASE,
+)
+
 
 class _ArticleExtractor(HTMLParser):
     """Converts the <article> body to clean Markdown-like plain text."""
@@ -37,6 +43,9 @@ class _ArticleExtractor(HTMLParser):
             self._buf.append("\n\n### ")
         elif tag == "h4":
             self._buf.append("\n\n#### ")
+        elif tag == "summary":
+            # <details>/<summary> blocks in BC section = one integration per entry
+            self._buf.append("\n\n### ")
         elif tag == "p":
             self._buf.append("\n\n")
         elif tag == "li":
@@ -64,6 +73,103 @@ def extract_blog_url_from_stub(stub_text: str) -> Optional[str]:
     """Return the first home-assistant.io/blog URL found in stub_text, or None."""
     m = _BLOG_URL_RE.search(stub_text)
     return m.group(0) if m else None
+
+
+def extract_breaking_changes(blog_text: str) -> list[tuple[str, str]]:
+    """Return [(integration_name, description), ...] from the BC section.
+
+    Relies on ``_ArticleExtractor`` having emitted ``### `` headings for each
+    ``<details>/<summary>`` integration block.
+    """
+    m = _BC_SECTION_RE.search(blog_text)
+    if not m:
+        return []
+    after = m.end()
+    # Next top-level ## heading ends the BC section
+    next_sec = re.search(r"\n##\s+(?!#)", blog_text[after:])
+    sec_end = after + next_sec.start() if next_sec else len(blog_text)
+    section = blog_text[m.start() : sec_end]
+
+    results: list[tuple[str, str]] = []
+    for entry in re.split(r"\n###\s+", section)[1:]:
+        head, _, body = entry.partition("\n")
+        name = head.strip()
+        if name:
+            results.append((name, body.strip()))
+    return results
+
+
+def format_core_notes_for_analysis(
+    notes: str,
+    installed_integrations: Optional[list[str]] = None,
+) -> str:
+    """Restructure Core release notes so installed-integration BCs appear first.
+
+    Returns a string containing:
+    (a) breaking changes for installed integrations, in full;
+    (b) names of other affected integrations;
+    (c) Farewell/removed section if present;
+    (d) a leading highlights excerpt (capped at 6 000 chars).
+    Total output is capped at 15 000 chars.
+    """
+    bc_entries = extract_breaking_changes(notes)
+    if not bc_entries:
+        return notes[:15000]
+
+    _installed_set = set(installed_integrations or [])
+
+    def _matches(heading: str) -> bool:
+        normalized = re.sub(r"\s*\([^)]*\)", "", heading).lower().strip()
+        key = re.sub(r"[\s\-]+", "_", normalized)
+        if key in _installed_set:
+            return True
+        bare = key.replace("_", "")
+        return any(dom.replace("_", "") == bare for dom in _installed_set)
+
+    installed_bc: list[str] = []
+    other_bc_names: list[str] = []
+    for name, body in bc_entries:
+        if _matches(name):
+            installed_bc.append(f"### {name}\n\n{body}" if body else f"### {name}")
+        else:
+            other_bc_names.append(name)
+
+    out_parts: list[str] = []
+
+    if installed_bc or other_bc_names:
+        bc_section = "## Backward-incompatible changes\n\n"
+        if installed_bc:
+            bc_section += (
+                "**Affects this instance:**\n\n" + "\n\n".join(installed_bc) + "\n\n"
+            )
+        if other_bc_names:
+            bc_section += (
+                "**Other affected integrations (not installed here):** "
+                + ", ".join(other_bc_names)
+            )
+        out_parts.append(bc_section)
+
+    # Include Farewell/removed section
+    farewell_m = re.search(r"\n##\s+Farewell\b", notes, re.IGNORECASE)
+    if farewell_m:
+        fw_start = farewell_m.start()
+        next_fw = re.search(r"\n##\s+", notes[fw_start + 4 :])
+        fw_end = fw_start + 4 + next_fw.start() if next_fw else len(notes)
+        out_parts.append(notes[fw_start:fw_end].strip())
+
+    # Leading highlights — everything before the BC or Farewell section
+    highlights_end = len(notes)
+    bc_m = _BC_SECTION_RE.search(notes)
+    if bc_m:
+        highlights_end = min(highlights_end, bc_m.start())
+    if farewell_m:
+        highlights_end = min(highlights_end, farewell_m.start())
+    highlights = notes[:highlights_end].strip()
+    if highlights:
+        out_parts.insert(0, highlights[:6000])
+
+    result = "\n\n---\n\n".join(out_parts)
+    return result[:15000]
 
 
 def fetch_blog_post(

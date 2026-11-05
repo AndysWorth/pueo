@@ -5051,17 +5051,19 @@ class TestFetchReleaseNotesCached:
         assert result == "Cached release notes content"
 
     def test_fetches_and_caches_when_file_missing(self, tmp_path):
+        _notes = "Release notes for 2026.7.0: " + "x" * 500
+
         async def fake_fetcher(version: str) -> str:
-            return f"Release notes for {version}"
+            return _notes
 
         from agents.ha_update_manager import fetch_release_notes_cached
 
         result = asyncio.run(
             fetch_release_notes_cached("2026.7.0", str(tmp_path), _fetcher=fake_fetcher)
         )
-        assert result == "Release notes for 2026.7.0"
+        assert result == _notes
         assert (tmp_path / "2026.7.0.txt").exists()
-        assert (tmp_path / "2026.7.0.txt").read_text() == "Release notes for 2026.7.0"
+        assert (tmp_path / "2026.7.0.txt").read_text() == _notes
 
     def test_cache_hit_skips_fetcher(self, tmp_path):
         from unittest.mock import AsyncMock
@@ -5081,7 +5083,7 @@ class TestFetchReleaseNotesCached:
         nested = tmp_path / "a" / "b" / "c"
 
         async def fake_fetcher(version: str) -> str:
-            return "notes"
+            return "notes: " + "x" * 500  # >= 500 chars → not a stub
 
         from agents.ha_update_manager import fetch_release_notes_cached
 
@@ -5091,7 +5093,7 @@ class TestFetchReleaseNotesCached:
         assert (nested / "2026.7.0.txt").exists()
 
     def test_stub_triggers_beta_fallback(self, tmp_path):
-        """Stub GA body causes beta tags to be tried; first real content wins."""
+        """Stub GA body with no blog causes beta tags to be tried; returned INCOMPLETE:."""
         stub = "https://www.home-assistant.io/blog/2026/08/06/"
         real_content = "x" * 600
 
@@ -5102,26 +5104,46 @@ class TestFetchReleaseNotesCached:
                 return real_content
             raise Exception("404")
 
+        def _no_blog(url):
+            raise OSError("network disabled in test")
+
         from agents.ha_update_manager import fetch_release_notes_cached
 
         result = asyncio.run(
-            fetch_release_notes_cached("2026.8.0", str(tmp_path), _fetcher=fake_fetcher)
+            fetch_release_notes_cached(
+                "2026.8.0",
+                str(tmp_path),
+                _fetcher=fake_fetcher,
+                _blog_post_fetcher=_no_blog,
+            )
         )
-        assert result == real_content
+        # Blog unavailable → beta fallback with INCOMPLETE: prefix, not cached
+        assert result.startswith("INCOMPLETE: ")
+        assert real_content in result
+        assert not (tmp_path / "2026.8.0.txt").exists()
 
     def test_all_stubs_returns_original(self, tmp_path):
-        """When all beta tags also return stubs, the GA stub body is returned."""
+        """When blog is unavailable and all betas are stubs, return INCOMPLETE: original."""
         stub = "https://www.home-assistant.io/blog/2026/08/06/"
 
         async def fake_fetcher(version: str) -> str:
             return stub
 
+        def _no_blog(url):
+            raise OSError("network disabled in test")
+
         from agents.ha_update_manager import fetch_release_notes_cached
 
         result = asyncio.run(
-            fetch_release_notes_cached("2026.8.0", str(tmp_path), _fetcher=fake_fetcher)
+            fetch_release_notes_cached(
+                "2026.8.0",
+                str(tmp_path),
+                _fetcher=fake_fetcher,
+                _blog_post_fetcher=_no_blog,
+            )
         )
-        assert result == stub
+        assert result.startswith("INCOMPLETE: ")
+        assert stub in result
 
     def test_non_ha_core_version_uses_release_url(self, tmp_path):
         """Non-HA-Core versions (e.g. HACS v0.7.1) fetch from release_url, not HA core API."""
@@ -5152,7 +5174,7 @@ class TestFetchReleaseNotesCached:
         """HA Core versions (YYYY.M.P) use the core GitHub API, not release_url."""
 
         async def fake_fetcher(version: str) -> str:
-            return f"HA Core notes for {version}"
+            return "HA Core notes for 2026.9.2: " + "x" * 500  # >= 500 → not a stub
 
         from agents.ha_update_manager import fetch_release_notes_cached
 
@@ -5164,7 +5186,7 @@ class TestFetchReleaseNotesCached:
                 _fetcher=fake_fetcher,
             )
         )
-        assert result == "HA Core notes for 2026.9.2"
+        assert "HA Core notes for 2026.9.2" in result
 
     def test_non_ha_core_no_release_url_returns_helpful_message(self, tmp_path):
         """Non-HA-Core version with no release_url returns a helpful message (not 404)."""

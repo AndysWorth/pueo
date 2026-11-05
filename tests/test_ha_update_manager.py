@@ -1941,7 +1941,8 @@ class TestFetchReleaseNotesCachedWS:
         import asyncio
 
         async def _fake_fetcher(version):
-            return f"Core notes for {version}"
+            # Return full-length notes (>= 500 chars) so the stub path is not taken
+            return f"Core notes for {version}: " + "x" * 500
 
         async def _run():
             from agents.ha_update_manager import fetch_release_notes_cached
@@ -5270,3 +5271,211 @@ class TestCheckAutomationReferencesRegistry:
         params = CHECK_AUTOMATION_REFERENCES.parameters
         assert "breaking_change_desc" in params["properties"]
         assert "breaking_change_desc" not in params.get("required", [])
+
+
+# ---------------------------------------------------------------------------
+# fetch_release_notes_cached — blog URL extraction from GA Core stubs (#1118)
+# ---------------------------------------------------------------------------
+
+
+class TestFetchReleaseNotesCachedCoreGAStub:
+    """GA Core stub triggers blog fetch; beta fallback is INCOMPLETE: (Closes #1118)."""
+
+    _STUB = (
+        "See the release blog post: "
+        "https://www.home-assistant.io/blog/2026/11/06/release-20261100/\n"
+    )
+    # Must be wrapped in <article> for _ArticleExtractor to pick it up
+    _REAL_BLOG_HTML = (
+        "<html><body><article><h2>What's new</h2><p>"
+        + "Real release blog content. " * 30
+        + "</p></article></body></html>"
+    )
+    _REAL_BLOG = "Real release blog content. " * 30
+
+    def test_stub_fetches_blog_url(self, tmp_path):
+        """When GitHub returns a stub, fetch_blog_post is called with the blog URL."""
+        import asyncio
+
+        async def _fake_fetcher(version):
+            return self._STUB
+
+        result = asyncio.run(
+            __import__(
+                "agents.ha_update_manager",
+                fromlist=["fetch_release_notes_cached"],
+            ).fetch_release_notes_cached(
+                "2026.11.0",
+                cache_dir=str(tmp_path / "cache"),
+                _fetcher=_fake_fetcher,
+                _blog_post_fetcher=lambda url: self._REAL_BLOG_HTML.encode(),
+            )
+        )
+
+        assert "Real release blog content" in result
+
+    def test_blog_success_caches_blog_text(self, tmp_path):
+        """Successful blog fetch writes the blog text (not the stub) to cache."""
+        import asyncio
+
+        async def _fake_fetcher(version):
+            return self._STUB
+
+        asyncio.run(
+            __import__(
+                "agents.ha_update_manager",
+                fromlist=["fetch_release_notes_cached"],
+            ).fetch_release_notes_cached(
+                "2026.11.0",
+                cache_dir=str(tmp_path / "cache"),
+                _fetcher=_fake_fetcher,
+                _blog_post_fetcher=lambda url: self._REAL_BLOG_HTML.encode(),
+            )
+        )
+
+        cache_file = tmp_path / "cache" / "2026.11.0.txt"
+        assert cache_file.exists()
+        assert "Real release blog content" in cache_file.read_text()
+        assert self._STUB.strip() not in cache_file.read_text()
+
+    def test_blog_unavailable_returns_incomplete_prefix(self, tmp_path):
+        """When blog fetch fails, return INCOMPLETE: with beta notes."""
+        import asyncio
+
+        _BETA_NOTES = "## 2026.11.0b3\n\n" + "Beta PR list entry. " * 30
+
+        async def _fake_fetcher(version):
+            if "b" in version:
+                return _BETA_NOTES
+            return self._STUB
+
+        def _fail_blog(url):
+            raise OSError("network unavailable")
+
+        result = asyncio.run(
+            __import__(
+                "agents.ha_update_manager",
+                fromlist=["fetch_release_notes_cached"],
+            ).fetch_release_notes_cached(
+                "2026.11.0",
+                cache_dir=str(tmp_path / "cache"),
+                _fetcher=_fake_fetcher,
+                _blog_post_fetcher=_fail_blog,
+            )
+        )
+
+        assert result.startswith("INCOMPLETE: ")
+        assert "Beta PR list" in result
+
+    def test_incomplete_notes_not_cached(self, tmp_path):
+        """INCOMPLETE: fallback is never written to <version>.txt."""
+        import asyncio
+
+        _BETA_NOTES = "## 2026.11.0b3\n\n" + "Beta PR list entry. " * 30
+
+        async def _fake_fetcher(version):
+            if "b" in version:
+                return _BETA_NOTES
+            return self._STUB
+
+        def _fail_blog(url):
+            raise OSError("network unavailable")
+
+        asyncio.run(
+            __import__(
+                "agents.ha_update_manager",
+                fromlist=["fetch_release_notes_cached"],
+            ).fetch_release_notes_cached(
+                "2026.11.0",
+                cache_dir=str(tmp_path / "cache"),
+                _fetcher=_fake_fetcher,
+                _blog_post_fetcher=_fail_blog,
+            )
+        )
+
+        cache_file = tmp_path / "cache" / "2026.11.0.txt"
+        assert not cache_file.exists()
+
+    def test_incomplete_does_not_set_release_notes_obtained(self, tmp_path):
+        """INCOMPLETE: notes leave _release_notes_obtained False in ToolExecutor."""
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, MagicMock
+
+        from utils.agent.tool_executor import ToolExecutor
+
+        _BETA_NOTES = "## 2026.11.0b3\n\n" + "Beta PR list. " * 40
+
+        async def _fake_fetcher(version):
+            if "b" in version:
+                return _BETA_NOTES
+            return self._STUB
+
+        def _fail_blog(url):
+            raise OSError("unreachable")
+
+        notifier = MagicMock()
+        notifier.send = AsyncMock()
+        executor = ToolExecutor(
+            ha_ssh_client=MagicMock(),
+            gate=MagicMock(),
+            notifier=notifier,
+            db_path=":memory:",
+        )
+        update = SimpleNamespace(
+            entity_id="update.home_assistant_core_update",
+            component="homeassistant",
+            installed_version="2026.10.4",
+            latest_version="2026.11.0",
+            release_url=None,
+            release_summary=None,
+        )
+        executor.set_update_status(update)
+
+        with __import__("unittest.mock", fromlist=["patch"]).patch(
+            "agents.ha_update_manager.fetch_release_notes_cached",
+            return_value=f"INCOMPLETE: {_BETA_NOTES}",
+        ):
+            result = asyncio.run(executor._get_update_release_notes("2026.11.0"))
+
+        assert not executor._release_notes_obtained
+        assert "UNVERIFIED" in result.output or "WARNING" in result.output
+
+    def test_incomplete_warning_in_output(self, tmp_path):
+        """INCOMPLETE: prefix is replaced with a human-readable warning in the output."""
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from utils.agent.tool_executor import ToolExecutor
+
+        _BETA_NOTES = "## 2026.11.0b3\n\n" + "Beta PR list. " * 40
+        _INCOMPLETE = f"INCOMPLETE: {_BETA_NOTES}"
+
+        notifier = MagicMock()
+        notifier.send = AsyncMock()
+        executor = ToolExecutor(
+            ha_ssh_client=MagicMock(),
+            gate=MagicMock(),
+            notifier=notifier,
+            db_path=":memory:",
+        )
+        update = SimpleNamespace(
+            entity_id="update.home_assistant_core_update",
+            component="homeassistant",
+            installed_version="2026.10.4",
+            latest_version="2026.11.0",
+            release_url=None,
+            release_summary=None,
+        )
+        executor.set_update_status(update)
+
+        with patch(
+            "agents.ha_update_manager.fetch_release_notes_cached",
+            return_value=_INCOMPLETE,
+        ):
+            result = asyncio.run(executor._get_update_release_notes("2026.11.0"))
+
+        assert result.success
+        assert "WARNING" in result.output
+        assert "INCOMPLETE" not in result.output  # prefix stripped
