@@ -21,6 +21,12 @@
       {% endif %}
     </div>
     <p class="body">{{ r.body }}</p>
+    {% if r.payload.get("card_type") == "update" and r.payload.get("release_notes_completeness") and r.payload.release_notes_completeness != "complete" and r.payload.get("safe_to_update") %}
+    <p style="color:var(--orange,#b45309);font-weight:600;padding:0.2rem 0;">
+      ⚠️ UNVERIFIED — release notes unavailable or incomplete; manual review required before approving.
+      {% if r.payload.get("release_url") %}&nbsp;<a href="{{ r.payload.release_url }}" target="_blank" style="color:inherit;">View release notes ↗</a>{% endif %}
+    </p>
+    {% endif %}
     {% if r.payload.get("is_notification_card") %}
     <p class="meta">
       Category: <strong>{{ r.payload.category }}</strong>
@@ -36,10 +42,13 @@
       </div>
     </details>
     {% endif %}
-    {% elif r.payload.get("severity") or r.payload.get("risk") or r.payload.get("step") %}
+    {% elif r.payload.get("severity") or r.payload.get("risk") or r.payload.get("step") or r.payload.get("component_class_label") %}
     <p class="meta">
-      {% if r.payload.get("severity") %}Severity: <strong>{{ r.payload.severity }}</strong>{% endif %}
-      {% if r.payload.get("risk") %} &nbsp;·&nbsp; Risk: <strong>{{ r.payload.risk }}</strong>{% endif %}
+      {% if r.payload.get("component_class_label") %}Component class: <strong>{{ r.payload.component_class_label }}</strong>
+      {% else %}
+        {% if r.payload.get("severity") %}Severity: <strong>{{ r.payload.severity }}</strong>{% endif %}
+        {% if r.payload.get("risk") %} &nbsp;·&nbsp; Risk: <strong>{{ r.payload.risk }}</strong>{% endif %}
+      {% endif %}
       {% if r.payload.get("step") %} &nbsp;·&nbsp; Step: <strong>{{ r.payload.step }}</strong>{% endif %}
     </p>
     {% endif %}
@@ -70,9 +79,6 @@
       {% if r.payload.get("pueo_command_risks") %}
       <p><strong>Pueo command risks</strong> (Pueo may need attention after update):</p>
       <ul>{% for risk in r.payload.pueo_command_risks %}<li>⚠ {{ risk }}</li>{% endfor %}</ul>
-      {% endif %}
-      {% if r.payload.get("advisory") %}
-      <p><em>{{ r.payload.advisory }}</em></p>
       {% endif %}
       {% if r.payload.get("proposed_config_fixes") %}
       <details>

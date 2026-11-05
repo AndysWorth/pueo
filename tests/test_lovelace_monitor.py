@@ -1409,7 +1409,7 @@ class TestUpdateAnalyzedSuppression:
         executor.set_update_status(update)
         # Simulate release notes obtained — ensures the no-notes override does not
         # force create_hitl_card=True and lets us test the no-card (analyzed) path.
-        executor._release_notes_obtained = True
+        executor._release_notes_completeness = "complete"
 
         # _update_mark_card_sent reads DB_PATH from ha_log_monitor._config.
         # safe_to_update=False ensures we skip the auto-apply branch and reach
