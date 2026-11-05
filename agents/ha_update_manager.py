@@ -454,6 +454,7 @@ async def fetch_release_notes_cached(
     release_url: Optional[str] = None,
     ws_fetcher=None,  # injectable: async callable(entity_id) -> str | None
     _fetcher=None,  # injectable for tests (HA Core GitHub fetch)
+    _blog_post_fetcher=None,  # injectable for tests: callable(url) -> bytes|str
 ) -> str:
     """Return cached release notes; fetch from GitHub API if not yet cached.
 
@@ -471,9 +472,12 @@ async def fetch_release_notes_cached(
     between different add-ons that share a version string (e.g. ``0.7.1``).
     Core cache key is unchanged: ``{version}.txt``.
 
-    GA monthly releases often have a blog-URL stub body (<500 chars).  When
-    detected, tries beta tags (b5→b0) for the same minor version to get the
-    real changelog content.
+    GA monthly (``.0``) Core releases set the GitHub body to a blog-link stub
+    (<500 chars).  When detected, the stub's blog URL is extracted and the real
+    article is fetched via ``fetch_blog_post`` and cached.  If the blog is
+    unreachable, the beta PR-list fallback is returned with an ``INCOMPLETE:``
+    prefix and is **not** cached under ``<version>.txt`` (so the next call
+    re-attempts the blog fetch).
     """
     _is_ha_core = version[:4].isdigit() and version.startswith("20")
 
@@ -568,17 +572,45 @@ async def fetch_release_notes_cached(
     fetcher = _fetcher or _fetch_github_release_notes
     notes = await fetcher(version)
     if len(notes.strip()) < 500:
+        # GA Core stub — extract the blog URL and fetch the real article
+        from utils.knowledge.ha_blog_scraper import (
+            extract_blog_url_from_stub,
+            fetch_blog_post as _fetch_blog_post,
+        )
+
+        _blog_url = extract_blog_url_from_stub(notes)
+        _blog_text: Optional[str] = None
+        if _blog_url and getattr(_config, "ALLOW_DIAGNOSTIC_WAN", True):
+            try:
+                if _blog_post_fetcher is not None:
+                    _blog_text = _fetch_blog_post(
+                        _blog_url, _fetcher=_blog_post_fetcher
+                    )
+                else:
+                    _blog_text = await asyncio.to_thread(_fetch_blog_post, _blog_url)
+            except Exception:  # nosec B110
+                pass
+
+        if _blog_text and len(_blog_text.strip()) >= 500:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_path.write_text(_blog_text)
+            return _blog_text
+
+        # Blog unavailable — beta PR-list as INCOMPLETE fallback (not cached)
+        _beta_notes: Optional[str] = None
         parts = version.split(".")
         if len(parts) >= 2:
             minor_base = f"{parts[0]}.{parts[1]}.0"
             for beta_num in range(5, -1, -1):
                 try:
-                    beta_notes = await fetcher(f"{minor_base}b{beta_num}")
-                    if len(beta_notes.strip()) >= 500:
-                        notes = beta_notes
+                    candidate = await fetcher(f"{minor_base}b{beta_num}")
+                    if len(candidate.strip()) >= 500:
+                        _beta_notes = candidate
                         break
                 except Exception:  # nosec B112
                     continue
+        return f"INCOMPLETE: {_beta_notes or notes}"
+
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     cache_path.write_text(notes)
     return notes

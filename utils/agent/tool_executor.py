@@ -6141,6 +6141,8 @@ class ToolExecutor:
                     )
                     if _iv_notes.startswith("STUB:"):
                         _iv_notes = _iv_notes[len("STUB:") :].lstrip()
+                    elif _iv_notes.startswith("INCOMPLETE: "):
+                        _iv_notes = _iv_notes[len("INCOMPLETE: ") :]
                     _inter_parts.append(f"# {_iv}\n\n{_iv_notes}")
                 except Exception:  # nosec B110
                     pass
@@ -6156,6 +6158,12 @@ class ToolExecutor:
             # RAG scraper; the agent should see only the notes.
             if notes.startswith("STUB:"):
                 notes = notes[len("STUB:") :].lstrip()
+            # Beta-fallback notes carry "INCOMPLETE: " — they don't satisfy the
+            # release-notes gate (the real blog post was unreachable).
+            _incomplete = False
+            if notes.startswith("INCOMPLETE: "):
+                notes = notes[len("INCOMPLETE: ") :]
+                _incomplete = True
             # Mark that real notes were obtained (not the "unavailable" sentinel).
             _UNAVAILABLE_SENTINEL = "Release notes unavailable"
             if _is_alert_only(notes):
@@ -6165,13 +6173,37 @@ class ToolExecutor:
                         "\n[Stub only — these are not the release notes. Fetch the"
                         f" release URL with fetch_url({_release_url!r}).]"
                     )
-            elif not notes.startswith(_UNAVAILABLE_SENTINEL):
+            elif not notes.startswith(_UNAVAILABLE_SENTINEL) and not _incomplete:
                 self._release_notes_obtained = True
+            if _incomplete:
+                notes = (
+                    "[WARNING: Official release notes were unreachable."
+                    " These are beta pre-release notes and may omit the final"
+                    " breaking-changes list. Any 'no breaking changes' finding"
+                    " is UNVERIFIED.]\n\n" + notes
+                )
 
             if _inter_parts:
                 notes = (
                     "\n\n---\n\n".join(_inter_parts)
                     + f"\n\n---\n\n# {_bare_version}\n\n{notes}"
+                )
+
+            # For complete HA Core notes, restructure to surface installed-
+            # integration breaking changes at the top.
+            if (
+                _is_ha_core_ver
+                and self._release_notes_obtained
+                and self._ha_profile is not None
+                and not _inter_parts
+            ):
+                from utils.knowledge.ha_blog_scraper import (
+                    format_core_notes_for_analysis,
+                )
+
+                notes = format_core_notes_for_analysis(
+                    notes,
+                    list(self._ha_profile.installed_integrations or []),
                 )
 
             return ToolResult(

@@ -2488,6 +2488,91 @@ class TestHABlogScraper:
         count = fetch_blog_release_notes("/nonexistent/path")
         assert count == 0
 
+    def test_article_extractor_summary_becomes_heading(self):
+        """<details>/<summary> integration blocks produce ### headings."""
+        from utils.knowledge.ha_blog_scraper import fetch_blog_post
+
+        html = """
+        <article>
+          <h2>Backward-incompatible changes</h2>
+          <details>
+            <summary>MQTT</summary>
+            <p>Entities without a unique_id are removed.</p>
+          </details>
+          <details>
+            <summary>Philips Hue</summary>
+            <p>The "None" effect has been removed.</p>
+          </details>
+        </article>
+        """
+        result = fetch_blog_post("http://example.com", _fetcher=lambda url: html)
+        assert "### MQTT" in result
+        assert "### Philips Hue" in result
+        assert "Entities without a unique_id" in result
+
+    def test_extract_breaking_changes_parses_section(self):
+        """extract_breaking_changes returns (name, body) for each ### entry."""
+        from utils.knowledge.ha_blog_scraper import extract_breaking_changes
+
+        blog_text = (
+            "## What's new\n\nSome highlights.\n\n"
+            "## Backward-incompatible changes\n\n"
+            "### MQTT\n\nEntities without a unique_id are removed.\n\n"
+            "### Philips Hue\n\nThe None effect is removed.\n\n"
+            "## Farewell\n\nSome removals."
+        )
+        result = extract_breaking_changes(blog_text)
+        assert len(result) == 2
+        names = [r[0] for r in result]
+        assert "MQTT" in names
+        assert "Philips Hue" in names
+        mqtt_body = next(body for name, body in result if name == "MQTT")
+        assert "unique_id" in mqtt_body
+
+    def test_extract_breaking_changes_no_section(self):
+        """When there is no BC section, an empty list is returned."""
+        from utils.knowledge.ha_blog_scraper import extract_breaking_changes
+
+        blog_text = "## What's new\n\nAll good, no breaking changes."
+        assert extract_breaking_changes(blog_text) == []
+
+    def test_format_core_notes_installed_integrations_first(self):
+        """format_core_notes_for_analysis puts installed-integration BCs at the top."""
+        from utils.knowledge.ha_blog_scraper import format_core_notes_for_analysis
+
+        notes = (
+            "## What's new\n\nGreat new features.\n\n"
+            "## Backward-incompatible changes\n\n"
+            "### mqtt\n\nEntities without unique_id removed.\n\n"
+            "### adguard\n\nSome adguard change.\n\n"
+            "## Farewell\n\nRemoved some old things."
+        )
+        result = format_core_notes_for_analysis(notes, installed_integrations=["mqtt"])
+        # Installed integration appears in the "Affects this instance" section
+        assert "Affects this instance" in result
+        assert "mqtt" in result
+        # Non-installed integration listed only by name
+        assert "adguard" in result
+        # Farewell section preserved
+        assert "Farewell" in result or "Removed some old things" in result
+
+    def test_format_core_notes_no_installed_integrations(self):
+        """With no installed_integrations, the original notes are returned unchanged."""
+        from utils.knowledge.ha_blog_scraper import format_core_notes_for_analysis
+
+        notes = "## What's new\n\nAll good.\n" + "x" * 100
+        result = format_core_notes_for_analysis(notes, installed_integrations=[])
+        # No BC section → original notes returned (possibly truncated)
+        assert "What's new" in result
+
+    def test_format_core_notes_caps_at_15000(self):
+        """Output is capped at 15 000 characters."""
+        from utils.knowledge.ha_blog_scraper import format_core_notes_for_analysis
+
+        notes = "## What's new\n\n" + "x" * 20000
+        result = format_core_notes_for_analysis(notes, installed_integrations=["mqtt"])
+        assert len(result) <= 15000
+
 
 class TestParseReleaseSections:
     def test_embeds_all_sections_not_just_breaking(self):
