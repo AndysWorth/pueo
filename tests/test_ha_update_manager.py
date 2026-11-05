@@ -446,7 +446,7 @@ class TestFinishUpdateAnalysisGate:
         update = self._make_update("noaa_it_all")
         executor.set_update_status(update)
         # Simulate that release notes were successfully obtained (happy path).
-        executor._release_notes_obtained = True
+        executor._release_notes_completeness = "complete"
 
         result = asyncio.run(
             executor._finish_update_analysis(
@@ -580,7 +580,7 @@ class TestFullAutonomousBypass:
         executor, notifier = self._make_executor(gate)
         executor.set_update_status(self._make_core_update())
         # Simulate release notes obtained — required for the auto-apply path.
-        executor._release_notes_obtained = True
+        executor._release_notes_completeness = "complete"
 
         result = asyncio.run(
             executor._finish_update_analysis(
@@ -738,7 +738,7 @@ class TestCoreOsCardEnforcement:
         gate = AutonomyGate(level=3)
         executor, notifier = self._make_executor(gate)
         executor.set_update_status(self._make_update(component))
-        executor._release_notes_obtained = True
+        executor._release_notes_completeness = "complete"
 
         result = asyncio.run(
             executor._finish_update_analysis(
@@ -769,7 +769,7 @@ class TestCoreOsCardEnforcement:
         gate = AutonomyGate(level=4)
         executor, notifier = self._make_executor(gate)
         executor.set_update_status(self._make_update("core"))
-        executor._release_notes_obtained = True
+        executor._release_notes_completeness = "complete"
 
         result = asyncio.run(
             executor._finish_update_analysis(
@@ -2190,10 +2190,10 @@ class TestGetUpdateReleaseNotesMatcher:
 
         assert result.success
         assert "RCPs" in result.output
-        assert executor._release_notes_obtained is True
+        assert executor._release_notes_completeness == "complete"
 
     def test_release_notes_obtained_false_on_unavailable(self, tmp_path, pueo_dirs):
-        """_release_notes_obtained stays False when WS returns None."""
+        """_release_notes_completeness stays 'none' when WS returns None."""
         import asyncio
         from unittest.mock import patch
 
@@ -2208,7 +2208,7 @@ class TestGetUpdateReleaseNotesMatcher:
             )
 
         assert result.success
-        assert executor._release_notes_obtained is False
+        assert executor._release_notes_completeness == "none"
         assert (
             "unavailable" in result.output.lower()
             or "changelog" in result.output.lower()
@@ -2254,14 +2254,14 @@ class TestFinishUpdateAnalysisNoNotes:
         )
 
     def test_no_notes_forces_card_and_caps_confidence(self, tmp_path, pueo_dirs):
-        """When _release_notes_obtained=False, create_hitl_card=False is overridden."""
+        """When _release_notes_completeness!='complete', create_hitl_card=False is overridden."""
         import asyncio
         from unittest.mock import patch
 
         db_path = _make_db(tmp_path)
         executor, notifier = self._make_executor(db_path)
         executor.set_update_status(self._make_update())
-        # _release_notes_obtained defaults to False — no notes obtained
+        # _release_notes_completeness defaults to "none" — no notes obtained
 
         with patch("agents.ha_log_monitor._update_mark_card_sent"):
             result = asyncio.run(
@@ -2322,14 +2322,14 @@ class TestFinishUpdateAnalysisNoNotes:
         )
 
     def test_with_notes_auto_applies_as_before(self, tmp_path, pueo_dirs):
-        """When _release_notes_obtained=True, auto-apply proceeds normally."""
+        """When _release_notes_completeness='complete', auto-apply proceeds normally."""
         import asyncio
         from unittest.mock import patch
 
         db_path = _make_db(tmp_path)
         executor, notifier = self._make_executor(db_path)
         executor.set_update_status(self._make_update())
-        executor._release_notes_obtained = True  # notes were obtained
+        executor._release_notes_completeness = "complete"  # real notes obtained
 
         with patch("agents.ha_log_monitor._update_mark_card_sent"):
             with patch("utils.core.timeline.write_timeline_event"):
@@ -3120,7 +3120,7 @@ class TestGetUpdateReleaseNotesVPrefix:
 
         assert result.success
         assert "Bug fixes" in result.output
-        assert executor._release_notes_obtained is True
+        assert executor._release_notes_completeness == "complete"
 
     def test_both_v_prefixed_still_matches(self, tmp_path, pueo_dirs):
         """Pending version 'v5.11.1' matches model arg 'v5.11.1' (both prefixed)."""
@@ -3136,7 +3136,7 @@ class TestGetUpdateReleaseNotesVPrefix:
             result = asyncio.run(executor._get_update_release_notes("v5.11.1"))
 
         assert result.success
-        assert executor._release_notes_obtained is True
+        assert executor._release_notes_completeness == "complete"
 
 
 # ---------------------------------------------------------------------------
@@ -3358,7 +3358,7 @@ class TestFinishUpdateAnalysisDispatchForwardsFields:
             notifier=notifier,
             db_path=str(tmp_path / "test.db"),
         )
-        executor._release_notes_obtained = True
+        executor._release_notes_completeness = "complete"
         update = SimpleNamespace(
             entity_id="update.spook_update",
             component="spook",
@@ -3427,7 +3427,9 @@ class TestFinishUpdateAnalysisAdvisoryWording:
             notifier=notifier,
             db_path=db_path,
         )
-        executor._release_notes_obtained = release_notes_obtained
+        executor._release_notes_completeness = (
+            "complete" if release_notes_obtained else "none"
+        )
         return executor, notifier
 
     def _make_update(self):
@@ -3534,6 +3536,334 @@ class TestFinishUpdateAnalysisAdvisoryWording:
 
         assert bodies
         assert "Pueo assessment: LOW" in bodies[0]
+
+
+# ---------------------------------------------------------------------------
+# S3 — completeness gate + honest card
+# ---------------------------------------------------------------------------
+
+
+class TestCompletenessGateAndHonestCard:
+    """S3 completeness gate: UNVERIFIED when notes incomplete or BC unchecked."""
+
+    def _make_executor(self, db_path, completeness="none"):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from utils.agent.tool_executor import ToolExecutor
+
+        notifier = MagicMock()
+        notifier.send = AsyncMock()
+        executor = ToolExecutor(
+            ha_ssh_client=MagicMock(),
+            gate=MagicMock(),
+            notifier=notifier,
+            db_path=db_path,
+        )
+        executor._release_notes_completeness = completeness
+        return executor, notifier
+
+    def _make_update(self, component="mosquitto"):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            entity_id=f"update.{component}_update",
+            component=component,
+            installed_version="2.0.18",
+            latest_version="2.0.19",
+            release_url=None,
+            release_summary=None,
+        )
+
+    def _finish(self, executor, **kwargs):
+        import asyncio
+        from unittest.mock import patch
+
+        defaults = dict(
+            safe_to_update=True,
+            breaking_changes=[],
+            affected_config_keys=[],
+            pueo_command_risks=[],
+            recommendation="looks fine",
+            instance_impact="none",
+            proposed_config_fixes=[],
+            create_hitl_card=True,
+        )
+        defaults.update(kwargs)
+        with patch("agents.ha_log_monitor._update_mark_card_sent"):
+            return asyncio.run(executor._finish_update_analysis(**defaults))
+
+    # -- release_notes_completeness in payload --
+
+    def test_completeness_field_in_payload_complete(self, tmp_path, pueo_dirs):
+        """release_notes_completeness='complete' propagates to the card payload."""
+        db_path = _make_db(tmp_path)
+        executor, notifier = self._make_executor(db_path, "complete")
+        executor.set_update_status(self._make_update())
+        payloads = []
+        notifier.send = __import__("unittest.mock", fromlist=["AsyncMock"]).AsyncMock(
+            side_effect=lambda **kw: payloads.append(kw.get("payload", {}))
+        )
+        self._finish(executor)
+        assert payloads
+        assert payloads[0].get("release_notes_completeness") == "complete"
+
+    def test_completeness_field_in_payload_incomplete(self, tmp_path, pueo_dirs):
+        """release_notes_completeness='incomplete' propagates to the card payload."""
+        db_path = _make_db(tmp_path)
+        executor, notifier = self._make_executor(db_path, "incomplete")
+        executor.set_update_status(self._make_update())
+        payloads = []
+        notifier.send = __import__("unittest.mock", fromlist=["AsyncMock"]).AsyncMock(
+            side_effect=lambda **kw: payloads.append(kw.get("payload", {}))
+        )
+        self._finish(executor)
+        assert payloads
+        assert payloads[0].get("release_notes_completeness") == "incomplete"
+
+    # -- effective_safe_to_update override --
+
+    def test_effective_safe_false_when_incomplete(self, tmp_path, pueo_dirs):
+        """effective_safe_to_update=False when notes are incomplete even if safe_to_update=True."""
+        db_path = _make_db(tmp_path)
+        executor, notifier = self._make_executor(db_path, "incomplete")
+        executor.set_update_status(self._make_update())
+        payloads = []
+        notifier.send = __import__("unittest.mock", fromlist=["AsyncMock"]).AsyncMock(
+            side_effect=lambda **kw: payloads.append(kw.get("payload", {}))
+        )
+        self._finish(executor)
+        assert payloads
+        assert payloads[0]["effective_safe_to_update"] is False
+
+    def test_effective_safe_true_when_complete_no_bc(self, tmp_path, pueo_dirs):
+        """effective_safe_to_update=True when notes complete and no installed BCs."""
+        db_path = _make_db(tmp_path)
+        executor, notifier = self._make_executor(db_path, "complete")
+        executor.set_update_status(self._make_update())
+        payloads = []
+        notifier.send = __import__("unittest.mock", fromlist=["AsyncMock"]).AsyncMock(
+            side_effect=lambda **kw: payloads.append(kw.get("payload", {}))
+        )
+        self._finish(executor, safe_to_update=True)
+        assert payloads
+        assert payloads[0]["effective_safe_to_update"] is True
+
+    # -- BC-unchecked gate --
+
+    def test_bc_unchecked_forces_card_and_unverified(self, tmp_path, pueo_dirs):
+        """When installed BCs found but check_config never called → UNVERIFIED card."""
+        db_path = _make_db(tmp_path)
+        executor, notifier = self._make_executor(db_path, "complete")
+        executor.set_update_status(self._make_update())
+        executor._installed_bc_found = True
+        # _session_outputs has NO check_config_against_breaking_change call
+        bodies = []
+        notifier.send = __import__("unittest.mock", fromlist=["AsyncMock"]).AsyncMock(
+            side_effect=lambda subject, body, payload: bodies.append(body)
+        )
+        result = self._finish(executor, create_hitl_card=False, safe_to_update=True)
+        assert result.success
+        assert bodies, "Card must be sent when installed BCs were not checked"
+        assert "UNVERIFIED" in bodies[0]
+
+    def test_bc_checked_allows_safe(self, tmp_path, pueo_dirs):
+        """When installed BCs found AND check_config was called → SAFE allowed."""
+        db_path = _make_db(tmp_path)
+        executor, notifier = self._make_executor(db_path, "complete")
+        executor.set_update_status(self._make_update())
+        executor._installed_bc_found = True
+        executor._session_outputs = [
+            ("check_config_against_breaking_change", "No issues found")
+        ]
+        bodies = []
+        notifier.send = __import__("unittest.mock", fromlist=["AsyncMock"]).AsyncMock(
+            side_effect=lambda subject, body, payload: bodies.append(body)
+        )
+        self._finish(executor, create_hitl_card=True, safe_to_update=True)
+        assert bodies
+        assert "SAFE" in bodies[0]
+        assert "UNVERIFIED" not in bodies[0]
+
+    def test_bc_unchecked_caps_confidence(self, tmp_path, pueo_dirs):
+        """BC-unchecked gate caps confidence at 0.5 to block auto-apply."""
+        from unittest.mock import AsyncMock as _AsyncMock
+
+        from utils.agent.autonomy import AutonomyGate, AutonomyLevel
+        from utils.agent.tool_executor import ToolExecutor
+
+        db_path = _make_db(tmp_path)
+        notifier = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
+        notifier.send = _AsyncMock()
+        gate = AutonomyGate(level=AutonomyLevel.FULL_AUTONOMOUS)
+        executor = ToolExecutor(
+            ha_ssh_client=__import__(
+                "unittest.mock", fromlist=["MagicMock"]
+            ).MagicMock(),
+            gate=gate,
+            notifier=notifier,
+            db_path=db_path,
+        )
+        executor._release_notes_completeness = "complete"
+        executor._installed_bc_found = True
+        executor.set_update_status(self._make_update("mosquitto"))
+
+        import asyncio
+        from unittest.mock import patch
+
+        with patch("agents.ha_log_monitor._update_mark_card_sent"):
+            asyncio.run(
+                executor._finish_update_analysis(
+                    safe_to_update=True,
+                    breaking_changes=[],
+                    affected_config_keys=[],
+                    pueo_command_risks=[],
+                    recommendation="Looks fine.",
+                    instance_impact="none",
+                    proposed_config_fixes=[],
+                    create_hitl_card=False,
+                    confidence=0.95,
+                )
+            )
+        # Card must be sent (auto-apply blocked) and not auto-apply
+        assert notifier.send.called
+        assert executor._pending_auto_apply is False
+
+    # -- component_class_label for Core/OS --
+
+    def test_component_class_label_core(self, tmp_path, pueo_dirs):
+        """Core update body shows 'Component class:' instead of 'Risk: CRITICAL'."""
+        from types import SimpleNamespace
+
+        db_path = _make_db(tmp_path)
+        executor, notifier = self._make_executor(db_path, "complete")
+        core_update = SimpleNamespace(
+            entity_id="update.home_assistant_core_update",
+            component="homeassistant",
+            installed_version="2026.11.0",
+            latest_version="2026.11.1",
+            release_url=None,
+            release_summary=None,
+        )
+        executor.set_update_status(core_update)
+        bodies = []
+        notifier.send = __import__("unittest.mock", fromlist=["AsyncMock"]).AsyncMock(
+            side_effect=lambda subject, body, payload: bodies.append(body)
+        )
+        self._finish(executor)
+        assert bodies
+        assert "Component class:" in bodies[0]
+        assert "always requires approval" in bodies[0]
+        assert "Risk: CRITICAL" not in bodies[0]
+
+    def test_component_class_label_addon_uses_risk(self, tmp_path, pueo_dirs):
+        """Add-on update body still shows 'Risk:' not 'Component class:'."""
+        db_path = _make_db(tmp_path)
+        executor, notifier = self._make_executor(db_path, "complete")
+        executor.set_update_status(self._make_update("mosquitto"))
+        bodies = []
+        notifier.send = __import__("unittest.mock", fromlist=["AsyncMock"]).AsyncMock(
+            side_effect=lambda subject, body, payload: bodies.append(body)
+        )
+        self._finish(executor)
+        assert bodies
+        assert "Risk:" in bodies[0]
+        assert "Component class:" not in bodies[0]
+
+    # -- _installed_bc_found tracks format_core_notes output --
+
+    def test_installed_bc_found_set_when_format_notes_finds_match(
+        self, tmp_path, pueo_dirs
+    ):
+        """_installed_bc_found is True when format_core_notes finds installed BCs."""
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.ha.ha_environment import HAEnvironmentProfile
+
+        notifier = MagicMock()
+        notifier.send = AsyncMock()
+        executor = ToolExecutor(
+            ha_ssh_client=MagicMock(),
+            gate=MagicMock(),
+            notifier=MagicMock(),
+            db_path=":memory:",
+        )
+        profile = HAEnvironmentProfile(installed_integrations=["mqtt"])
+        executor.set_ha_profile(profile)
+        update = SimpleNamespace(
+            entity_id="update.home_assistant_core_update",
+            component="homeassistant",
+            installed_version="2026.10.4",
+            latest_version="2026.11.0",
+            release_url=None,
+            release_summary=None,
+        )
+        executor.set_update_status(update)
+
+        _NOTES_WITH_BC = (
+            "## Backward-incompatible changes\n\n"
+            "### MQTT\n\nEntities without unique_id will be removed.\n\n"
+            "## Full changelog\n\nSome changes."
+        )
+
+        import config as _cfg
+
+        with patch.object(_cfg, "HA_UPDATE_RELEASE_NOTES_CACHE_DIR", str(tmp_path)):
+            with patch(
+                "agents.ha_update_manager.fetch_release_notes_cached",
+                return_value=_NOTES_WITH_BC,
+            ):
+                asyncio.run(executor._get_update_release_notes("2026.11.0"))
+
+        assert executor._release_notes_completeness == "complete"
+        assert executor._installed_bc_found is True
+
+    def test_installed_bc_found_false_when_no_bc_match(self, tmp_path, pueo_dirs):
+        """_installed_bc_found stays False when no installed integration has BCs."""
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.ha.ha_environment import HAEnvironmentProfile
+
+        executor = ToolExecutor(
+            ha_ssh_client=MagicMock(),
+            gate=MagicMock(),
+            notifier=AsyncMock(),
+            db_path=":memory:",
+        )
+        profile = HAEnvironmentProfile(installed_integrations=["zwave_js"])
+        executor.set_ha_profile(profile)
+        update = SimpleNamespace(
+            entity_id="update.home_assistant_core_update",
+            component="homeassistant",
+            installed_version="2026.10.4",
+            latest_version="2026.11.0",
+            release_url=None,
+            release_summary=None,
+        )
+        executor.set_update_status(update)
+
+        _NOTES_WITH_MQTT_BC = (
+            "## Backward-incompatible changes\n\n"
+            "### MQTT\n\nEntities without unique_id removed.\n\n"
+            "## Full changelog\n\nSome changes."
+        )
+
+        import config as _cfg
+
+        with patch.object(_cfg, "HA_UPDATE_RELEASE_NOTES_CACHE_DIR", str(tmp_path)):
+            with patch(
+                "agents.ha_update_manager.fetch_release_notes_cached",
+                return_value=_NOTES_WITH_MQTT_BC,
+            ):
+                asyncio.run(executor._get_update_release_notes("2026.11.0"))
+
+        assert executor._release_notes_completeness == "complete"
+        assert executor._installed_bc_found is False
 
 
 # ---------------------------------------------------------------------------
@@ -3852,7 +4182,8 @@ class TestPollForUpdatesTimelineDedup:
 
 class TestGetUpdateReleaseNotesVersionMismatch:
     """Version mismatch: if pending entity is HACS but model requests HA Core notes,
-    the gate must return an error and NOT set _release_notes_obtained."""
+    the gate must return an error and NOT set _release_notes_completeness to 'complete'.
+    """
 
     def _make_executor(self, entity_id, pending_version):
         from types import SimpleNamespace
@@ -3891,8 +4222,8 @@ class TestGetUpdateReleaseNotesVersionMismatch:
         assert "5.11.1" in result.error
         assert "2026.10.1" in result.error
         assert (
-            executor._release_notes_obtained is False
-        ), "_release_notes_obtained must not be set on a version mismatch"
+            executor._release_notes_completeness != "complete"
+        ), "_release_notes_completeness must not be 'complete' on a version mismatch"
 
     def test_matching_version_is_accepted(self, tmp_path, pueo_dirs):
         """Requesting the exact pending version succeeds normally."""
@@ -3915,7 +4246,7 @@ class TestGetUpdateReleaseNotesVersionMismatch:
             result = asyncio.run(executor._get_update_release_notes("5.11.1"))
 
         assert result.success
-        assert executor._release_notes_obtained is True
+        assert executor._release_notes_completeness == "complete"
 
 
 # ---------------------------------------------------------------------------
@@ -3987,7 +4318,7 @@ class TestFinishUpdateAnalysisPendingCardGuard:
         executor, notifier, db_path = self._make_executor_and_db(tmp_path)
         update = self._make_update()
         executor.set_update_status(update)
-        executor._release_notes_obtained = True
+        executor._release_notes_completeness = "complete"
 
         # Insert a pending card row (send_count > 0, last_action=NULL, resolved_at=NULL)
         now = time.time()
@@ -4027,7 +4358,7 @@ class TestFinishUpdateAnalysisPendingCardGuard:
         executor, notifier, db_path = self._make_executor_and_db(tmp_path)
         update = self._make_update()
         executor.set_update_status(update)
-        executor._release_notes_obtained = True
+        executor._release_notes_completeness = "complete"
 
         # No row in hitl_suppression → no pending card
         result = asyncio.run(
@@ -4510,7 +4841,7 @@ class TestCloseInstalledUpdateCard:
 
 
 class TestFinishUpdateAnalysisVerificationQuestion:
-    """_finish_update_analysis always sets verification_question in the card payload."""
+    """_finish_update_analysis payload: no default verification_question; LLM question kept."""
 
     def _make_executor(self, gate=None):
         from unittest.mock import AsyncMock, MagicMock
@@ -4540,12 +4871,13 @@ class TestFinishUpdateAnalysisVerificationQuestion:
             release_summary=None,
         )
 
-    def test_default_question_in_card_payload(self, pueo_dirs):
-        """When LLM omits verification_question, a default is placed in the payload."""
+    def test_no_default_question_in_card_payload(self, pueo_dirs):
+        """No default verification_question is generated; signature is always set."""
         import asyncio
 
         executor, notifier = self._make_executor()
         executor.set_update_status(self._make_update("mosquitto"))
+        executor._release_notes_completeness = "complete"
 
         with __import__("unittest.mock", fromlist=["patch"]).patch(
             "agents.ha_log_monitor._update_mark_card_sent"
@@ -4565,15 +4897,18 @@ class TestFinishUpdateAnalysisVerificationQuestion:
 
         assert notifier.send.called
         payload = notifier.send.call_args.kwargs["payload"]
-        assert "verification_question" in payload
-        assert "mosquitto" in payload["verification_question"]
+        # No auto-generated default question; verification comes from post-update check.
+        assert "verification_question" not in payload
+        # Signature is always set so the card executor can trigger distillation.
+        assert "signature" in payload
 
     def test_llm_question_kept_when_provided(self, pueo_dirs):
-        """When the LLM provides a verification_question it is used as-is."""
+        """When the LLM explicitly provides a verification_question it is used as-is."""
         import asyncio
 
         executor, notifier = self._make_executor()
         executor.set_update_status(self._make_update("noaa_it_all"))
+        executor._release_notes_completeness = "complete"
 
         with __import__("unittest.mock", fromlist=["patch"]).patch(
             "agents.ha_log_monitor._update_mark_card_sent"
@@ -4761,13 +5096,13 @@ class TestGetUpdateReleaseNotesAlertOnlyStub:
         executor = self._executor(_OS_RELEASE_URL)
         result = self._call(executor, tmp_path)
         assert result.success
-        assert executor._release_notes_obtained is False
+        assert executor._release_notes_completeness == "none"
         assert f"fetch_url({_OS_RELEASE_URL!r})" in result.output
 
     def test_stub_without_release_url_no_hint(self, tmp_path, pueo_dirs):
         executor = self._executor(None)
         result = self._call(executor, tmp_path)
-        assert executor._release_notes_obtained is False
+        assert executor._release_notes_completeness == "none"
         assert "fetch_url" not in result.output
 
 
@@ -4817,25 +5152,25 @@ class TestFetchUrlGitHubReleaseRewrite:
         result, requested = self._fetch(executor, _OS_RELEASE_URL, _OS_REAL_NOTES)
         assert requested == _OS_API_URL
         assert "Raspberry Pi" in json.loads(result.output)["body"]
-        assert executor._release_notes_obtained is True
+        assert executor._release_notes_completeness == "complete"
 
     def test_other_release_does_not_mark_notes(self, pueo_dirs):
         executor = self._executor(_OS_RELEASE_URL)
         other = "https://github.com/home-assistant/operating-system/releases/tag/18.3"
         _, requested = self._fetch(executor, other, _OS_REAL_NOTES)
         assert requested.endswith("/releases/tags/18.3")
-        assert executor._release_notes_obtained is False
+        assert executor._release_notes_completeness == "none"
 
     def test_alert_only_body_does_not_mark_notes(self, pueo_dirs):
         executor = self._executor(_OS_RELEASE_URL)
         self._fetch(executor, _OS_RELEASE_URL, _OS_STUB)
-        assert executor._release_notes_obtained is False
+        assert executor._release_notes_completeness == "none"
 
     def test_no_pending_update_does_not_mark_notes(self, pueo_dirs):
         executor = self._executor()
         _, requested = self._fetch(executor, _OS_RELEASE_URL, _OS_REAL_NOTES)
         assert requested == _OS_API_URL
-        assert executor._release_notes_obtained is False
+        assert executor._release_notes_completeness == "none"
 
     def test_release_download_url_not_rewritten(self, pueo_dirs):
         executor = self._executor()
@@ -5397,7 +5732,7 @@ class TestFetchReleaseNotesCachedCoreGAStub:
         assert not cache_file.exists()
 
     def test_incomplete_does_not_set_release_notes_obtained(self, tmp_path):
-        """INCOMPLETE: notes leave _release_notes_obtained False in ToolExecutor."""
+        """INCOMPLETE: notes set _release_notes_completeness to 'incomplete' in ToolExecutor."""
         import asyncio
         from types import SimpleNamespace
         from unittest.mock import AsyncMock, MagicMock
@@ -5438,7 +5773,7 @@ class TestFetchReleaseNotesCachedCoreGAStub:
         ):
             result = asyncio.run(executor._get_update_release_notes("2026.11.0"))
 
-        assert not executor._release_notes_obtained
+        assert executor._release_notes_completeness == "incomplete"
         assert "UNVERIFIED" in result.output or "WARNING" in result.output
 
     def test_incomplete_warning_in_output(self, tmp_path):

@@ -427,7 +427,10 @@ class ToolExecutor:
         self._pending_auto_apply: bool = False
         # Advisory line for the card sent when auto-apply is blocked (#976).
         self._auto_apply_advisory: str = ""
-        self._release_notes_obtained: bool = False
+        self._release_notes_completeness: str = (
+            "none"  # "none" | "incomplete" | "complete"
+        )
+        self._installed_bc_found: bool = False
         self._lovelace_suspicious: list[str] = []
         self._event_subscriber: Optional[Any] = None
         # Per-session KB tracking (reset in reset())
@@ -476,6 +479,8 @@ class ToolExecutor:
         self._hitl_card_id = None
         self._fetched_urls = {}
         self._session_outputs = []
+        self._release_notes_completeness = "none"
+        self._installed_bc_found = False
         # _dynamic_tools intentionally not reset — registered tools persist across loops
 
     def _mark_card_queued(self, nid: str) -> None:
@@ -3151,7 +3156,7 @@ class ToolExecutor:
                     and _rewrite_github_release_url(_pending_url) == url
                     and not _is_alert_only(str(_data.get("body") or ""))
                 ):
-                    self._release_notes_obtained = True
+                    self._release_notes_completeness = "complete"
             except Exception:  # nosec B110
                 pass
         elif "text/html" in content_type:
@@ -6100,7 +6105,7 @@ class ToolExecutor:
                 elif _pv:
                     # Version mismatch: the model requested notes for a different
                     # component.  Return an error so the wrong component's notes
-                    # never satisfy the _release_notes_obtained check and enable
+                    # never satisfy the _release_notes_completeness gate and enable
                     # an accidental auto-apply (e.g. HA Core notes for a HACS
                     # integration update).
                     return ToolResult(
@@ -6174,6 +6179,7 @@ class ToolExecutor:
             if notes.startswith("INCOMPLETE: "):
                 notes = notes[len("INCOMPLETE: ") :]
                 _incomplete = True
+                self._release_notes_completeness = "incomplete"
             # Mark that real notes were obtained (not the "unavailable" sentinel).
             _UNAVAILABLE_SENTINEL = "Release notes unavailable"
             if _is_alert_only(notes):
@@ -6184,7 +6190,7 @@ class ToolExecutor:
                         f" release URL with fetch_url({_release_url!r}).]"
                     )
             elif not notes.startswith(_UNAVAILABLE_SENTINEL) and not _incomplete:
-                self._release_notes_obtained = True
+                self._release_notes_completeness = "complete"
             if _incomplete:
                 notes = (
                     "[WARNING: Official release notes were unreachable."
@@ -6203,7 +6209,7 @@ class ToolExecutor:
             # integration breaking changes at the top.
             if (
                 _is_ha_core_ver
-                and self._release_notes_obtained
+                and self._release_notes_completeness == "complete"
                 and self._ha_profile is not None
                 and not _inter_parts
             ):
@@ -6211,10 +6217,11 @@ class ToolExecutor:
                     format_core_notes_for_analysis,
                 )
 
-                notes = format_core_notes_for_analysis(
-                    notes,
-                    list(self._ha_profile.installed_integrations or []),
+                _installed_integrations = list(
+                    self._ha_profile.installed_integrations or []
                 )
+                notes = format_core_notes_for_analysis(notes, _installed_integrations)
+                self._installed_bc_found = "**Affects this instance:**" in notes
 
             return ToolResult(
                 tool_name="get_update_release_notes",
@@ -6380,23 +6387,45 @@ class ToolExecutor:
             if not (_l4 and _hc and safe_to_update):
                 create_hitl_card = True
 
-        # No-notes override: when a pending update exists and no real release notes were
-        # obtained, force approval-card creation and cap confidence at 0.5.  The model
-        # must never auto-apply based on an unverified "no breaking changes" claim.
-        if self._pending_update_status is not None and not self._release_notes_obtained:
+        # Unverified-analysis override: force a card and cap confidence when
+        # (a) no real release notes were obtained, or
+        # (b) installed-integration breaking changes were found but check_config was not called.
+        # The model must never auto-apply based on an unverified "no breaking changes" claim.
+        _notes_incomplete = self._release_notes_completeness != "complete"
+        _bc_unchecked = (
+            self._installed_bc_found
+            and self._release_notes_completeness == "complete"
+            and not any(
+                n == "check_config_against_breaking_change"
+                for n, _ in self._session_outputs
+            )
+        )
+        _unverified = _notes_incomplete or _bc_unchecked
+        if self._pending_update_status is not None and _unverified:
             create_hitl_card = True
             if confidence is not None and confidence > 0.5:
                 confidence = 0.5
-            _no_notes_prefix = (
-                "Release notes could not be retrieved — verdict not verified against"
-                " the changelog. "
-            )
-            recommendation = _no_notes_prefix + recommendation
-            log.warning(
-                "update_analysis_no_release_notes",
-                component=self._pending_update_status.component,
-                version=self._pending_update_status.latest_version,
-            )
+            if _notes_incomplete:
+                _unverified_prefix = (
+                    "Release notes could not be retrieved — verdict not verified against"
+                    " the changelog. "
+                )
+                log.warning(
+                    "update_analysis_no_release_notes",
+                    component=self._pending_update_status.component,
+                    version=self._pending_update_status.latest_version,
+                )
+            else:
+                _unverified_prefix = (
+                    "Breaking changes found for installed integrations but no config"
+                    " check was performed — impact unconfirmed. "
+                )
+                log.warning(
+                    "update_analysis_bc_not_checked",
+                    component=self._pending_update_status.component,
+                    version=self._pending_update_status.latest_version,
+                )
+            recommendation = _unverified_prefix + recommendation
 
         # Gate override: the user's autonomy level may require approval even if the LLM
         # decided create_hitl_card=False. Updates are always at least MEDIUM risk.
@@ -6576,14 +6605,11 @@ class ToolExecutor:
                 ),
             )
 
-        # Use "UNVERIFIED" instead of "SAFE" when no release notes were obtained — the
-        # model's "no breaking changes" conclusion was not verified against the changelog.
-        _no_notes = (
-            self._pending_update_status is not None and not self._release_notes_obtained
-        )
+        # Use "UNVERIFIED" instead of "SAFE" when analysis is incomplete:
+        # no release notes were obtained, OR installed-integration BCs were not checked.
         advisory = (
             "UNVERIFIED"
-            if (_no_notes and safe_to_update)
+            if (_unverified and safe_to_update)
             else ("SAFE" if safe_to_update else "REVIEW REQUIRED")
         )
         _component_risk = (
@@ -6591,10 +6617,16 @@ class ToolExecutor:
             if update.component in ("core", "os")
             else "HIGH" if update.component == "supervisor" else "MEDIUM"
         )
-        body_parts = [
-            f"Component: {update.component}",
-            f"Risk: {_component_risk}",
-        ]
+        _component_class_label: Optional[str] = None
+        if update.component.lower() in ("core", "os", "homeassistant"):
+            _component_class_label = "Core (always requires approval)"
+        elif update.component.lower() == "supervisor":
+            _component_class_label = "Supervisor (always requires approval)"
+        body_parts = [f"Component: {update.component}"]
+        if _component_class_label:
+            body_parts.append(f"Component class: {_component_class_label}")
+        else:
+            body_parts.append(f"Risk: {_component_risk}")
         if risk_score:
             body_parts.append(f"Pueo assessment: {risk_score}")
         if update.release_summary:
@@ -6646,7 +6678,7 @@ class ToolExecutor:
             "advisory": recommendation,
             "safe_to_update": safe_to_update,
             "instance_impact": instance_impact,
-            "effective_safe_to_update": safe_to_update,
+            "effective_safe_to_update": safe_to_update and not _unverified,
             "instance_impact_summary": recommendation,
             "proposed_config_fixes": proposed_config_fixes,
             "disk_headroom_warning": disk_headroom_warning,
@@ -6655,15 +6687,16 @@ class ToolExecutor:
             "new_features": new_features or [],
             "risk_score": risk_score or "",
             "episode_id": self._episode_id,
+            "release_notes_completeness": self._release_notes_completeness,
+            "installed_bc_found": self._installed_bc_found,
+            "component_class_label": _component_class_label or "",
         }
-        from utils.knowledge.session_verification import default_verification_question
-
-        _q = verification_question or default_verification_question(
-            CARD_TYPE_UPDATE, payload
-        )
-        if _q:
-            payload["verification_question"] = _q
-            payload["signature"] = self._session_signature
+        # Verification comes from the post-update result card (run_pueo_self_check /
+        # add-on version poll), not from a pre-analysis digest question.  Accept an
+        # explicitly LLM-provided question, but don't generate a meaningless default.
+        if verification_question:
+            payload["verification_question"] = verification_question
+        payload["signature"] = self._session_signature
         await asyncio.to_thread(
             _update_mark_card_sent,
             suppression_key,

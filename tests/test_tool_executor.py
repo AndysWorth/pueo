@@ -6499,7 +6499,7 @@ class TestReleaseNotesStubPrefix:
         r = asyncio.run(ex._get_update_release_notes("2026.10.4"))
         assert r.success
         assert r.output == "- Raise aiohttp client header limits"
-        assert ex._release_notes_obtained is True
+        assert ex._release_notes_completeness == "complete"
 
 
 # ---------------------------------------------------------------------------
