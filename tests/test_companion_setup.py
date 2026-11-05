@@ -636,3 +636,41 @@ class TestMainCompanionSetupArgs:
             ["--companion", "upgrade_advisor", "--agent-id", "conversation.ollama"]
         )
         assert args.agent_id == "conversation.ollama"
+
+
+class TestMarketplaceWarningNotAccepted:
+    """companion provisioning returns advise-only error when Marketplace warning not accepted."""
+
+    def test_download_raises_marketplace_warning_returns_advise_error(self):
+        hacs_repo = _make_spook_hacs_repo(downloaded=False, repo_id="99")
+        ws = _make_ws(
+            hacs_repositories=[hacs_repo],
+            ha_components=[],
+            config_entries=[],
+        )
+        ws.set_raise_marketplace_warning(True)
+        rest = _make_rest()
+        ssh = AsyncMock()
+
+        with (
+            patch(
+                "agents.ha_agent_advanced.execute_remote_backup",
+                return_value=AsyncMock(return_value="slug-warn"),
+            ),
+            patch("agents.ha_agent_advanced.record_backup_slug"),
+        ):
+
+            async def _fake_backup(ssh_client):
+                return "slug-warn"
+
+            with patch(
+                "agents.ha_agent_advanced.execute_remote_backup",
+                side_effect=_fake_backup,
+            ):
+                result = asyncio.run(
+                    run_companion_setup("spook", rest=rest, ws=ws, ssh=ssh)
+                )
+
+        assert not result.success
+        assert "Marketplace" in (result.error or "")
+        assert "accept" in (result.error or "").lower()

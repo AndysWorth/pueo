@@ -1574,3 +1574,48 @@ class TestIntegrationBugRouting:
         assert bug_card_calls[0]["domain"] == "spook"
         assert "sensor.py:291" in bug_card_calls[0]["file_line"]
         assert repair_pipeline_calls == [], "repair pipeline must NOT be triggered"
+
+
+# ---------------------------------------------------------------------------
+# _hacs_repo_id_from_issue — marketplace domain support
+# ---------------------------------------------------------------------------
+
+
+class TestHacsRepoIdFromIssue:
+    """_hacs_repo_id_from_issue handles both hacs and marketplace domains."""
+
+    def _make_issue(self, domain, issue_id):
+        from utils.ha.ha_rest_client import HARepairIssue
+
+        return HARepairIssue(
+            domain=domain,
+            issue_id=issue_id,
+            severity="warning",
+            issue_key=f"{domain}/{issue_id}",
+            breaks_in_ha_version=None,
+            translation_key="restart_required",
+        )
+
+    def test_hacs_domain_extracts_repo_id(self):
+        from agents.ha_log_monitor import _hacs_repo_id_from_issue
+
+        issue = self._make_issue("hacs", "restart_required_42_some_suffix")
+        assert _hacs_repo_id_from_issue(issue) == "42"
+
+    def test_marketplace_domain_extracts_repo_id(self):
+        from agents.ha_log_monitor import _hacs_repo_id_from_issue
+
+        issue = self._make_issue("marketplace", "restart_required_12345_v1")
+        assert _hacs_repo_id_from_issue(issue) == "12345"
+
+    def test_other_domain_returns_empty(self):
+        from agents.ha_log_monitor import _hacs_repo_id_from_issue
+
+        issue = self._make_issue("homeassistant", "restart_required_99")
+        assert _hacs_repo_id_from_issue(issue) == ""
+
+    def test_no_numeric_id_returns_empty(self):
+        from agents.ha_log_monitor import _hacs_repo_id_from_issue
+
+        issue = self._make_issue("marketplace", "restart_required_no_number_here")
+        assert _hacs_repo_id_from_issue(issue) == ""

@@ -5930,3 +5930,79 @@ class TestPueoHADependenciesManifest:
         # Every line with an entry should include the feature name
         assert "HACS" in result.output
         assert "companion provisioning" in result.output
+
+    def test_websocket_commands_includes_marketplace_commands(self):
+        from agents.ha_update_manager import PUEO_HA_DEPENDENCIES
+
+        cmds = [e["cmd"] for e in PUEO_HA_DEPENDENCIES["websocket_commands"]]
+        assert any("marketplace/repositories/list" in c for c in cmds)
+        assert any("marketplace/repository/install" in c for c in cmds)
+
+    def test_integrations_includes_marketplace(self):
+        from agents.ha_update_manager import PUEO_HA_DEPENDENCIES
+
+        domains = {e["domain"] for e in PUEO_HA_DEPENDENCIES["integrations"]}
+        assert "marketplace" in domains
+
+    def test_repair_id_patterns_includes_marketplace_restart_required(self):
+        from agents.ha_update_manager import PUEO_HA_DEPENDENCIES
+
+        patterns = [e["pattern"] for e in PUEO_HA_DEPENDENCIES["repair_id_patterns"]]
+        assert any("marketplace/restart_required" in p for p in patterns)
+
+
+class TestCheckHacsInstallViaSsh:
+    """_check_hacs_install_via_ssh recognises marketplace domain restart_required issues."""
+
+    def _make_issues_json(self, domain, issue_id):
+        import json
+
+        data = {"data": {"issues": [{"domain": domain, "issue_id": issue_id}]}}
+        return json.dumps(data)
+
+    def test_hacs_domain_restart_required_returns_true(self, tmp_path):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+
+        from agents.ha_update_manager import _check_hacs_install_via_ssh
+
+        ssh = MagicMock()
+        ssh.run = AsyncMock(
+            return_value=(0, self._make_issues_json("hacs", "restart_required_42"), "")
+        )
+        result = asyncio.run(_check_hacs_install_via_ssh(ssh))
+        assert result is True
+
+    def test_marketplace_domain_restart_required_returns_true(self, tmp_path):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+
+        from agents.ha_update_manager import _check_hacs_install_via_ssh
+
+        ssh = MagicMock()
+        ssh.run = AsyncMock(
+            return_value=(
+                0,
+                self._make_issues_json("marketplace", "restart_required_12345"),
+                "",
+            )
+        )
+        result = asyncio.run(_check_hacs_install_via_ssh(ssh))
+        assert result is True
+
+    def test_other_domain_returns_false(self, tmp_path):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+
+        from agents.ha_update_manager import _check_hacs_install_via_ssh
+
+        ssh = MagicMock()
+        ssh.run = AsyncMock(
+            return_value=(
+                0,
+                self._make_issues_json("homeassistant", "restart_required_99"),
+                "",
+            )
+        )
+        result = asyncio.run(_check_hacs_install_via_ssh(ssh))
+        assert result is False

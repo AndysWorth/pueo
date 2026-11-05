@@ -106,10 +106,18 @@ def _discover_via_hacs_ws(  # pragma: no cover
             msg = json.loads(ws.recv())
             if msg.get("type") != "auth_ok":
                 return []
-            ws.send(json.dumps({"id": 1, "type": "hacs/repositories/list"}))
+            # HA 2026.11+: built-in Marketplace replaces HACS (probe, then fallback)
+            ws.send(json.dumps({"id": 1, "type": "marketplace/repositories/list"}))
             msg = json.loads(ws.recv())
-            if not msg.get("success"):
-                return []
+            use_marketplace = msg.get("success", False)
+            if not use_marketplace:
+                if (msg.get("error") or {}).get("code") == "unknown_command":
+                    ws.send(json.dumps({"id": 2, "type": "hacs/repositories/list"}))
+                    msg = json.loads(ws.recv())
+                    if not msg.get("success"):
+                        return []
+                else:
+                    return []
             repos: list[dict] = msg.get("result", [])
     except Exception as exc:
         from utils.core.logging import get_logger
@@ -125,9 +133,12 @@ def _discover_via_hacs_ws(  # pragma: no cover
             continue
         if repo.get("category") != "integration":
             continue
-        slug: str = repo.get("slug", "")
         full_name: str = repo.get("full_name", "")
-        if not slug or not full_name or "/" not in full_name:
+        if not full_name or "/" not in full_name:
+            continue
+        # Marketplace responses have no "slug" field; derive it from full_name
+        slug: str = repo.get("slug", "") or full_name.split("/")[1]
+        if not slug:
             continue
         domain: str = repo.get("domain", "") or slug
         repo_id: str = str(repo.get("id", "")) if repo.get("id") else ""
