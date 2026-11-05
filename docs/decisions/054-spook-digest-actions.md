@@ -42,15 +42,41 @@ all items are resolved.
 
 ### drive_repair_flow
 
-`drive_repair_flow(rest, domain, issue_id, *, max_steps)` in
+`drive_repair_flow(rest, domain, issue_id, *, menu_choice=None, max_steps)` in
 `utils/ha/config_flow_driver.py` mirrors `drive_config_flow` but uses the
 repairs fix-flow endpoints:
 - `POST /api/repairs/issues/fix` to start
-- `POST /api/repairs/issues/fix/{flow_id}` to advance (empty body for confirm steps)
+- `POST /api/repairs/issues/fix/{flow_id}` to advance (empty body for confirm
+  steps; `{"next_step_id": menu_choice}` for menu steps)
 - `DELETE /api/repairs/issues/fix/{flow_id}` to abort
 
 Returns `FlowResult(success=True)` on `create_entry`; aborts cleanly on errors
-or unexpected step types.
+or unexpected step types. When a `menu` step is encountered without a valid
+`menu_choice`, the flow is aborted immediately and returns `abort_reason=
+"menu_unhandled"` — it never submits `{}` to a menu step (which causes an
+infinite loop).
+
+Each step is logged at DEBUG as `repair_flow_step` with `step_id`, `type`, and
+`menu_options`.
+
+### Per-key fix action metadata
+
+Each item in a `CARD_TYPE_SPOOK_DIGEST` card now carries:
+- `fix_label` — human-readable button label (e.g. "Delete area", "Clear statistics")
+- `fix_effect` — one sentence describing what the fix does, shown under the item label
+- `menu_choice` — the `next_step_id` to submit when the driver encounters a menu step
+
+Defined in `_FIX_ACTION` in `utils/ha/spook_digest.py`. `_execute_spook_item`
+reads `menu_choice` from the item and passes it to `drive_repair_flow`.
+
+### Per-item error tracking
+
+Fix failures no longer reject the whole card. Instead:
+- `payload["_errors"][issue_id]` is set with the error message
+- The card stays PENDING so the user can retry or ignore the remaining items
+- After a successful fix for the same item, its error is cleared
+- After `create_entry`, the issue list is re-queried to confirm the issue is gone;
+  if it is still present, that also sets `payload["_errors"][issue_id]`
 
 ### ignore_repair_issue
 
@@ -91,3 +117,8 @@ in-memory state.
 - Fix and ignore both use HA's supported APIs; no more 404-generating REST DELETEs.
 - The card stays open with a progress view until every item is handled.
 - `drive_repair_flow` can be reused for any HA integration that exposes a repair flow.
+- Fix failures are shown per-item in the card; the whole card is no longer silently
+  rejected and hidden from the queue on a single-item failure.
+- Spook registry-cleanup flows (empty_areas, unused_labels, unused_blueprints,
+  orphaned_statistics) work correctly because the driver submits the `remove` menu
+  choice instead of looping on empty input.

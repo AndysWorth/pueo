@@ -1216,6 +1216,47 @@ class TestSpookDigestPayload:
         assert "empty_areas" in payload["body"]
         assert "Upstairs" in payload["body"]
 
+    def test_known_keys_have_fix_metadata(self):
+        """Every known cleanup key must carry fix_label, fix_effect and menu_choice."""
+        from utils.ha.spook_digest import KNOWN_CLEANUP_KEYS, build_spook_digest_payload
+
+        for tkey in KNOWN_CLEANUP_KEYS:
+            issue = _FakeSpookIssue(tkey=tkey)
+            issue.data = {}
+            payload = build_spook_digest_payload(tkey, [issue])
+            assert payload is not None
+            item = payload["items"][0]
+            assert item.get("fix_label"), f"{tkey}: expected non-empty fix_label"
+            assert item.get("fix_effect"), f"{tkey}: expected non-empty fix_effect"
+            assert (
+                item.get("menu_choice") == "remove"
+            ), f"{tkey}: expected menu_choice='remove'"
+
+    def test_empty_areas_fix_label_and_effect(self):
+        from utils.ha.spook_digest import build_spook_digest_payload
+
+        issue = _FakeSpookIssue(tkey="empty_areas", issue_id="ea-1")
+        issue.data = {"translation_placeholders": {"area": "Aiden's Room"}}
+        payload = build_spook_digest_payload("empty_areas", [issue])
+
+        assert payload is not None
+        item = payload["items"][0]
+        assert item["fix_label"] == "Delete area"
+        assert "area" in item["fix_effect"].lower()
+        assert item["menu_choice"] == "remove"
+
+    def test_orphaned_statistics_effect_mentions_irreversible(self):
+        from utils.ha.spook_digest import build_spook_digest_payload
+
+        issue = _FakeSpookIssue(tkey="orphaned_statistics", issue_id="stat-1")
+        issue.data = {}
+        payload = build_spook_digest_payload("orphaned_statistics", [issue])
+
+        assert payload is not None
+        item = payload["items"][0]
+        assert item["fix_label"] == "Clear statistics"
+        assert "backup" in item["fix_effect"].lower()
+
 
 class TestSpookDigestHybridRouting:
     """Known Spook cleanup keys must bypass the LLM work queue in poll_for_repairs."""

@@ -36,6 +36,33 @@ _KEY_DESCRIPTION: dict[str, str] = {
     "orphaned_statistics": "Orphaned statistics — sensor no longer exists",
 }
 
+# Per-key fix action: (menu_choice, button_label, effect_text).
+# menu_choice is the next_step_id to submit when Spook's init step is a menu.
+_FIX_ACTION: dict[str, tuple[str, str, str]] = {
+    "empty_areas": (
+        "remove",
+        "Delete area",
+        "Deletes the area from HA's area registry. "
+        "Spook aborts the fix if the area gained devices or entities since.",
+    ),
+    "unused_labels": (
+        "remove",
+        "Delete label",
+        "Deletes the label from HA's label registry.",
+    ),
+    "unused_blueprints": (
+        "remove",
+        "Delete blueprint",
+        "Deletes the blueprint file from /config/blueprints/.",
+    ),
+    "orphaned_statistics": (
+        "remove",
+        "Clear statistics",
+        "Permanently deletes long-term statistics for this entity. "
+        "Only a backup restore can bring them back.",
+    ),
+}
+
 
 def build_spook_digest_payload(
     tkey: str,
@@ -57,6 +84,10 @@ def build_spook_digest_payload(
 
     suppression_key = f"spook/digest:{tkey}"
     label_field = _PLACEHOLDER_LABEL_FIELD.get(tkey, "")
+    fix_action = _FIX_ACTION.get(tkey)
+    menu_choice = fix_action[0] if fix_action else None
+    fix_label = fix_action[1] if fix_action else "Apply fix"
+    fix_effect = fix_action[2] if fix_action else ""
 
     items = []
     for issue in issues:
@@ -69,6 +100,9 @@ def build_spook_digest_payload(
                 "is_fixable": bool(issue.data.get("is_fixable", True)),
                 "learn_more_url": issue.data.get("learn_more_url") or "",
                 "placeholders": placeholders,
+                "fix_label": fix_label,
+                "fix_effect": fix_effect,
+                "menu_choice": menu_choice,
             }
         )
 

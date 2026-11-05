@@ -2434,7 +2434,7 @@ async def _execute_spook_item(
 
         if action == "fix":
             if issue_id not in live_ids:
-                # Already gone — treat as success.
+                # Already gone — treat as success; fall through to mark resolved.
                 pass
             else:
                 matching = next(
@@ -2445,13 +2445,47 @@ async def _execute_spook_item(
                         f"Issue {issue_id!r} is not fixable via the repair flow"
                     )
 
+                # Resolve menu_choice from the item metadata (empty_areas → "remove" etc.)
+                items_list = payload.get("items", [])
+                item_meta: dict = next(
+                    (it for it in items_list if it.get("issue_id") == issue_id), {}
+                )
+                mc = item_meta.get("menu_choice") or None
+
                 # Backup before writing to HA.
                 slug = await execute_remote_backup()
                 await asyncio.to_thread(record_backup_slug, slug)
 
-                result = await drive_repair_flow(rest, domain, issue_id)
+                result = await drive_repair_flow(rest, domain, issue_id, menu_choice=mc)
                 if not result.success:
-                    raise RuntimeError(f"Repair flow failed: {result.error_message}")
+                    # Per-item failure: keep the card PENDING with an error note.
+                    errors: dict = dict(payload.get("_errors") or {})
+                    errors[issue_id] = result.error_message
+                    payload["_errors"] = errors
+                    data["payload"] = payload
+                    json_path.write_text(json.dumps(data, indent=2))
+                    log.warning(
+                        "spook_item_fix_failed",
+                        nid=nid,
+                        issue_id=issue_id,
+                        reason=result.abort_reason,
+                    )
+                    return
+
+                # Verify the issue is gone after create_entry.
+                post_issues = await get_ha_repair_issues(ws)
+                if any(i.issue_id == issue_id for i in post_issues):
+                    errors = dict(payload.get("_errors") or {})
+                    errors[issue_id] = "Issue still listed after repair flow completed"
+                    payload["_errors"] = errors
+                    data["payload"] = payload
+                    json_path.write_text(json.dumps(data, indent=2))
+                    log.warning(
+                        "spook_item_fix_not_verified",
+                        nid=nid,
+                        issue_id=issue_id,
+                    )
+                    return
 
         elif action == "ignore":
             if issue_id not in live_ids:
@@ -2461,6 +2495,14 @@ async def _execute_spook_item(
 
         else:
             raise RuntimeError(f"Unknown spook card action: {action!r}")
+
+        # Clear any previous error for this item on success.
+        errors = dict(payload.get("_errors") or {})
+        errors.pop(issue_id, None)
+        if errors:
+            payload["_errors"] = errors
+        elif "_errors" in payload:
+            del payload["_errors"]
 
         # Update the per-item resolved status inside payload (accessible from template).
         items = payload.get("items", [])
@@ -2479,6 +2521,7 @@ async def _execute_spook_item(
         # Individual item resolved — leave card open.
 
     except Exception as exc:
+        # Unexpected exception: write fix_error and reject the whole card.
         data["fix_error"] = str(exc)
         json_path.write_text(json.dumps(data, indent=2))
         (watch_dir / f"{nid}.rejected").touch()

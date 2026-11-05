@@ -561,6 +561,94 @@ class TestDriveRepairFlowAbortPaths:
         assert "connection refused" in result.error_message
 
 
+class TestDriveRepairFlowMenuStep:
+    """drive_repair_flow handles menu steps correctly (Spook registry cleanups)."""
+
+    def test_menu_valid_choice_reaches_create_entry(self):
+        """A valid menu_choice is submitted as next_step_id and flow completes."""
+        fake = FakeHARestClient(
+            flow_responses={
+                "repair_start:spook:empty_areas/iss1": {
+                    "flow_id": "rf-menu-1",
+                    "type": "menu",
+                    "step_id": "init",
+                    "menu_options": ["remove", "manage", "ignore"],
+                },
+                "repair_submit:rf-menu-1": {"type": "create_entry"},
+            }
+        )
+        result = _run(
+            drive_repair_flow(fake, "spook", "empty_areas/iss1", menu_choice="remove")
+        )
+        assert result.success is True
+        # Exactly one submission must have been made with the menu choice.
+        menu_submits = [d for _, d in fake.posted if d == {"next_step_id": "remove"}]
+        assert len(menu_submits) == 1
+
+    def test_menu_no_choice_aborts_without_looping(self):
+        """When menu_choice is None the flow is aborted immediately; {} is never submitted."""
+        fake = FakeHARestClient(
+            flow_responses={
+                "repair_start:spook:iss_menu_none": {
+                    "flow_id": "rf-menu-none",
+                    "type": "menu",
+                    "step_id": "init",
+                    "menu_options": ["remove", "manage"],
+                },
+            }
+        )
+        result = _run(drive_repair_flow(fake, "spook", "iss_menu_none"))
+        assert result.success is False
+        assert result.abort_reason == "menu_unhandled"
+        # Empty dict {} must NOT have been submitted — that is the looping bug.
+        empty_submits = [d for _, d in fake.posted if d == {}]
+        assert empty_submits == []
+        # Flow should have been aborted via DELETE.
+        assert any("rf-menu-none" in p for p in fake.deleted)
+
+    def test_menu_invalid_choice_aborts(self):
+        """A menu_choice not in menu_options aborts the flow."""
+        fake = FakeHARestClient(
+            flow_responses={
+                "repair_start:spook:iss_bad_choice": {
+                    "flow_id": "rf-menu-bad",
+                    "type": "menu",
+                    "step_id": "init",
+                    "menu_options": ["remove", "manage"],
+                },
+            }
+        )
+        result = _run(
+            drive_repair_flow(fake, "spook", "iss_bad_choice", menu_choice="delete")
+        )
+        assert result.success is False
+        assert result.abort_reason == "menu_unhandled"
+        assert "delete" in result.error_message
+        assert any("rf-menu-bad" in p for p in fake.deleted)
+
+    def test_menu_abort_changed_after_remove(self):
+        """Flow aborts with 'changed' reason if the item was modified since the issue was raised."""
+        fake = FakeHARestClient(
+            flow_responses={
+                "repair_start:spook:iss_changed": {
+                    "flow_id": "rf-menu-changed",
+                    "type": "menu",
+                    "step_id": "init",
+                    "menu_options": ["remove", "manage"],
+                },
+                "repair_submit:rf-menu-changed": {
+                    "type": "abort",
+                    "reason": "changed",
+                },
+            }
+        )
+        result = _run(
+            drive_repair_flow(fake, "spook", "iss_changed", menu_choice="remove")
+        )
+        assert result.success is False
+        assert result.abort_reason == "changed"
+
+
 class TestIgnoreRepairIssueWS:
     """Test FakeHAWebSocketClient.ignore_repair_issue stubs."""
 

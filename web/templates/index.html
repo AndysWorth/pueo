@@ -386,24 +386,34 @@ trigger: {{ r.payload.get("trigger", []) | tojson(indent=2) }}
       {% endif %}
       {% if ct == "spook_digest" and r.payload.get("items") %}
       {% set _spook_resolved = r.payload.get("_resolved", []) %}
+      {% set _spook_errors = r.payload.get("_errors", {}) %}
       <div style="margin:0.75rem 0;">
         <p style="margin:0 0 0.4rem;font-size:0.88rem;"><strong>{{ r.payload.get("description", "Spook cleanup items") }}</strong></p>
         <table style="border-collapse:collapse;width:100%;font-size:0.88rem;">
           {% for item in r.payload["items"] %}
           {% set _iid = item.get("issue_id", "") %}
           {% set _done = _iid in _spook_resolved %}
+          {% set _fix_label = item.get("fix_label") or "Apply fix" %}
+          {% set _fix_effect = item.get("fix_effect") or "" %}
+          {% set _item_error = _spook_errors.get(_iid) or "" %}
           <tr style="border-bottom:1px solid #eee;">
-            <td style="padding:0.35rem 0.5rem 0.35rem 0;vertical-align:middle;">
+            <td style="padding:0.35rem 0.5rem 0.35rem 0;vertical-align:top;">
               <code style="font-size:0.82rem;">{{ item.get("label", _iid) }}</code>
               {% if item.get("learn_more_url") %}&nbsp;<a href="{{ item.learn_more_url }}" target="_blank" rel="noopener" style="font-size:0.78rem;">learn more ↗</a>{% endif %}
+              {% if _fix_effect and not _done %}
+              <div style="font-size:0.78rem;color:#555;margin-top:0.15rem;">{{ _fix_effect }}</div>
+              {% endif %}
+              {% if _item_error %}
+              <div style="font-size:0.78rem;color:#c62828;margin-top:0.15rem;">⚠ {{ _item_error }}</div>
+              {% endif %}
             </td>
-            <td style="padding:0.35rem 0.3rem;white-space:nowrap;vertical-align:middle;">
+            <td style="padding:0.35rem 0.3rem;white-space:nowrap;vertical-align:top;">
               {% if _done %}
               <span style="color:#2e7d32;font-size:0.82rem;">✓ done</span>
               {% else %}
               {% if item.get("is_fixable") %}
               <form method="POST" action="/spook/{{ r.notification_id }}/{{ _iid }}/fix" style="display:inline;">
-                <button type="submit" style="background:#1976d2;color:#fff;border:none;padding:0.25rem 0.65rem;border-radius:4px;cursor:pointer;font-size:0.80rem;margin-right:0.3rem;">Apply fix</button>
+                <button type="submit" style="background:#1976d2;color:#fff;border:none;padding:0.25rem 0.65rem;border-radius:4px;cursor:pointer;font-size:0.80rem;margin-right:0.3rem;">{{ _fix_label }}</button>
               </form>
               {% endif %}
               <form method="POST" action="/spook/{{ r.notification_id }}/{{ _iid }}/ignore" style="display:inline;">
@@ -415,7 +425,7 @@ trigger: {{ r.payload.get("trigger", []) | tojson(indent=2) }}
           {% endfor %}
         </table>
         <p style="font-size:0.78rem;color:#666;margin:0.4rem 0 0;">
-          <strong>Apply fix</strong> — backup first, then run Spook's repair flow for this item &nbsp;·&nbsp;
+          <strong>{{ r.payload["items"][0].get("fix_label") or "Apply fix" }}</strong> — backup first, then delete / clear this item &nbsp;·&nbsp;
           <strong>Ignore in HA</strong> — tell HA to suppress this issue (no config change)
         </p>
       </div>
