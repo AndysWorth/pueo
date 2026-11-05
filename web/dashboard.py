@@ -2432,6 +2432,11 @@ async def _execute_spook_item(
         live_issues = await get_ha_repair_issues(ws)
         live_ids = {i.issue_id for i in live_issues}
 
+        items_list = payload.get("items", [])
+        item_meta: dict = next(
+            (it for it in items_list if it.get("issue_id") == issue_id), {}
+        )
+
         if action == "fix":
             if issue_id not in live_ids:
                 # Already gone — treat as success; fall through to mark resolved.
@@ -2446,10 +2451,6 @@ async def _execute_spook_item(
                     )
 
                 # Resolve menu_choice from the item metadata (empty_areas → "remove" etc.)
-                items_list = payload.get("items", [])
-                item_meta: dict = next(
-                    (it for it in items_list if it.get("issue_id") == issue_id), {}
-                )
                 mc = item_meta.get("menu_choice") or None
 
                 # Backup before writing to HA.
@@ -2470,6 +2471,23 @@ async def _execute_spook_item(
                         issue_id=issue_id,
                         reason=result.abort_reason,
                     )
+                    try:
+                        from utils.core.timeline import write_timeline_event
+
+                        await asyncio.to_thread(
+                            write_timeline_event,
+                            "ERROR",
+                            "spook_item",
+                            f"Spook fix failed: {item_meta.get('label', issue_id)}"
+                            f" ({tkey}) — {result.error_message}",
+                            {
+                                "issue_id": issue_id,
+                                "translation_key": tkey,
+                                "nid": nid,
+                            },
+                        )
+                    except Exception:  # nosec B110  # pragma: no cover
+                        pass
                     return
 
                 # Verify the issue is gone after create_entry.
@@ -2485,6 +2503,23 @@ async def _execute_spook_item(
                         nid=nid,
                         issue_id=issue_id,
                     )
+                    try:
+                        from utils.core.timeline import write_timeline_event
+
+                        await asyncio.to_thread(
+                            write_timeline_event,
+                            "ERROR",
+                            "spook_item",
+                            f"Spook fix not verified: {item_meta.get('label', issue_id)}"
+                            f" ({tkey}) still listed after repair",
+                            {
+                                "issue_id": issue_id,
+                                "translation_key": tkey,
+                                "nid": nid,
+                            },
+                        )
+                    except Exception:  # nosec B110  # pragma: no cover
+                        pass
                     return
 
         elif action == "ignore":
@@ -2513,6 +2548,25 @@ async def _execute_spook_item(
         data["payload"] = payload
         json_path.write_text(json.dumps(data, indent=2))
 
+        try:
+            from utils.core.timeline import write_timeline_event
+
+            _verb = "fixed" if action == "fix" else "ignored"
+            await asyncio.to_thread(
+                write_timeline_event,
+                "INFO",
+                "spook_item",
+                f"Spook issue {_verb}: {item_meta.get('label', issue_id)} ({tkey})",
+                {
+                    "issue_id": issue_id,
+                    "translation_key": tkey,
+                    "action": action,
+                    "nid": nid,
+                },
+            )
+        except Exception:  # nosec B110  # pragma: no cover
+            pass
+
         # Close the card only when every item is resolved.
         all_done = all(item.get("issue_id") in resolved_ids for item in items)
         if all_done:
@@ -2525,6 +2579,24 @@ async def _execute_spook_item(
         data["fix_error"] = str(exc)
         json_path.write_text(json.dumps(data, indent=2))
         (watch_dir / f"{nid}.rejected").touch()
+        try:
+            from utils.core.timeline import write_timeline_event
+
+            await asyncio.to_thread(
+                write_timeline_event,
+                "ERROR",
+                "spook_item",
+                f"Spook item error: {action} {item_meta.get('label', issue_id)}"
+                f" ({tkey}) — {exc}",
+                {
+                    "issue_id": issue_id,
+                    "translation_key": tkey,
+                    "action": action,
+                    "nid": nid,
+                },
+            )
+        except Exception:  # nosec B110  # pragma: no cover
+            pass
     finally:
         (watch_dir / f"{nid}.in_progress").unlink(missing_ok=True)
 
