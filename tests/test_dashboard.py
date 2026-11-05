@@ -11803,3 +11803,76 @@ class TestExecuteSpookItem:
         ]
         assert len(menu_submits) == 1
         assert (watch_dir / f"{nid}.approved").exists()
+
+    def test_fix_success_writes_info_timeline_event(
+        self, tmp_path, monkeypatch, watch_dir
+    ):
+        """Successful fix writes an INFO timeline entry."""
+        import asyncio
+        import web.dashboard as dashboard
+
+        self._patch_fix(
+            monkeypatch,
+            watch_dir,
+            flow_responses={"repair_submit:repair-flow-iss1": {"type": "create_entry"}},
+        )
+
+        calls: list = []
+        monkeypatch.setattr(
+            "utils.core.timeline.write_timeline_event",
+            lambda *a, **kw: calls.append(a),
+        )
+
+        nid = "spk_tl_ok1"
+        data = self._make_data(nid)
+        json_path = watch_dir / f"{nid}.json"
+        json_path.write_text(json.dumps(data))
+
+        asyncio.run(
+            dashboard._execute_spook_item(
+                nid, "fix", "iss1", data, json_path, watch_dir
+            )
+        )
+        assert any(c[0] == "INFO" and c[1] == "spook_item" for c in calls)
+        info = next(c for c in calls if c[0] == "INFO")
+        assert "fixed" in info[2]
+        assert "empty_areas" in info[2]
+
+    def test_fix_failure_writes_error_timeline_event(
+        self, tmp_path, monkeypatch, watch_dir
+    ):
+        """Per-item fix failure writes an ERROR timeline entry."""
+        import asyncio
+        import web.dashboard as dashboard
+
+        # Flow returns unhandled menu (no menu_choice) → drive_repair_flow fails.
+        self._patch_fix(
+            monkeypatch,
+            watch_dir,
+            flow_responses={
+                "repair_start:spook:iss1": {
+                    "flow_id": "rf-err",
+                    "type": "menu",
+                    "step_id": "init",
+                    "menu_options": ["remove", "manage"],
+                },
+            },
+        )
+
+        calls: list = []
+        monkeypatch.setattr(
+            "utils.core.timeline.write_timeline_event",
+            lambda *a, **kw: calls.append(a),
+        )
+
+        nid = "spk_tl_err1"
+        data = self._make_data(nid)
+        json_path = watch_dir / f"{nid}.json"
+        json_path.write_text(json.dumps(data))
+
+        asyncio.run(
+            dashboard._execute_spook_item(
+                nid, "fix", "iss1", data, json_path, watch_dir
+            )
+        )
+        assert any(c[0] == "ERROR" and c[1] == "spook_item" for c in calls)
