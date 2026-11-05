@@ -16,8 +16,11 @@ _PROPOSED_YAML = "homeassistant:\n  name: Home\n\nhttp:\n  server_port: 8124\n"
 class _FakeSyncResp:
     """Minimal urllib response mock for urlopen patches."""
 
-    def __init__(self, data: bytes) -> None:
+    def __init__(self, data: bytes, content_type: str = "") -> None:
         self._data = data
+        self.headers: dict[str, str] = (
+            {"Content-Type": content_type} if content_type else {}
+        )
 
     def read(self) -> bytes:
         return self._data
@@ -362,6 +365,63 @@ class TestFetchUrl:
         _, second = self._run_many([url, url], urlopen, reset_after=0)
         assert urlopen.call_count == 2
         assert second.output == "body"
+
+    def test_html_response_extracts_body_text(self):
+        """HTML with a large nav returns article text, not raw markup."""
+        nav = "<nav>" + "navlink " * 500 + "</nav>"
+        html = (
+            "<html><body>"
+            + nav
+            + "<article><p>Article content here.</p></article>"
+            + "</body></html>"
+        ).encode()
+        with patch(
+            "urllib.request.urlopen",
+            return_value=_FakeSyncResp(html, "text/html; charset=utf-8"),
+        ):
+            result = self._run("https://example.com/page")
+        assert result.success is True
+        assert "Article content here." in result.output
+        assert "navlink" not in result.output
+
+    def test_html_fragment_starts_at_heading(self):
+        """#fragment in URL starts output at the matching heading id."""
+        html = (
+            "<html><body><article>"
+            "<h2 id='intro'>Introduction</h2><p>Intro text.</p>"
+            "<h2 id='breaking-changes'>Breaking changes</h2><p>BC text.</p>"
+            "</article></body></html>"
+        ).encode()
+        with patch(
+            "urllib.request.urlopen",
+            return_value=_FakeSyncResp(html, "text/html"),
+        ):
+            result = self._run("https://example.com/notes#breaking-changes")
+        assert result.success is True
+        assert "BC text." in result.output
+        assert "Intro text." not in result.output
+
+    def test_non_html_response_unchanged(self):
+        """Plain-text response is returned as-is (no HTML extraction)."""
+        body = b"plain text body"
+        with patch(
+            "urllib.request.urlopen",
+            return_value=_FakeSyncResp(body, "text/plain"),
+        ):
+            result = self._run("https://example.com/file.txt")
+        assert result.success is True
+        assert result.output == "plain text body"
+
+    def test_html_fallback_to_raw_when_extractor_empty(self):
+        """If the extractor yields nothing, raw HTML is used as fallback."""
+        html = b"<html><head><title>Empty</title></head></html>"
+        with patch(
+            "urllib.request.urlopen",
+            return_value=_FakeSyncResp(html, "text/html"),
+        ):
+            result = self._run("https://example.com/empty")
+        assert result.success is True
+        assert "Empty" in result.output
 
 
 class TestSearchHaDocs:
