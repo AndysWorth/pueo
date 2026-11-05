@@ -365,29 +365,51 @@ class LoopSupervisor:
                 status.status = "error"
                 status.next_run = time.time() + delay
                 self._emit(name)
-                log.error(
-                    "loop_crashed",
-                    loop=name,
-                    exc_type=type(exc).__name__,
-                    error=str(exc),
-                    restart_in=delay,
-                )
+                _is_transport_drop = False
                 try:
-                    from utils.core.timeline import write_timeline_event
-
-                    write_timeline_event(
-                        "ERROR",
-                        "loop_crash",
-                        f"Loop '{name}' crashed — restarting in {delay:.0f}s: {type(exc).__name__}: {exc}",
-                        {
-                            "loop": name,
-                            "exc_type": type(exc).__name__,
-                            "error": str(exc),
-                            "restart_in": delay,
-                        },
+                    from agents.ha_update_manager import (
+                        is_ssh_transport_update_in_progress,
                     )
+
+                    if is_ssh_transport_update_in_progress() and (
+                        type(exc).__name__ == "ConnectionLost"
+                        or "Connection lost" in str(exc)
+                    ):
+                        _is_transport_drop = True
                 except Exception:  # nosec B110
                     pass
+                if _is_transport_drop:
+                    log.info(
+                        "expected_transport_drop",
+                        loop=name,
+                        exc_type=type(exc).__name__,
+                        detail="SSH add-on restarting during update — connection drop is expected",
+                        restart_in=delay,
+                    )
+                else:
+                    log.error(
+                        "loop_crashed",
+                        loop=name,
+                        exc_type=type(exc).__name__,
+                        error=str(exc),
+                        restart_in=delay,
+                    )
+                    try:
+                        from utils.core.timeline import write_timeline_event
+
+                        write_timeline_event(
+                            "ERROR",
+                            "loop_crash",
+                            f"Loop '{name}' crashed — restarting in {delay:.0f}s: {type(exc).__name__}: {exc}",
+                            {
+                                "loop": name,
+                                "exc_type": type(exc).__name__,
+                                "error": str(exc),
+                                "restart_in": delay,
+                            },
+                        )
+                    except Exception:  # nosec B110
+                        pass
                 try:
                     await asyncio.sleep(delay)
                 except asyncio.CancelledError:

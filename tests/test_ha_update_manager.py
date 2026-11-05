@@ -1202,7 +1202,7 @@ class TestUpdateAnalysisContextBuilding:
         db_path = _make_db(tmp_path)
         captured_context = []
 
-        async def _fake_resolve(component, ssh_client):
+        async def _fake_resolve(component, ssh_client, entity_picture=None):
             return "core_mosquitto"
 
         with ExitStack() as stack:
@@ -6006,3 +6006,529 @@ class TestCheckHacsInstallViaSsh:
         )
         result = asyncio.run(_check_hacs_install_via_ssh(ssh))
         assert result is False
+
+
+# ---------------------------------------------------------------------------
+# S5 — _resolve_addon_slug via entity_picture (#1130)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveAddonSlugEntityPicture:
+    """_resolve_addon_slug extracts slug from entity_picture URL without SSH."""
+
+    def _run(self, component, entity_picture, ssh_response=None):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+
+        from agents.ha_update_manager import _resolve_addon_slug
+
+        ssh = MagicMock()
+        ssh.run = AsyncMock(return_value=(0, ssh_response or "{}", ""))
+
+        return asyncio.run(
+            _resolve_addon_slug(component, ssh, entity_picture=entity_picture)
+        )
+
+    def test_extracts_slug_from_entity_picture(self):
+        result = self._run(
+            "terminal_ssh",
+            "/api/hassio/addons/core_ssh/icon",
+        )
+        assert result == "core_ssh"
+
+    def test_entity_picture_no_ssh_call(self):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock, call
+
+        from agents.ha_update_manager import _resolve_addon_slug
+
+        ssh = MagicMock()
+        ssh.run = AsyncMock(return_value=(0, "{}", ""))
+
+        asyncio.run(
+            _resolve_addon_slug(
+                "core_ssh", ssh, entity_picture="/api/hassio/addons/core_ssh/icon"
+            )
+        )
+        ssh.run.assert_not_called()
+
+    def test_brands_url_falls_through_to_ssh(self):
+        """HACS integration has brands URL — falls through to ha apps list."""
+        ssh_data = '{"data":{"addons":[{"slug":"spook","url":"https://github.com/frenck/spook"}]}}'
+        result = self._run(
+            "spook",
+            "https://brands.home-assistant.io/_/spook/icon.png",
+            ssh_response=ssh_data,
+        )
+        assert result == "spook"
+
+    def test_no_entity_picture_falls_through_to_ssh(self):
+        ssh_data = '{"data":{"addons":[{"slug":"core_mosquitto","url":null}]}}'
+        result = self._run("core_mosquitto", None, ssh_response=ssh_data)
+        assert result == "core_mosquitto"
+
+    def test_a0d7b954_slug_extracted(self):
+        result = self._run(
+            "ssh",
+            "/api/hassio/addons/a0d7b954_ssh/icon",
+        )
+        assert result == "a0d7b954_ssh"
+
+
+# ---------------------------------------------------------------------------
+# S5 — UpdateStatus entity_picture field (#1130)
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateStatusEntityPicture:
+    """entity_picture is populated from entity attributes in _entity_to_update_status."""
+
+    def test_entity_picture_populated(self):
+        from utils.ha.ha_rest_client import _entity_to_update_status
+
+        entity = {
+            "entity_id": "update.core_ssh_update",
+            "state": "on",
+            "attributes": {
+                "installed_version": "10.5.0",
+                "latest_version": "10.6.0",
+                "in_progress": False,
+                "entity_picture": "/api/hassio/addons/core_ssh/icon",
+            },
+        }
+        result = _entity_to_update_status(entity)
+        assert result is not None
+        assert result.entity_picture == "/api/hassio/addons/core_ssh/icon"
+
+    def test_entity_picture_missing_defaults_none(self):
+        from utils.ha.ha_rest_client import _entity_to_update_status
+
+        entity = {
+            "entity_id": "update.core_ssh_update",
+            "state": "on",
+            "attributes": {
+                "installed_version": "10.5.0",
+                "latest_version": "10.6.0",
+                "in_progress": False,
+            },
+        }
+        result = _entity_to_update_status(entity)
+        assert result is not None
+        assert result.entity_picture is None
+
+    def test_update_status_json_roundtrip(self):
+        import json
+        from dataclasses import asdict
+        from utils.ha.ha_rest_client import UpdateStatus
+
+        u = UpdateStatus(
+            component="core_ssh",
+            entity_id="update.core_ssh_update",
+            installed_version="10.5.0",
+            latest_version="10.6.0",
+            update_available=True,
+            release_url=None,
+            release_summary=None,
+            in_progress=False,
+            entity_picture="/api/hassio/addons/core_ssh/icon",
+        )
+        d = asdict(u)
+        assert (
+            json.loads(json.dumps(d))["entity_picture"]
+            == "/api/hassio/addons/core_ssh/icon"
+        )
+
+
+# ---------------------------------------------------------------------------
+# S5 — SSH transport flag and supervisor suppression (#1130)
+# ---------------------------------------------------------------------------
+
+
+class TestSshTransportUpdateFlag:
+    """is_ssh_transport_update_in_progress reflects execute_addon_update state."""
+
+    def test_flag_set_during_transport_update_and_cleared_after(self, pueo_dirs):
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from agents.ha_update_manager import is_ssh_transport_update_in_progress
+
+        flags_during = []
+
+        async def _fake_backup(**kwargs):
+            return "slug123"
+
+        async def _fake_poll(*args, **kwargs):
+            flags_during.append(is_ssh_transport_update_in_progress())
+            return True
+
+        fake_notifier = MagicMock()
+        fake_notifier.send = AsyncMock()
+        fake_rest = MagicMock()
+        fake_rest.call_service = AsyncMock()
+
+        update = SimpleNamespace(
+            entity_id="update.core_ssh_update",
+            component="core_ssh",
+            installed_version="10.5.0",
+            latest_version="10.6.0",
+            update_available=True,
+            in_progress=False,
+            release_url=None,
+            release_summary=None,
+            entity_picture="/api/hassio/addons/core_ssh/icon",
+        )
+
+        with (
+            patch(
+                "agents.ha_agent_advanced.execute_remote_backup",
+                side_effect=_fake_backup,
+            ),
+            patch("agents.ha_agent_advanced.record_backup_slug"),
+            patch("agents.ha_agent_advanced.offload_backup_to_local", AsyncMock()),
+            patch(
+                "agents.ha_update_manager._poll_addon_update_via_rest",
+                side_effect=_fake_poll,
+            ),
+            patch("agents.ha_update_manager._send_post_update_card", AsyncMock()),
+        ):
+            from agents.ha_update_manager import execute_addon_update
+
+            asyncio.run(
+                execute_addon_update(
+                    update,
+                    ssh_client=MagicMock(),
+                    notifier=fake_notifier,
+                    gate=MagicMock(),
+                    ha_rest_client=fake_rest,
+                )
+            )
+
+        assert flags_during == [True], "flag must be True during update"
+        assert not is_ssh_transport_update_in_progress(), "flag must clear after update"
+
+    def test_flag_not_set_for_non_transport_addon(self, pueo_dirs):
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from agents.ha_update_manager import is_ssh_transport_update_in_progress
+
+        flags_during = []
+
+        async def _fake_backup(**kwargs):
+            return "slug456"
+
+        async def _fake_poll(*args, **kwargs):
+            flags_during.append(is_ssh_transport_update_in_progress())
+            return True
+
+        fake_rest = MagicMock()
+        fake_rest.call_service = AsyncMock()
+
+        update = SimpleNamespace(
+            entity_id="update.core_mosquitto_update",
+            component="core_mosquitto",
+            installed_version="2.0.14",
+            latest_version="2.0.15",
+            update_available=True,
+            in_progress=False,
+            release_url=None,
+            release_summary=None,
+            entity_picture="/api/hassio/addons/core_mosquitto/icon",
+        )
+
+        with (
+            patch(
+                "agents.ha_agent_advanced.execute_remote_backup",
+                side_effect=_fake_backup,
+            ),
+            patch("agents.ha_agent_advanced.record_backup_slug"),
+            patch("agents.ha_agent_advanced.offload_backup_to_local", AsyncMock()),
+            patch(
+                "agents.ha_update_manager._poll_addon_update_via_rest",
+                side_effect=_fake_poll,
+            ),
+            patch("agents.ha_update_manager._send_post_update_card", AsyncMock()),
+        ):
+            from agents.ha_update_manager import execute_addon_update
+
+            asyncio.run(
+                execute_addon_update(
+                    update,
+                    ssh_client=MagicMock(),
+                    notifier=MagicMock(send=AsyncMock()),
+                    gate=MagicMock(),
+                    ha_rest_client=fake_rest,
+                )
+            )
+
+        assert flags_during == [False], "flag must NOT be set for non-transport add-ons"
+
+
+class TestSupervisorTransportDropSuppression:
+    """LoopSupervisor logs expected_transport_drop at INFO instead of ERROR
+    when a ConnectionLost-like exception occurs during a transport update."""
+
+    def test_connection_lost_during_transport_is_info(self):
+        import asyncio
+        from unittest.mock import patch
+
+        from utils.agent.supervisor import LoopSupervisor
+
+        log_calls = []
+        call_count = [0]
+
+        async def _crashing_factory():
+            call_count[0] += 1
+            if call_count[0] == 1:
+
+                class ConnectionLost(Exception):
+                    pass
+
+                raise ConnectionLost("Connection lost")
+
+        async def _run():
+            sv = LoopSupervisor(backoff_start=0.0, backoff_cap=0.0)
+            with (
+                patch(
+                    "agents.ha_update_manager.is_ssh_transport_update_in_progress",
+                    return_value=True,
+                ),
+                patch(
+                    "utils.agent.supervisor.log.error",
+                    side_effect=lambda *a, **kw: log_calls.append(
+                        ("error", kw.get("event", a[0] if a else ""))
+                    ),
+                ),
+                patch(
+                    "utils.agent.supervisor.log.info",
+                    side_effect=lambda *a, **kw: log_calls.append(
+                        ("info", kw.get("event", a[0] if a else ""))
+                    ),
+                ),
+            ):
+                sv.start("test_loop", _crashing_factory)
+                for _ in range(30):
+                    await asyncio.sleep(0)
+
+        asyncio.run(_run())
+
+        error_events = [e for level, e in log_calls if level == "error"]
+        info_transport = [
+            e for level, e in log_calls if level == "info" and "transport" in e
+        ]
+        assert (
+            "loop_crashed" not in error_events
+        ), "loop_crashed must not appear during transport update"
+        assert info_transport, "expected_transport_drop must appear as INFO"
+
+    def test_non_connection_lost_still_errors(self):
+        import asyncio
+        from unittest.mock import patch
+
+        from utils.agent.supervisor import LoopSupervisor
+
+        log_calls = []
+        call_count = [0]
+
+        async def _crashing_factory():
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise ValueError("some other error")
+
+        async def _run():
+            sv = LoopSupervisor(backoff_start=0.0, backoff_cap=0.0)
+            with (
+                patch(
+                    "agents.ha_update_manager.is_ssh_transport_update_in_progress",
+                    return_value=True,
+                ),
+                patch(
+                    "utils.agent.supervisor.log.error",
+                    side_effect=lambda *a, **kw: log_calls.append(
+                        ("error", kw.get("event", a[0] if a else ""))
+                    ),
+                ),
+                patch(
+                    "utils.agent.supervisor.log.info",
+                    side_effect=lambda *a, **kw: log_calls.append(
+                        ("info", kw.get("event", a[0] if a else ""))
+                    ),
+                ),
+            ):
+                sv.start("test_loop", _crashing_factory)
+                for _ in range(30):
+                    await asyncio.sleep(0)
+
+        asyncio.run(_run())
+
+        error_events = [e for level, e in log_calls if level == "error"]
+        assert (
+            "loop_crashed" in error_events
+        ), "non-SSH errors must still be loop_crashed"
+
+
+# ---------------------------------------------------------------------------
+# S5 — Post-update restart note only for HACS integrations (#1130)
+# ---------------------------------------------------------------------------
+
+
+class TestAddonUpdateRestartNote:
+    """execute_addon_update sends restart note only for HACS integrations."""
+
+    def _run_update(self, entity_picture, pueo_dirs):
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        sent_cards = []
+
+        async def _fake_backup(**kwargs):
+            return "bk001"
+
+        fake_rest = MagicMock()
+        fake_rest.call_service = AsyncMock()
+
+        async def _capture_card(update, notifier, success, detail, restart_note):
+            sent_cards.append(restart_note)
+
+        update = SimpleNamespace(
+            entity_id="update.test_update",
+            component="test_component",
+            installed_version="1.0",
+            latest_version="1.1",
+            update_available=True,
+            in_progress=False,
+            release_url=None,
+            release_summary=None,
+            entity_picture=entity_picture,
+        )
+
+        with (
+            patch(
+                "agents.ha_agent_advanced.execute_remote_backup",
+                side_effect=_fake_backup,
+            ),
+            patch("agents.ha_agent_advanced.record_backup_slug"),
+            patch("agents.ha_agent_advanced.offload_backup_to_local", AsyncMock()),
+            patch(
+                "agents.ha_update_manager._poll_addon_update_via_rest",
+                AsyncMock(return_value=True),
+            ),
+            patch(
+                "agents.ha_update_manager._send_post_update_card",
+                side_effect=_capture_card,
+            ),
+            patch(
+                "agents.ha_update_manager.set_restart_pending_after_update"
+            ) as mock_restart,
+            patch("agents.ha_update_manager._post_update_repair_scan", AsyncMock()),
+            patch("asyncio.create_task"),
+        ):
+            from agents.ha_update_manager import execute_addon_update
+
+            asyncio.run(
+                execute_addon_update(
+                    update,
+                    ssh_client=MagicMock(),
+                    notifier=MagicMock(send=AsyncMock()),
+                    gate=MagicMock(),
+                    ha_rest_client=fake_rest,
+                )
+            )
+        return sent_cards, mock_restart
+
+    def test_hacs_integration_gets_restart_note(self, pueo_dirs):
+        """HACS integration (brands URL entity_picture) gets the Core restart note."""
+        cards, mock_restart = self._run_update(
+            "https://brands.home-assistant.io/_/my_integration/icon.png",
+            pueo_dirs,
+        )
+        assert cards, "card must be sent"
+        assert "Core restart" in cards[0], "restart note must mention Core restart"
+        mock_restart.assert_called_once_with(True)
+
+    def test_supervisor_addon_no_restart_note(self, pueo_dirs):
+        """Supervisor add-on (hassio URL entity_picture) gets no restart note."""
+        cards, mock_restart = self._run_update(
+            "/api/hassio/addons/core_mosquitto/icon",
+            pueo_dirs,
+        )
+        assert cards, "card must be sent"
+        assert cards[0] == "", "Supervisor add-on must have empty restart note"
+        mock_restart.assert_not_called()
+
+    def test_no_entity_picture_defaults_to_hacs_behavior(self, pueo_dirs):
+        """Missing entity_picture falls back to HACS behavior (safe default)."""
+        cards, mock_restart = self._run_update(None, pueo_dirs)
+        assert cards, "card must be sent"
+        assert "Core restart" in cards[0]
+        mock_restart.assert_called_once_with(True)
+
+
+# ---------------------------------------------------------------------------
+# S5 — Initial context transport note (#1130)
+# ---------------------------------------------------------------------------
+
+
+class TestAddonInitialContextTransportNote:
+    """_run_update_analysis adds SSH transport note when updating core_ssh."""
+
+    def test_transport_note_in_initial_context(self, tmp_path, pueo_dirs):
+        import asyncio
+        from contextlib import ExitStack
+        from unittest import mock
+        from unittest.mock import MagicMock
+
+        from utils.agent.tool_registry import AgentLoopResult
+        from utils.hitl.notify import FakeNotifier
+
+        class _FakeSshUpdate:
+            component = "terminal_ssh"
+            entity_id = "update.core_ssh_update"
+            installed_version = "10.5.0"
+            latest_version = "10.6.0"
+            release_url = None
+            release_summary = None
+            entity_picture = "/api/hassio/addons/core_ssh/icon"
+
+        db_path = _make_db(tmp_path)
+        captured_context = []
+
+        async def _fake_resolve(component, ssh_client, entity_picture=None):
+            return "core_ssh"
+
+        with ExitStack() as stack:
+            patches = _base_patches(db_path)
+            mocks = [stack.enter_context(p) for p in patches]
+            stack.enter_context(
+                mock.patch(
+                    "agents.ha_update_manager._resolve_addon_slug",
+                    side_effect=_fake_resolve,
+                )
+            )
+            MockLoop = mocks[0]
+            mock_instance = MagicMock()
+
+            async def _capture_run(ctx, **kwargs):
+                captured_context.append(ctx)
+                return AgentLoopResult(outcome="success")
+
+            mock_instance.run = _capture_run
+            MockLoop.return_value = mock_instance
+            mocks[4].return_value = MagicMock()
+
+            from agents.ha_update_manager import _run_update_analysis
+
+            asyncio.run(
+                _run_update_analysis(
+                    update=_FakeSshUpdate(),
+                    notifier=FakeNotifier(),
+                )
+            )
+
+        ctx = captured_context[0] if captured_context else ""
+        assert "Supervisor slug: core_ssh" in ctx
+        assert "SSH transport" in ctx

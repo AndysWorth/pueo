@@ -23,6 +23,8 @@ class UpdateStatus:
     # False when the entity state is unavailable/unknown (e.g. during an HA restart):
     # update_available then carries no information (#976).
     state_known: bool = True
+    # /api/hassio/addons/<slug>/icon for Supervisor add-ons; brands URL for HACS integrations.
+    entity_picture: Optional[str] = None
 
 
 _COMPONENT_MAP = {
@@ -58,6 +60,7 @@ def _entity_to_update_status(entity: dict) -> Optional[UpdateStatus]:
         release_summary=attrs.get("release_summary"),
         in_progress=bool(attrs.get("in_progress", False)),
         state_known=state not in ("unavailable", "unknown"),
+        entity_picture=attrs.get("entity_picture"),
     )
 
 

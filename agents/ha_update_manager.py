@@ -59,10 +59,27 @@ _reboot_pending_after_update: Optional[float] = None
 # false "updated outside Pueo" timeline events while execute_update is in flight.
 _entities_executing_update: set = set()
 
+# Supervisor add-on slugs that provide Pueo's SSH transport.  When one of these
+# is being updated, SSH-based loops (ha_log_monitor, netalertx) will lose their
+# connection — the supervisor treats this as expected, not a crash.
+_SSH_TRANSPORT_SLUGS: frozenset = frozenset({"core_ssh", "a0d7b954_ssh"})
+
+# Set while a transport add-on update is executing so the supervisor can suppress
+# ConnectionLost timeline errors during the update window.
+_ssh_transport_update_in_progress: bool = False
+
+# Matches the Supervisor icon URL to extract the add-on slug without an SSH query.
+_HASSIO_ADDON_ICON_RE = re.compile(r"^/api/hassio/addons/([^/]+)/icon")
+
 
 def is_entity_executing_update(entity_id: str) -> bool:
     """Return True while Pueo is actively running execute_update for this entity."""
     return entity_id in _entities_executing_update
+
+
+def is_ssh_transport_update_in_progress() -> bool:
+    """Return True while a known SSH-transport add-on update is executing."""
+    return _ssh_transport_update_in_progress
 
 
 async def _enqueue_distillation_for_subject(
@@ -1143,16 +1160,28 @@ def classify_update_type(
     return "addon"
 
 
-async def _resolve_addon_slug(component: str, ssh_client: Any) -> Optional[str]:
+async def _resolve_addon_slug(
+    component: str,
+    ssh_client: Any,
+    entity_picture: Optional[str] = None,
+) -> Optional[str]:
     """Return the Supervisor slug for an add-on whose entity component is *component*.
 
-    Queries ``ha apps list --raw-json`` and matches by:
+    First tries to extract the slug directly from the update entity's
+    ``entity_picture`` URL (``/api/hassio/addons/<slug>/icon``), which HA always
+    sets and requires no SSH query.  Falls back to querying
+    ``ha apps list --raw-json`` and matching by:
+
     - slug == component (exact)
     - slug.endswith("_" + component) (prefix, e.g. core_matter_server → matter_server)
     - url ending in "/<component>"
 
     Returns None on no match or SSH error.
     """
+    if entity_picture:
+        m = _HASSIO_ADDON_ICON_RE.match(entity_picture)
+        if m:
+            return m.group(1)
     try:
         _, stdout, _ = await ssh_client.run("ha apps list --raw-json", check=False)
         data = json.loads(stdout)
@@ -1259,9 +1288,19 @@ async def _run_update_analysis(
         # HA entity component name (e.g. "matter_server"), which may differ from the
         # actual slug (e.g. "core_matter_server"); resolve via `ha apps list --raw-json`.
         if _update_type_early == "addon":
-            _resolved_slug = await _resolve_addon_slug(update.component, _ssh)
+            _resolved_slug = await _resolve_addon_slug(
+                update.component,
+                _ssh,
+                entity_picture=getattr(update, "entity_picture", None),
+            )
             if _resolved_slug:
                 initial_context += f"\nSupervisor slug: {_resolved_slug}"
+                if _resolved_slug in _SSH_TRANSPORT_SLUGS:
+                    initial_context += (
+                        "\nNote: This add-on provides Pueo's SSH transport to HA. "
+                        "Pueo will lose SSH connectivity while the add-on restarts — "
+                        "this is expected and not a failure."
+                    )
         if update.release_url:
             initial_context += f"\nRelease URL: {update.release_url}"
         if update.release_summary:
@@ -2108,162 +2147,185 @@ async def execute_addon_update(
     ha_rest_client: Optional[HARestClientProtocol] = None,
 ) -> bool:
     """Execute add-on update: backup → update.install REST service → poll → result card."""
+    global _ssh_transport_update_in_progress
     from .ha_agent_advanced import (
         execute_remote_backup,
         offload_backup_to_local,
         record_backup_slug,
     )
 
-    log.info("addon_update_start", slug=update.component, version=update.latest_version)
+    # Detect transport add-on via entity_picture before touching SSH.
+    _ep = getattr(update, "entity_picture", None) or ""
+    _ep_match = _HASSIO_ADDON_ICON_RE.match(_ep)
+    _is_transport = bool(_ep_match and _ep_match.group(1) in _SSH_TRANSPORT_SLUGS)
+    # HACS integrations have a brands.home-assistant.io entity_picture; Supervisor
+    # add-ons use /api/hassio/addons/<slug>/icon.  Only HACS integrations trigger a
+    # Core restart — regular add-ons restart themselves.
+    _is_hacs = not _ep.startswith("/api/hassio/addons/")
 
-    def _tl(level: str, msg: str, extra: dict) -> None:  # pragma: no cover
-        """Write a timeline event; best-effort, never raises."""
-        try:
-            from utils.core.timeline import write_timeline_event
-
-            write_timeline_event(level, "update_check", msg, extra)
-        except Exception:  # nosec B110
-            pass
-
-    backup_slug = await execute_remote_backup(ssh_client=ssh_client)
-    record_backup_slug(backup_slug)
-    await offload_backup_to_local(backup_slug, ssh_client=ssh_client)
-    log.info("addon_update_backup_complete", slug=backup_slug)
-    await asyncio.to_thread(
-        _tl,
-        "INFO",
-        f"{update.component}: backup created ({backup_slug})",
-        {
-            "component": update.component,
-            "version": update.latest_version,
-            "backup_slug": backup_slug,
-            "step": "backup_created",
-        },
-    )
-    await asyncio.to_thread(
-        _tl,
-        "INFO",
-        f"{update.component}: install started → {update.latest_version}",
-        {
-            "component": update.component,
-            "version": update.latest_version,
-            "step": "install_started",
-        },
-    )
-
-    rest: HARestClientProtocol
-    if ha_rest_client is not None:
-        rest = ha_rest_client
-    else:
-        from utils.ha.ha_rest_client import HARestClient
-
-        rest = HARestClient(HA_HOST, HA_API_PORT, HA_API_TOKEN, timeout=30.0)
+    if _is_transport:
+        _ssh_transport_update_in_progress = True
 
     try:
-        await rest.call_service("update", "install", {"entity_id": update.entity_id})
         log.info(
-            "addon_update_install_service_called",
-            slug=update.component,
-            entity_id=update.entity_id,
+            "addon_update_start", slug=update.component, version=update.latest_version
         )
-    except httpx.TimeoutException:
-        # HA holds the connection open while the update runs; a timeout here is expected
-        # behaviour, not a failure. The update may already be in progress — proceed to
-        # the poll, which will determine the actual outcome.
-        log.warning(
-            "addon_update_service_timeout",
-            slug=update.component,
-            entity_id=update.entity_id,
-            detail="service call timed out; update may be in progress — proceeding to poll",
-        )
-    except Exception as exc:
-        log.warning(
-            "addon_update_service_failed",
-            slug=update.component,
-            error=str(exc)[:200] or repr(exc),
-        )
+
+        def _tl(level: str, msg: str, extra: dict) -> None:  # pragma: no cover
+            """Write a timeline event; best-effort, never raises."""
+            try:
+                from utils.core.timeline import write_timeline_event
+
+                write_timeline_event(level, "update_check", msg, extra)
+            except Exception:  # nosec B110
+                pass
+
+        backup_slug = await execute_remote_backup(ssh_client=ssh_client)
+        record_backup_slug(backup_slug)
+        await offload_backup_to_local(backup_slug, ssh_client=ssh_client)
+        log.info("addon_update_backup_complete", slug=backup_slug)
         await asyncio.to_thread(
             _tl,
-            "WARNING",
-            f"{update.component}: update service call failed",
+            "INFO",
+            f"{update.component}: backup created ({backup_slug})",
             {
                 "component": update.component,
                 "version": update.latest_version,
-                "step": "install_result",
-                "success": False,
+                "backup_slug": backup_slug,
+                "step": "backup_created",
             },
-        )
-        await _send_post_update_card(update, notifier, False, "", "")
-        return False
-
-    if _poll is not None:
-        success = await _poll(
-            update.component,
-            update.latest_version,
-            ssh_client,
-            timeout_seconds=_ADDON_UPDATE_TIMEOUT,
-        )
-    else:
-        success = await _poll_addon_update_via_rest(
-            update.entity_id,
-            rest,
-            timeout_seconds=_ADDON_UPDATE_TIMEOUT,
-        )
-
-    # HACS-specific fallback: a successful HACS download produces a
-    # hacs/restart_required_* repair within seconds instead of flipping the
-    # update entity to "off". The REST poll always times out in this case;
-    # check ha resolution info over SSH as the true install-success signal.
-    if not success and "hacs" in update.entity_id.lower() and _poll is None:
-        success = await _check_hacs_install_via_ssh(ssh_client)
-        if success:
-            log.info(
-                "hacs_install_success_via_ssh_fallback",
-                slug=update.component,
-                version=update.latest_version,
-            )
-
-    if success:
-        set_restart_pending_after_update(True)
-        set_post_update_pending(update.component, "restart")
-        asyncio.create_task(_post_update_repair_scan())
-        log.info("addon_update_restart_pending_flag_set", slug=update.component)
-        _restart_note = (
-            "HA may require a Core restart to complete this update. "
-            "If so, Pueo will restart automatically — no further approval needed."
         )
         await asyncio.to_thread(
             _tl,
             "INFO",
-            f"{update.component}: updated to {update.latest_version} ✓",
+            f"{update.component}: install started → {update.latest_version}",
             {
                 "component": update.component,
                 "version": update.latest_version,
-                "step": "install_result",
-                "success": True,
+                "step": "install_started",
             },
         )
-        await _send_post_update_card(update, notifier, True, "", _restart_note)
-    else:
-        await asyncio.to_thread(
-            _tl,
-            "WARNING",
-            f"{update.component}: update timed out — check HA UI",
-            {
-                "component": update.component,
-                "version": update.latest_version,
-                "step": "install_result",
-                "success": False,
-            },
-        )
-        await _send_post_update_card(update, notifier, False, "", "")
-        log.warning(
-            "addon_update_timed_out",
-            slug=update.component,
-            version=update.latest_version,
-            detail="Add-on may still be updating — check HA UI",
-        )
-    return success
+
+        rest: HARestClientProtocol
+        if ha_rest_client is not None:
+            rest = ha_rest_client
+        else:
+            from utils.ha.ha_rest_client import HARestClient
+
+            rest = HARestClient(HA_HOST, HA_API_PORT, HA_API_TOKEN, timeout=30.0)
+
+        try:
+            await rest.call_service(
+                "update", "install", {"entity_id": update.entity_id}
+            )
+            log.info(
+                "addon_update_install_service_called",
+                slug=update.component,
+                entity_id=update.entity_id,
+            )
+        except httpx.TimeoutException:
+            # HA holds the connection open while the update runs; a timeout here is expected
+            # behaviour, not a failure. The update may already be in progress — proceed to
+            # the poll, which will determine the actual outcome.
+            log.warning(
+                "addon_update_service_timeout",
+                slug=update.component,
+                entity_id=update.entity_id,
+                detail="service call timed out; update may be in progress — proceeding to poll",
+            )
+        except Exception as exc:
+            log.warning(
+                "addon_update_service_failed",
+                slug=update.component,
+                error=str(exc)[:200] or repr(exc),
+            )
+            await asyncio.to_thread(
+                _tl,
+                "WARNING",
+                f"{update.component}: update service call failed",
+                {
+                    "component": update.component,
+                    "version": update.latest_version,
+                    "step": "install_result",
+                    "success": False,
+                },
+            )
+            await _send_post_update_card(update, notifier, False, "", "")
+            return False
+
+        if _poll is not None:
+            success = await _poll(
+                update.component,
+                update.latest_version,
+                ssh_client,
+                timeout_seconds=_ADDON_UPDATE_TIMEOUT,
+            )
+        else:
+            success = await _poll_addon_update_via_rest(
+                update.entity_id,
+                rest,
+                timeout_seconds=_ADDON_UPDATE_TIMEOUT,
+            )
+
+        # HACS-specific fallback: a successful HACS download produces a
+        # hacs/restart_required_* repair within seconds instead of flipping the
+        # update entity to "off". The REST poll always times out in this case;
+        # check ha resolution info over SSH as the true install-success signal.
+        if not success and "hacs" in update.entity_id.lower() and _poll is None:
+            success = await _check_hacs_install_via_ssh(ssh_client)
+            if success:
+                log.info(
+                    "hacs_install_success_via_ssh_fallback",
+                    slug=update.component,
+                    version=update.latest_version,
+                )
+
+        if success:
+            _restart_note = ""
+            if _is_hacs:
+                set_restart_pending_after_update(True)
+                set_post_update_pending(update.component, "restart")
+                asyncio.create_task(_post_update_repair_scan())
+                log.info("addon_update_restart_pending_flag_set", slug=update.component)
+                _restart_note = (
+                    "HA may require a Core restart to complete this update. "
+                    "If so, Pueo will restart automatically — no further approval needed."
+                )
+            await asyncio.to_thread(
+                _tl,
+                "INFO",
+                f"{update.component}: updated to {update.latest_version} ✓",
+                {
+                    "component": update.component,
+                    "version": update.latest_version,
+                    "step": "install_result",
+                    "success": True,
+                },
+            )
+            await _send_post_update_card(update, notifier, True, "", _restart_note)
+        else:
+            await asyncio.to_thread(
+                _tl,
+                "WARNING",
+                f"{update.component}: update timed out — check HA UI",
+                {
+                    "component": update.component,
+                    "version": update.latest_version,
+                    "step": "install_result",
+                    "success": False,
+                },
+            )
+            await _send_post_update_card(update, notifier, False, "", "")
+            log.warning(
+                "addon_update_timed_out",
+                slug=update.component,
+                version=update.latest_version,
+                detail="Add-on may still be updating — check HA UI",
+            )
+        return success
+    finally:
+        if _is_transport:
+            _ssh_transport_update_in_progress = False
 
 
 _UPDATE_PRIORITY: dict[str, int] = {"os": 0, "supervisor": 1, "core": 2}
