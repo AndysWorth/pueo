@@ -210,12 +210,17 @@ async def drive_repair_flow(
     domain: str,
     issue_id: str,
     *,
+    menu_choice: str | None = None,
     max_steps: int = _MAX_STEPS,
 ) -> FlowResult:
     """Walk a Spook / HA repair fix-flow to completion.
 
     Most Spook repair flows are a single confirm step — start the flow,
     then immediately POST an empty body to advance past the confirm step.
+    Pass menu_choice for flows whose init step is a menu (e.g. Spook registry
+    cleanups that offer remove / manage / ignore).  The driver submits
+    {"next_step_id": menu_choice}; if no choice is given or the choice is
+    not in the menu options the flow is aborted immediately.
     Aborts on unexpected step types, errors, or exceptions.
     Returns FlowResult(success=True) when the flow yields create_entry.
     """
@@ -226,6 +231,15 @@ async def drive_repair_flow(
 
         for _ in range(max_steps):
             resp_type = resp.get("type", "")
+
+            _log.debug(
+                "repair_flow_step domain=%r issue_id=%r step_id=%r type=%r menu_options=%r",
+                domain,
+                issue_id,
+                resp.get("step_id"),
+                resp_type,
+                resp.get("menu_options"),
+            )
 
             if resp_type == "create_entry":
                 return FlowResult(
@@ -269,7 +283,26 @@ async def drive_repair_flow(
                     error_message=f"Repair flow step {resp.get('step_id')!r} returned errors: {resp.get('errors')}",
                 )
 
-            # Confirm steps take an empty submission; form steps also advance with {}.
+            if resp_type == "menu":
+                menu_options = resp.get("menu_options") or []
+                if not menu_choice or menu_choice not in menu_options:
+                    if flow_id:
+                        await rest.abort_repair_flow(flow_id)
+                    return FlowResult(
+                        success=False,
+                        entry_ids=[],
+                        abort_reason="menu_unhandled",
+                        error_message=(
+                            f"Repair flow offered menu {menu_options!r}; "
+                            f"no valid choice given (got {menu_choice!r})"
+                        ),
+                    )
+                resp = await rest.submit_repair_flow(
+                    flow_id, {"next_step_id": menu_choice}
+                )
+                continue
+
+            # Confirm / form steps advance with an empty submission.
             resp = await rest.submit_repair_flow(flow_id, {})
 
         if flow_id:

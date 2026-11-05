@@ -11599,33 +11599,58 @@ class TestExecuteSpookItem:
         saved = json.loads(json_path.read_text())
         assert "fix_error" in saved
 
-    def test_fix_item_happy_path(self, tmp_path, monkeypatch, watch_dir):
-        import asyncio
+    def _patch_fix(
+        self,
+        monkeypatch,
+        watch_dir,
+        *,
+        issue_ids_before=None,
+        issue_ids_after=None,
+        flow_responses=None,
+    ):
+        """Shared fixture for fix-action tests.
+
+        issue_ids_before: repair issues present before the fix (default ["iss1"])
+        issue_ids_after:  repair issues present after the fix (default [], i.e. all gone)
+        flow_responses:   FakeHARestClient overrides
+        """
         import web.dashboard as dashboard
         from utils.ha.ha_ws_client import FakeHAWebSocketClient
         from utils.ha.ha_rest_client import FakeHARestClient
-
-        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
-        import agents.ha_agent_advanced as _adv
-
-        monkeypatch.setattr(_adv, "mark_repair_resolved", lambda k: None)
-
-        fake_ws = FakeHAWebSocketClient(
-            repair_issues=[
-                {
-                    "domain": "spook",
-                    "issue_id": "iss1",
-                    "severity": "warning",
-                    "is_fixable": True,
-                }
-            ]
-        )
-        fake_rest = FakeHARestClient(
-            flow_responses={"repair_submit:repair-flow-iss1": {"type": "create_entry"}}
-        )
+        import agents.ha_agent_sandbox_engine as _sandbox
         import utils.ha.ha_ws_client as _ws_mod
         import utils.ha.ha_rest_client as _rest_mod
-        import agents.ha_agent_sandbox_engine as _sandbox
+        import agents.ha_agent_advanced as _adv
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+        monkeypatch.setattr(_adv, "mark_repair_resolved", lambda k: None)
+
+        issue_ids_before = (
+            issue_ids_before if issue_ids_before is not None else ["iss1"]
+        )
+        issue_ids_after = issue_ids_after if issue_ids_after is not None else []
+
+        # Build a fake WS that returns issue_ids_before on the first call and
+        # issue_ids_after on subsequent calls (simulating the repair taking effect).
+        call_count = [0]
+
+        class _CountingFakeWS(FakeHAWebSocketClient):
+            async def get_repair_issues(self):
+                self.calls.append("get_repair_issues")
+                call_count[0] += 1
+                ids = issue_ids_before if call_count[0] == 1 else issue_ids_after
+                return [
+                    {
+                        "domain": "spook",
+                        "issue_id": iid,
+                        "severity": "warning",
+                        "is_fixable": True,
+                    }
+                    for iid in ids
+                ]
+
+        fake_ws = _CountingFakeWS()
+        fake_rest = FakeHARestClient(flow_responses=flow_responses or {})
 
         monkeypatch.setattr(_ws_mod, "HAWebSocketClient", lambda *a, **kw: fake_ws)
         monkeypatch.setattr(_rest_mod, "HARestClient", lambda *a, **kw: fake_rest)
@@ -11633,11 +11658,20 @@ class TestExecuteSpookItem:
         async def _fake_backup(**_kwargs):
             return "bk-slug"
 
-        def _fake_record(s):
-            pass
-
         monkeypatch.setattr(_sandbox, "execute_remote_backup", _fake_backup)
-        monkeypatch.setattr(_sandbox, "record_backup_slug", _fake_record)
+        monkeypatch.setattr(_sandbox, "record_backup_slug", lambda s: None)
+        return fake_ws, fake_rest
+
+    def test_fix_item_happy_path(self, tmp_path, monkeypatch, watch_dir):
+        import asyncio
+        import web.dashboard as dashboard
+
+        # Default FakeHARestClient: repair-flow-iss1 → create_entry.
+        self._patch_fix(
+            monkeypatch,
+            watch_dir,
+            flow_responses={"repair_submit:repair-flow-iss1": {"type": "create_entry"}},
+        )
 
         nid = "spk_fix1"
         data = self._make_data(nid)
@@ -11649,4 +11683,123 @@ class TestExecuteSpookItem:
                 nid, "fix", "iss1", data, json_path, watch_dir
             )
         )
+        assert (watch_dir / f"{nid}.approved").exists()
+
+    def test_fix_failure_keeps_card_pending_with_errors(
+        self, tmp_path, monkeypatch, watch_dir
+    ):
+        """When drive_repair_flow fails, the card stays PENDING with _errors set."""
+        import asyncio
+        import web.dashboard as dashboard
+
+        # Flow returns menu_unhandled (no menu_choice in item, so driver aborts).
+        self._patch_fix(
+            monkeypatch,
+            watch_dir,
+            flow_responses={
+                "repair_start:spook:iss1": {
+                    "flow_id": "rf-fail",
+                    "type": "menu",
+                    "step_id": "init",
+                    "menu_options": ["remove", "manage"],
+                },
+            },
+        )
+
+        nid = "spk_fail1"
+        # Item has no menu_choice (simulates old-style item without metadata).
+        data = self._make_data(nid)
+        json_path = watch_dir / f"{nid}.json"
+        json_path.write_text(json.dumps(data))
+
+        asyncio.run(
+            dashboard._execute_spook_item(
+                nid, "fix", "iss1", data, json_path, watch_dir
+            )
+        )
+        # Card must NOT be rejected — it must stay PENDING.
+        assert not (watch_dir / f"{nid}.rejected").exists()
+        # _errors must carry the per-item message.
+        saved = json.loads(json_path.read_text())
+        assert "iss1" in saved["payload"].get("_errors", {})
+
+    def test_fix_issue_still_listed_keeps_card_pending(
+        self, tmp_path, monkeypatch, watch_dir
+    ):
+        """If issue still present after create_entry, card stays PENDING with _errors."""
+        import asyncio
+        import web.dashboard as dashboard
+
+        # Flow completes (create_entry) but iss1 is still listed after.
+        self._patch_fix(
+            monkeypatch,
+            watch_dir,
+            issue_ids_after=["iss1"],  # still there after the fix
+            flow_responses={
+                "repair_submit:repair-flow-iss1": {"type": "create_entry"},
+            },
+        )
+
+        nid = "spk_still1"
+        data = self._make_data(nid)
+        json_path = watch_dir / f"{nid}.json"
+        json_path.write_text(json.dumps(data))
+
+        asyncio.run(
+            dashboard._execute_spook_item(
+                nid, "fix", "iss1", data, json_path, watch_dir
+            )
+        )
+        assert not (watch_dir / f"{nid}.rejected").exists()
+        saved = json.loads(json_path.read_text())
+        assert "iss1" in saved["payload"].get("_errors", {})
+
+    def test_fix_menu_choice_from_item_metadata(self, tmp_path, monkeypatch, watch_dir):
+        """menu_choice from item payload is passed to drive_repair_flow as next_step_id."""
+        import asyncio
+        import web.dashboard as dashboard
+
+        _, fake_rest = self._patch_fix(
+            monkeypatch,
+            watch_dir,
+            flow_responses={
+                "repair_start:spook:iss1": {
+                    "flow_id": "rf-mc",
+                    "type": "menu",
+                    "step_id": "init",
+                    "menu_options": ["remove", "manage"],
+                },
+                "repair_submit:rf-mc": {"type": "create_entry"},
+            },
+        )
+
+        nid = "spk_mc1"
+        # Item carries menu_choice as built by build_spook_digest_payload.
+        data = self._make_data(
+            nid,
+            items=[
+                {
+                    "issue_id": "iss1",
+                    "label": "Aiden's Room",
+                    "is_fixable": True,
+                    "learn_more_url": "",
+                    "menu_choice": "remove",
+                    "fix_label": "Delete area",
+                    "fix_effect": "Deletes the area.",
+                }
+            ],
+        )
+        json_path = watch_dir / f"{nid}.json"
+        json_path.write_text(json.dumps(data))
+
+        asyncio.run(
+            dashboard._execute_spook_item(
+                nid, "fix", "iss1", data, json_path, watch_dir
+            )
+        )
+        # The menu submit must have been sent with next_step_id.
+        menu_submits = [
+            d for _, d in fake_rest.posted if d == {"next_step_id": "remove"}
+        ]
+        assert len(menu_submits) == 1
         assert (watch_dir / f"{nid}.approved").exists()
