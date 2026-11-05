@@ -311,7 +311,7 @@ def _emit_step(status: str, activity: str = "update_execution") -> None:
         pass
 
 
-# SSH commands Pueo uses — checked against release notes for rename/removal risk.
+# SSH commands Pueo uses — kept for backwards compatibility; also included in PUEO_HA_DEPENDENCIES.
 PUEO_SSH_COMMANDS = [
     "ha core check",
     "ha core restart",
@@ -325,6 +325,160 @@ PUEO_SSH_COMMANDS = [
     "ha os info",
     "ha host info",
 ]
+
+# Full dependency manifest — every HA API surface Pueo touches, with the feature that uses it.
+# The LLM calls get_pueo_command_catalog() and cross-references this against release notes to
+# detect renames, removals, or incompatible changes that would break Pueo.
+PUEO_HA_DEPENDENCIES: dict[str, list[dict[str, str]]] = {
+    "ssh_commands": [
+        {"cmd": "ha core check", "feature": "sandbox config validation before repair"},
+        {"cmd": "ha core restart", "feature": "post-repair Core restart"},
+        {"cmd": "ha core update", "feature": "Core update execution"},
+        {"cmd": "ha core info --raw-json", "feature": "version detection"},
+        {"cmd": "ha core logs", "feature": "log tailing and triage"},
+        {"cmd": "ha apps list", "feature": "add-on slug resolution"},
+        {"cmd": "ha apps info <slug>", "feature": "add-on metadata and update state"},
+        {"cmd": "ha backup new", "feature": "mandatory pre-repair backup"},
+        {"cmd": "ha os update", "feature": "OS update execution"},
+        {"cmd": "ha os info", "feature": "OS version detection"},
+        {"cmd": "ha host info", "feature": "host hardware profile"},
+        {
+            "cmd": "ha resolution suggestion apply <uuid>",
+            "feature": "host-health resolution",
+        },
+        {
+            "cmd": "ha resolution issue dismiss <uuid>",
+            "feature": "host-health issue dismiss",
+        },
+        {"cmd": "ha apps restart <slug>", "feature": "add-on restart"},
+        {"cmd": "ha resolution healthcheck", "feature": "host-health check"},
+    ],
+    "websocket_commands": [
+        {
+            "cmd": "hacs/repositories/list",
+            "feature": "HACS integration discovery and companion provisioning",
+        },
+        {
+            "cmd": "hacs/repositories/add",
+            "feature": "HACS integration install (companion provisioning)",
+        },
+        {
+            "cmd": "hacs/repository/download",
+            "feature": "HACS integration download (companion provisioning)",
+        },
+        {
+            "cmd": "repairs/list_issues",
+            "feature": "repair issue triage and host-health investigation",
+        },
+        {
+            "cmd": "repairs/ignore_issue",
+            "feature": "repair issue ignore/dismiss",
+        },
+        {
+            "cmd": "update/release_notes",
+            "feature": "add-on release notes retrieval",
+        },
+        {
+            "cmd": "persistent_notification/subscribe",
+            "feature": "notification event streaming",
+        },
+        {
+            "cmd": "persistent_notification/get",
+            "feature": "persistent notification retrieval",
+        },
+        {
+            "cmd": "config/config_entries/flow/init",
+            "feature": "config flow initiation (companion provisioning, integration setup)",
+        },
+        {
+            "cmd": "config/config_entries/flow/{flow_id}",
+            "feature": "config flow step execution",
+        },
+        {
+            "cmd": "config/config_entries/options/flow/init",
+            "feature": "options flow initiation (companion provisioning)",
+        },
+        {
+            "cmd": "lovelace/resources",
+            "feature": "dashboard resource listing",
+        },
+        {
+            "cmd": "validate_config",
+            "feature": "automation YAML validation before authoring",
+        },
+    ],
+    "rest_paths": [
+        {
+            "path": "POST /api/services/<domain>/<service>",
+            "feature": "service call execution (call_service tool)",
+        },
+        {
+            "path": "GET /api/states/<entity_id>",
+            "feature": "entity state reads (get_entity_history, device availability)",
+        },
+        {
+            "path": "GET /api/logbook",
+            "feature": "logbook retrieval",
+        },
+        {
+            "path": "POST /api/template",
+            "feature": "template rendering (render_ha_template)",
+        },
+        {
+            "path": "GET /api/repairs/issues/fix/<issue_id>",
+            "feature": "repair flow initiation (drive_repair_flow)",
+        },
+        {
+            "path": "POST /api/config/automation/config/<automation_id>",
+            "feature": "automation create/update",
+        },
+        {
+            "path": "DELETE /api/config/automation/config/<automation_id>",
+            "feature": "automation delete (rollback)",
+        },
+        {
+            "path": "POST http://supervisor/addons/<slug>/options",
+            "feature": "add-on options update (companion provisioning)",
+        },
+    ],
+    "integrations": [
+        {
+            "domain": "hacs",
+            "feature": "HACS integration discovery and companion provisioning",
+            "note": "Becomes built-in Marketplace in HA 2026.11+",
+        },
+        {
+            "domain": "spook",
+            "feature": "Spook issue digest and companion provisioning",
+            "note": "optional HACS companion",
+        },
+        {
+            "domain": "ai_agent_ha",
+            "feature": "AI Agent HA companion integration detection",
+            "note": "optional HACS companion",
+        },
+    ],
+    "repair_id_patterns": [
+        {
+            "pattern": "hacs/restart_required_*",
+            "feature": "HACS restart-required repair detection in log monitor",
+        },
+    ],
+    "ssh_file_paths": [
+        {
+            "path": "/config/configuration.yaml",
+            "feature": "config read, sandbox validation, atomic repair swap",
+        },
+        {
+            "path": "/config/.agent_sandbox/",
+            "feature": "sandbox config testing before production apply",
+        },
+        {
+            "path": "/backup/",
+            "feature": "backup file download and SHA-256 verification",
+        },
+    ],
+}
 
 _GITHUB_API_URL = (
     "https://api.github.com/repos/home-assistant/core/releases/tags/{version}"

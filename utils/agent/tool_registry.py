@@ -2368,9 +2368,13 @@ GET_UPDATE_RELEASE_NOTES = ToolDefinition(
 GET_PUEO_COMMAND_CATALOG = ToolDefinition(
     name="get_pueo_command_catalog",
     description=(
-        "Return the list of SSH commands Pueo uses to interact with Home Assistant. "
-        "Cross-reference these with release notes to identify renamed or removed commands "
-        "that would break Pueo's operation."
+        "Return the full Pueo HA dependency manifest: SSH commands, WebSocket commands "
+        "(hacs/*, repairs/*, update/*, persistent_notification/*, config flow endpoints), "
+        "REST paths, integrations Pueo relies on (hacs, spook), and repair-id patterns. "
+        "Each entry shows the Pueo feature that depends on it. "
+        "Call for any Core/Supervisor update that renames, removes, or replaces APIs or "
+        "integrations — cross-reference against the release notes and report matches in "
+        "pueo_command_risks with the affected Pueo feature."
     ),
     parameters={
         "type": "object",

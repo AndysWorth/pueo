@@ -77,8 +77,8 @@
       <p><strong>Affected config keys:</strong> {{ r.payload.affected_config_keys | join(", ") }}</p>
       {% endif %}
       {% if r.payload.get("pueo_command_risks") %}
-      <p><strong>Pueo command risks</strong> (Pueo may need attention after update):</p>
-      <ul>{% for risk in r.payload.pueo_command_risks %}<li>⚠ {{ risk }}</li>{% endfor %}</ul>
+      <p><strong>⚠ Affects Pueo</strong> — these Pueo features rely on APIs changed in this update:</p>
+      <ul>{% for risk in r.payload.pueo_command_risks %}<li>{{ risk }}</li>{% endfor %}</ul>
       {% endif %}
       {% if r.payload.get("proposed_config_fixes") %}
       <details>
