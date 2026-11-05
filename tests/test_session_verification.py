@@ -533,6 +533,46 @@ class TestCollectDigestItems:
         assert items[0]["acknowledge"] is True
         assert "nothing needs doing" in items[0]["question"]
 
+    def test_root_cause_included(self, tmp_path):
+        """root_cause from card payload is included in each digest item dict."""
+        db = _make_db(tmp_path)
+        watch = tmp_path / "hitl"
+        watch.mkdir()
+        _insert_session(db, "e1")
+        _write_card(
+            watch,
+            "dev",
+            {
+                "card_type": "device_offline",
+                "episode_id": "e1",
+                "devices": [{"name": "Lamp"}],
+                "root_cause": "MQTT broker lost connection",
+                "verification_question": "Did it recover?",
+            },
+        )
+        items = collect_digest_items(watch, db)
+        assert len(items) == 1
+        assert items[0]["root_cause"] == "MQTT broker lost connection"
+
+    def test_root_cause_empty_when_missing(self, tmp_path):
+        """Items without root_cause in payload get an empty string."""
+        db = _make_db(tmp_path)
+        watch = tmp_path / "hitl"
+        watch.mkdir()
+        _insert_session(db, "e1")
+        _write_card(
+            watch,
+            "upd",
+            {
+                "card_type": "update",
+                "episode_id": "e1",
+                "verification_question": "Was this right?",
+            },
+        )
+        items = collect_digest_items(watch, db)
+        assert len(items) == 1
+        assert items[0]["root_cause"] == ""
+
     def test_missing_dir_and_db(self, tmp_path):
         db = _make_db(tmp_path)
         assert collect_digest_items(tmp_path / "nope", db) == []

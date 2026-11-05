@@ -378,6 +378,7 @@ def collect_digest_items(watch_dir: Path, db_path: str) -> list[dict]:
                 "nid": nid,
                 "subject": str(data.get("subject", "")),
                 "question": question,
+                "root_cause": str(payload.get("root_cause", "")).strip(),
                 "card_type": payload.get("card_type", ""),
                 "acknowledge": not card_is_actionable(payload),
                 "can_turn_off": payload.get("card_type") == "device_offline"

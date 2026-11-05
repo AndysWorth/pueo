@@ -52,6 +52,12 @@ single post-restart sighting. One restart gives you one data point.
    before the restart.
 5. Call `finish_device_availability` once for the whole group.
 
+## Prediction (lets Pueo check your conclusion itself)
+You **must** set a `prediction` on every `finish_device_availability` call:
+- Devices were already off (monitoring outcome): `{"kind": "stays_offline", "within_minutes": 120}`.
+- Integration failed to reload, you reloaded it: `{"kind": "recovers_after_reload", "within_minutes": 15}`.
+- Reload recommended but not yet done: `{"kind": "stays_offline", "within_minutes": 60}`.
+
 ## Verification question
 When you conclude the devices were already off, ask:
 "Were these devices switched off before the restart?" and leave `fact_if_yes` empty.

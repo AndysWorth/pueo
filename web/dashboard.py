@@ -468,6 +468,7 @@ def _refresh_digest(r: HITLRequest, watch_dir: Path) -> bool:
     """Drop digest rows whose card was answered; hide a digest with none left."""
     if r.payload.get("card_type") != "verification_digest":
         return True
+    orig_count = len(r.payload.get("items", []))
     items = []
     for i in r.payload.get("items", []):
         if not isinstance(i, dict):
@@ -487,6 +488,12 @@ def _refresh_digest(r: HITLRequest, watch_dir: Path) -> bool:
         if not answered:
             items.append(i)
     r.payload["items"] = items
+    n = len(items)
+    if n != orig_count:
+        r.subject = (
+            f"Pueo: {n} question{'s' if n != 1 else ''} to confirm"
+            f" ({orig_count} when sent)"
+        )
     return bool(items)
 
 
