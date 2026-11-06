@@ -11724,10 +11724,12 @@ class TestExecuteSpookItem:
         assert (watch_dir / f"{nid}.approved").exists()
 
     def test_fix_failure_keeps_card_pending_with_errors(
-        self, tmp_path, monkeypatch, watch_dir
+        self, tmp_path, monkeypatch, watch_dir, caplog
     ):
-        """When drive_repair_flow fails, the card stays PENDING with _errors set."""
+        """When drive_repair_flow fails, the card stays PENDING with _errors set
+        and the error message is emitted on the spook_item_fix_failed warning."""
         import asyncio
+        import logging
         import web.dashboard as dashboard
 
         # Flow returns menu_unhandled (no menu_choice in item, so driver aborts).
@@ -11750,16 +11752,27 @@ class TestExecuteSpookItem:
         json_path = watch_dir / f"{nid}.json"
         json_path.write_text(json.dumps(data))
 
-        asyncio.run(
-            dashboard._execute_spook_item(
-                nid, "fix", "iss1", data, json_path, watch_dir
+        # pueo logger has propagate=False; patch it so caplog can capture records.
+        monkeypatch.setattr(logging.getLogger("pueo"), "propagate", True)
+        with caplog.at_level(logging.WARNING):
+            asyncio.run(
+                dashboard._execute_spook_item(
+                    nid, "fix", "iss1", data, json_path, watch_dir
+                )
             )
-        )
         # Card must NOT be rejected — it must stay PENDING.
         assert not (watch_dir / f"{nid}.rejected").exists()
         # _errors must carry the per-item message.
         saved = json.loads(json_path.read_text())
         assert "iss1" in saved["payload"].get("_errors", {})
+        # error_message must be surfaced in the structured log event.
+        fix_failed = [
+            r for r in caplog.records if r.getMessage() == "spook_item_fix_failed"
+        ]
+        assert fix_failed, "Expected spook_item_fix_failed warning in log"
+        assert fix_failed[0].__dict__.get(
+            "error"
+        ), "spook_item_fix_failed must include 'error' field with the error message"
 
     def test_fix_issue_still_listed_keeps_card_pending(
         self, tmp_path, monkeypatch, watch_dir

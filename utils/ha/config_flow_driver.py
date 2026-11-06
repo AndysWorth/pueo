@@ -320,6 +320,12 @@ async def drive_repair_flow(
                 await rest.abort_repair_flow(flow_id)
             except Exception:  # nosec B110
                 pass
+        _log.warning(
+            "drive_repair_flow exception domain=%r issue_id=%r: %s",
+            domain,
+            issue_id,
+            exc,
+        )
         return FlowResult(
             success=False,
             entry_ids=[],
