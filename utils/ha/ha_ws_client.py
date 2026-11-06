@@ -474,6 +474,10 @@ class HAWebSocketClient:  # pragma: no cover
         except Exception:  # nosec B110
             return False
 
+    async def list_manifests(self) -> list[dict]:
+        """Return all integration manifests via manifest/list."""
+        return await self._call("manifest/list")  # type: ignore[return-value]
+
     async def disable_config_entry(
         self, entry_id: str, disabled_by: str | None
     ) -> None:
@@ -560,6 +564,7 @@ class FakeHAWebSocketClient:
         hacs_repositories: list[dict] | None = None,
         flows_in_progress: list[dict] | None = None,
         known_integrations: set[str] | None = None,
+        manifests: list[dict] | None = None,
     ) -> None:
         self._devices: list[dict] = devices or []
         self._notifications: list[dict] = notifications or []
@@ -597,6 +602,7 @@ class FakeHAWebSocketClient:
         self.hacs_download_calls: list[str] = []
         self._flows_in_progress: list[dict] = flows_in_progress or []
         self._known_integrations: set[str] = known_integrations or set()
+        self._manifests: list[dict] = manifests or []
         self.disable_entry_calls: list[tuple[str, str | None]] = []
         self.ignored_repairs: list[tuple[str, str, bool]] = []
         self._raise_marketplace_warning: bool = False
@@ -753,6 +759,10 @@ class FakeHAWebSocketClient:
     async def integration_known(self, domain: str) -> bool:
         self.calls.append(f"integration_known:{domain}")
         return domain in self._known_integrations
+
+    async def list_manifests(self) -> list[dict]:
+        self.calls.append("list_manifests")
+        return list(self._manifests)
 
     async def ignore_repair_issue(
         self, domain: str, issue_id: str, ignore: bool = True
