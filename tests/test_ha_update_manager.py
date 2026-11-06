@@ -6611,3 +6611,129 @@ class TestAddonInitialContextTransportNote:
         ctx = captured_context[0] if captured_context else ""
         assert "Supervisor slug: core_ssh" in ctx
         assert "SSH transport" in ctx
+
+
+# ---------------------------------------------------------------------------
+# _finish_update_analysis — highlights, report_id, blog_url in card payload
+# ---------------------------------------------------------------------------
+
+
+class TestFinishUpdateAnalysisReportPayload:
+    """highlights / report_id / blog_url fields added to card payload (S4)."""
+
+    def _make_executor(self, db_path=":memory:"):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from utils.agent.tool_executor import ToolExecutor
+
+        notifier = MagicMock()
+        notifier.send = AsyncMock()
+        return (
+            ToolExecutor(
+                ha_ssh_client=MagicMock(),
+                gate=None,
+                notifier=notifier,
+                db_path=db_path,
+            ),
+            notifier,
+        )
+
+    def _make_update(self, component="homeassistant", version="2026.11.0"):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            entity_id=f"update.home_assistant_core_update",
+            component=component,
+            installed_version="2026.10.4",
+            latest_version=version,
+            release_url="https://www.home-assistant.io/latest-release-notes/",
+            release_summary=None,
+        )
+
+    def _run(self, executor, **kwargs):
+        import asyncio
+        from unittest.mock import patch
+
+        defaults = dict(
+            safe_to_update=True,
+            breaking_changes=[],
+            affected_config_keys=[],
+            pueo_command_risks=[],
+            recommendation="Safe.",
+            instance_impact="none",
+            proposed_config_fixes=[],
+            create_hitl_card=True,
+        )
+        defaults.update(kwargs)
+        with patch("agents.ha_log_monitor._update_mark_card_sent"):
+            asyncio.run(executor._finish_update_analysis(**defaults))
+
+    def test_highlights_in_payload(self, pueo_dirs):
+        executor, notifier = self._make_executor()
+        executor.set_update_status(self._make_update())
+        self._run(executor, highlights=["MQTT 5.0 support", "New automation editor"])
+        payload = notifier.send.call_args.kwargs["payload"]
+        assert payload["highlights"] == ["MQTT 5.0 support", "New automation editor"]
+
+    def test_highlights_capped_at_five(self, pueo_dirs):
+        executor, notifier = self._make_executor()
+        executor.set_update_status(self._make_update())
+        self._run(executor, highlights=[f"hl{i}" for i in range(8)])
+        payload = notifier.send.call_args.kwargs["payload"]
+        assert len(payload["highlights"]) == 5
+
+    def test_highlights_empty_when_not_provided(self, pueo_dirs):
+        executor, notifier = self._make_executor()
+        executor.set_update_status(self._make_update())
+        self._run(executor)
+        payload = notifier.send.call_args.kwargs["payload"]
+        assert payload["highlights"] == []
+
+    def test_report_id_set_for_core(self, pueo_dirs):
+        executor, notifier = self._make_executor()
+        executor.set_update_status(
+            self._make_update(component="homeassistant", version="2026.11.0")
+        )
+        self._run(executor)
+        payload = notifier.send.call_args.kwargs["payload"]
+        assert payload["report_id"] == "core_2026.11.0"
+
+    def test_report_id_empty_for_non_core(self, pueo_dirs):
+        from types import SimpleNamespace
+
+        executor, notifier = self._make_executor()
+        update = SimpleNamespace(
+            entity_id="update.hacs",
+            component="hacs",
+            installed_version="2.0.0",
+            latest_version="2.1.0",
+            release_url="https://example.com/release",
+            release_summary=None,
+        )
+        executor.set_update_status(update)
+        self._run(executor)
+        payload = notifier.send.call_args.kwargs["payload"]
+        assert payload["report_id"] == ""
+
+    def test_blog_url_from_core_report(self, pueo_dirs):
+        executor, notifier = self._make_executor()
+        executor.set_update_status(self._make_update())
+        executor._core_report_blog_url = (
+            "https://www.home-assistant.io/blog/2026/11/06/release-202611/"
+        )
+        self._run(executor)
+        payload = notifier.send.call_args.kwargs["payload"]
+        assert (
+            payload["blog_url"]
+            == "https://www.home-assistant.io/blog/2026/11/06/release-202611/"
+        )
+
+    def test_blog_url_falls_back_to_release_url(self, pueo_dirs):
+        executor, notifier = self._make_executor()
+        executor.set_update_status(self._make_update())
+        # _core_report_blog_url not set → falls back to release_url
+        self._run(executor)
+        payload = notifier.send.call_args.kwargs["payload"]
+        assert (
+            payload["blog_url"] == "https://www.home-assistant.io/latest-release-notes/"
+        )

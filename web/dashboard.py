@@ -5924,6 +5924,40 @@ async def submit_runbooks_to_kb() -> JSONResponse:
     return JSONResponse({"ok": True, "pr_url": pr_url, "count": total})
 
 
+_REPORT_ID_RE = re.compile(r"^core_[\d.]+$")
+
+
+@app.get("/updates/report/{report_id}", response_class=HTMLResponse)
+async def update_report_page(request: Request, report_id: str) -> HTMLResponse:
+    """Full release report page for a Core update."""
+    if not _REPORT_ID_RE.match(report_id):
+        raise HTTPException(status_code=404, detail="Report not found")
+
+    from utils.knowledge.ha_release_report import CoreReleaseReport
+
+    report_path = _get_dirs().state_dir / "update_reports" / f"{report_id}.json"
+
+    def _load() -> "CoreReleaseReport | None":
+        if not report_path.exists():
+            return None
+        try:
+            return CoreReleaseReport.model_validate_json(
+                report_path.read_text(encoding="utf-8")
+            )
+        except Exception:  # nosec B110
+            return None
+
+    report = await asyncio.to_thread(_load)
+    if report is None:
+        raise HTTPException(status_code=404, detail="Report not found")
+
+    return templates.TemplateResponse(
+        request,
+        "update_report.html",
+        {"report": report, "report_id": report_id},
+    )
+
+
 def run_dashboard() -> None:
     import uvicorn
 

@@ -2584,6 +2584,15 @@ FINISH_UPDATE_ANALYSIS = ToolDefinition(
                     "A default is supplied automatically if you omit this."
                 ),
             },
+            "highlights": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Up to 5 feature changes from this release that are relevant to "
+                    "installed integrations — each item is one sentence. Leave empty "
+                    "if no highlights stand out for this installation."
+                ),
+            },
             "deviated_from_runbook": {
                 "type": "object",
                 "description": (
