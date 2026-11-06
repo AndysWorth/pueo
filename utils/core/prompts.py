@@ -15,6 +15,7 @@ _VALID_TASKS = frozenset(
         "host",
         "update",
         "setup",
+        "log_recurrence",
     }
 )
 

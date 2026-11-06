@@ -1215,6 +1215,143 @@ async def _run_repair_issue_investigation(
         decrement_active_agent()
 
 
+def _log_recurrence_initial_context(pending: dict) -> str:
+    """Build the bounded first user message for a recurring-log-error session."""
+    from utils.core.context import truncate_to_budget
+
+    window = pending.get("window_days")
+    text = (
+        "Recurring Home Assistant log error:\n"
+        f"Logger: {pending.get('logger') or '(unknown)'}\n"
+        f"Exception: {pending.get('exc_class') or '(none)'}\n"
+        f"Occurrences: {pending.get('count')} in the last {window} days\n"
+        "This error recurred; the one-shot log pre-filter judged single occurrences "
+        "non-actionable. Determine whether it needs user action.\n\n"
+        f"Error block:\n{pending.get('error_block', '')}\n"
+    )
+    return truncate_to_budget(text, max_tokens=800)
+
+
+async def _run_log_recurrence_investigation(
+    pending: dict,
+    notifier: NotifierProtocol,
+    db_path: str,
+    llm_client: Optional[LLMClientProtocol] = None,
+    knowledge_store: Optional[Any] = None,
+    ha_rest_client: Optional[HARestClientProtocol] = None,
+    ssh_client: Optional[SSHClientProtocol] = None,
+    gate: Optional[AutonomyGate] = None,
+    ha_ws_client: Optional[HAWebSocketClientProtocol] = None,
+    event_subscriber: Optional[HAEventSubscriberProtocol] = None,
+) -> None:
+    """Investigate a recurring log error in a read-only ``log:*`` session (#1132).
+
+    *pending* is ``{fp, logger, exc_class, count, window_days, error_block}``.
+    Mirrors ``_run_repair_issue_investigation``: ``ReadOnlySSHClient`` (ADR 043)
+    and the real ``AutonomyGate``.  ``finish_log_investigation`` writes the
+    ``log_recurrence:<fp>`` suppression row; a non-success outcome writes the
+    30-minute ``log_recurrence_backoff:<fp>`` row so a stuck session does not
+    re-trigger on the next occurrence.
+    """
+    from utils.agent.agent_loop import AgentLoop
+    from utils.agent.tool_executor import ToolExecutor
+    from utils.agent.tool_registry import build_ha_tool_registry
+    from utils.ha.read_only_ssh import ReadOnlySSHClient
+    from utils.llm.llm_factory import make_llm_client
+    from utils.core.prompts import load_agent_prompt
+    from utils.knowledge.runbook_signature import sig_log
+
+    fp = str(pending.get("fp", ""))
+    llm = llm_client or make_llm_client()  # pragma: no cover
+    gate = gate or AutonomyGate(AUTONOMY_LEVEL)
+    ssh = ssh_client or AsyncSSHClient(HA_HOST, HA_USER, SSH_KEY_PATH)
+    if ha_rest_client is None and HA_API_TOKEN:  # pragma: no cover
+        ha_rest_client = HARestClient(HA_HOST, HA_API_PORT, HA_API_TOKEN)
+    if ha_ws_client is None and HA_API_TOKEN:  # pragma: no cover
+        from utils.ha.ha_ws_client import HAWebSocketClient
+
+        ha_ws_client = HAWebSocketClient(HA_HOST, HA_API_PORT, HA_API_TOKEN)
+
+    executor = ToolExecutor(
+        ha_ssh_client=ReadOnlySSHClient(ssh),
+        gate=gate,
+        notifier=notifier,
+        ha_rest_client=ha_rest_client,
+        ha_ws_client=ha_ws_client,
+        knowledge_store=knowledge_store,
+        db_path=db_path,
+    )
+    executor.set_pending_log_error(pending)
+    if event_subscriber is not None:
+        executor.set_event_subscriber(event_subscriber)
+    try:
+        from utils.ha.ha_environment import load_environment_profile as _lep
+
+        _prof = await asyncio.to_thread(_lep, db_path)
+        if _prof is not None:
+            executor.set_ha_profile(_prof)
+    except Exception:  # nosec B110
+        pass
+
+    logger_name = str(pending.get("logger") or "")
+    exc_class = pending.get("exc_class")
+    signature = sig_log(logger_name, exc_class)
+
+    from utils.agent.supervisor import (
+        decrement_active_agent,
+        increment_active_agent,
+        make_activity_timeline_callback,
+        publish_activity_done,
+    )
+
+    loop = AgentLoop(
+        llm_client=llm,
+        tool_executor=executor,
+        tool_registry=build_ha_tool_registry(),
+        system_prompt=load_agent_prompt("log_recurrence", "finish_log_investigation"),
+        terminal_tool_name="finish_log_investigation",
+        trigger="ha_log_monitor",
+        activity_type="log_recurrence",
+        db_path=db_path,
+        knowledge_store=knowledge_store,
+        timeline_callback=make_activity_timeline_callback(
+            "log_recurrence",
+            trigger=f"Recurring log error: {logger_name or 'unknown'} {exc_class or ''}",
+        ),
+        capture_llm=True,
+    )
+    log.info(
+        "log_recurrence_investigation_start",
+        signature=signature,
+        fingerprint=fp,
+        count=pending.get("count"),
+    )
+    increment_active_agent()
+    try:
+        result = await loop.run(
+            initial_context=_log_recurrence_initial_context(pending),
+            knowledge_query=f"{logger_name} {exc_class or ''} recurring error".strip(),
+            signature=signature,
+            subject_key=fp,
+        )
+        publish_activity_done("log_recurrence", result.outcome)
+        if result.outcome != "success":
+            from utils.hitl.hitl_tracker import mark_investigation_backoff
+
+            def _backoff() -> None:
+                with sqlite3.connect(db_path) as _conn:
+                    mark_investigation_backoff(_conn, f"log_recurrence_backoff:{fp}")
+
+            await asyncio.to_thread(_backoff)
+            log.warning(
+                "log_recurrence_stuck_backoff", outcome=result.outcome, fingerprint=fp
+            )
+    except Exception as exc:
+        log.error("log_recurrence_investigation_failed", fingerprint=fp, error=str(exc))
+    finally:
+        decrement_active_agent()
+
+
 async def _send_integration_bug_card(
     domain: str,
     file_line: str,
@@ -1281,6 +1418,84 @@ async def _send_integration_bug_card(
     log.info("integration_bug_card_sent", domain=domain, fingerprint=_fp, name=name)
 
 
+async def _route_recurring_error(
+    error_block: list[str],
+    logger_name: str,
+    fp_line: str,
+    count: int,
+    client: SSHClientProtocol,
+    notifier: NotifierProtocol,
+    llm_client: Optional[LLMClientProtocol],
+    gate: AutonomyGate,
+    knowledge_store: Optional[Any] = None,
+    event_subscriber: Optional[HAEventSubscriberProtocol] = None,
+) -> None:
+    """Route a recurring critical log block to a ``log:*`` investigation (#1132).
+
+    A custom-component traceback still gets the integration-bug card.  Otherwise
+    the one-shot triage is skipped (its verdict is what recurrence overrides) and
+    an investigation is queued once per suppression window.
+    """
+    from utils.knowledge.runbook_signature import sig_log
+
+    exc_class = _extract_exception_class(error_block)
+    signature = sig_log(logger_name, exc_class)
+    if count == LOG_RECURRENCE_THRESHOLD:
+        log.info("log_recurrence_threshold_reached", signature=signature, count=count)
+
+    _ci = _extract_custom_component_info(error_block)
+    if _ci is not None:
+        _domain, _file_line = _ci
+        await _send_integration_bug_card(
+            _domain, _file_line, exc_class, client, notifier
+        )
+        return
+
+    fp = _recurrence_key(logger_name, fp_line)
+    if not await asyncio.to_thread(_log_recurrence_should_investigate, fp):
+        log.info("log_recurrence_suppressed", signature=signature, fingerprint=fp)
+        return
+
+    pending = {
+        "fp": fp,
+        "logger": logger_name,
+        "exc_class": exc_class,
+        "count": count,
+        "window_days": _LOG_RECURRENCE_WINDOW // 86400,
+        "error_block": "\n".join(error_block),
+    }
+    db_path = _config.DB_PATH
+
+    async def _investigate() -> None:
+        await _run_log_recurrence_investigation(
+            pending=pending,
+            notifier=notifier,
+            db_path=db_path,
+            llm_client=llm_client,
+            knowledge_store=knowledge_store,
+            ssh_client=client,
+            gate=gate,
+            event_subscriber=event_subscriber,
+        )
+
+    from utils.agent.work_queue import PRIORITY_HIGH, WorkItem, get_work_queue_or_none
+
+    _wq = get_work_queue_or_none()
+    if _wq is not None:
+        await _wq.submit(
+            WorkItem(
+                priority=PRIORITY_HIGH,
+                activity_type="log_recurrence",
+                description=f"Recurring error: {signature}"[:120],
+                dedup_key=f"log_recurrence:{fp}",
+                suppress_while_running=frozenset(),
+                coro_factory=_investigate,
+            )
+        )
+    else:
+        await _investigate()
+
+
 # ==========================================
 # STREAMING SSH CONNECTION LAYER
 # ==========================================
@@ -1291,8 +1506,15 @@ async def tail_remote_log_stream(
     llm_client: Optional[LLMClientProtocol] = None,
     gate: Optional[AutonomyGate] = None,
     notifier: Optional[NotifierProtocol] = None,
+    knowledge_store: Optional[Any] = None,
+    event_subscriber: Optional[HAEventSubscriberProtocol] = None,
 ) -> None:
-    """Streams live HA logs over SSH. source='core' tails ha core; source='supervisor' tails ha supervisor."""
+    """Streams live HA logs over SSH. source='core' tails ha core; source='supervisor' tails ha supervisor.
+
+    A critical line whose fingerprint recurred ``LOG_RECURRENCE_THRESHOLD`` times
+    in the window skips one-shot triage and starts a read-only ``log:*``
+    investigation instead (#1132); other lines keep the triage gate.
+    """
     client = ssh_client or AsyncSSHClient(HA_HOST, HA_USER, SSH_KEY_PATH)
     _gate = gate or AutonomyGate(AUTONOMY_LEVEL)
     _notifier = notifier or get_notifier(NOTIFIER, NOTIFY_URL, NOTIFY_WATCH_DIR)
@@ -1366,27 +1588,31 @@ async def tail_remote_log_stream(
                     _pending_line = _boundary_raw
 
                 _logger = _resolve_block_logger(clean_line, _prev_line, _error_block)
+                _fp_line = _recurrence_fingerprint(_error_block)
                 _recurrence_count = await asyncio.to_thread(
                     _check_and_record_recurrence,
                     _logger or "",
-                    _recurrence_fingerprint(_error_block),
+                    _fp_line,
                     time.time(),
                 )
                 _is_recurring = _recurrence_count >= LOG_RECURRENCE_THRESHOLD
 
-                if _is_recurring and _recurrence_count == LOG_RECURRENCE_THRESHOLD:
-                    _exc_class = _extract_exception_class(_error_block)
-                    from utils.knowledge.runbook_signature import sig_log
-
-                    log.info(
-                        "log_recurrence_threshold_reached",
-                        signature=sig_log(_logger or "", _exc_class),
+                if _is_recurring:
+                    await _route_recurring_error(
+                        error_block=list(_error_block),
+                        logger_name=_logger or "",
+                        fp_line=_fp_line,
                         count=_recurrence_count,
+                        client=client,
+                        notifier=_notifier,
+                        llm_client=llm_client,
+                        gate=_gate,
+                        knowledge_store=knowledge_store,
+                        event_subscriber=event_subscriber,
                     )
+                    continue
 
-                if not _is_recurring and _TRANSIENT_LOG_PATTERNS.search(
-                    "\n".join(_error_block)
-                ):
+                if _TRANSIENT_LOG_PATTERNS.search("\n".join(_error_block)):
                     log.info(
                         "triage_transient_skip",
                         line=clean_line,
