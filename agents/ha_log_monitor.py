@@ -646,6 +646,43 @@ def _extract_logger(line: str) -> Optional[str]:
     return m.group(1) if m else None
 
 
+# Traceback frame inside an HA core or custom integration package, e.g.
+# '  File "/usr/src/homeassistant/homeassistant/components/noaa_tides/sensor.py", ...'
+_INTEGRATION_FRAME_RE = re.compile(
+    r'File "[^"]*/(homeassistant/components|custom_components)/([A-Za-z0-9_]+)/'
+)
+
+
+def _resolve_block_logger(
+    trigger_line: str, prev_line: str, block: list[str]
+) -> Optional[str]:
+    """Return the logger that best identifies the integration behind an error block.
+
+    ``ha core logs`` emits the ``ERROR ... [logger] msg`` header on its own line
+    and the ``Traceback`` header on the next, so when the traceback line is the
+    trigger the logger lives on *prev_line*.  Core loggers outside
+    ``homeassistant.components`` (``homeassistant.helpers.entity``,
+    ``homeassistant.core``…) name the caller, not the integration, so they are
+    refined from the innermost integration frame of the traceback (#1132).
+    """
+    logger = _extract_logger(trigger_line)
+    if logger is None and _TRACEBACK_HEADER.match(_strip_ansi(trigger_line)):
+        logger = _extract_logger(prev_line)
+    generic = logger is None or (
+        logger.startswith("homeassistant.")
+        and not logger.startswith("homeassistant.components.")
+    )
+    if not generic:
+        return logger
+    frame_logger: Optional[str] = None
+    for line in block:
+        m = _INTEGRATION_FRAME_RE.search(line)
+        if m:
+            pkg = m.group(1).replace("/", ".")
+            frame_logger = f"{pkg}.{m.group(2)}"
+    return frame_logger or logger
+
+
 def _extract_exception_class(block: list[str]) -> Optional[str]:
     """Return the short exception class name from the last matching line of *block*."""
     result = None
@@ -699,14 +736,38 @@ def _recurrence_fingerprint(block: list[str]) -> str:
     return _DIGIT_RE.sub("N", _strip_log_timestamp(target))
 
 
+def _recurrence_key(logger: str, first_error_line: str) -> str:
+    """Return the 16-char recurrence hash for a (logger, fingerprint line) pair.
+
+    Shared by the occurrence counter (``user_prefs`` key ``log_recurrence:<fp>``)
+    and the recurrence-investigation suppression keys so both name the same error.
+    """
+    return hashlib.sha256(f"{logger}|{first_error_line}".encode()).hexdigest()[:16]
+
+
+def _log_recurrence_should_investigate(fp: str) -> bool:
+    """Return True when no card or stuck-loop backoff suppresses *fp*. Sync.
+
+    Checks ``log_recurrence:<fp>`` (the advise-only card: pending, rejected or
+    within its cooldown) and ``log_recurrence_backoff:<fp>`` (30-min stuck-loop
+    backoff), so a recurring error gets one session per window, not one per line.
+    """
+    from utils.hitl.hitl_tracker import should_send_card
+
+    with sqlite3.connect(_config.DB_PATH) as _conn:
+        return bool(
+            should_send_card(_conn, f"log_recurrence:{fp}")
+            and should_send_card(_conn, f"log_recurrence_backoff:{fp}")
+        )
+
+
 def _check_and_record_recurrence(logger: str, first_error_line: str, now: float) -> int:
     """Record this error occurrence and return count within _LOG_RECURRENCE_WINDOW. Sync.
 
     *first_error_line* should be the message without its timestamp prefix so
     that repeated occurrences at different times share the same fingerprint.
     """
-    fp = hashlib.sha256(f"{logger}|{first_error_line}".encode()).hexdigest()[:16]
-    key = f"log_recurrence:{fp}"
+    key = f"log_recurrence:{_recurrence_key(logger, first_error_line)}"
     cutoff = now - _LOG_RECURRENCE_WINDOW
     try:
         with sqlite3.connect(_config.DB_PATH) as conn:
@@ -1304,7 +1365,7 @@ async def tail_remote_log_stream(
                 if _boundary_raw is not None:
                     _pending_line = _boundary_raw
 
-                _logger = _extract_logger(clean_line)
+                _logger = _resolve_block_logger(clean_line, _prev_line, _error_block)
                 _recurrence_count = await asyncio.to_thread(
                     _check_and_record_recurrence,
                     _logger or "",

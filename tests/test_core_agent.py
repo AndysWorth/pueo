@@ -4158,6 +4158,85 @@ class TestLogErrorBlock:
         line = "\x1b[31mERROR\x1b[0m [mylogger] boom"
         assert _extract_logger(line) == "mylogger"
 
+    # Real `ha core logs` block captured 2026-11-05 (#1132): header and
+    # Traceback lines are separate, header logger is the generic entity helper.
+    _NOAA_HEADER = (
+        "\x1b[31m2026-11-05 23:46:25.987 ERROR (MainThread) "
+        "[homeassistant.helpers.entity] Update for sensor.noaa_tides_2 fails"
+    )
+    _NOAA_BLOCK = [
+        "Traceback (most recent call last):",
+        '  File "/usr/src/homeassistant/homeassistant/helpers/entity.py", line 999,'
+        " in async_update_ha_state",
+        '  File "/usr/local/lib/python3.14/concurrent/futures/thread.py", line 73,'
+        " in run",
+        '  File "/usr/src/homeassistant/homeassistant/components/noaa_tides/sensor.py",'
+        " line 165, in update",
+        "    df_predictions = self._station.get_data(",
+        '  File "/usr/local/lib/python3.14/site-packages/noaa_coops/station.py",'
+        " line 426, in _make_api_request",
+        "    raise COOPSAPIError(message=err_msg)",
+        "noaa_coops.station.COOPSAPIError: CO-OPS API returned an error: No Predictions"
+        " data was found. Please make sure the Datum input is valid.\x1b[0m",
+    ]
+
+    def test_resolve_block_logger_real_noaa_traceback(self):
+        from agents.ha_log_monitor import (
+            _extract_exception_class,
+            _resolve_block_logger,
+        )
+        from utils.knowledge.runbook_signature import sig_log
+
+        logger = _resolve_block_logger(
+            self._NOAA_BLOCK[0], self._NOAA_HEADER, self._NOAA_BLOCK
+        )
+        assert logger == "homeassistant.components.noaa_tides"
+        sig = sig_log(logger, _extract_exception_class(self._NOAA_BLOCK))
+        assert sig == "log:homeassistant_components_noaa_tides:coopsapierror"
+
+    def test_resolve_block_logger_keeps_component_logger(self):
+        from agents.ha_log_monitor import _resolve_block_logger
+
+        line = "2026-11-06 01:31:13.816 ERROR (MainThread) [homeassistant.components.lifx] Error doing job"
+        assert (
+            _resolve_block_logger(line, "", self._NOAA_BLOCK)
+            == "homeassistant.components.lifx"
+        )
+
+    def test_resolve_block_logger_keeps_library_logger(self):
+        from agents.ha_log_monitor import _resolve_block_logger
+
+        line = "2026-11-06 01:31:25.222 ERROR (Thread-7) [pychromecast.socket_client] Traceback"
+        assert _resolve_block_logger(line, "", [line]) == "pychromecast.socket_client"
+
+    def test_resolve_block_logger_custom_component_frame(self):
+        from agents.ha_log_monitor import _resolve_block_logger
+
+        block = [
+            "Traceback (most recent call last):",
+            '  File "/config/custom_components/spook/sensor.py", line 291, in foo',
+            "ValueError: bad",
+        ]
+        header = "2026-11-06 ERROR (MainThread) [homeassistant.core] Error doing job"
+        assert _resolve_block_logger(block[0], header, block) == (
+            "custom_components.spook"
+        )
+
+    def test_resolve_block_logger_generic_without_frames_falls_back(self):
+        from agents.ha_log_monitor import _resolve_block_logger
+
+        line = "2026-11-06 ERROR (MainThread) [homeassistant.core] Error doing job"
+        assert _resolve_block_logger(line, "", [line]) == "homeassistant.core"
+
+    def test_resolve_block_logger_traceback_ignores_non_header_prev(self):
+        """A non-traceback trigger never borrows the previous line's logger."""
+        from agents.ha_log_monitor import _resolve_block_logger
+
+        assert (
+            _resolve_block_logger("Uncaught thread exception", "[other.logger] x", [])
+            is None
+        )
+
     def test_extract_exception_class_from_last_match(self):
         from agents.ha_log_monitor import _extract_exception_class
 
@@ -4359,6 +4438,54 @@ class TestLogRecurrence:
         count = _check_and_record_recurrence("homeassistant.sensor", "ERROR old", now)
         assert count == 1  # only the current occurrence is within window
 
+    def test_recurrence_key_is_stable_16_hex(self):
+        from agents.ha_log_monitor import _recurrence_key
+
+        k = _recurrence_key("logger.a", "ERROR foo")
+        assert len(k) == 16 and int(k, 16) >= 0
+        assert k == _recurrence_key("logger.a", "ERROR foo")
+        assert k != _recurrence_key("logger.b", "ERROR foo")
+
+    def test_check_and_record_uses_recurrence_key(self, db_path):
+        import sqlite3
+
+        from agents.ha_log_monitor import _check_and_record_recurrence, _recurrence_key
+
+        _check_and_record_recurrence("logger.a", "ERROR foo", 1000.0)
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT value FROM user_prefs WHERE key = ?",
+                (f"log_recurrence:{_recurrence_key('logger.a', 'ERROR foo')}",),
+            ).fetchone()
+        assert row is not None
+
+    def test_should_investigate_when_no_rows(self, db_path):
+        from agents.ha_log_monitor import _log_recurrence_should_investigate
+
+        assert _log_recurrence_should_investigate("abcd") is True
+
+    def test_should_not_investigate_while_card_pending(self, db_path):
+        import sqlite3
+
+        from agents.ha_log_monitor import _log_recurrence_should_investigate
+        from utils.hitl.hitl_tracker import mark_card_sent
+
+        with sqlite3.connect(db_path) as conn:
+            mark_card_sent(conn, "log_recurrence:abcd", "log_recurrence", "x")
+        assert _log_recurrence_should_investigate("abcd") is False
+
+    def test_should_not_investigate_during_stuck_backoff(self, db_path):
+        import sqlite3
+
+        from agents.ha_log_monitor import _log_recurrence_should_investigate
+        from utils.hitl.hitl_tracker import mark_investigation_backoff
+
+        with sqlite3.connect(db_path) as conn:
+            mark_investigation_backoff(conn, "log_recurrence_backoff:abcd")
+        assert _log_recurrence_should_investigate("abcd") is False
+        # A different fingerprint is unaffected.
+        assert _log_recurrence_should_investigate("ef01") is True
+
     def test_different_errors_are_independent(self, db_path):
         from agents.ha_log_monitor import _check_and_record_recurrence
 
@@ -4398,6 +4525,44 @@ class TestLogRecurrence:
         # First two hits: transient match → skipped.
         # Third hit (threshold): NOT skipped even though block contains ConnectionError.
         assert len(llm.calls) >= 1
+
+    def test_traceback_trigger_records_under_integration_logger(self, db_path):
+        """Real ha-core-logs shape: header line, then Traceback trigger (#1132)."""
+        import sqlite3
+
+        import agents.ha_log_monitor as _lm
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.llm.ollama_client import FakeLLMClient
+        from agents.ha_log_monitor import LogEvaluation
+
+        llm = FakeLLMClient(
+            LogEvaluation(
+                is_actionable=False, root_cause_summary="x", confidence_score=0.1
+            ).model_dump_json()
+        )
+        lines = [
+            "2026-11-05 23:46:25.987 ERROR (MainThread) "
+            "[homeassistant.helpers.entity] Update for sensor.noaa_tides_2 fails",
+            "Traceback (most recent call last):",
+            '  File "/usr/src/homeassistant/homeassistant/components/noaa_tides/'
+            'sensor.py", line 165, in update',
+            "noaa_coops.station.COOPSAPIError: CO-OPS API returned an error: No data",
+            "2026-11-05 23:46:30.000 INFO (MainThread) [x] done",
+        ]
+        ssh = FakeSSHClient(stream_data=lines)
+        asyncio.run(_lm.tail_remote_log_stream(ssh_client=ssh, llm_client=llm))
+
+        fp_line = _lm._recurrence_fingerprint(lines[1:4])
+        expected = _lm._recurrence_key("homeassistant.components.noaa_tides", fp_line)
+        with sqlite3.connect(db_path) as conn:
+            keys = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT key FROM user_prefs WHERE key LIKE 'log_recurrence:%'"
+                )
+            }
+        assert f"log_recurrence:{expected}" in keys
+        assert f"log_recurrence:{_lm._recurrence_key('', fp_line)}" not in keys
 
 
 # ── Retention policy (item 32) ────────────────────────────────────────────────────
