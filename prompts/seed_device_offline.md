@@ -88,11 +88,12 @@ reading logs:
   fault.
 
 ## Prediction (lets Pueo check your conclusion itself)
-You **must** set a `prediction` on every `finish_device_availability` call. Pueo watches
-the devices and verifies the session from what actually happens, without waiting for the
-user. Pick the best fit:
-- You reloaded the integration because its connection dropped:
-  `{"kind": "recovers_after_reload", "within_minutes": 15}`.
+You **must** set a `prediction` on every `finish_device_availability` call — including when
+you already observed recovery via `get_entity_history`. The prediction is what triggers
+Pueo's auto-verification path; without it the session outcome is never recorded
+automatically and the user is asked to verify manually instead. Pick the best fit:
+- You reloaded the integration because its connection dropped (whether or not you already
+  confirmed recovery): `{"kind": "recovers_after_reload", "within_minutes": 15}`.
 - The connection dropped or the vendor has an outage, and you expect it to come back by
   itself: `{"kind": "recovers_without_action", "within_minutes": <N>}`, where N comes from
   the evidence (for example the typical duration in a recurrence fact).
@@ -102,6 +103,13 @@ user. Pick the best fit:
   a conservative default.
 
 ## Verification question
-Ask one yes/no question the user can answer from what they know, e.g. "Was the Kasa plug
-switched off at the wall?". Set `fact_if_yes` only to a fact the evidence and that answer
-together establish, such as "Kitchen TV (cast) is switched off at night by the user."
+Ask one yes/no question about something the **user** knows that Pueo **cannot** determine
+from tools — for example "Was this device switched off intentionally?" or "Is the EcoNet
+gateway known to have network issues?".
+
+**Never ask whether the device recovered** if you already confirmed this via
+`get_entity_history` or any other tool call — Pueo already has that answer, and asking the
+user is redundant. The `prediction` field handles recovery verification automatically.
+
+Set `fact_if_yes` only to a fact the evidence and the user's answer together establish,
+such as "Kitchen TV (cast) is switched off at night by the user."
