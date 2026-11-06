@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Callable, Optional
 
 _BLOG_URL_RE = re.compile(r"https://www\.home-assistant\.io/blog/[^\s]+")
+# Markdown link form: [text](url)  — preferred because it avoids trailing punctuation.
+_BLOG_MD_LINK_RE = re.compile(r"\((https://www\.home-assistant\.io/blog/[^)\s]+)\)")
 _STUB_THRESHOLD = 500
 
 # Matches the "Backward-incompatible changes" (or "Breaking changes") heading.
@@ -21,6 +23,8 @@ _BC_SECTION_RE = re.compile(
     r"(?:^|\n)##\s+(?:Backward[- ]incompatible|Breaking)\s+changes?\b",
     re.IGNORECASE,
 )
+# Matches the [domains: X, Y] annotation emitted by _ArticleExtractor.
+_DOMAIN_ANNOTATION_RE = re.compile(r"\[domains:\s*([^\]]+)\]")
 
 
 class _GenericHtmlExtractor(HTMLParser):
@@ -139,13 +143,26 @@ def html_to_text(html: str, fragment: str = "") -> str:
 
 
 class _ArticleExtractor(HTMLParser):
-    """Converts the <article> body to clean Markdown-like plain text."""
+    """Converts the <article> body to clean Markdown-like plain text.
+
+    Inside ``<details>`` blocks, tracks ``<a href="/integrations/<domain>/">``
+    links whose text ends with "documentation" and emits a ``[domains: X]``
+    annotation at the end of each block so ``extract_breaking_changes`` can
+    match entries to their exact HA domain without relying on display-name
+    normalisation alone.
+    """
+
+    _INTEGRATION_HREF_RE = re.compile(r"^/integrations/([^/]+)/$")
 
     def __init__(self) -> None:
         super().__init__()
         self._in_article = False
         self._tag_stack: list[str] = []
         self._buf: list[str] = []
+        self._in_details = False
+        self._details_domains: list[str] = []
+        self._pending_a_domain: Optional[str] = None
+        self._link_text_buf: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list) -> None:
         if tag == "article":
@@ -153,7 +170,16 @@ class _ArticleExtractor(HTMLParser):
         if not self._in_article:
             return
         self._tag_stack.append(tag)
-        if tag == "h2":
+        if tag == "details":
+            self._in_details = True
+            self._details_domains = []
+        elif tag == "a" and self._in_details:
+            href = dict(attrs).get("href", "")
+            m = self._INTEGRATION_HREF_RE.match(href)
+            if m:
+                self._pending_a_domain = m.group(1)
+                self._link_text_buf = []
+        elif tag == "h2":
             self._buf.append("\n\n## ")
         elif tag == "h3":
             self._buf.append("\n\n### ")
@@ -172,12 +198,25 @@ class _ArticleExtractor(HTMLParser):
             self._tag_stack.pop()
         if tag == "article":
             self._in_article = False
+        elif tag == "details" and self._in_details:
+            if self._details_domains:
+                self._buf.append(f"\n[domains: {', '.join(self._details_domains)}]")
+            self._in_details = False
+            self._details_domains = []
+        elif tag == "a" and self._pending_a_domain is not None:
+            link_text = "".join(self._link_text_buf).strip().lower()
+            if link_text.endswith("documentation"):
+                self._details_domains.append(self._pending_a_domain)
+            self._pending_a_domain = None
+            self._link_text_buf = []
 
     def handle_data(self, data: str) -> None:
         if self._in_article:
             text = data.strip()
             if text:
                 self._buf.append(text + " ")
+                if self._pending_a_domain is not None:
+                    self._link_text_buf.append(text)
 
     def result(self) -> str:
         text = "".join(self._buf)
@@ -186,13 +225,29 @@ class _ArticleExtractor(HTMLParser):
 
 
 def extract_blog_url_from_stub(stub_text: str) -> Optional[str]:
-    """Return the first home-assistant.io/blog URL found in stub_text, or None."""
+    """Return the first home-assistant.io/blog URL found in stub_text, or None.
+
+    Prefers the target of a markdown link ``[text](url)`` so that trailing
+    punctuation such as ``).`` in ``[release notes](url).`` is not included.
+    Falls back to a bare URL match with trailing ``).,[...]>"'`` stripped.
+    """
+    m = _BLOG_MD_LINK_RE.search(stub_text)
+    if m:
+        return m.group(1)
     m = _BLOG_URL_RE.search(stub_text)
-    return m.group(0) if m else None
+    if not m:
+        return None
+    url = m.group(0).rstrip(").,]>\"'")
+    return url or None
 
 
-def extract_breaking_changes(blog_text: str) -> list[tuple[str, str]]:
-    """Return [(integration_name, description), ...] from the BC section.
+def extract_breaking_changes(blog_text: str) -> list[tuple[str, list[str], str]]:
+    """Return [(name, domains, description), ...] from the BC section.
+
+    ``domains`` is populated from the ``[domains: X]`` annotation that
+    ``_ArticleExtractor`` emits inside each ``<details>`` block when it finds
+    a "… documentation" link.  It is an empty list for general entries (Entity
+    names, Python dependencies) that have no associated integration.
 
     Relies on ``_ArticleExtractor`` having emitted ``### `` headings for each
     ``<details>/<summary>`` integration block.
@@ -206,12 +261,17 @@ def extract_breaking_changes(blog_text: str) -> list[tuple[str, str]]:
     sec_end = after + next_sec.start() if next_sec else len(blog_text)
     section = blog_text[m.start() : sec_end]
 
-    results: list[tuple[str, str]] = []
+    results: list[tuple[str, list[str], str]] = []
     for entry in re.split(r"\n###\s+", section)[1:]:
         head, _, body = entry.partition("\n")
         name = head.strip()
         if name:
-            results.append((name, body.strip()))
+            dm = _DOMAIN_ANNOTATION_RE.search(body)
+            domains = (
+                [d.strip() for d in dm.group(1).split(",") if d.strip()] if dm else []
+            )
+            clean_body = _DOMAIN_ANNOTATION_RE.sub("", body).strip()
+            results.append((name, domains, clean_body))
     return results
 
 
@@ -234,7 +294,10 @@ def format_core_notes_for_analysis(
 
     _installed_set = set(installed_integrations or [])
 
-    def _matches(heading: str) -> bool:
+    def _matches_domains(domains: list[str]) -> bool:
+        return bool(_installed_set.intersection(domains))
+
+    def _matches_name(heading: str) -> bool:
         normalized = re.sub(r"\s*\([^)]*\)", "", heading).lower().strip()
         key = re.sub(r"[\s\-]+", "_", normalized)
         if key in _installed_set:
@@ -243,20 +306,36 @@ def format_core_notes_for_analysis(
         return any(dom.replace("_", "") == bare for dom in _installed_set)
 
     installed_bc: list[str] = []
+    general_bc: list[str] = []
     other_bc_names: list[str] = []
-    for name, body in bc_entries:
-        if _matches(name):
-            installed_bc.append(f"### {name}\n\n{body}" if body else f"### {name}")
+    for name, domains, body in bc_entries:
+        entry_text = f"### {name}\n\n{body}" if body else f"### {name}"
+        if not domains:
+            # No integration-doc link.  Try name matching; unmatched entries
+            # surface as general (could be truly general like "Entity names",
+            # or a plain-text entry without domain annotations).
+            if _matches_name(name):
+                installed_bc.append(entry_text)
+            else:
+                general_bc.append(entry_text)
+        elif _matches_domains(domains) or _matches_name(name):
+            installed_bc.append(entry_text)
         else:
             other_bc_names.append(name)
 
     out_parts: list[str] = []
 
-    if installed_bc or other_bc_names:
+    if installed_bc or general_bc or other_bc_names:
         bc_section = "## Backward-incompatible changes\n\n"
         if installed_bc:
             bc_section += (
                 "**Affects this instance:**\n\n" + "\n\n".join(installed_bc) + "\n\n"
+            )
+        if general_bc:
+            bc_section += (
+                "**General (applies to all installs):**\n\n"
+                + "\n\n".join(general_bc)
+                + "\n\n"
             )
         if other_bc_names:
             bc_section += (

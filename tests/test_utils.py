@@ -2511,7 +2511,7 @@ class TestHABlogScraper:
         assert "Entities without a unique_id" in result
 
     def test_extract_breaking_changes_parses_section(self):
-        """extract_breaking_changes returns (name, body) for each ### entry."""
+        """extract_breaking_changes returns (name, domains, body) for each ### entry."""
         from utils.knowledge.ha_blog_scraper import extract_breaking_changes
 
         blog_text = (
@@ -2526,8 +2526,26 @@ class TestHABlogScraper:
         names = [r[0] for r in result]
         assert "MQTT" in names
         assert "Philips Hue" in names
-        mqtt_body = next(body for name, body in result if name == "MQTT")
+        mqtt_body = next(body for name, domains, body in result if name == "MQTT")
         assert "unique_id" in mqtt_body
+
+    def test_extract_breaking_changes_domain_annotation(self):
+        """Domain annotation from _ArticleExtractor is parsed out of the body."""
+        from utils.knowledge.ha_blog_scraper import extract_breaking_changes
+
+        blog_text = (
+            "## Backward-incompatible changes\n\n"
+            "### Philips Hue\n\nThe None effect is removed.\n"
+            "[domains: hue]\n\n"
+            "### Entity names\n\nAll entity names changed.\n\n"
+        )
+        result = extract_breaking_changes(blog_text)
+        assert len(result) == 2
+        hue = next(r for r in result if r[0] == "Philips Hue")
+        assert hue[1] == ["hue"]
+        assert "[domains:" not in hue[2]
+        entity = next(r for r in result if r[0] == "Entity names")
+        assert entity[1] == []
 
     def test_extract_breaking_changes_no_section(self):
         """When there is no BC section, an empty list is returned."""
@@ -2572,6 +2590,166 @@ class TestHABlogScraper:
         notes = "## What's new\n\n" + "x" * 20000
         result = format_core_notes_for_analysis(notes, installed_integrations=["mqtt"])
         assert len(result) <= 15000
+
+    # ── blog URL extraction ──────────────────────────────────────────────────
+
+    def test_extract_blog_url_from_stub_markdown_link(self):
+        """Markdown link target is returned without the surrounding punctuation."""
+        from utils.knowledge.ha_blog_scraper import extract_blog_url_from_stub
+
+        # Real-world form: the stub has a markdown link ending with ")."
+        stub = "[release notes](https://www.home-assistant.io/blog/2026/11/05/home-assistant-2026-11-released/)."
+        result = extract_blog_url_from_stub(stub)
+        assert (
+            result
+            == "https://www.home-assistant.io/blog/2026/11/05/home-assistant-2026-11-released/"
+        )
+
+    def test_extract_blog_url_from_stub_bare_strips_trailing(self):
+        """Bare URL with trailing ').' is returned with trailing chars stripped."""
+        from utils.knowledge.ha_blog_scraper import extract_blog_url_from_stub
+
+        stub = "See https://www.home-assistant.io/blog/2026/08/06/release-20268/)."
+        result = extract_blog_url_from_stub(stub)
+        assert result == "https://www.home-assistant.io/blog/2026/08/06/release-20268/"
+
+    def test_extract_blog_url_from_stub_clean_bare_url_unchanged(self):
+        """A bare URL with no trailing punctuation is returned as-is."""
+        from utils.knowledge.ha_blog_scraper import extract_blog_url_from_stub
+
+        url = "https://www.home-assistant.io/blog/2026/08/06/release-20268/"
+        assert extract_blog_url_from_stub(url) == url
+
+    # ── _ArticleExtractor domain links ───────────────────────────────────────
+
+    def test_article_extractor_emits_domain_annotation(self):
+        """Documentation links inside <details> produce [domains: X] in output."""
+        from utils.knowledge.ha_blog_scraper import fetch_blog_post
+
+        html = """
+        <article>
+          <h2>Backward-incompatible changes</h2>
+          <details>
+            <summary>Philips Hue</summary>
+            <p>The None effect was removed.</p>
+            <p>(<a href="/integrations/hue/">Philips Hue documentation</a>)</p>
+          </details>
+        </article>
+        """
+        result = fetch_blog_post("http://example.com", _fetcher=lambda url: html)
+        assert "[domains: hue]" in result
+
+    def test_article_extractor_ignores_non_documentation_links(self):
+        """Links whose text does not end with 'documentation' are not captured."""
+        from utils.knowledge.ha_blog_scraper import fetch_blog_post
+
+        html = """
+        <article>
+          <h2>Backward-incompatible changes</h2>
+          <details>
+            <summary>Philips Hue</summary>
+            <p>Affects <a href="/integrations/climate/">climate</a> entities.</p>
+            <p>(<a href="/integrations/hue/">Philips Hue documentation</a>)</p>
+          </details>
+        </article>
+        """
+        result = fetch_blog_post("http://example.com", _fetcher=lambda url: html)
+        assert "[domains: hue]" in result
+        assert (
+            "climate" not in result.split("[domains:")[1]
+            if "[domains:" in result
+            else True
+        )
+
+    def test_article_extractor_no_documentation_link_no_annotation(self):
+        """A <details> block without a documentation link emits no [domains:] annotation."""
+        from utils.knowledge.ha_blog_scraper import fetch_blog_post
+
+        html = """
+        <article>
+          <h2>Backward-incompatible changes</h2>
+          <details>
+            <summary>Entity names</summary>
+            <p>All entity names have changed globally.</p>
+          </details>
+        </article>
+        """
+        result = fetch_blog_post("http://example.com", _fetcher=lambda url: html)
+        assert "[domains:" not in result
+
+    # ── format_core_notes with domain-based matching ─────────────────────────
+
+    def test_format_core_notes_domain_match_beats_name(self):
+        """Entries matched by domain appear under 'Affects this instance' even when
+        the display name does not match by text normalisation."""
+        from utils.knowledge.ha_blog_scraper import format_core_notes_for_analysis
+
+        notes = (
+            "## Backward-incompatible changes\n\n"
+            "### Calendar and Sun\n\nSun platform changed.\n[domains: sun]\n\n"
+            "### Philips Hue\n\nNone effect removed.\n[domains: hue]\n\n"
+            "### adguard\n\nAdGuard change.\n[domains: adguard]\n\n"
+        )
+        result = format_core_notes_for_analysis(
+            notes, installed_integrations=["sun", "hue"]
+        )
+        assert "Affects this instance" in result
+        assert "Calendar and Sun" in result
+        assert "Philips Hue" in result
+        # adguard not installed → other list
+        assert "adguard" in result
+        assert "Affects this instance" in result.split("adguard")[0]
+
+    def test_format_core_notes_general_entries_surfaced(self):
+        """Entries with no domain link are shown under 'General' section."""
+        from utils.knowledge.ha_blog_scraper import format_core_notes_for_analysis
+
+        notes = (
+            "## Backward-incompatible changes\n\n"
+            "### Entity names\n\nAll entity names changed.\n\n"
+            "### Python dependencies\n\nSome deps bumped.\n\n"
+        )
+        result = format_core_notes_for_analysis(notes, installed_integrations=["mqtt"])
+        assert "General" in result
+        assert "Entity names" in result
+        assert "Python dependencies" in result
+
+    def test_format_core_notes_bc_fixture_hue_sun(self):
+        """Realistic HTML-parsed text with Calendar/Sun and Philips Hue domain links."""
+        from utils.knowledge.ha_blog_scraper import (
+            fetch_blog_post,
+            format_core_notes_for_analysis,
+        )
+
+        html = """
+        <article>
+          <h2>Backward-incompatible changes</h2>
+          <details>
+            <summary>Calendar and Sun</summary>
+            <p>The sun platform changed.</p>
+            <p>(<a href="/integrations/sun/">Sun documentation</a>)</p>
+          </details>
+          <details>
+            <summary>Philips Hue</summary>
+            <p>Affects <a href="/integrations/climate/">climate</a> entities.</p>
+            <p>(<a href="/integrations/hue/">Philips Hue documentation</a>)</p>
+          </details>
+          <details>
+            <summary>Entity names</summary>
+            <p>All entity naming changed.</p>
+          </details>
+        </article>
+        """
+        blog_text = fetch_blog_post("http://example.com", _fetcher=lambda url: html)
+        result = format_core_notes_for_analysis(
+            blog_text, installed_integrations=["sun", "hue", "mqtt"]
+        )
+        assert "Affects this instance" in result
+        assert "Calendar and Sun" in result
+        assert "Philips Hue" in result
+        # Entity names has no domain → general section
+        assert "General" in result
+        assert "Entity names" in result
 
 
 class TestGenericHtmlExtractor:
