@@ -7767,6 +7767,7 @@ class TestSeedRegistry:
             sig_device_availability,
             sig_device_post_restart,
             sig_host_health,
+            sig_log,
             sig_lovelace,
             sig_netalertx,
             sig_notification,
@@ -7801,6 +7802,7 @@ class TestSeedRegistry:
             sig_netalertx("availability"),
             sig_setup("noaa_it_all"),
             sig_setup("spook"),
+            sig_log("homeassistant.components.noaa_tides", "COOPSAPIError"),
         ]
 
     def test_every_seed_file_registered_or_retired(self):
@@ -8108,7 +8110,7 @@ class TestPromptNoVerdictRules:
         )
 
     def test_finds_task_prompts(self):
-        assert len(self._agent_prompts()) == 10  # agent_core + 9 task_*.md
+        assert len(self._agent_prompts()) == 11  # agent_core + 10 task_*.md
 
     def test_no_per_type_verdicts(self):
         import re
@@ -8188,6 +8190,7 @@ class TestLoadAgentPrompt:
             "host": "finish_host_health",
             "update": "finish_update_analysis",
             "setup": "finish_setup_plan",
+            "log_recurrence": "finish_log_investigation",
         }
         for task in _VALID_TASKS:
             tool = terminal_tools[task]

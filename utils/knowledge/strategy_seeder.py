@@ -65,6 +65,11 @@ _SEED_PROMPTS: list[tuple[str, str, str]] = [
         "integration failing, sensor unavailable, entity error, connection error, API outage",
     ),
     (
+        "seed_log_recurring.md",
+        "Recurring log error investigation",
+        "recurring log error, same error repeats daily, error recurred, repeated exception, COOPSAPIError, no data found, integration error keeps happening",
+    ),
+    (
         "seed_disk_space.md",
         "HA disk space investigation",
         "disk space low, HA disk usage, backups taking too much space, recorder DB large",

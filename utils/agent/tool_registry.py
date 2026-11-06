@@ -2286,6 +2286,58 @@ FINISH_NOTIFICATION_INVESTIGATION = ToolDefinition(
     },
 )
 
+FINISH_LOG_INVESTIGATION = ToolDefinition(
+    name="finish_log_investigation",
+    description=(
+        "Report findings for a recurring HA log error and close the session. "
+        "Set requires_hitl=true only when the user must act (config/option change, "
+        "integration update, upstream bug); false for transient or self-recovering errors."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "human_explanation": {
+                "type": "string",
+                "description": "What the error means and its root cause (2–4 sentences).",
+            },
+            "recommended_action": {
+                "type": "string",
+                "description": "Concrete steps the user should take, or 'none'.",
+            },
+            "requires_hitl": {
+                "type": "boolean",
+                "description": "True if the user must act. False sends no card.",
+            },
+            "summary": {
+                "type": "string",
+                "description": "One-sentence conclusion.",
+            },
+            "runbook_followed": {
+                "type": "string",
+                "description": "strategy_id ([id=…]) of the runbook you followed, or 'none'.",
+            },
+            "verification_question": {
+                "type": "string",
+                "description": "One yes/no question (≤120 chars) whose Yes confirms the root cause.",
+            },
+            "fact_if_yes": {
+                "type": "string",
+                "description": "Instance fact (≤200 chars) to store when the user answers Yes.",
+            },
+            "deviated_from_runbook": {
+                "type": "object",
+                "description": "Set when you departed from the pre-injected runbook and it worked better.",
+                "properties": {
+                    "rule": {"type": "string"},
+                    "why": {"type": "string"},
+                },
+                "required": ["rule", "why"],
+            },
+        },
+        "required": ["human_explanation", "recommended_action", "requires_hitl"],
+    },
+)
+
 GET_DEVICE_INFO = ToolDefinition(
     name="get_device_info",
     description=(
@@ -2834,6 +2886,7 @@ def build_ha_tool_registry() -> ToolRegistry:
         VERIFY_FIX,
         FINISH_REPAIR,
         FINISH_REPAIR_ISSUE,
+        FINISH_LOG_INVESTIGATION,
         QUERY_KNOWLEDGE,
         READ_SOURCE,
         FETCH_HA_DOCS,

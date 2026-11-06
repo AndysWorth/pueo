@@ -4158,6 +4158,85 @@ class TestLogErrorBlock:
         line = "\x1b[31mERROR\x1b[0m [mylogger] boom"
         assert _extract_logger(line) == "mylogger"
 
+    # Real `ha core logs` block captured 2026-11-05 (#1132): header and
+    # Traceback lines are separate, header logger is the generic entity helper.
+    _NOAA_HEADER = (
+        "\x1b[31m2026-11-05 23:46:25.987 ERROR (MainThread) "
+        "[homeassistant.helpers.entity] Update for sensor.noaa_tides_2 fails"
+    )
+    _NOAA_BLOCK = [
+        "Traceback (most recent call last):",
+        '  File "/usr/src/homeassistant/homeassistant/helpers/entity.py", line 999,'
+        " in async_update_ha_state",
+        '  File "/usr/local/lib/python3.14/concurrent/futures/thread.py", line 73,'
+        " in run",
+        '  File "/usr/src/homeassistant/homeassistant/components/noaa_tides/sensor.py",'
+        " line 165, in update",
+        "    df_predictions = self._station.get_data(",
+        '  File "/usr/local/lib/python3.14/site-packages/noaa_coops/station.py",'
+        " line 426, in _make_api_request",
+        "    raise COOPSAPIError(message=err_msg)",
+        "noaa_coops.station.COOPSAPIError: CO-OPS API returned an error: No Predictions"
+        " data was found. Please make sure the Datum input is valid.\x1b[0m",
+    ]
+
+    def test_resolve_block_logger_real_noaa_traceback(self):
+        from agents.ha_log_monitor import (
+            _extract_exception_class,
+            _resolve_block_logger,
+        )
+        from utils.knowledge.runbook_signature import sig_log
+
+        logger = _resolve_block_logger(
+            self._NOAA_BLOCK[0], self._NOAA_HEADER, self._NOAA_BLOCK
+        )
+        assert logger == "homeassistant.components.noaa_tides"
+        sig = sig_log(logger, _extract_exception_class(self._NOAA_BLOCK))
+        assert sig == "log:homeassistant_components_noaa_tides:coopsapierror"
+
+    def test_resolve_block_logger_keeps_component_logger(self):
+        from agents.ha_log_monitor import _resolve_block_logger
+
+        line = "2026-11-06 01:31:13.816 ERROR (MainThread) [homeassistant.components.lifx] Error doing job"
+        assert (
+            _resolve_block_logger(line, "", self._NOAA_BLOCK)
+            == "homeassistant.components.lifx"
+        )
+
+    def test_resolve_block_logger_keeps_library_logger(self):
+        from agents.ha_log_monitor import _resolve_block_logger
+
+        line = "2026-11-06 01:31:25.222 ERROR (Thread-7) [pychromecast.socket_client] Traceback"
+        assert _resolve_block_logger(line, "", [line]) == "pychromecast.socket_client"
+
+    def test_resolve_block_logger_custom_component_frame(self):
+        from agents.ha_log_monitor import _resolve_block_logger
+
+        block = [
+            "Traceback (most recent call last):",
+            '  File "/config/custom_components/spook/sensor.py", line 291, in foo',
+            "ValueError: bad",
+        ]
+        header = "2026-11-06 ERROR (MainThread) [homeassistant.core] Error doing job"
+        assert _resolve_block_logger(block[0], header, block) == (
+            "custom_components.spook"
+        )
+
+    def test_resolve_block_logger_generic_without_frames_falls_back(self):
+        from agents.ha_log_monitor import _resolve_block_logger
+
+        line = "2026-11-06 ERROR (MainThread) [homeassistant.core] Error doing job"
+        assert _resolve_block_logger(line, "", [line]) == "homeassistant.core"
+
+    def test_resolve_block_logger_traceback_ignores_non_header_prev(self):
+        """A non-traceback trigger never borrows the previous line's logger."""
+        from agents.ha_log_monitor import _resolve_block_logger
+
+        assert (
+            _resolve_block_logger("Uncaught thread exception", "[other.logger] x", [])
+            is None
+        )
+
     def test_extract_exception_class_from_last_match(self):
         from agents.ha_log_monitor import _extract_exception_class
 
@@ -4359,6 +4438,54 @@ class TestLogRecurrence:
         count = _check_and_record_recurrence("homeassistant.sensor", "ERROR old", now)
         assert count == 1  # only the current occurrence is within window
 
+    def test_recurrence_key_is_stable_16_hex(self):
+        from agents.ha_log_monitor import _recurrence_key
+
+        k = _recurrence_key("logger.a", "ERROR foo")
+        assert len(k) == 16 and int(k, 16) >= 0
+        assert k == _recurrence_key("logger.a", "ERROR foo")
+        assert k != _recurrence_key("logger.b", "ERROR foo")
+
+    def test_check_and_record_uses_recurrence_key(self, db_path):
+        import sqlite3
+
+        from agents.ha_log_monitor import _check_and_record_recurrence, _recurrence_key
+
+        _check_and_record_recurrence("logger.a", "ERROR foo", 1000.0)
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT value FROM user_prefs WHERE key = ?",
+                (f"log_recurrence:{_recurrence_key('logger.a', 'ERROR foo')}",),
+            ).fetchone()
+        assert row is not None
+
+    def test_should_investigate_when_no_rows(self, db_path):
+        from agents.ha_log_monitor import _log_recurrence_should_investigate
+
+        assert _log_recurrence_should_investigate("abcd") is True
+
+    def test_should_not_investigate_while_card_pending(self, db_path):
+        import sqlite3
+
+        from agents.ha_log_monitor import _log_recurrence_should_investigate
+        from utils.hitl.hitl_tracker import mark_card_sent
+
+        with sqlite3.connect(db_path) as conn:
+            mark_card_sent(conn, "log_recurrence:abcd", "log_recurrence", "x")
+        assert _log_recurrence_should_investigate("abcd") is False
+
+    def test_should_not_investigate_during_stuck_backoff(self, db_path):
+        import sqlite3
+
+        from agents.ha_log_monitor import _log_recurrence_should_investigate
+        from utils.hitl.hitl_tracker import mark_investigation_backoff
+
+        with sqlite3.connect(db_path) as conn:
+            mark_investigation_backoff(conn, "log_recurrence_backoff:abcd")
+        assert _log_recurrence_should_investigate("abcd") is False
+        # A different fingerprint is unaffected.
+        assert _log_recurrence_should_investigate("ef01") is True
+
     def test_different_errors_are_independent(self, db_path):
         from agents.ha_log_monitor import _check_and_record_recurrence
 
@@ -4367,37 +4494,209 @@ class TestLogRecurrence:
         count = _check_and_record_recurrence("logger.b", "ERROR bar", 1002.0)
         assert count == 1
 
+    @staticmethod
+    def _recurring_lines(
+        n, logger="logger.noaa", exc="requests.exceptions.ConnectionError: pool"
+    ):
+        lines = []
+        for i in range(n):
+            lines += [f"2024-01-01 12:00:0{i} ERROR [{logger}] Error doing job", exc]
+        lines.append("2024-01-01 12:00:09 INFO done")
+        return lines
+
+    @staticmethod
+    def _capture_investigation(monkeypatch):
+        import agents.ha_log_monitor as _lm
+
+        calls: list[dict] = []
+
+        async def _fake(**kwargs):
+            calls.append(kwargs)
+
+        monkeypatch.setattr(_lm, "_run_log_recurrence_investigation", _fake)
+        monkeypatch.setattr(
+            "utils.agent.work_queue.get_work_queue_or_none", lambda: None
+        )
+        return calls
+
+    @staticmethod
+    def _triage_llm():
+        from utils.llm.ollama_client import FakeLLMClient
+        from agents.ha_log_monitor import LogEvaluation
+
+        return FakeLLMClient(
+            LogEvaluation(
+                is_actionable=False, root_cause_summary="x", confidence_score=0.1
+            ).model_dump_json()
+        )
+
     def test_recurring_error_bypasses_transient_skip(self, db_path, monkeypatch):
-        """After LOG_RECURRENCE_THRESHOLD hits, transient check is skipped."""
+        """At the threshold a transient-looking error starts an investigation (#1132)."""
+        import agents.ha_log_monitor as _lm
+        from utils.ha.ssh_client import FakeSSHClient
+        from agents.ha_log_monitor import LOG_RECURRENCE_THRESHOLD
+
+        calls = self._capture_investigation(monkeypatch)
+        llm = self._triage_llm()
+        ssh = FakeSSHClient(stream_data=self._recurring_lines(LOG_RECURRENCE_THRESHOLD))
+        asyncio.run(_lm.tail_remote_log_stream(ssh_client=ssh, llm_client=llm))
+        # First two hits: transient → skipped; third: investigation, no triage call.
+        assert len(calls) == 1
+        assert llm.calls == []
+
+    def test_recurring_error_starts_investigation_with_pending(
+        self, db_path, monkeypatch
+    ):
+        import agents.ha_log_monitor as _lm
+        from utils.ha.ssh_client import FakeSSHClient
+
+        calls = self._capture_investigation(monkeypatch)
+        llm = self._triage_llm()
+        lines = self._recurring_lines(
+            3, exc="noaa_coops.station.COOPSAPIError: No data was found"
+        )
+        ssh = FakeSSHClient(stream_data=lines)
+        ks = object()
+        asyncio.run(
+            _lm.tail_remote_log_stream(
+                ssh_client=ssh, llm_client=llm, knowledge_store=ks
+            )
+        )
+        # Two non-recurring occurrences go through triage; the third does not.
+        assert len(llm.calls) == 2
+        assert len(calls) == 1
+        pending = calls[0]["pending"]
+        assert pending["logger"] == "logger.noaa"
+        assert pending["exc_class"] == "COOPSAPIError"
+        assert pending["count"] == 3
+        assert pending["window_days"] == 7
+        assert "COOPSAPIError" in pending["error_block"]
+        assert len(pending["fp"]) == 16
+        assert calls[0]["knowledge_store"] is ks
+        assert calls[0]["llm_client"] is llm
+        assert calls[0]["ssh_client"] is ssh
+
+    def test_recurring_error_suppressed_skips_investigation(self, db_path, monkeypatch):
+        import agents.ha_log_monitor as _lm
+        from utils.ha.ssh_client import FakeSSHClient
+
+        calls = self._capture_investigation(monkeypatch)
+        monkeypatch.setattr(_lm, "_log_recurrence_should_investigate", lambda fp: False)
+        llm = self._triage_llm()
+        ssh = FakeSSHClient(stream_data=self._recurring_lines(4))
+        asyncio.run(_lm.tail_remote_log_stream(ssh_client=ssh, llm_client=llm))
+        assert calls == []
+        assert llm.calls == []  # transient pattern skips the first two
+
+    def test_recurring_custom_component_sends_integration_bug_card(
+        self, db_path, monkeypatch
+    ):
+        import agents.ha_log_monitor as _lm
+        from utils.ha.ssh_client import FakeSSHClient
+
+        calls = self._capture_investigation(monkeypatch)
+        bug_cards: list[tuple] = []
+
+        async def _fake_bug(domain, file_line, exc_class, client, notifier):
+            bug_cards.append((domain, file_line, exc_class))
+
+        monkeypatch.setattr(_lm, "_send_integration_bug_card", _fake_bug)
+        lines = []
+        for i in range(3):
+            lines += [
+                f"2024-01-01 12:00:0{i} ERROR [custom_components.foo] Error doing job",
+                '  File "/config/custom_components/foo/sensor.py", line 12, in x',
+                "ValueError: bad",
+            ]
+        lines.append("2024-01-01 12:00:09 INFO done")
+        ssh = FakeSSHClient(stream_data=lines)
+        asyncio.run(
+            _lm.tail_remote_log_stream(ssh_client=ssh, llm_client=self._triage_llm())
+        )
+        assert calls == []
+        assert bug_cards == [("foo", "sensor.py:12", "ValueError")]
+
+    def test_recurring_error_submits_work_item_when_queue_running(
+        self, db_path, monkeypatch
+    ):
+        import agents.ha_log_monitor as _lm
+        from agents.ha_log_monitor import _route_recurring_error
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+
+        submitted: list = []
+        ran: list = []
+
+        class _Q:
+            async def submit(self, item):
+                submitted.append(item)
+
+        async def _fake(**kwargs):
+            ran.append(kwargs)
+
+        monkeypatch.setattr(_lm, "_run_log_recurrence_investigation", _fake)
+        monkeypatch.setattr(
+            "utils.agent.work_queue.get_work_queue_or_none", lambda: _Q()
+        )
+        asyncio.run(
+            _route_recurring_error(
+                error_block=["ERROR [a.b] x", "KeyError: 'k'"],
+                logger_name="a.b",
+                fp_line="KeyError: 'k'",
+                count=5,
+                client=FakeSSHClient(),
+                notifier=FakeNotifier(),
+                llm_client=None,
+                gate=FakeAutonomyGate(),
+            )
+        )
+        assert len(submitted) == 1
+        item = submitted[0]
+        assert item.activity_type == "log_recurrence"
+        expected_fp = _lm._recurrence_key("a.b", "KeyError: 'k'")
+        assert item.dedup_key == f"log_recurrence:{expected_fp}"
+        assert ran == []
+        asyncio.run(item.coro_factory())
+        assert ran[0]["pending"]["exc_class"] == "KeyError"
+
+    def test_traceback_trigger_records_under_integration_logger(self, db_path):
+        """Real ha-core-logs shape: header line, then Traceback trigger (#1132)."""
+        import sqlite3
+
         import agents.ha_log_monitor as _lm
         from utils.ha.ssh_client import FakeSSHClient
         from utils.llm.ollama_client import FakeLLMClient
-        from agents.ha_log_monitor import LogEvaluation, LOG_RECURRENCE_THRESHOLD
+        from agents.ha_log_monitor import LogEvaluation
 
         llm = FakeLLMClient(
             LogEvaluation(
-                is_actionable=False,
-                root_cause_summary="recurring error",
-                confidence_score=0.1,
+                is_actionable=False, root_cause_summary="x", confidence_score=0.1
             ).model_dump_json()
         )
-        # Error line whose block contains a transient pattern
-        ts_base = "2024-01-01 12:00:0"
-        lines = []
-        for i in range(LOG_RECURRENCE_THRESHOLD):
-            lines += [
-                f"{ts_base}{i} ERROR [logger.noaa] Error doing job",
-                f"requests.exceptions.ConnectionError: pool",
-            ]
-        if LOG_RECURRENCE_THRESHOLD < 9:
-            # Add a non-transient follow-up so the stream doesn't end mid-block
-            lines.append(f"2024-01-01 12:00:09 INFO done")
-
+        lines = [
+            "2026-11-05 23:46:25.987 ERROR (MainThread) "
+            "[homeassistant.helpers.entity] Update for sensor.noaa_tides_2 fails",
+            "Traceback (most recent call last):",
+            '  File "/usr/src/homeassistant/homeassistant/components/noaa_tides/'
+            'sensor.py", line 165, in update',
+            "noaa_coops.station.COOPSAPIError: CO-OPS API returned an error: No data",
+            "2026-11-05 23:46:30.000 INFO (MainThread) [x] done",
+        ]
         ssh = FakeSSHClient(stream_data=lines)
         asyncio.run(_lm.tail_remote_log_stream(ssh_client=ssh, llm_client=llm))
-        # First two hits: transient match → skipped.
-        # Third hit (threshold): NOT skipped even though block contains ConnectionError.
-        assert len(llm.calls) >= 1
+
+        fp_line = _lm._recurrence_fingerprint(lines[1:4])
+        expected = _lm._recurrence_key("homeassistant.components.noaa_tides", fp_line)
+        with sqlite3.connect(db_path) as conn:
+            keys = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT key FROM user_prefs WHERE key LIKE 'log_recurrence:%'"
+                )
+            }
+        assert f"log_recurrence:{expected}" in keys
+        assert f"log_recurrence:{_lm._recurrence_key('', fp_line)}" not in keys
 
 
 # ── Retention policy (item 32) ────────────────────────────────────────────────────
@@ -15856,6 +16155,187 @@ class TestRunRepairIssueInvestigation:
         )
         assert len(notifier.sent) == 1
         assert notifier.sent[0]["payload"]["action"] == "reboot"
+
+
+class TestRunLogRecurrenceInvestigation:
+    """_run_log_recurrence_investigation() — read-only log:* session (#1132)."""
+
+    @pytest.fixture
+    def db_path(self, tmp_path, monkeypatch):
+        from agents import ha_agent_advanced
+
+        path = str(tmp_path / "test.db")
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
+        ha_agent_advanced.init_local_database()
+        return path
+
+    @staticmethod
+    def _pending():
+        return {
+            "fp": "0123456789abcdef",
+            "logger": "homeassistant.components.noaa_tides",
+            "exc_class": "COOPSAPIError",
+            "count": 3,
+            "window_days": 7,
+            "error_block": "COOPSAPIError: No data was found",
+        }
+
+    @staticmethod
+    def _finish(requires_hitl: bool) -> list[dict]:
+        return [
+            {
+                "tool_calls": [
+                    {
+                        "function": {
+                            "name": "finish_log_investigation",
+                            "arguments": {
+                                "human_explanation": "Station has no datum data.",
+                                "recommended_action": "Pick another station.",
+                                "requires_hitl": requires_hitl,
+                            },
+                        }
+                    }
+                ]
+            }
+        ]
+
+    def _run(self, db_path, llm, notifier, **kw):
+        from agents.ha_log_monitor import _run_log_recurrence_investigation
+        from utils.ha.ssh_client import FakeSSHClient
+
+        asyncio.run(
+            _run_log_recurrence_investigation(
+                pending=self._pending(),
+                notifier=notifier,
+                db_path=db_path,
+                llm_client=llm,
+                ssh_client=FakeSSHClient(),
+                **kw,
+            )
+        )
+
+    def test_sends_card_with_signature(self, db_path):
+        from utils.hitl.card_types import CARD_TYPE_LOG_RECURRENCE
+        from utils.hitl.notify import FakeNotifier
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        notifier = FakeNotifier()
+        self._run(db_path, FakeToolCallingLLMClient(self._finish(True)), notifier)
+        assert len(notifier.sent) == 1
+        payload = notifier.sent[0]["payload"]
+        assert payload["card_type"] == CARD_TYPE_LOG_RECURRENCE
+        assert payload["signature"] == (
+            "log:homeassistant_components_noaa_tides:coopsapierror"
+        )
+        assert payload["verification_question"]
+        assert payload["suppression_key"] == "log_recurrence:0123456789abcdef"
+
+    def test_initial_context_names_error(self, db_path):
+        from utils.hitl.notify import FakeNotifier
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        llm = FakeToolCallingLLMClient(self._finish(False))
+        self._run(db_path, llm, FakeNotifier())
+        first = " ".join(str(m.get("content", "")) for m in llm.calls[0]["messages"])
+        assert "COOPSAPIError" in first
+        assert "3 in the last 7 days" in first
+
+    def test_executor_is_read_only_with_real_gate(self, db_path, monkeypatch):
+        import utils.agent.tool_executor as _te
+        from utils.agent.autonomy import AutonomyGate
+        from utils.ha.read_only_ssh import ReadOnlySSHClient
+        from utils.hitl.notify import FakeNotifier
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        seen: dict = {}
+        _orig = _te.ToolExecutor.__init__
+
+        def _spy(self, *a, **kw):
+            seen.update(kw)
+            _orig(self, *a, **kw)
+
+        monkeypatch.setattr(_te.ToolExecutor, "__init__", _spy)
+        self._run(
+            db_path, FakeToolCallingLLMClient(self._finish(False)), FakeNotifier()
+        )
+        assert isinstance(seen["ha_ssh_client"], ReadOnlySSHClient)
+        assert type(seen["gate"]) is AutonomyGate
+
+    def test_non_success_writes_backoff(self, db_path):
+        import sqlite3
+
+        from utils.hitl.hitl_tracker import should_send_card
+        from utils.hitl.notify import FakeNotifier
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        self._run(db_path, FakeToolCallingLLMClient([]), FakeNotifier())
+        with sqlite3.connect(db_path) as conn:
+            assert not should_send_card(conn, "log_recurrence_backoff:0123456789abcdef")
+
+    def test_success_writes_no_backoff(self, db_path):
+        import sqlite3
+
+        from utils.hitl.hitl_tracker import should_send_card
+        from utils.hitl.notify import FakeNotifier
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        self._run(
+            db_path, FakeToolCallingLLMClient(self._finish(False)), FakeNotifier()
+        )
+        with sqlite3.connect(db_path) as conn:
+            assert should_send_card(conn, "log_recurrence_backoff:0123456789abcdef")
+
+    @pytest.mark.parametrize("raises", [False, True])
+    def test_env_profile_loaded_or_ignored(self, db_path, monkeypatch, raises):
+        import utils.agent.tool_executor as _te
+        from utils.hitl.notify import FakeNotifier
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        prof = object()
+
+        def _lep(path):
+            if raises:
+                raise RuntimeError("no profile")
+            return prof
+
+        monkeypatch.setattr("utils.ha.ha_environment.load_environment_profile", _lep)
+        got: list = []
+        monkeypatch.setattr(
+            _te.ToolExecutor, "set_ha_profile", lambda self, p: got.append(p)
+        )
+        notifier = FakeNotifier()
+        self._run(db_path, FakeToolCallingLLMClient(self._finish(True)), notifier)
+        assert got == ([] if raises else [prof])
+        assert len(notifier.sent) == 1
+
+    def test_event_subscriber_injected_and_errors_logged(self, db_path, monkeypatch):
+        import agents.ha_log_monitor as _lm
+        import utils.agent.tool_executor as _te
+        from utils.hitl.notify import FakeNotifier
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        got: list = []
+        monkeypatch.setattr(
+            _te.ToolExecutor, "set_event_subscriber", lambda self, s: got.append(s)
+        )
+
+        async def _boom(self, **kw):
+            raise RuntimeError("loop exploded")
+
+        monkeypatch.setattr("utils.agent.agent_loop.AgentLoop.run", _boom)
+        errors: list = []
+        monkeypatch.setattr(
+            _lm.log, "error", lambda event, **kw: errors.append((event, kw))
+        )
+        sub = object()
+        self._run(
+            db_path,
+            FakeToolCallingLLMClient([]),
+            FakeNotifier(),
+            event_subscriber=sub,
+        )
+        assert got == [sub]
+        assert errors and errors[0][0] == "log_recurrence_investigation_failed"
 
 
 # ── _finish_repair_issue auto-reboot ─────────────────────────────────────────────

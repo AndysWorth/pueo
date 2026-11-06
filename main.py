@@ -1400,13 +1400,19 @@ async def supervisor_main(config_path: Path) -> None:
     supervisor.start(
         "ha_log_monitor",
         lambda: tail_remote_log_stream(
-            source="core", notifier=notifier, llm_client=_triage_llm_client
+            source="core",
+            notifier=notifier,
+            llm_client=_triage_llm_client,
+            knowledge_store=knowledge_store,
         ),
     )
     supervisor.start(
         "ha_log_monitor_supervisor",
         lambda: tail_remote_log_stream(
-            source="supervisor", notifier=notifier, llm_client=_triage_llm_client
+            source="supervisor",
+            notifier=notifier,
+            llm_client=_triage_llm_client,
+            knowledge_store=knowledge_store,
         ),
     )
 

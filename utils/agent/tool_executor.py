@@ -420,6 +420,8 @@ class ToolExecutor:
         self._ha_profile: Optional["HAEnvironmentProfile"] = None
         self._pending_repair_issue = pending_repair_issue
         self._pending_notification = pending_notification
+        # Recurring log error under investigation (#1132); read by finish_log_investigation.
+        self._pending_log_error: Optional[dict] = None
         self._pending_update_status: Optional[Any] = None
         self._host_health_finding: Optional[Any] = None
         self._device_availability_finding: Optional[Any] = None
@@ -530,6 +532,14 @@ class ToolExecutor:
         """Store entity IDs under investigation so _finish_lovelace_investigation can
         write benign suppression records when findings is empty."""
         self._lovelace_suspicious = list(entity_ids)
+
+    def set_pending_log_error(self, error: dict) -> None:
+        """Store the recurring log error so finish_log_investigation can build the card.
+
+        Keys: ``fp`` (recurrence hash), ``logger``, ``exc_class``, ``count``,
+        ``window_days``, ``error_block``.
+        """
+        self._pending_log_error = error
 
     def set_host_health_finding(self, finding: Any) -> None:
         """Store the HostHealthFinding so _finish_host_health can build the card."""
@@ -854,6 +864,15 @@ class ToolExecutor:
                     requires_hitl=bool(args.get("requires_hitl", True)),
                     severity_override=args.get("severity_override"),
                     dismiss_now=bool(args.get("dismiss_now", False)),
+                    verification_question=args.get("verification_question"),
+                    fact_if_yes=args.get("fact_if_yes"),
+                )
+            if name == "finish_log_investigation":
+                self._capture_declared_runbook(args)
+                return await self._finish_log_investigation(
+                    human_explanation=args.get("human_explanation", ""),
+                    recommended_action=args.get("recommended_action", ""),
+                    requires_hitl=bool(args.get("requires_hitl", True)),
                     verification_question=args.get("verification_question"),
                     fact_if_yes=args.get("fact_if_yes"),
                 )
@@ -5976,6 +5995,103 @@ class ToolExecutor:
             tool_name="finish_notification_investigation",
             success=True,
             output=f"Notification card sent for {ha_nid} (severity={severity})",
+        )
+
+    def _log_recurrence_mark(self, suppression_key: str, sent: bool, desc: str) -> None:
+        """Record a recurrence verdict in hitl_suppression. Sync — call via to_thread.
+
+        A sent card stays pending until the user acts on it; a no-card verdict
+        defers re-investigation for LOG_TRIAGE_COOLDOWN_HOURS.
+        """
+        from utils.hitl.card_types import CARD_TYPE_LOG_RECURRENCE
+        from utils.hitl.hitl_tracker import mark_card_deferred, mark_card_sent
+
+        with sqlite3.connect(self._db_path) as conn:
+            if sent:
+                mark_card_sent(conn, suppression_key, CARD_TYPE_LOG_RECURRENCE, desc)
+            else:
+                mark_card_deferred(
+                    conn,
+                    suppression_key,
+                    hours=float(_config_mod.LOG_TRIAGE_COOLDOWN_HOURS),
+                )
+
+    async def _finish_log_investigation(
+        self,
+        human_explanation: str,
+        recommended_action: str,
+        requires_hitl: bool,
+        verification_question: Optional[str] = None,
+        fact_if_yes: Optional[str] = None,
+    ) -> ToolResult:
+        """Close a recurring-log-error session; send an advise-only card if needed (#1132)."""
+        err = self._pending_log_error
+        if err is None:
+            return ToolResult(
+                tool_name="finish_log_investigation",
+                success=False,
+                output="",
+                error="No pending log error stored on executor",
+            )
+        from utils.hitl.card_types import CARD_TYPE_LOG_RECURRENCE
+        from utils.hitl.hitl_tracker import stable_nid
+
+        fp = str(err.get("fp", ""))
+        logger_name = str(err.get("logger") or "unknown")
+        exc_class = str(err.get("exc_class") or "error")
+        suppression_key = f"log_recurrence:{fp}"
+        desc = f"Recurring log error: {logger_name} {exc_class}"
+
+        if not requires_hitl:
+            await asyncio.to_thread(
+                self._log_recurrence_mark, suppression_key, False, desc
+            )
+            log.info("log_recurrence_no_card", fingerprint=fp, logger=logger_name)
+            return ToolResult(
+                tool_name="finish_log_investigation",
+                success=True,
+                output="Investigation complete. No card needed.",
+            )
+
+        nid = stable_nid(suppression_key)
+        body_lines = [human_explanation]
+        if recommended_action:
+            body_lines.append(f"\nRecommended action: {recommended_action}")
+        payload: dict = {
+            "notification_id": nid,
+            "suppression_key": suppression_key,
+            "card_type": CARD_TYPE_LOG_RECURRENCE,
+            "informational": True,
+            "logger": logger_name,
+            "exception": exc_class,
+            "occurrences": err.get("count"),
+            "window_days": err.get("window_days"),
+            "error_excerpt": str(err.get("error_block", ""))[:2000],
+            "human_explanation": human_explanation,
+            "recommended_action": recommended_action,
+            "episode_id": self._episode_id,
+        }
+        from utils.knowledge.session_verification import default_verification_question
+
+        _q = verification_question or default_verification_question(
+            CARD_TYPE_LOG_RECURRENCE, payload
+        )
+        payload["verification_question"] = _q
+        payload["signature"] = self._session_signature
+        if fact_if_yes:
+            payload["fact_if_yes"] = fact_if_yes
+        await asyncio.to_thread(self._log_recurrence_mark, suppression_key, True, desc)
+        await self._notifier.send(
+            subject=f"Pueo: Recurring error — {logger_name} {exc_class}",
+            body="\n".join(body_lines),
+            payload=payload,
+        )
+        self._mark_card_queued(nid)
+        log.info("log_recurrence_card_sent", fingerprint=fp, logger=logger_name)
+        return ToolResult(
+            tool_name="finish_log_investigation",
+            success=True,
+            output=f"Recurring-error card sent ({logger_name} {exc_class})",
         )
 
     async def _get_device_info(self, ip: str) -> ToolResult:
