@@ -433,6 +433,10 @@ class ToolExecutor:
             "none"  # "none" | "incomplete" | "complete"
         )
         self._installed_bc_found: bool = False
+        # Accumulated across screening batch sessions; consumed by _get_update_release_notes
+        self._screening_flags: list[dict] = []
+        self._screening_highlights: list[dict] = []
+        self._screening_complete: bool = False
         self._lovelace_suspicious: list[str] = []
         self._event_subscriber: Optional[Any] = None
         # Per-session KB tracking (reset in reset())
@@ -483,6 +487,7 @@ class ToolExecutor:
         self._session_outputs = []
         self._release_notes_completeness = "none"
         self._installed_bc_found = False
+        # Screening state is accumulated across batch loops; not reset here.
         # _dynamic_tools intentionally not reset — registered tools persist across loops
 
     def _mark_card_queued(self, nid: str) -> None:
@@ -875,6 +880,12 @@ class ToolExecutor:
                     requires_hitl=bool(args.get("requires_hitl", True)),
                     verification_question=args.get("verification_question"),
                     fact_if_yes=args.get("fact_if_yes"),
+                )
+            if name == "finish_change_screening":
+                return self._finish_change_screening(
+                    flagged=args.get("flagged") or [],
+                    highlights=args.get("highlights") or [],
+                    batch_complete=bool(args.get("batch_complete", True)),
                 )
             if name == "get_device_info":
                 return await self._get_device_info(args.get("ip", ""))
@@ -6094,6 +6105,41 @@ class ToolExecutor:
             output=f"Recurring-error card sent ({logger_name} {exc_class})",
         )
 
+    def _finish_change_screening(
+        self,
+        flagged: list,
+        highlights: list,
+        batch_complete: bool,
+    ) -> ToolResult:
+        """Accumulate screening results from one batch session.
+
+        Results are stored on the executor so the orchestrating _coro can read them
+        back after each AgentLoop.run() and persist them to the report.
+        """
+        self._screening_flags.extend(flagged)
+        self._screening_highlights.extend(highlights)
+        if not batch_complete:
+            self._screening_complete = False
+        return ToolResult(
+            tool_name="finish_change_screening",
+            success=True,
+            output=f"Batch screened: {len(flagged)} flag(s), {len(highlights)} highlight(s).",
+        )
+
+    def clear_screening_state(self) -> None:
+        """Reset accumulated screening results before a new set of batches."""
+        self._screening_flags = []
+        self._screening_highlights = []
+        self._screening_complete = True  # will be set False on any incomplete batch
+
+    def get_screening_results(self) -> tuple[list[dict], list[dict], bool]:
+        """Return (flags, highlights, complete) accumulated from all batch sessions."""
+        return (
+            self._screening_flags,
+            self._screening_highlights,
+            self._screening_complete,
+        )
+
     async def _get_device_info(self, ip: str) -> ToolResult:
         """Enrich a source IP with ARP, DNS, NetAlertX, and HA device registry context."""
         if not ip:
@@ -6236,6 +6282,51 @@ class ToolExecutor:
                             "release notes for the pending update."
                         ),
                     )
+
+            # ── Core report short-circuit ─────────────────────────────────
+            # When a pre-built CoreReleaseReport exists for this version, return a
+            # compact digest instead of re-fetching the blog.  This avoids the 8k
+            # fetch_url cap and surfaces screening flags from the screening pass.
+            _is_ha_core_ver_early = _bare_version[
+                :4
+            ].isdigit() and _bare_version.startswith("20")
+            if _is_ha_core_ver_early:
+                from pathlib import Path as _Path
+
+                from utils.knowledge.ha_release_report import (
+                    CoreReleaseReport as _CRR,
+                    format_core_release_digest,
+                )
+                from paths import get_dirs as _get_dirs
+
+                _report_path = (
+                    _get_dirs().state_dir
+                    / "update_reports"
+                    / f"core_{_bare_version}.json"
+                )
+                if _report_path.exists():
+                    try:
+                        _rpt = _CRR.model_validate_json(
+                            _report_path.read_text(encoding="utf-8")
+                        )
+                        digest = format_core_release_digest(_rpt)
+                        # Set completeness from the report (screening must be complete too)
+                        if _rpt.completeness == "complete" and _rpt.screening_complete:
+                            self._release_notes_completeness = "complete"
+                        elif _rpt.completeness == "complete":
+                            self._release_notes_completeness = "incomplete"
+                        else:
+                            self._release_notes_completeness = "incomplete"
+                        self._installed_bc_found = bool(_rpt.bc_installed)
+                        if not digest.strip():
+                            digest = "Release report built but no relevant changes found for installed integrations."
+                        return ToolResult(
+                            tool_name="get_update_release_notes",
+                            success=True,
+                            output=digest[:16000],
+                        )
+                    except Exception:  # nosec B110
+                        pass  # fall through to legacy path on parse error
 
             _ws_fetcher = None
             if self._ws_client is not None:

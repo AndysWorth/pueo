@@ -2618,6 +2618,72 @@ FINISH_UPDATE_ANALYSIS = ToolDefinition(
 )
 
 
+FINISH_CHANGE_SCREENING = ToolDefinition(
+    name="finish_change_screening",
+    description=(
+        "Report the screening results for this batch of release changes and close the "
+        "screening session.  Call exactly once after reviewing all changes in the batch. "
+        "List every change that warrants attention in flagged[], and any features "
+        "relevant to installed integrations in highlights[]."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "flagged": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "domain": {
+                            "type": "string",
+                            "description": "The integration domain this change affects.",
+                        },
+                        "change": {
+                            "type": "string",
+                            "description": "Brief description of the change (≤120 chars).",
+                        },
+                        "concern": {
+                            "type": "string",
+                            "description": "Why this warrants user attention (≤120 chars).",
+                        },
+                        "severity": {
+                            "type": "string",
+                            "enum": ["low", "medium", "high"],
+                            "description": "'high' for breaking / data-loss risk; 'medium' for config changes; 'low' for deprecations.",
+                        },
+                    },
+                    "required": ["domain", "change", "concern", "severity"],
+                },
+                "description": "Changes that need user attention.  Empty if none.",
+            },
+            "highlights": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "domain": {
+                            "type": "string",
+                            "description": "The integration domain this feature belongs to.",
+                        },
+                        "feature": {
+                            "type": "string",
+                            "description": "One-sentence description of the new capability (≤120 chars).",
+                        },
+                    },
+                    "required": ["domain", "feature"],
+                },
+                "description": "New features or improvements relevant to this installation.  Empty if none.",
+            },
+            "batch_complete": {
+                "type": "boolean",
+                "description": "True when every entry in this batch was reviewed.  False if the batch was too large to finish.",
+            },
+        },
+        "required": ["flagged", "highlights", "batch_complete"],
+    },
+)
+
+
 # Shared by the finish tools whose condition a poll keeps watching (ADR 050).
 _PREDICTION_PROPERTIES: dict = {
     "kind": {
@@ -2862,6 +2928,24 @@ def build_update_analysis_registry() -> ToolRegistry:
         GET_SPOOK_ISSUES,
         GET_SENTINEL_ISSUES,
         FINISH_UPDATE_ANALYSIS,
+    ):
+        reg.register(tool)
+    return reg
+
+
+def build_change_screening_registry() -> ToolRegistry:
+    """Registry for a Core release-change screening session.
+
+    A lightweight session that reviews a batch of changelog entries and BC items
+    for installed integrations, then calls finish_change_screening.
+    No SSH tools — read_config is included so the agent can verify whether a
+    flagged BC key is actually present in this install's config.
+    """
+    reg = ToolRegistry()
+    for tool in (
+        READ_CONFIG,
+        QUERY_KNOWLEDGE,
+        FINISH_CHANGE_SCREENING,
     ):
         reg.register(tool)
     return reg

@@ -80,6 +80,9 @@ Rules:
 - Approve/Acknowledge/Apply verify nothing (ADR 046). Only system verifiers, "Pueo was right"/"got this wrong", and prediction checks call `enqueue_distillation_after_verification`.
 - **Seeds own verdicts:** per-type "conclude X" rules belong in signature-matched `seed_*.md`, not `agent_loop_*.md` (`TestPromptNoVerdictRules`). Every seed must be registered and match a real signature (`TestSeedRegistry`).
 
+## Core release report + screening
+`build_core_release_report()` in `utils/knowledge/ha_release_report.py` runs before the main update-analysis AgentLoop for Core updates: fetches the blog + changelog, parses BCs (domain-linked entries matched first), maps changelog sections to installed integrations via WS `manifest/list`, and persists a `CoreReleaseReport` JSON to `state_dir/update_reports/core_<version>.json`. Then `_run_update_analysis._coro` runs sequential `change_screening` AgentLoop batches (cut at integration boundaries, ≤ 6 k chars each; registry: `read_config`, `query_knowledge`, `finish_change_screening`; no distillation). `_get_update_release_notes` short-circuits to `format_core_release_digest()` when a report exists, capping output at 16 k chars. See ADR 056.
+
 ## Developer docs
 `ha_developer_docs` is a ChromaDB collection (in `COLLECTIONS` in `knowledge_store.py`) that stores curated pages from `developers.home-assistant.io` (architecture, entity model, config flows, Supervisor API, WebSocket API, REST API). Populated by `utils/knowledge/ha_developer_docs_scraper.py` at RAG refresh (step 3.7). Authority score 1.0 — treated as official docs. Cache lives at `HA_DEVELOPER_DOCS_CACHE_DIR` (default `~/Library/Caches/Pueo/ha_developer_docs/`).
 
