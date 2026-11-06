@@ -9529,6 +9529,44 @@ class TestPueoWasRightButton:
         assert 'action="/right/card-r"' in html
         assert 'name="acknowledge"' not in html
 
+    def test_log_recurrence_card_is_advise_only(self, tmp_path, monkeypatch):
+        """#1132: recurring-log card renders details, Yes/No, and /acknowledge."""
+        html = self._render(
+            tmp_path,
+            monkeypatch,
+            {
+                "episode_id": "ep1",
+                "card_type": "log_recurrence",
+                "suppression_key": "log_recurrence:abcd",
+                "informational": True,
+                "logger": "homeassistant.components.noaa_tides",
+                "exception": "COOPSAPIError",
+                "occurrences": 3,
+                "window_days": 7,
+                "recommended_action": "Change the datum option",
+                "error_excerpt": "COOPSAPIError: No data was found",
+                "verification_question": "Did changing the datum stop it?",
+            },
+        )
+        assert "seen 3 times in 7 days" in html
+        assert "Change the datum option" in html
+        assert "No data was found" in html
+        assert "Pueo stops re-investigating this recurring error" in html
+        assert 'action="/acknowledge/card-r"' in html
+        assert 'action="/approve/card-r"' not in html
+        assert "Did changing the datum stop it?" in html
+        assert 'name="acknowledge" value="1"' in html
+
+    def test_log_recurrence_card_minimal_payload(self, tmp_path, monkeypatch):
+        html = self._render(
+            tmp_path,
+            monkeypatch,
+            {"card_type": "log_recurrence", "logger": "x.y", "exception": "E"},
+        )
+        assert "<code>E</code> from <code>x.y</code>" in html
+        assert "Log excerpt" not in html
+        assert "seen " not in html
+
     def test_actionable_card_shows_verdict_once_marked(self, tmp_path, monkeypatch):
         html = self._render(
             tmp_path,

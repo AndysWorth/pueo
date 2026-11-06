@@ -535,6 +535,7 @@ _UNSET_PROMPT = object()  # sentinel for auto-loaded, terminal-tool-aware defaul
 _TERMINAL_TOOL_PRIMARY_FIELD: dict[str, str] = {
     "finish_repair_issue": "human_explanation",
     "finish_notification_investigation": "human_explanation",
+    "finish_log_investigation": "human_explanation",
     "finish_update_analysis": "recommendation",
 }
 

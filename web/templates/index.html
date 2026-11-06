@@ -452,6 +452,23 @@ trigger: {{ r.payload.get("trigger", []) | tojson(indent=2) }}
         </p>
       </div>
       {% endif %}
+      {% if ct == "log_recurrence" %}
+      <div style="margin:0.75rem 0;">
+        <p style="margin:0 0 0.4rem;font-size:0.88rem;">
+          <code>{{ r.payload.get("exception", "error") }}</code> from <code>{{ r.payload.get("logger", "unknown") }}</code>
+          {% if r.payload.get("occurrences") %}— seen {{ r.payload.get("occurrences") }} times{% if r.payload.get("window_days") %} in {{ r.payload.get("window_days") }} days{% endif %}{% endif %}.
+        </p>
+        {% if r.payload.get("recommended_action") %}
+        <p style="margin:0 0 0.3rem;font-size:0.85rem;"><strong>Recommended action:</strong> {{ r.payload.get("recommended_action") }}</p>
+        {% endif %}
+        {% if r.payload.get("error_excerpt") %}
+        <details style="font-size:0.8rem;">
+          <summary style="cursor:pointer;color:#555;">Log excerpt</summary>
+          <pre style="white-space:pre-wrap;background:#f6f6f6;padding:0.4rem;border-radius:4px;max-height:16rem;overflow:auto;">{{ r.payload.get("error_excerpt") }}</pre>
+        </details>
+        {% endif %}
+      </div>
+      {% endif %}
       {% if ct == "disk_recovery" %}
       <div style="margin:0.75rem 0;">
         {% set da = r.payload.get("disk_analysis", {}) %}
@@ -767,6 +784,8 @@ trigger: {{ r.payload.get("trigger", []) | tojson(indent=2) }}
         <strong style="color:#222;">Acknowledge</strong> — Mark as Known Issue; Pueo will re-investigate if the underlying data changes
         {% elif ct == "integration_bug" %}
         <strong style="color:#222;">Acknowledge</strong> — Dismiss this notification; check HACS or the issue tracker for a fix
+        {% elif ct == "log_recurrence" %}
+        <strong style="color:#222;">Acknowledge</strong> — Mark as Known Issue; Pueo stops re-investigating this recurring error
         {% else %}
         <strong style="color:#222;">Acknowledge</strong> — Mark as seen and remove from queue; full details remain in the Timeline
         {% endif %}
@@ -783,7 +802,7 @@ trigger: {{ r.payload.get("trigger", []) | tojson(indent=2) }}
       <form method="POST" action="/acknowledge/{{ r.notification_id }}" style="display:inline;">
         <button class="btn" style="background:#6c757d;color:#fff;border:none;padding:0.35rem 0.9rem;border-radius:4px;cursor:pointer;font-size:0.875rem;" type="submit">Acknowledge</button>
       </form>
-      {% elif ct == "host_health" and r.payload.get("informational") %}
+      {% elif (ct == "host_health" and r.payload.get("informational")) or ct == "log_recurrence" %}
       <form method="POST" action="/acknowledge/{{ r.notification_id }}">
         <button class="btn btn-approve" type="submit">Acknowledge</button>
       </form>

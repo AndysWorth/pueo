@@ -363,6 +363,26 @@ class TestRegistryMembership:
             "Either the registry grew unexpectedly or the ceiling needs bumping."
         )
 
+    def test_finish_log_investigation_registered_in_ha_not_mcp(self):
+        from utils.agent.tool_registry import (
+            FINISH_LOG_INVESTIGATION,
+            build_chat_tool_registry,
+            build_ha_tool_registry,
+        )
+        from utils.mcp.pueo_mcp_server import _MCP_TOOL_NAMES
+
+        assert "finish_log_investigation" in build_ha_tool_registry()
+        assert "finish_log_investigation" not in build_chat_tool_registry()
+        assert "finish_log_investigation" not in _MCP_TOOL_NAMES
+        params = FINISH_LOG_INVESTIGATION.parameters
+        assert params["required"] == [
+            "human_explanation",
+            "recommended_action",
+            "requires_hitl",
+        ]
+        assert "deviated_from_runbook" in params["properties"]
+        assert "prediction" not in params["properties"]
+
     def test_get_automation_traces_in_ha_chat_registries(self):
         from utils.agent.tool_registry import (
             build_ha_tool_registry,

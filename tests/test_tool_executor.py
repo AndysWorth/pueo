@@ -6112,6 +6112,166 @@ class TestHitlCardQueuedFlag:
         assert ex._hitl_card_queued is False
 
 
+class TestFinishLogInvestigation:
+    """finish_log_investigation closes a recurring-log-error session (#1132)."""
+
+    _ERR = {
+        "fp": "abcd1234abcd1234",
+        "logger": "homeassistant.components.noaa_tides",
+        "exc_class": "COOPSAPIError",
+        "count": 3,
+        "window_days": 7,
+        "error_block": "Error fetching NOAA Tides data\nCOOPSAPIError: No data",
+    }
+
+    def _setup(self, tmp_path):
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+
+        db = TestHitlCardQueuedFlag()._make_db(tmp_path)
+        notifier = FakeNotifier()
+        ex = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=notifier,
+            db_path=db,
+        )
+        return ex, notifier, db
+
+    def _row(self, db, key):
+        import sqlite3
+
+        with sqlite3.connect(db) as conn:
+            return conn.execute(
+                "SELECT last_action, next_allowed_at, send_count, card_type"
+                " FROM hitl_suppression WHERE card_key = ?",
+                (key,),
+            ).fetchone()
+
+    def test_no_pending_error_fails(self, tmp_path):
+        from utils.agent.tool_registry import ToolCall
+
+        ex, notifier, _ = self._setup(tmp_path)
+        result = asyncio.run(
+            ex.execute(
+                ToolCall(
+                    name="finish_log_investigation",
+                    arguments={
+                        "human_explanation": "x",
+                        "recommended_action": "y",
+                        "requires_hitl": True,
+                    },
+                )
+            )
+        )
+        assert result.success is False
+        assert "No pending log error" in (result.error or "")
+        assert notifier.sent == []
+
+    def test_requires_hitl_sends_advise_only_card(self, tmp_path):
+        from utils.agent.tool_registry import ToolCall
+        from utils.hitl.card_types import CARD_TYPE_LOG_RECURRENCE
+        from utils.hitl.hitl_tracker import stable_nid
+
+        ex, notifier, db = self._setup(tmp_path)
+        ex.set_pending_log_error(dict(self._ERR))
+        ex.set_episode_id("ep-log")
+        ex.set_signature("log:homeassistant_components_noaa_tides:coopsapierror")
+        result = asyncio.run(
+            ex.execute(
+                ToolCall(
+                    name="finish_log_investigation",
+                    arguments={
+                        "human_explanation": "Station has no MLLW datum.",
+                        "recommended_action": "Change the datum option to MSL.",
+                        "requires_hitl": True,
+                        "verification_question": "Did changing the datum stop it?",
+                        "fact_if_yes": "noaa_tides station 8467150 lacks MLLW",
+                        "runbook_followed": "none",
+                    },
+                )
+            )
+        )
+        assert result.success is True
+        key = "log_recurrence:abcd1234abcd1234"
+        assert len(notifier.sent) == 1
+        payload = notifier.sent[0]["payload"]
+        assert payload["card_type"] == CARD_TYPE_LOG_RECURRENCE
+        assert payload["notification_id"] == stable_nid(key)
+        assert payload["suppression_key"] == key
+        assert payload["informational"] is True
+        assert payload["episode_id"] == "ep-log"
+        assert payload["signature"].startswith("log:")
+        assert payload["verification_question"] == "Did changing the datum stop it?"
+        assert payload["fact_if_yes"].startswith("noaa_tides")
+        assert payload["occurrences"] == 3
+        assert "COOPSAPIError" in payload["error_excerpt"]
+        assert "Recommended action: Change the datum" in notifier.sent[0]["body"]
+        assert ex._hitl_card_queued is True
+        assert ex._hitl_card_id == stable_nid(key)
+        row = self._row(db, key)
+        assert row[2] == 1 and row[3] == CARD_TYPE_LOG_RECURRENCE
+
+    def test_requires_hitl_default_question_no_fact(self, tmp_path):
+        ex, notifier, _ = self._setup(tmp_path)
+        ex.set_pending_log_error(dict(self._ERR))
+        asyncio.run(
+            ex._finish_log_investigation(
+                human_explanation="x", recommended_action="", requires_hitl=True
+            )
+        )
+        payload = notifier.sent[0]["payload"]
+        assert "recurring log error" in payload["verification_question"]
+        assert "fact_if_yes" not in payload
+        assert "Recommended action" not in notifier.sent[0]["body"]
+
+    def test_no_hitl_defers_for_cooldown(self, tmp_path, monkeypatch):
+        import time as _time
+
+        import config
+
+        monkeypatch.setattr(config, "LOG_TRIAGE_COOLDOWN_HOURS", 24)
+        ex, notifier, db = self._setup(tmp_path)
+        ex.set_pending_log_error(dict(self._ERR))
+        result = asyncio.run(
+            ex._finish_log_investigation(
+                human_explanation="Transient API outage.",
+                recommended_action="none",
+                requires_hitl=False,
+            )
+        )
+        assert result.success is True
+        assert notifier.sent == []
+        assert ex._hitl_card_queued is False
+        last_action, next_allowed_at, _, _ = self._row(
+            db, "log_recurrence:abcd1234abcd1234"
+        )
+        assert last_action == "deferred"
+        assert next_allowed_at > _time.time() + 23 * 3600
+
+    def test_suppression_blocks_reinvestigation(self, tmp_path, monkeypatch):
+        """Both verdicts make _log_recurrence_should_investigate return False."""
+        import config
+        from agents.ha_log_monitor import _log_recurrence_should_investigate
+
+        for requires_hitl in (True, False):
+            sub = tmp_path / str(requires_hitl)
+            sub.mkdir()
+            ex, _, db = self._setup(sub)
+            monkeypatch.setattr(config, "DB_PATH", db)
+            ex.set_pending_log_error(dict(self._ERR))
+            asyncio.run(
+                ex._finish_log_investigation(
+                    human_explanation="x",
+                    recommended_action="",
+                    requires_hitl=requires_hitl,
+                )
+            )
+            assert _log_recurrence_should_investigate("abcd1234abcd1234") is False
+
+
 class TestGateQueuedCardsCarryEpisode:
     """ADR 046: gate-queued cards carry episode_id and defer the session."""
 

@@ -424,6 +424,10 @@ class TestDefaultVerificationQuestion:
         q = default_verification_question("ha_config_issue", {})
         assert q == "Was Pueo's config issue assessment right?"
 
+    def test_log_recurrence(self):
+        q = default_verification_question("log_recurrence", {})
+        assert q == "Was Pueo's diagnosis of this recurring log error right?"
+
     def test_notification_card(self):
         q = default_verification_question("unknown", {"is_notification_card": True})
         assert "notification" in q.lower()

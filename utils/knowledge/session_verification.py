@@ -325,6 +325,8 @@ def default_verification_question(card_type: str, payload: dict) -> str:
         return "Was Pueo's analysis of this repair issue right?"
     if card_type == "ha_config_issue":
         return "Was Pueo's config issue assessment right?"
+    if card_type == "log_recurrence":
+        return "Was Pueo's diagnosis of this recurring log error right?"
     if payload.get("is_notification_card"):
         return "Was Pueo's notification assessment right?"
     return "Was Pueo's assessment right?"
