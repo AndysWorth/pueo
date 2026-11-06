@@ -11356,3 +11356,406 @@ class TestToolExecutorWSClientGuard:
         ), "ToolExecutor(...) calls missing ha_ws_client= (ADR 017):\n" + "\n".join(
             f"  {f}" for f in failures
         )
+
+
+class TestCoreReleaseReport:
+    """Tests for utils/knowledge/ha_release_report.py."""
+
+    # ── Pydantic model ──────────────────────────────────────────────────────
+
+    def test_bc_entry_valid_construction(self):
+        from utils.knowledge.ha_release_report import BCEntry
+
+        e = BCEntry(name="MQTT", domains=["mqtt"], body="Some change.")
+        assert e.name == "MQTT"
+        assert e.domains == ["mqtt"]
+        assert e.body == "Some change."
+
+    def test_bc_entry_invalid_missing_name(self):
+        from pydantic import ValidationError
+        from utils.knowledge.ha_release_report import BCEntry
+
+        with pytest.raises(ValidationError):
+            BCEntry()  # type: ignore[call-arg]
+
+    def test_bc_entry_json_roundtrip(self):
+        from utils.knowledge.ha_release_report import BCEntry
+
+        e = BCEntry(name="Philips Hue", domains=["hue"], body="Effect removed.")
+        e2 = BCEntry.model_validate_json(e.model_dump_json())
+        assert e2 == e
+
+    def test_core_release_report_valid_construction(self):
+        from utils.knowledge.ha_release_report import BCEntry, CoreReleaseReport
+
+        r = CoreReleaseReport(
+            version="2026.11.0",
+            blog_url="https://www.home-assistant.io/blog/2026/11/05/x/",
+            completeness="complete",
+            built_at="2026-11-05T00:00:00+00:00",
+        )
+        assert r.version == "2026.11.0"
+        assert r.completeness == "complete"
+        assert r.bc_installed == []
+
+    def test_core_release_report_invalid_missing_version(self):
+        from pydantic import ValidationError
+        from utils.knowledge.ha_release_report import CoreReleaseReport
+
+        with pytest.raises(ValidationError):
+            CoreReleaseReport()  # type: ignore[call-arg]
+
+    def test_core_release_report_json_roundtrip(self):
+        from utils.knowledge.ha_release_report import BCEntry, CoreReleaseReport
+
+        r = CoreReleaseReport(
+            version="2026.11.0",
+            bc_installed=[BCEntry(name="MQTT", domains=["mqtt"], body="change")],
+            bc_general=[BCEntry(name="Entity names", body="all changed")],
+            bc_other_names=["adguard"],
+            changes_by_domain={"mqtt": ["Change 1"]},
+            completeness="complete",
+            built_at="2026-11-05T00:00:00+00:00",
+        )
+        r2 = CoreReleaseReport.model_validate_json(r.model_dump_json())
+        assert r2 == r
+
+    # ── _derive_changelog_url ───────────────────────────────────────────────
+
+    def test_derive_changelog_url_ga_release(self):
+        from utils.knowledge.ha_release_report import _derive_changelog_url
+
+        assert (
+            _derive_changelog_url("2026.11.0")
+            == "https://www.home-assistant.io/changelogs/core-2026.11"
+        )
+
+    def test_derive_changelog_url_patch_release(self):
+        from utils.knowledge.ha_release_report import _derive_changelog_url
+
+        assert (
+            _derive_changelog_url("2026.11.3")
+            == "https://www.home-assistant.io/changelogs/core-2026.11"
+        )
+
+    # ── _strip_attr_refs ────────────────────────────────────────────────────
+
+    def test_strip_attr_refs_removes_credit(self):
+        from utils.knowledge.ha_release_report import _strip_attr_refs
+
+        line = "Add new feature (by @JohnDoe - #12345)"
+        assert _strip_attr_refs(line) == "Add new feature"
+
+    def test_strip_attr_refs_no_credit(self):
+        from utils.knowledge.ha_release_report import _strip_attr_refs
+
+        line = "Plain change without attribution"
+        assert _strip_attr_refs(line) == line
+
+    # ── _normalize_name ─────────────────────────────────────────────────────
+
+    def test_normalize_name_basic(self):
+        from utils.knowledge.ha_release_report import _normalize_name
+
+        assert _normalize_name("Philips Hue") == "philips_hue"
+        assert _normalize_name("Z-Wave JS") == "z_wave_js"
+        assert _normalize_name("MQTT") == "mqtt"
+        assert _normalize_name("Calendar and Sun (sun)") == "calendar_and_sun"
+
+    # ── _resolve_domain ─────────────────────────────────────────────────────
+
+    def test_resolve_domain_exact_manifest(self):
+        from utils.knowledge.ha_release_report import _resolve_domain
+
+        installed = {"hue", "mqtt"}
+        name_map = {"Philips Hue": "hue", "MQTT": "mqtt"}
+        assert _resolve_domain("Philips Hue", installed, name_map) == "hue"
+
+    def test_resolve_domain_normalized_fallback(self):
+        from utils.knowledge.ha_release_report import _resolve_domain
+
+        installed = {"mqtt", "sun"}
+        name_map = {}
+        assert _resolve_domain("MQTT", installed, name_map) == "mqtt"
+        assert _resolve_domain("Sun", installed, name_map) == "sun"
+
+    def test_resolve_domain_bare_form(self):
+        from utils.knowledge.ha_release_report import _resolve_domain
+
+        # "Z-Wave JS" normalises to "z_wave_js"; bare form = "zwavejs"
+        # domain "zwave_js" bare form = "zwavejs" → match
+        installed = {"zwave_js"}
+        name_map = {}
+        assert _resolve_domain("Z-Wave JS", installed, name_map) == "zwave_js"
+
+    def test_resolve_domain_not_installed(self):
+        from utils.knowledge.ha_release_report import _resolve_domain
+
+        installed = {"mqtt"}
+        name_map = {"Philips Hue": "hue"}
+        assert _resolve_domain("Philips Hue", installed, name_map) is None
+
+    # ── parse_changelog_sections ────────────────────────────────────────────
+
+    def test_parse_changelog_sections_basic(self):
+        from utils.knowledge.ha_release_report import parse_changelog_sections
+
+        text = (
+            "Some intro\n"
+            "##### MQTT\n"
+            "- Change 1 (by @user - #123)\n"
+            "- Change 2\n"
+            "##### adguard\n"
+            "- Other change\n"
+        )
+        result = parse_changelog_sections(text, {"mqtt"}, {"MQTT": "mqtt"})
+        assert "mqtt" in result
+        assert result["mqtt"] == ["Change 1", "Change 2"]
+        assert "adguard" not in result
+
+    def test_parse_changelog_sections_strips_attr_refs(self):
+        from utils.knowledge.ha_release_report import parse_changelog_sections
+
+        text = "##### Sun\n- Fix sunrise calc (by @dev - #9999)\n"
+        result = parse_changelog_sections(text, {"sun"}, {})
+        assert result["sun"] == ["Fix sunrise calc"]
+
+    def test_parse_changelog_sections_normalized_match(self):
+        from utils.knowledge.ha_release_report import parse_changelog_sections
+
+        # Heading "Home Assistant Cloud" with no manifest entry; normalized = "home_assistant_cloud"
+        # domain "cloud" won't match, but "home_assistant_cloud" might if installed
+        text = "##### Home Assistant Cloud\n- Cloud update\n"
+        result = parse_changelog_sections(text, {"home_assistant_cloud"}, {})
+        assert "home_assistant_cloud" in result
+
+    def test_parse_changelog_sections_multiple_domains(self):
+        from utils.knowledge.ha_release_report import parse_changelog_sections
+
+        text = (
+            "##### MQTT\n- Fix A\n"
+            "##### Sun\n- Fix B\n"
+            "##### Other\n- Not installed\n"
+        )
+        result = parse_changelog_sections(
+            text, {"mqtt", "sun"}, {"MQTT": "mqtt", "Sun": "sun"}
+        )
+        assert set(result.keys()) == {"mqtt", "sun"}
+
+    # ── build_core_release_report (async, via fakes) ────────────────────────
+
+    def _make_changelog_html(self, sections: list[tuple[str, list[str]]]) -> str:
+        """Build minimal changelog HTML with <h5> integration sections."""
+        parts = ["<html><body>"]
+        for heading, lines in sections:
+            parts.append(f"<h5>{heading}</h5><ul>")
+            for line in lines:
+                parts.append(f"<li>{line}</li>")
+            parts.append("</ul>")
+        parts.append("</body></html>")
+        return "\n".join(parts)
+
+    def _make_blog_html(self, bc_sections: list[tuple[str, str, str]]) -> str:
+        """Build minimal blog HTML with BC <details> blocks.
+
+        bc_sections: [(heading, domain_or_empty, body_text), ...]
+        """
+        parts = ["<html><article><h2>Backward-incompatible changes</h2>"]
+        for heading, domain, body in bc_sections:
+            parts.append("<details class='details-block-item'>")
+            parts.append(f"<summary>{heading}</summary>")
+            parts.append(f"<p>{body}</p>")
+            if domain:
+                parts.append(
+                    f'<p>(<a href="/integrations/{domain}/">{heading} documentation</a>)</p>'
+                )
+            parts.append("</details>")
+        parts.append("</article></html>")
+        return "\n".join(parts)
+
+    def test_build_core_release_report_complete(self, tmp_path, pueo_dirs):
+        """build_core_release_report parses BCs and changelog, persists JSON."""
+        import asyncio
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+        from utils.knowledge.ha_release_report import build_core_release_report
+
+        blog_html = self._make_blog_html(
+            [
+                ("MQTT", "mqtt", "Entities without unique_id removed."),
+                ("Philips Hue", "hue", "None effect removed."),
+                ("Entity names", "", "All entity names changed."),
+            ]
+        )
+        changelog_html = self._make_changelog_html(
+            [
+                ("MQTT", ["Fix A (by @user - #1)", "Fix B"]),
+                ("adguard", ["Other fix"]),
+            ]
+        )
+
+        ws = FakeHAWebSocketClient(
+            manifests=[
+                {"domain": "mqtt", "name": "MQTT"},
+                {"domain": "hue", "name": "Philips Hue"},
+            ]
+        )
+
+        stub = "[release notes](https://www.home-assistant.io/blog/2026/11/05/x/)."
+
+        report = asyncio.run(
+            build_core_release_report(
+                version="2026.11.0",
+                installed_integrations=["mqtt", "hue"],
+                ws_client=ws,
+                cache_dir=str(tmp_path / "cache"),
+                state_dir=tmp_path / "state",
+                _github_fetcher=lambda v: stub,
+                _blog_fetcher=lambda url: blog_html.encode(),
+                _changelog_fetcher=lambda url: changelog_html,
+            )
+        )
+
+        assert report.version == "2026.11.0"
+        assert report.completeness == "complete"
+        assert report.blog_url == "https://www.home-assistant.io/blog/2026/11/05/x/"
+        installed_names = {e.name for e in report.bc_installed}
+        assert "MQTT" in installed_names
+        assert "Philips Hue" in installed_names
+        general_names = {e.name for e in report.bc_general}
+        assert "Entity names" in general_names
+        assert "mqtt" in report.changes_by_domain
+        assert report.changes_by_domain["mqtt"] == ["Fix A", "Fix B"]
+        assert "adguard" not in report.changes_by_domain
+        assert "list_manifests" in ws.calls
+
+        # Persisted to state_dir
+        report_path = tmp_path / "state" / "update_reports" / "core_2026.11.0.json"
+        assert report_path.exists()
+        loaded = __import__("json").loads(report_path.read_text())
+        assert loaded["version"] == "2026.11.0"
+
+    def test_build_core_release_report_changelog_cached(self, tmp_path, pueo_dirs):
+        """build_core_release_report uses existing changelog cache when present."""
+        import asyncio
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+        from utils.knowledge.ha_release_report import build_core_release_report
+
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir(exist_ok=True)
+        cached_text = "##### MQTT\n- Cached change\n"
+        (cache_dir / "changelog_core-2026.11.txt").write_text(cached_text)
+
+        stub = "[release notes](https://www.home-assistant.io/blog/2026/11/05/x/)."
+        blog_html = self._make_blog_html([])
+        changelog_calls: list[str] = []
+
+        def _changelog_should_not_be_called(url: str) -> str:
+            changelog_calls.append(url)
+            return ""
+
+        ws = FakeHAWebSocketClient(manifests=[{"domain": "mqtt", "name": "MQTT"}])
+
+        report = asyncio.run(
+            build_core_release_report(
+                version="2026.11.0",
+                installed_integrations=["mqtt"],
+                ws_client=ws,
+                cache_dir=str(cache_dir),
+                state_dir=tmp_path / "state",
+                _github_fetcher=lambda v: stub,
+                _blog_fetcher=lambda url: blog_html.encode(),
+                _changelog_fetcher=_changelog_should_not_be_called,
+            )
+        )
+
+        assert changelog_calls == [], "changelog should come from cache, not fetcher"
+        assert "mqtt" in report.changes_by_domain
+
+    def test_build_core_release_report_incomplete_on_blog_failure(
+        self, tmp_path, pueo_dirs
+    ):
+        """Completeness is 'incomplete' when the blog fetch fails."""
+        import asyncio
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+        from utils.knowledge.ha_release_report import build_core_release_report
+
+        changelog_html = self._make_changelog_html([("MQTT", ["Fix A"])])
+        ws = FakeHAWebSocketClient(manifests=[{"domain": "mqtt", "name": "MQTT"}])
+
+        def _raise(url: str) -> bytes:
+            raise RuntimeError("network error")
+
+        stub = "[release notes](https://www.home-assistant.io/blog/2026/11/05/x/)."
+
+        report = asyncio.run(
+            build_core_release_report(
+                version="2026.11.0",
+                installed_integrations=["mqtt"],
+                ws_client=ws,
+                cache_dir=str(tmp_path / "cache"),
+                state_dir=tmp_path / "state",
+                _github_fetcher=lambda v: stub,
+                _blog_fetcher=_raise,
+                _changelog_fetcher=lambda url: changelog_html,
+            )
+        )
+
+        assert report.completeness == "incomplete"
+
+    def test_build_core_release_report_changelog_cached_only_on_success(
+        self, tmp_path, pueo_dirs
+    ):
+        """Changelog cache file is not written when the fetcher raises."""
+        import asyncio
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+        from utils.knowledge.ha_release_report import build_core_release_report
+
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir(exist_ok=True)
+        # Remove any stale files so the assertion is clean
+        for f in cache_dir.iterdir():
+            f.unlink()
+        ws = FakeHAWebSocketClient()
+        stub = "Beta PR list content that is long enough to not be a stub" + "x" * 500
+
+        def _raise_changelog(url: str) -> str:
+            raise RuntimeError("network error")
+
+        report = asyncio.run(
+            build_core_release_report(
+                version="2026.11.0",
+                installed_integrations=["mqtt"],
+                ws_client=ws,
+                cache_dir=str(cache_dir),
+                state_dir=tmp_path / "state",
+                _github_fetcher=lambda v: stub,
+                _blog_fetcher=lambda url: b"<article></article>",
+                _changelog_fetcher=_raise_changelog,
+            )
+        )
+
+        assert not any(cache_dir.iterdir()), "no cache file on failure"
+        assert report.completeness == "incomplete"
+
+    # ── FakeHAWebSocketClient.list_manifests ────────────────────────────────
+
+    def test_fake_ws_list_manifests_returns_configured(self):
+        import asyncio
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        manifests = [
+            {"domain": "hue", "name": "Philips Hue"},
+            {"domain": "mqtt", "name": "MQTT"},
+        ]
+        ws = FakeHAWebSocketClient(manifests=manifests)
+        result = asyncio.run(ws.list_manifests())
+        assert result == manifests
+        assert "list_manifests" in ws.calls
+
+    def test_fake_ws_list_manifests_default_empty(self):
+        import asyncio
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        ws = FakeHAWebSocketClient()
+        result = asyncio.run(ws.list_manifests())
+        assert result == []
