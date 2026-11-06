@@ -2470,6 +2470,7 @@ async def _execute_spook_item(
                         nid=nid,
                         issue_id=issue_id,
                         reason=result.abort_reason,
+                        error=result.error_message,
                     )
                     try:
                         from utils.core.timeline import write_timeline_event

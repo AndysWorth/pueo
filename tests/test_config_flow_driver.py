@@ -1,6 +1,7 @@
 """Tests for utils/ha/config_flow_driver.py."""
 
 import asyncio
+import logging
 
 import pytest
 
@@ -551,14 +552,16 @@ class TestDriveRepairFlowAbortPaths:
         assert result.success is False
         assert "external" in result.error_message
 
-    def test_exception_aborts_and_returns_failure(self):
+    def test_exception_aborts_and_returns_failure(self, caplog):
         class _RaisingClient(FakeHARestClient):
             async def start_repair_flow(self, domain: str, issue_id: str) -> dict:
                 raise RuntimeError("connection refused")
 
-        result = _run(drive_repair_flow(_RaisingClient(), "spook", "iss5"))
+        with caplog.at_level(logging.WARNING, logger="config_flow_driver"):
+            result = _run(drive_repair_flow(_RaisingClient(), "spook", "iss5"))
         assert result.success is False
         assert "connection refused" in result.error_message
+        assert "connection refused" in caplog.text
 
 
 class TestDriveRepairFlowMenuStep:
