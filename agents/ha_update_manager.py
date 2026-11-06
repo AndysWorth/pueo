@@ -783,8 +783,12 @@ async def fetch_release_notes_cached(
                     )
                 else:
                     _blog_text = await asyncio.to_thread(_fetch_blog_post, _blog_url)
-            except Exception:  # nosec B110
-                pass
+            except Exception as _blog_exc:  # nosec B110
+                log.warning(
+                    "release_notes_blog_fetch_failed",
+                    url=_blog_url,
+                    error=str(_blog_exc),
+                )
 
         if _blog_text and len(_blog_text.strip()) >= 500:
             cache_path.parent.mkdir(parents=True, exist_ok=True)

@@ -6315,19 +6315,14 @@ class ToolExecutor:
                     " is UNVERIFIED.]\n\n" + notes
                 )
 
-            if _inter_parts:
-                notes = (
-                    "\n\n---\n\n".join(_inter_parts)
-                    + f"\n\n---\n\n# {_bare_version}\n\n{notes}"
-                )
-
             # For complete HA Core notes, restructure to surface installed-
-            # integration breaking changes at the top.
+            # integration breaking changes at the top.  Apply to the target
+            # version's notes before combining with intermediate-version parts
+            # so the BC section of the final release is always formatted.
             if (
                 _is_ha_core_ver
                 and self._release_notes_completeness == "complete"
                 and self._ha_profile is not None
-                and not _inter_parts
             ):
                 from utils.knowledge.ha_blog_scraper import (
                     format_core_notes_for_analysis,
@@ -6338,6 +6333,12 @@ class ToolExecutor:
                 )
                 notes = format_core_notes_for_analysis(notes, _installed_integrations)
                 self._installed_bc_found = "**Affects this instance:**" in notes
+
+            if _inter_parts:
+                notes = (
+                    "\n\n---\n\n".join(_inter_parts)
+                    + f"\n\n---\n\n# {_bare_version}\n\n{notes}"
+                )
 
             return ToolResult(
                 tool_name="get_update_release_notes",

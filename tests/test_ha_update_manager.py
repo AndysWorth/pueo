@@ -5815,6 +5815,85 @@ class TestFetchReleaseNotesCachedCoreGAStub:
         assert "WARNING" in result.output
         assert "INCOMPLETE" not in result.output  # prefix stripped
 
+    def test_stub_markdown_link_form_extracts_url(self, tmp_path):
+        """Stub with markdown link '(url).' form is correctly parsed — regression for #1138."""
+        import asyncio
+
+        # Real GitHub stub: markdown link ending with ').' causes the old regex to 404
+        _MARKDOWN_STUB = (
+            "## What's Changed\n\n"
+            "[release notes]"
+            "(https://www.home-assistant.io/blog/2026/11/05/home-assistant-2026-11-released/).\n"
+        )
+        fetched_urls: list[str] = []
+
+        def _capture_fetcher(url: str) -> bytes:
+            fetched_urls.append(url)
+            return self._REAL_BLOG_HTML.encode()
+
+        async def _md_stub_fetcher(v: str) -> str:
+            return _MARKDOWN_STUB
+
+        asyncio.run(
+            __import__(
+                "agents.ha_update_manager",
+                fromlist=["fetch_release_notes_cached"],
+            ).fetch_release_notes_cached(
+                "2026.11.0",
+                cache_dir=str(tmp_path / "cache"),
+                _fetcher=_md_stub_fetcher,
+                _blog_post_fetcher=_capture_fetcher,
+            )
+        )
+
+        assert fetched_urls, "blog URL was never fetched"
+        assert fetched_urls[0].endswith(
+            "/"
+        ), "URL should not contain trailing ').' punctuation"
+        assert fetched_urls[0] == (
+            "https://www.home-assistant.io/blog/2026/11/05/"
+            "home-assistant-2026-11-released/"
+        )
+
+    def test_blog_fetch_failure_logs_warning(self, tmp_path, caplog):
+        """When the blog fetch raises, a structured warning is logged (not silenced)."""
+        import asyncio
+        import logging
+
+        _BETA_NOTES = "## 2026.11.0b3\n\n" + "Beta PR list entry. " * 30
+
+        async def _fake_fetcher(version):
+            if "b" in version:
+                return _BETA_NOTES
+            return self._STUB
+
+        def _fail_blog(url):
+            raise OSError("connection refused")
+
+        with caplog.at_level(logging.WARNING, logger="ha_update_manager"):
+            asyncio.run(
+                __import__(
+                    "agents.ha_update_manager",
+                    fromlist=["fetch_release_notes_cached"],
+                ).fetch_release_notes_cached(
+                    "2026.11.0",
+                    cache_dir=str(tmp_path / "cache"),
+                    _fetcher=_fake_fetcher,
+                    _blog_post_fetcher=_fail_blog,
+                )
+            )
+
+        warning_records = [
+            r
+            for r in caplog.records
+            if "blog" in r.getMessage().lower() or "blog" in str(getattr(r, "url", ""))
+        ]
+        assert warning_records or any(
+            "release_notes_blog_fetch_failed" in r.getMessage()
+            or "release_notes_blog_fetch_failed" in getattr(r, "event", "")
+            for r in caplog.records
+        ), "Expected release_notes_blog_fetch_failed warning"
+
 
 # ---------------------------------------------------------------------------
 # Pueo HA dependency manifest (S4 — #1124)
