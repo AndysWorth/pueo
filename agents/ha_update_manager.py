@@ -1368,6 +1368,141 @@ async def _run_update_analysis(
 
         initial_context = sanitize_update_context(initial_context)
 
+        # ── Core: build report + run screening batches (S3) ──────────────
+        # For Core updates only: build the structured release report (step 1),
+        # then run sequential LLM screening batches (step 2) inside this same
+        # WorkItem so the no-concurrent-LLM rule is satisfied.  The main loop
+        # (step 3) then calls get_update_release_notes which returns a compact
+        # digest from the report instead of re-fetching the blog.
+        _is_core_update = _update_type_early == "core"
+        if _is_core_update and _profile is not None and HA_API_TOKEN:
+            from utils.knowledge.ha_release_report import (
+                CoreReleaseReport as _CRR,
+                ScreeningFlag,
+                ScreeningHighlight,
+                build_core_release_report,
+                make_screening_batches,
+            )
+            from utils.agent.tool_registry import build_change_screening_registry
+            from utils.knowledge.runbook_signature import sig_update as _sig_update
+            from paths import get_dirs as _get_dirs
+            import config as _cfg
+
+            _installed = list(_profile.installed_integrations or [])
+            _report_path = (
+                _get_dirs().state_dir
+                / "update_reports"
+                / f"core_{update.latest_version}.json"
+            )
+
+            # Step 1: build report (deterministic)
+            try:
+                _rpt = await build_core_release_report(
+                    update.latest_version,
+                    _installed,
+                    ws_client=_ws_client,
+                    cache_dir=_cfg.HA_UPDATE_RELEASE_NOTES_CACHE_DIR,
+                    state_dir=_get_dirs().state_dir,
+                )
+                log.info(
+                    "core_release_report_built",
+                    version=update.latest_version,
+                    completeness=_rpt.completeness,
+                    bc_installed=len(_rpt.bc_installed),
+                    bc_general=len(_rpt.bc_general),
+                    changelog_domains=len(_rpt.changes_by_domain),
+                )
+            except Exception as _rpt_exc:
+                log.warning(
+                    "core_release_report_failed",
+                    version=update.latest_version,
+                    error=str(_rpt_exc),
+                )
+                _rpt = None  # type: ignore[assignment]
+
+            # Step 2: screening batches (LLM, sequential, same WorkItem)
+            if _rpt is not None:
+                executor.clear_screening_state()
+                _batches = make_screening_batches(_rpt)
+                _all_complete = True
+                for _batch_idx, _batch_text in enumerate(_batches):
+                    if not _batch_text.strip():
+                        continue
+                    try:
+                        _screen_prompt = load_agent_prompt(
+                            "change_screening", "finish_change_screening"
+                        )
+                        _screen_llm = make_llm_client()  # pragma: no cover
+                        _screen_loop = AgentLoop(
+                            llm_client=_screen_llm,
+                            tool_executor=executor,
+                            tool_registry=build_change_screening_registry(),
+                            system_prompt=_screen_prompt,
+                            terminal_tool_name="finish_change_screening",
+                            trigger="update_poll",
+                            activity_type="change_screening",
+                            db_path=DB_PATH,
+                            knowledge_store=knowledge_store,
+                            capture_llm=False,
+                        )
+                        _screen_result = await _screen_loop.run(
+                            (
+                                f"HA Core {update.latest_version} — batch {_batch_idx + 1}"
+                                f" of {len(_batches)}:\n\n{_batch_text}"
+                            ),
+                            knowledge_query=(
+                                f"HA Core {update.latest_version} breaking changes "
+                                "installed integrations"
+                            ),
+                            signature=_sig_update("core_screen", update.component),
+                            subject_key=update.entity_id,
+                        )
+                        if _screen_result.outcome != "success":
+                            _all_complete = False
+                            log.warning(
+                                "screening_batch_incomplete",
+                                batch=_batch_idx + 1,
+                                outcome=_screen_result.outcome,
+                            )
+                    except Exception as _se:
+                        _all_complete = False
+                        log.warning(
+                            "screening_batch_failed",
+                            batch=_batch_idx + 1,
+                            error=str(_se),
+                        )
+
+                # Persist screening results to report
+                _flags, _hls, _sc = executor.get_screening_results()
+                _rpt.screening_flags = [
+                    ScreeningFlag(**f) if isinstance(f, dict) else f for f in _flags
+                ]
+                _rpt.screening_highlights = [
+                    ScreeningHighlight(**h) if isinstance(h, dict) else h for h in _hls
+                ]
+                _rpt.screening_complete = _all_complete
+                # Only "complete" if both deterministic report AND all screening finished
+                if not _all_complete and _rpt.completeness == "complete":
+                    _rpt.completeness = "incomplete"
+                try:
+                    _report_dir = _get_dirs().state_dir / "update_reports"
+                    _report_dir.mkdir(parents=True, exist_ok=True)
+                    (_report_dir / f"core_{update.latest_version}.json").write_text(
+                        _rpt.model_dump_json(indent=2), encoding="utf-8"
+                    )
+                    log.info(
+                        "core_release_report_screening_persisted",
+                        version=update.latest_version,
+                        flags=len(_flags),
+                        highlights=len(_hls),
+                        complete=_all_complete,
+                    )
+                except Exception as _persist_exc:
+                    log.warning(
+                        "core_release_report_persist_failed",
+                        error=str(_persist_exc),
+                    )
+
         llm_client = make_llm_client()  # pragma: no cover
         loop = AgentLoop(
             llm_client=llm_client,

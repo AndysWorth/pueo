@@ -29,6 +29,18 @@ class BCEntry(BaseModel):
     body: str = ""
 
 
+class ScreeningFlag(BaseModel):
+    domain: str
+    change: str
+    concern: str
+    severity: str = "medium"
+
+
+class ScreeningHighlight(BaseModel):
+    domain: str
+    feature: str
+
+
 class CoreReleaseReport(BaseModel):
     version: str
     blog_url: Optional[str] = None
@@ -39,7 +51,10 @@ class CoreReleaseReport(BaseModel):
     changes_by_domain: dict[str, list[str]] = {}
     farewell: Optional[str] = None
     # Populated by S3 screening pass
-    screening: list[Any] = []
+    screening_flags: list[ScreeningFlag] = []
+    screening_highlights: list[ScreeningHighlight] = []
+    # True when every screening batch was attempted (even if some had flags)
+    screening_complete: bool = False
     completeness: str = "incomplete"
     built_at: str = ""
 
@@ -263,6 +278,114 @@ async def build_core_release_report(
     )
 
     return report
+
+
+def format_core_release_digest(report: "CoreReleaseReport") -> str:
+    """Build a compact digest string from a CoreReleaseReport for the main AgentLoop.
+
+    Contains: installed BCs, general BCs, flagged changes, highlight candidates,
+    and the Farewell section.  Capped at 15 000 chars.
+    """
+    parts: list[str] = []
+
+    # Installed BC entries
+    if report.bc_installed:
+        installed_lines = "\n\n".join(
+            f"### {e.name}\n\n{e.body}" if e.body else f"### {e.name}"
+            for e in report.bc_installed
+        )
+        parts.append(
+            "## Backward-incompatible changes\n\n"
+            "**Affects this instance:**\n\n" + installed_lines
+        )
+    if report.bc_general:
+        general_lines = "\n\n".join(
+            f"### {e.name}\n\n{e.body}" if e.body else f"### {e.name}"
+            for e in report.bc_general
+        )
+        general_header = "**General (applies to all installs):**\n\n" + general_lines
+        if report.bc_installed:
+            parts[-1] += "\n\n" + general_header
+        else:
+            parts.append("## Backward-incompatible changes\n\n" + general_header)
+    if report.bc_other_names:
+        other_line = (
+            "**Other affected integrations (not installed here):** "
+            + ", ".join(report.bc_other_names)
+        )
+        if parts:
+            parts[-1] += "\n\n" + other_line
+        else:
+            parts.append("## Backward-incompatible changes\n\n" + other_line)
+
+    # Flagged changes from screening pass
+    if report.screening_flags:
+        flag_lines = []
+        for f in report.screening_flags:
+            flag_lines.append(
+                f"- **{f.domain}** [{f.severity}]: {f.change} — {f.concern}"
+            )
+        parts.append("## Flagged changes (from screening)\n\n" + "\n".join(flag_lines))
+
+    # Highlight candidates from screening pass
+    if report.screening_highlights:
+        hl_lines = []
+        for h in report.screening_highlights:
+            hl_lines.append(f"- **{h.domain}**: {h.feature}")
+        parts.append("## Feature highlights (from screening)\n\n" + "\n".join(hl_lines))
+
+    # Farewell / removed section
+    if report.farewell:
+        parts.append(report.farewell)
+
+    result = "\n\n---\n\n".join(parts)
+    return result[:15000]
+
+
+# Screening batch size budget (chars).  Cut at integration boundaries.
+_SCREENING_BATCH_CHARS = 6000
+
+
+def make_screening_batches(report: "CoreReleaseReport") -> list[str]:
+    """Split the report's BC + changelog content into LLM-sized batches.
+
+    Each batch is a self-contained text block ≤ _SCREENING_BATCH_CHARS that
+    cuts at integration boundaries (never mid-entry).  Returns a list of
+    batch strings.
+    """
+    sections: list[str] = []
+
+    # BC entries (installed + general) first
+    for entry in report.bc_installed + report.bc_general:
+        text = (
+            f"### BC: {entry.name}\n\n{entry.body}"
+            if entry.body
+            else f"### BC: {entry.name}"
+        )
+        sections.append(text)
+
+    # Changelog sections per domain
+    for domain, lines in report.changes_by_domain.items():
+        text = f"### Changes: {domain}\n\n" + "\n".join(f"- {l}" for l in lines)
+        sections.append(text)
+
+    batches: list[str] = []
+    current_parts: list[str] = []
+    current_len = 0
+
+    for section in sections:
+        sec_len = len(section)
+        if current_parts and current_len + sec_len + 2 > _SCREENING_BATCH_CHARS:
+            batches.append("\n\n".join(current_parts))
+            current_parts = []
+            current_len = 0
+        current_parts.append(section)
+        current_len += sec_len + 2  # +2 for "\n\n"
+
+    if current_parts:
+        batches.append("\n\n".join(current_parts))
+
+    return batches
 
 
 async def _fetch_core_github_stub(version: str) -> str:  # pragma: no cover

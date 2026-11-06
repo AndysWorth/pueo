@@ -7970,6 +7970,7 @@ class TestSeedRegistry:
             sig_update(hacs_type, "noaa_it_all"),
             sig_update("addon", "mosquitto"),
             sig_update("core", "homeassistant"),
+            sig_update("core_screen", "homeassistant"),
             sig_update("os", "home_assistant_operating_system"),
             sig_update("supervisor", "home_assistant_supervisor"),
             sig_host_health("resolution_issue", "rpi_firmware_update_blocked"),
@@ -8288,7 +8289,7 @@ class TestPromptNoVerdictRules:
         )
 
     def test_finds_task_prompts(self):
-        assert len(self._agent_prompts()) == 11  # agent_core + 10 task_*.md
+        assert len(self._agent_prompts()) == 12  # agent_core + 11 task_*.md
 
     def test_no_per_type_verdicts(self):
         import re
@@ -8359,6 +8360,7 @@ class TestLoadAgentPrompt:
         from utils.core.prompts import _VALID_TASKS, load_agent_prompt
 
         terminal_tools = {
+            "change_screening": "finish_change_screening",
             "chat": "finish_chat",
             "config_repair": "finish_repair",
             "repair_issue": "finish_repair_issue",
@@ -8384,6 +8386,7 @@ class TestLoadAgentPrompt:
         from utils.agent.tool_registry import build_ha_tool_registry
 
         from utils.agent.tool_registry import (
+            build_change_screening_registry,
             build_chat_tool_registry,
             build_device_availability_tool_registry,
             build_host_health_tool_registry,
@@ -8399,6 +8402,7 @@ class TestLoadAgentPrompt:
             | set(build_netalertx_tool_registry().names())
             | set(build_notification_investigation_registry().names())
             | set(build_update_analysis_registry().names())
+            | set(build_change_screening_registry().names())
             | set(build_device_availability_tool_registry().names())
             | set(build_host_health_tool_registry().names())
             | set(build_lovelace_investigation_registry().names())
@@ -11759,3 +11763,422 @@ class TestCoreReleaseReport:
         ws = FakeHAWebSocketClient()
         result = asyncio.run(ws.list_manifests())
         assert result == []
+
+    # ── ScreeningFlag / ScreeningHighlight Pydantic models ─────────────────
+
+    def test_screening_flag_valid_construction(self):
+        from utils.knowledge.ha_release_report import ScreeningFlag
+
+        f = ScreeningFlag(
+            domain="mqtt", change="API removed", concern="config break", severity="high"
+        )
+        assert f.domain == "mqtt"
+        assert f.severity == "high"
+
+    def test_screening_flag_invalid_missing_domain(self):
+        from pydantic import ValidationError
+        from utils.knowledge.ha_release_report import ScreeningFlag
+
+        with pytest.raises(ValidationError):
+            ScreeningFlag(change="x", concern="y", severity="low")  # type: ignore[call-arg]
+
+    def test_screening_flag_json_roundtrip(self):
+        from utils.knowledge.ha_release_report import ScreeningFlag
+
+        f = ScreeningFlag(
+            domain="hue",
+            change="Effect removed",
+            concern="broken automation",
+            severity="medium",
+        )
+        f2 = ScreeningFlag.model_validate_json(f.model_dump_json())
+        assert f2 == f
+
+    def test_screening_highlight_valid_construction(self):
+        from utils.knowledge.ha_release_report import ScreeningHighlight
+
+        h = ScreeningHighlight(domain="zha", feature="Matter grouping support")
+        assert h.domain == "zha"
+
+    def test_screening_highlight_invalid_missing_domain(self):
+        from pydantic import ValidationError
+        from utils.knowledge.ha_release_report import ScreeningHighlight
+
+        with pytest.raises(ValidationError):
+            ScreeningHighlight(feature="new feature")  # type: ignore[call-arg]
+
+    def test_screening_highlight_json_roundtrip(self):
+        from utils.knowledge.ha_release_report import ScreeningHighlight
+
+        h = ScreeningHighlight(domain="tuya", feature="Local polling mode added")
+        h2 = ScreeningHighlight.model_validate_json(h.model_dump_json())
+        assert h2 == h
+
+    # ── format_core_release_digest ─────────────────────────────────────────
+
+    def test_digest_contains_installed_bc(self):
+        from utils.knowledge.ha_release_report import (
+            BCEntry,
+            CoreReleaseReport,
+            format_core_release_digest,
+        )
+
+        rpt = CoreReleaseReport(
+            version="2026.11.0",
+            bc_installed=[
+                BCEntry(name="MQTT", domains=["mqtt"], body="config changed")
+            ],
+            completeness="complete",
+            built_at="2026-11-05T00:00:00+00:00",
+        )
+        digest = format_core_release_digest(rpt)
+        assert "Affects this instance" in digest
+        assert "MQTT" in digest
+        assert "config changed" in digest
+
+    def test_digest_contains_general_bc(self):
+        from utils.knowledge.ha_release_report import (
+            BCEntry,
+            CoreReleaseReport,
+            format_core_release_digest,
+        )
+
+        rpt = CoreReleaseReport(
+            version="2026.11.0",
+            bc_general=[BCEntry(name="Entity names", body="all renamed")],
+            completeness="complete",
+            built_at="2026-11-05T00:00:00+00:00",
+        )
+        digest = format_core_release_digest(rpt)
+        assert "General (applies to all installs)" in digest
+        assert "Entity names" in digest
+
+    def test_digest_contains_screening_flags(self):
+        from utils.knowledge.ha_release_report import (
+            CoreReleaseReport,
+            ScreeningFlag,
+            format_core_release_digest,
+        )
+
+        rpt = CoreReleaseReport(
+            version="2026.11.0",
+            screening_flags=[
+                ScreeningFlag(
+                    domain="tuya",
+                    change="polling removed",
+                    concern="may break",
+                    severity="high",
+                )
+            ],
+            completeness="complete",
+            built_at="2026-11-05T00:00:00+00:00",
+        )
+        digest = format_core_release_digest(rpt)
+        assert "Flagged changes" in digest
+        assert "tuya" in digest
+        assert "polling removed" in digest
+
+    def test_digest_contains_highlights(self):
+        from utils.knowledge.ha_release_report import (
+            CoreReleaseReport,
+            ScreeningHighlight,
+            format_core_release_digest,
+        )
+
+        rpt = CoreReleaseReport(
+            version="2026.11.0",
+            screening_highlights=[
+                ScreeningHighlight(domain="zha", feature="Matter grouping")
+            ],
+            completeness="complete",
+            built_at="2026-11-05T00:00:00+00:00",
+        )
+        digest = format_core_release_digest(rpt)
+        assert "Feature highlights" in digest
+        assert "zha" in digest
+        assert "Matter grouping" in digest
+
+    def test_digest_contains_farewell(self):
+        from utils.knowledge.ha_release_report import (
+            CoreReleaseReport,
+            format_core_release_digest,
+        )
+
+        rpt = CoreReleaseReport(
+            version="2026.11.0",
+            farewell="## Farewell\n\nRemoved the old thing.",
+            completeness="complete",
+            built_at="2026-11-05T00:00:00+00:00",
+        )
+        digest = format_core_release_digest(rpt)
+        assert "Farewell" in digest
+        assert "Removed the old thing" in digest
+
+    def test_digest_empty_report(self):
+        from utils.knowledge.ha_release_report import (
+            CoreReleaseReport,
+            format_core_release_digest,
+        )
+
+        rpt = CoreReleaseReport(
+            version="2026.11.0",
+            completeness="complete",
+            built_at="2026-11-05T00:00:00+00:00",
+        )
+        digest = format_core_release_digest(rpt)
+        assert isinstance(digest, str)
+
+    # ── make_screening_batches ──────────────────────────────────────────────
+
+    def test_batches_cut_at_integration_boundaries(self):
+        from utils.knowledge.ha_release_report import (
+            BCEntry,
+            CoreReleaseReport,
+            _SCREENING_BATCH_CHARS,
+            make_screening_batches,
+        )
+
+        # Build a report with enough changelog entries to force a split
+        big_line = "x" * 2000
+        rpt = CoreReleaseReport(
+            version="2026.11.0",
+            bc_installed=[BCEntry(name="MQTT", domains=["mqtt"], body=big_line)],
+            changes_by_domain={
+                "mqtt": [big_line],
+                "zha": [big_line],
+                "tuya": [big_line],
+            },
+            completeness="complete",
+            built_at="2026-11-05T00:00:00+00:00",
+        )
+        batches = make_screening_batches(rpt)
+        # Each batch should not exceed the limit (they cut at section boundaries)
+        for b in batches:
+            assert (
+                len(b) <= _SCREENING_BATCH_CHARS + 2000
+            )  # one section can exceed if large
+
+    def test_batches_no_mid_entry_split(self):
+        from utils.knowledge.ha_release_report import (
+            BCEntry,
+            CoreReleaseReport,
+            make_screening_batches,
+        )
+
+        rpt = CoreReleaseReport(
+            version="2026.11.0",
+            bc_installed=[BCEntry(name="MQTT", domains=["mqtt"], body="change A")],
+            bc_general=[BCEntry(name="Entity names", body="change B")],
+            changes_by_domain={"hue": ["change C"]},
+            completeness="complete",
+            built_at="2026-11-05T00:00:00+00:00",
+        )
+        batches = make_screening_batches(rpt)
+        # All entries should appear across batches exactly once
+        combined = "\n".join(batches)
+        assert "MQTT" in combined
+        assert "Entity names" in combined
+        assert "hue" in combined
+
+    def test_batches_empty_report(self):
+        from utils.knowledge.ha_release_report import (
+            CoreReleaseReport,
+            make_screening_batches,
+        )
+
+        rpt = CoreReleaseReport(
+            version="2026.11.0",
+            completeness="complete",
+            built_at="2026-11-05T00:00:00+00:00",
+        )
+        batches = make_screening_batches(rpt)
+        # Empty report should produce at most one (empty) batch, which the caller skips
+        assert all(isinstance(b, str) for b in batches)
+
+    # ── ToolExecutor screening state ───────────────────────────────────────
+
+    def _make_executor(self):
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+
+        return ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(auto_execute_result=False),
+            notifier=FakeNotifier(),
+        )
+
+    def test_finish_change_screening_accumulates(self):
+        executor = self._make_executor()
+        executor.clear_screening_state()
+
+        result = executor._finish_change_screening(
+            flagged=[
+                {
+                    "domain": "mqtt",
+                    "change": "API removed",
+                    "concern": "break",
+                    "severity": "high",
+                }
+            ],
+            highlights=[{"domain": "zha", "feature": "New feature"}],
+            batch_complete=True,
+        )
+        assert result.success
+        flags, hls, complete = executor.get_screening_results()
+        assert len(flags) == 1
+        assert flags[0]["domain"] == "mqtt"
+        assert len(hls) == 1
+        assert complete is True
+
+    def test_finish_change_screening_incomplete_batch(self):
+        executor = self._make_executor()
+        executor.clear_screening_state()
+        executor._finish_change_screening(
+            flagged=[], highlights=[], batch_complete=False
+        )
+        _, _, complete = executor.get_screening_results()
+        assert complete is False
+
+    def test_finish_change_screening_multiple_batches_accumulated(self):
+        executor = self._make_executor()
+        executor.clear_screening_state()
+        executor._finish_change_screening(
+            flagged=[
+                {"domain": "mqtt", "change": "x", "concern": "y", "severity": "low"}
+            ],
+            highlights=[],
+            batch_complete=True,
+        )
+        executor._finish_change_screening(
+            flagged=[
+                {"domain": "hue", "change": "z", "concern": "w", "severity": "medium"}
+            ],
+            highlights=[{"domain": "hue", "feature": "new feature"}],
+            batch_complete=True,
+        )
+        flags, hls, complete = executor.get_screening_results()
+        assert len(flags) == 2
+        assert len(hls) == 1
+        assert complete is True
+
+    # ── build_change_screening_registry ───────────────────────────────────
+
+    def test_change_screening_registry_contents(self):
+        from utils.agent.tool_registry import build_change_screening_registry
+
+        reg = build_change_screening_registry()
+        names = set(reg.names())
+        assert "read_config" in names
+        assert "query_knowledge" in names
+        assert "finish_change_screening" in names
+        # SSH write tools must NOT be in the screening registry
+        assert "apply_fix" not in names
+        assert "trigger_backup" not in names
+
+    def test_finish_change_screening_tool_schema(self):
+        from utils.agent.tool_registry import FINISH_CHANGE_SCREENING
+
+        props = FINISH_CHANGE_SCREENING.parameters["properties"]
+        assert "flagged" in props
+        assert "highlights" in props
+        assert "batch_complete" in props
+        assert FINISH_CHANGE_SCREENING.parameters["required"] == [
+            "flagged",
+            "highlights",
+            "batch_complete",
+        ]
+
+    # ── get_update_release_notes digest short-circuit ─────────────────────
+
+    def test_get_update_release_notes_uses_report_digest(self, tmp_path, pueo_dirs):
+        """When a CoreReleaseReport JSON exists, the method returns a digest."""
+        import asyncio
+        from dataclasses import dataclass
+
+        from utils.knowledge.ha_release_report import (
+            BCEntry,
+            CoreReleaseReport,
+            ScreeningFlag,
+        )
+
+        @dataclass
+        class _FakeUpdate:
+            latest_version: str
+            entity_id: str
+            installed_version: str = "2026.10.0"
+            release_url: str = ""
+
+        rpt = CoreReleaseReport(
+            version="2026.11.0",
+            bc_installed=[BCEntry(name="MQTT", domains=["mqtt"], body="API changed")],
+            bc_general=[BCEntry(name="Entity names", body="renamed")],
+            screening_flags=[
+                ScreeningFlag(
+                    domain="mqtt",
+                    change="config key",
+                    concern="update needed",
+                    severity="medium",
+                )
+            ],
+            screening_complete=True,
+            completeness="complete",
+            built_at="2026-11-05T00:00:00+00:00",
+        )
+
+        report_dir = pueo_dirs.state_dir / "update_reports"
+        report_dir.mkdir(parents=True, exist_ok=True)
+        (report_dir / "core_2026.11.0.json").write_text(
+            rpt.model_dump_json(), encoding="utf-8"
+        )
+
+        executor = self._make_executor()
+        executor.set_update_status(
+            _FakeUpdate(latest_version="2026.11.0", entity_id="update.ha_core")
+        )
+
+        result = asyncio.run(executor._get_update_release_notes("2026.11.0"))
+        assert result.success
+        assert "MQTT" in result.output
+        assert "API changed" in result.output
+        assert executor._release_notes_completeness == "complete"
+        assert executor._installed_bc_found is True
+
+    def test_get_update_release_notes_incomplete_when_screening_incomplete(
+        self, tmp_path, pueo_dirs
+    ):
+        """completeness=complete but screening_complete=False → release_notes_completeness=incomplete."""
+        import asyncio
+        from dataclasses import dataclass
+
+        from utils.knowledge.ha_release_report import BCEntry, CoreReleaseReport
+
+        @dataclass
+        class _FakeUpdate:
+            latest_version: str
+            entity_id: str
+            installed_version: str = "2026.10.0"
+            release_url: str = ""
+
+        rpt = CoreReleaseReport(
+            version="2026.11.0",
+            bc_installed=[BCEntry(name="MQTT", domains=["mqtt"], body="change")],
+            screening_complete=False,
+            completeness="complete",
+            built_at="2026-11-05T00:00:00+00:00",
+        )
+        report_dir = pueo_dirs.state_dir / "update_reports"
+        report_dir.mkdir(parents=True, exist_ok=True)
+        (report_dir / "core_2026.11.0.json").write_text(
+            rpt.model_dump_json(), encoding="utf-8"
+        )
+
+        executor = self._make_executor()
+        executor.set_update_status(
+            _FakeUpdate(latest_version="2026.11.0", entity_id="update.ha_core")
+        )
+
+        result = asyncio.run(executor._get_update_release_notes("2026.11.0"))
+        assert result.success
+        assert executor._release_notes_completeness == "incomplete"

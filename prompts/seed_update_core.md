@@ -23,39 +23,36 @@ releases (2026.9.x → 2026.10.x) may carry breaking changes.
 
 ## Investigation steps
 
-1. `get_update_release_notes(entity_id=<entity>)` — fetch notes for the target version.
-   - Read the full text. Identify the "Breaking changes" section (usually near the top).
-   - Produce a numbered checklist of ALL breaking changes mentioned, including ones that may
-     not affect this install. Mark each as "affects this install: yes/no/unknown" — verify below.
+1. `get_update_release_notes(entity_id=<entity>)` — returns a **pre-built digest** for this
+   release.  The digest contains:
+   - `Backward-incompatible changes` with installed-integration BCs at the top
+   - `Flagged changes (from screening)` — changes flagged by the pre-screening pass
+   - `Feature highlights (from screening)` — noteworthy new capabilities
+   - `Farewell` / removed section
+   Do NOT call `fetch_url` for the blog or changelog — the digest already contains the
+   relevant content.  When no digest is available (non-Core update or report not yet built),
+   `get_update_release_notes` returns raw notes as before.
 
-2. For each potentially-affecting breaking change that mentions a YAML config key:
+2. For every installed-integration BC in the digest that mentions a YAML config key:
    `check_config_against_breaking_change(config_key, description)` — searches
    `/config/configuration.yaml`, `/config/packages/`, and `/config/integrations/`.
-   - When matches are returned, classify each matched line as `likely affected`,
-     `likely safe`, or `unclear`. Count the check as a finding only if at least one
-     line is `likely affected` or `unclear`. If all lines are `likely safe`, state it
-     as a non-finding.
+   - Classify each matched line as `likely affected`, `likely safe`, or `unclear`.
+   - Count as a finding only if at least one line is `likely affected` or `unclear`.
 
-3. For breaking changes that affect service calls or entity platforms (common in minor
-   releases): `check_automation_references(pattern, description)` — searches
-   `automations.yaml`, `automations/*.yaml`, and `packages/**/*.yaml`.
+3. For breaking changes that affect service calls or entity platforms:
+   `check_automation_references(pattern, description)` — searches automation YAML files.
    Apply the same line classification rule as step 2.
 
 4. `query_knowledge(query_type="procedural")` — cross-check renamed/removed config keys
    against the `ha_best_practices` deprecated-API table.
 
-5. For any minor or major release (e.g. 2026.10.x → 2026.11.0): **always** call
-   `get_pueo_command_catalog`. Compare every removed, renamed, or replaced integration,
-   API command, or service mentioned in the release notes against the catalog entries.
-   For each match, add one entry to `pueo_command_risks` naming the affected command/path
-   and the Pueo feature that uses it (e.g. `"hacs/* WS commands → HACS discovery and
-   companion provisioning"`). If no catalog entries match the notes, `pueo_command_risks`
-   stays empty.
-   For patch releases (e.g. 2026.11.0 → 2026.11.1), call only when the notes explicitly
-   mention CLI or API changes.
+5. For any minor or major release: **always** call `get_pueo_command_catalog`.
+   Compare every removed, renamed, or replaced integration, API command, or service
+   mentioned in the digest against the catalog entries.  For each match, add an entry to
+   `pueo_command_risks`.
 
-6. `read_file("/config/configuration.yaml")` only if you need to verify a specific config key
-   flagged by a breaking change.
+6. For every installed-integration BC entry in the digest, state explicitly in
+   `breaking_changes` whether it affects this instance (yes/no/unknown).
 
 ## Output guidance
 
@@ -63,5 +60,5 @@ releases (2026.9.x → 2026.10.x) may carry breaking changes.
 - `proposed_config_fixes`: concrete YAML diff the user must apply before updating.
 - `prerequisites`: any manual steps before applying (e.g. "Update Supervisor first",
   "Create a manual backup").
-- `confidence`: 0.9+ only when you have read the full release notes and checked every
-  relevant config key. Lower confidence if notes were short or unavailable.
+- `confidence`: 0.9+ only when the digest was `complete` and you checked every installed-
+  integration BC.  Lower confidence if the digest was incomplete or notes unavailable.
