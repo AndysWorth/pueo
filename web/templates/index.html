@@ -24,7 +24,23 @@
     {% if r.payload.get("card_type") == "update" and r.payload.get("release_notes_completeness") and r.payload.release_notes_completeness != "complete" and r.payload.get("safe_to_update") %}
     <p style="color:var(--orange,#b45309);font-weight:600;padding:0.2rem 0;">
       ⚠️ UNVERIFIED — release notes unavailable or incomplete; manual review required before approving.
-      {% if r.payload.get("release_url") %}&nbsp;<a href="{{ r.payload.release_url }}" target="_blank" style="color:inherit;">View release notes ↗</a>{% endif %}
+    </p>
+    {% endif %}
+    {% if r.payload.get("card_type") == "update" %}
+    {% set _has_highlights = r.payload.get("highlights") %}
+    {% set _rpt_id = r.payload.get("report_id", "") %}
+    {% set _blog_url = r.payload.get("blog_url", "") or r.payload.get("release_url", "") %}
+    {% if _has_highlights %}
+    <ul style="margin:0.3rem 0 0.5rem 1.25rem;padding:0;">
+      {% for hl in r.payload.highlights %}
+      <li style="font-size:0.85rem;color:#333;margin-bottom:0.2rem;">{{ hl }}</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+    <p style="font-size:0.82rem;margin:0.3rem 0 0.5rem;">
+      {% if _rpt_id %}<a href="/updates/report/{{ _rpt_id }}" target="_blank" style="color:#1a73e8;text-decoration:none;font-weight:600;">Release report ↗</a>{% endif %}
+      {% if _rpt_id and _blog_url %}&nbsp;&middot;&nbsp;{% endif %}
+      {% if _blog_url %}<a href="{{ _blog_url }}" target="_blank" style="color:#1a73e8;text-decoration:none;">HA release notes ↗</a>{% endif %}
     </p>
     {% endif %}
     {% if r.payload.get("is_notification_card") %}

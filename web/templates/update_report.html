@@ -1,0 +1,154 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+  .rpt-header { margin-bottom: 1.25rem; }
+  .rpt-header h2 { font-size: 1.15rem; font-weight: 700; color: #333; margin-bottom: 0.3rem; }
+  .rpt-links { font-size: 0.82rem; display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 0.4rem; }
+  .rpt-links a { color: #1a73e8; text-decoration: none; }
+  .rpt-links a:hover { text-decoration: underline; }
+  .rpt-status { display: inline-block; font-size: 0.72rem; font-weight: 700; padding: 0.18rem 0.55rem;
+    border-radius: 10px; white-space: nowrap; border: 1px solid; margin-left: 0.5rem; }
+  .rpt-status-complete   { background: #d1e7dd; color: #0a3622; border-color: #28a745; }
+  .rpt-status-incomplete { background: #fff3cd; color: #856404; border-color: #ffc107; }
+  .rpt-section { background: #fff; border: 1px solid #ddd; border-radius: 6px;
+    padding: 0.9rem 1.1rem; margin-bottom: 1rem; }
+  .rpt-section h3 { font-size: 0.95rem; font-weight: 700; color: #333; margin-bottom: 0.6rem; }
+  .rpt-section ul { margin: 0 0 0 1.25rem; }
+  .rpt-section li { font-size: 0.88rem; color: #333; margin-bottom: 0.3rem; }
+  .bc-entry { margin-bottom: 0.75rem; padding-bottom: 0.75rem; border-bottom: 1px solid #eee; }
+  .bc-entry:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
+  .bc-name { font-weight: 700; font-size: 0.9rem; color: #222; }
+  .bc-domains { font-size: 0.72rem; color: #6c757d; font-family: monospace; margin-left: 0.5rem; }
+  .bc-body { font-size: 0.84rem; color: #444; margin-top: 0.25rem; white-space: pre-wrap; }
+  .flag-entry { padding: 0.4rem 0.6rem; border-radius: 4px; margin-bottom: 0.4rem;
+    font-size: 0.84rem; }
+  .flag-high   { background: #f8d7da; border-left: 3px solid #dc3545; }
+  .flag-medium { background: #fff3cd; border-left: 3px solid #ffc107; }
+  .flag-low    { background: #d1e7dd; border-left: 3px solid #28a745; }
+  .flag-domain { font-weight: 700; }
+  .flag-concern { color: #555; margin-top: 0.1rem; }
+  .hl-entry { font-size: 0.88rem; color: #333; padding: 0.2rem 0; }
+  .hl-domain { font-weight: 700; color: #1a73e8; }
+  .domain-changes summary { font-size: 0.84rem; color: #555; cursor: pointer; padding: 0.2rem 0; }
+  .domain-changes ul { margin: 0.4rem 0 0 1.25rem; }
+  .domain-changes li { font-size: 0.8rem; color: #444; margin-bottom: 0.2rem; }
+  .rpt-empty { font-size: 0.85rem; color: #888; font-style: italic; }
+  .rpt-meta { font-size: 0.75rem; color: #888; margin-top: 0.3rem; }
+</style>
+
+{% set ver = report.version %}
+{% set completeness = report.completeness %}
+{% set screening_ok = report.screening_complete %}
+
+<div class="rpt-header">
+  <h2>
+    Core {{ ver }} — Release Report
+    <span class="rpt-status rpt-status-{{ 'complete' if completeness == 'complete' and screening_ok else 'incomplete' }}">
+      {{ 'complete' if completeness == 'complete' and screening_ok else 'incomplete' }}
+    </span>
+  </h2>
+  <div class="rpt-links">
+    {% if report.blog_url %}<a href="{{ report.blog_url }}" target="_blank">HA release blog ↗</a>{% endif %}
+    {% if report.changelog_url %}<a href="{{ report.changelog_url }}" target="_blank">Full changelog ↗</a>{% endif %}
+    <a href="/">← Dashboard</a>
+  </div>
+  {% if report.built_at %}
+  <p class="rpt-meta">Report built: {{ report.built_at[:19].replace("T"," ") }} UTC</p>
+  {% endif %}
+</div>
+
+{# Screening highlights #}
+{% if report.screening_highlights %}
+<div class="rpt-section">
+  <h3>✨ Feature Highlights</h3>
+  {% for h in report.screening_highlights %}
+  <div class="hl-entry"><span class="hl-domain">{{ h.domain }}</span>: {{ h.feature }}</div>
+  {% endfor %}
+</div>
+{% endif %}
+
+{# Screening flags #}
+{% if report.screening_flags %}
+<div class="rpt-section">
+  <h3>⚑ Flagged Changes</h3>
+  {% for f in report.screening_flags %}
+  <div class="flag-entry flag-{{ f.severity | lower }}">
+    <div><span class="flag-domain">{{ f.domain }}</span>
+      <span style="font-size:0.72rem;font-weight:700;color:#555;margin-left:0.4rem;">[{{ f.severity | upper }}]</span>
+    </div>
+    <div>{{ f.change }}</div>
+    <div class="flag-concern">⚠ {{ f.concern }}</div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+{# Installed BCs #}
+{% if report.bc_installed %}
+<div class="rpt-section">
+  <h3>⚠️ Breaking Changes — Affects This Installation</h3>
+  {% for entry in report.bc_installed %}
+  <div class="bc-entry">
+    <div>
+      <span class="bc-name">{{ entry.name }}</span>
+      {% if entry.domains %}<span class="bc-domains">{{ entry.domains | join(", ") }}</span>{% endif %}
+    </div>
+    {% if entry.body %}<div class="bc-body">{{ entry.body }}</div>{% endif %}
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+{# General BCs #}
+{% if report.bc_general %}
+<div class="rpt-section">
+  <h3>ℹ️ Breaking Changes — General (All Installs)</h3>
+  {% for entry in report.bc_general %}
+  <div class="bc-entry">
+    <span class="bc-name">{{ entry.name }}</span>
+    {% if entry.body %}<div class="bc-body">{{ entry.body }}</div>{% endif %}
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+{# BC names for other integrations (not installed) #}
+{% if report.bc_other_names %}
+<div class="rpt-section">
+  <h3>Other Breaking Changes (Not Installed Here)</h3>
+  <p style="font-size:0.85rem;color:#555;">{{ report.bc_other_names | join(", ") }}</p>
+</div>
+{% endif %}
+
+{# All changes by installed domain — collapsed #}
+{% if report.changes_by_domain %}
+<div class="rpt-section">
+  <h3>All Changes by Integration ({{ report.changes_by_domain | length }} installed)</h3>
+  {% for domain, lines in report.changes_by_domain.items() | sort %}
+  <details class="domain-changes">
+    <summary><strong>{{ domain }}</strong> — {{ lines | length }} change(s)</summary>
+    <ul>
+      {% for line in lines %}
+      <li>{{ line }}</li>
+      {% endfor %}
+    </ul>
+  </details>
+  {% endfor %}
+</div>
+{% endif %}
+
+{# No content fallback #}
+{% if not report.bc_installed and not report.bc_general and not report.screening_flags and not report.screening_highlights and not report.changes_by_domain %}
+<div class="rpt-section">
+  <p class="rpt-empty">No relevant changes found for installed integrations.</p>
+</div>
+{% endif %}
+
+{# Farewell / removed integrations #}
+{% if report.farewell %}
+<div class="rpt-section">
+  <h3>Farewell</h3>
+  <div style="font-size:0.85rem;color:#444;white-space:pre-wrap;">{{ report.farewell }}</div>
+</div>
+{% endif %}
+{% endblock %}

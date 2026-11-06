@@ -11927,3 +11927,123 @@ class TestExecuteSpookItem:
             )
         )
         assert any(c[0] == "ERROR" and c[1] == "spook_item" for c in calls)
+
+
+# ── Update report page ────────────────────────────────────────────────────────
+
+
+class TestUpdateReportRoute:
+    """Tests for GET /updates/report/{report_id}."""
+
+    def _write_report(self, state_dir: Path, version: str = "2026.11.0") -> Path:
+        """Write a minimal CoreReleaseReport JSON to state_dir/update_reports/."""
+        from utils.knowledge.ha_release_report import (
+            BCEntry,
+            CoreReleaseReport,
+            ScreeningFlag,
+            ScreeningHighlight,
+        )
+
+        report = CoreReleaseReport(
+            version=version,
+            blog_url="https://www.home-assistant.io/blog/2026/11/06/release-202611/",
+            changelog_url="https://www.home-assistant.io/changelogs/core-2026.11",
+            bc_installed=[
+                BCEntry(name="MQTT", domains=["mqtt"], body="MQTT auth changed.")
+            ],
+            bc_general=[BCEntry(name="Entity names", body="Names now unique.")],
+            bc_other_names=["zwave_js"],
+            changes_by_domain={"mqtt": ["MQTT: auth overhaul (#123)"]},
+            screening_flags=[
+                ScreeningFlag(
+                    domain="mqtt",
+                    change="auth",
+                    concern="Check broker",
+                    severity="high",
+                )
+            ],
+            screening_highlights=[
+                ScreeningHighlight(domain="mqtt", feature="MQTT 5.0 support")
+            ],
+            screening_complete=True,
+            completeness="complete",
+            built_at="2026-11-06T12:00:00+00:00",
+        )
+        report_dir = state_dir / "update_reports"
+        report_dir.mkdir(parents=True, exist_ok=True)
+        report_path = report_dir / f"core_{version}.json"
+        report_path.write_text(report.model_dump_json())
+        return report_path
+
+    def test_report_200(self, pueo_dirs, monkeypatch, tmp_path):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        self._write_report(pueo_dirs.state_dir)
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.get("/updates/report/core_2026.11.0")
+        assert resp.status_code == 200
+        assert "2026.11.0" in resp.text
+
+    def test_report_shows_bc_and_highlights(self, pueo_dirs, monkeypatch):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        self._write_report(pueo_dirs.state_dir)
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/updates/report/core_2026.11.0").text
+        assert "MQTT" in html
+        assert "MQTT 5.0 support" in html
+        assert "Entity names" in html
+
+    def test_report_404_missing_file(self, pueo_dirs, monkeypatch):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.get("/updates/report/core_9999.99.0")
+        assert resp.status_code == 404
+
+    def test_report_404_invalid_id(self, pueo_dirs, monkeypatch):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        # Path traversal attempt must return 404, not read filesystem
+        resp = client.get("/updates/report/core_../../../etc/passwd")
+        assert resp.status_code == 404
+
+    def test_update_card_shows_report_link_and_blog_url(self, tmp_path, monkeypatch):
+        """Index card shows 'Release report' and 'HA release notes' links when payload has them."""
+        import json as _json
+        import time as _time
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        nid = "upd_link_test"
+        (tmp_path / f"{nid}.json").write_text(
+            _json.dumps(
+                {
+                    "notification_id": nid,
+                    "subject": "Update available: core 2026.11.0",
+                    "body": "Core 2026.10.4 → 2026.11.0",
+                    "payload": {
+                        "card_type": "update",
+                        "component": "homeassistant",
+                        "installed_version": "2026.10.4",
+                        "latest_version": "2026.11.0",
+                        "report_id": "core_2026.11.0",
+                        "blog_url": "https://www.home-assistant.io/blog/2026/11/06/release-202611/",
+                        "highlights": ["MQTT 5.0 support", "New automation editor"],
+                    },
+                    "sent_at": int(_time.time()) - 30,
+                }
+            )
+        )
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/queue").text
+        assert "Release report" in html
+        assert "/updates/report/core_2026.11.0" in html
+        assert "HA release notes" in html
+        assert "MQTT 5.0 support" in html

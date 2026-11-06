@@ -437,6 +437,9 @@ class ToolExecutor:
         self._screening_flags: list[dict] = []
         self._screening_highlights: list[dict] = []
         self._screening_complete: bool = False
+        # Blog URL from CoreReleaseReport (populated when report is loaded); persists
+        # across inner loops so _finish_update_analysis can stamp it on the card payload.
+        self._core_report_blog_url: Optional[str] = None
         self._lovelace_suspicious: list[str] = []
         self._event_subscriber: Optional[Any] = None
         # Per-session KB tracking (reset in reset())
@@ -6318,6 +6321,7 @@ class ToolExecutor:
                         else:
                             self._release_notes_completeness = "incomplete"
                         self._installed_bc_found = bool(_rpt.bc_installed)
+                        self._core_report_blog_url = _rpt.blog_url
                         if not digest.strip():
                             digest = "Release report built but no relevant changes found for installed integrations."
                         return ToolResult(
@@ -6595,6 +6599,7 @@ class ToolExecutor:
         risk_score: Optional[str] = None,
         confidence: Optional[float] = None,
         verification_question: Optional[str] = None,
+        highlights: Optional[list] = None,
         **_extra: Any,
     ) -> ToolResult:
         """Create a HITL approval card for the pending HA update."""
@@ -6923,6 +6928,13 @@ class ToolExecutor:
             "release_notes_completeness": self._release_notes_completeness,
             "installed_bc_found": self._installed_bc_found,
             "component_class_label": _component_class_label or "",
+            "highlights": list(highlights or [])[:5],
+            "blog_url": self._core_report_blog_url or (update.release_url or ""),
+            "report_id": (
+                f"core_{update.latest_version}"
+                if update.component.lower() in ("core", "homeassistant")
+                else ""
+            ),
         }
         # Verification comes from the post-update result card (run_pueo_self_check /
         # add-on version poll), not from a pre-analysis digest question.  Accept an
