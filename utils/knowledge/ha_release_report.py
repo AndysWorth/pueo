@@ -53,8 +53,13 @@ class CoreReleaseReport(BaseModel):
     # Populated by S3 screening pass
     screening_flags: list[ScreeningFlag] = []
     screening_highlights: list[ScreeningHighlight] = []
-    # True when every screening batch was attempted (even if some had flags)
+    # True when every screening batch finished (even if some had flags)
     screening_complete: bool = False
+    # Batch counts from the screening pass; None on reports persisted before #1148.
+    screening_batches_total: Optional[int] = None
+    screening_batches_done: Optional[int] = None
+    # Deterministic report status (blog + changelog parsed).  Screening status is
+    # tracked separately in screening_complete / screening_batches_* (#1148).
     completeness: str = "incomplete"
     built_at: str = ""
 

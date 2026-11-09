@@ -351,6 +351,16 @@ def _version_score_multiplier(
     return 1.0
 
 
+def _screening_gap_prefix(gap: tuple[int | None, int | None] | None) -> str:
+    """Card prefix for complete notes with a partial all-changes screening (#1148)."""
+    done, total = gap if gap is not None else (None, None)
+    counts = f" ({done} of {total} batches)" if done is not None and total else ""
+    return (
+        f"All-changes screening incomplete{counts} — some changelog entries"
+        " were not reviewed. "
+    )
+
+
 def _update_card_is_pending(suppression_key: str, db_path: str) -> bool:
     """Return True when a HITL update card for *suppression_key* is awaiting a decision.
 
@@ -462,6 +472,12 @@ class ToolExecutor:
         self._screening_flags: list[dict] = []
         self._screening_highlights: list[dict] = []
         self._screening_complete: bool = False
+        # Set by the Core report short-circuit when notes are complete but the
+        # screening pass was partial: (batches_done, batches_total), either may be
+        # None for pre-#1148 reports.  Reset per loop like the completeness flag.
+        self._screening_gap: Optional[tuple[Optional[int], Optional[int]]] = None
+        # Fallback card highlights ("domain: feature") from the Core report.
+        self._report_highlights: list[str] = []
         # Blog URL from CoreReleaseReport (populated when report is loaded); persists
         # across inner loops so _finish_update_analysis can stamp it on the card payload.
         self._core_report_blog_url: Optional[str] = None
@@ -515,6 +531,8 @@ class ToolExecutor:
         self._session_outputs = []
         self._release_notes_completeness = "none"
         self._installed_bc_found = False
+        self._screening_gap = None
+        self._report_highlights = []
         # Screening state is accumulated across batch loops; not reset here.
         # _dynamic_tools intentionally not reset — registered tools persist across loops
 
@@ -6159,6 +6177,7 @@ class ToolExecutor:
         self._screening_flags = []
         self._screening_highlights = []
         self._screening_complete = True  # will be set False on any incomplete batch
+        self._screening_gap = None
 
     def get_screening_results(self) -> tuple[list[dict], list[dict], bool]:
         """Return (flags, highlights, complete) accumulated from all batch sessions."""
@@ -6338,13 +6357,21 @@ class ToolExecutor:
                             _report_path.read_text(encoding="utf-8")
                         )
                         digest = format_core_release_digest(_rpt)
-                        # Set completeness from the report (screening must be complete too)
-                        if _rpt.completeness == "complete" and _rpt.screening_complete:
+                        # Notes completeness comes from the deterministic report only;
+                        # a partial screening pass is tracked separately (#1148).
+                        if _rpt.completeness == "complete":
                             self._release_notes_completeness = "complete"
-                        elif _rpt.completeness == "complete":
-                            self._release_notes_completeness = "incomplete"
+                            if not _rpt.screening_complete:
+                                self._screening_gap = (
+                                    _rpt.screening_batches_done,
+                                    _rpt.screening_batches_total,
+                                )
                         else:
                             self._release_notes_completeness = "incomplete"
+                        self._report_highlights = [
+                            f"{h.domain}: {h.feature}"
+                            for h in _rpt.screening_highlights[:5]
+                        ]
                         self._installed_bc_found = bool(_rpt.bc_installed)
                         self._core_report_blog_url = _rpt.blog_url
                         if not digest.strip():
@@ -6684,12 +6711,21 @@ class ToolExecutor:
                 for n, _ in self._session_outputs
             )
         )
-        _unverified = _notes_incomplete or _bc_unchecked
+        _screening_partial = not _notes_incomplete and self._screening_gap is not None
+        _unverified = _notes_incomplete or _bc_unchecked or _screening_partial
         if self._pending_update_status is not None and _unverified:
             create_hitl_card = True
             if confidence is not None and confidence > 0.5:
                 confidence = 0.5
-            if _notes_incomplete:
+            if _screening_partial and not _bc_unchecked:
+                _unverified_prefix = _screening_gap_prefix(self._screening_gap)
+                log.warning(
+                    "update_analysis_screening_partial",
+                    component=self._pending_update_status.component,
+                    version=self._pending_update_status.latest_version,
+                    screening_gap=self._screening_gap,
+                )
+            elif _notes_incomplete:
                 _unverified_prefix = (
                     "Release notes could not be retrieved — verdict not verified against"
                     " the changelog. "
@@ -6704,6 +6740,8 @@ class ToolExecutor:
                     "Breaking changes found for installed integrations but no config"
                     " check was performed — impact unconfirmed. "
                 )
+                if _screening_partial:
+                    _unverified_prefix += _screening_gap_prefix(self._screening_gap)
                 log.warning(
                     "update_analysis_bc_not_checked",
                     component=self._pending_update_status.component,
@@ -6974,7 +7012,7 @@ class ToolExecutor:
             "release_notes_completeness": self._release_notes_completeness,
             "installed_bc_found": self._installed_bc_found,
             "component_class_label": _component_class_label or "",
-            "highlights": list(highlights or [])[:5],
+            "highlights": list(highlights or self._report_highlights)[:5],
             "blog_url": self._core_report_blog_url or (update.release_url or ""),
             "report_id": (
                 f"core_{update.latest_version}"

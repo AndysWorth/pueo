@@ -1425,9 +1425,12 @@ async def _run_update_analysis(
                 executor.clear_screening_state()
                 _batches = make_screening_batches(_rpt)
                 _all_complete = True
+                _batches_total = 0
+                _batches_done = 0
                 for _batch_idx, _batch_text in enumerate(_batches):
                     if not _batch_text.strip():
                         continue
+                    _batches_total += 1
                     try:
                         _screen_prompt = load_agent_prompt(
                             "change_screening", "finish_change_screening"
@@ -1457,7 +1460,9 @@ async def _run_update_analysis(
                             signature=_sig_update("core_screen", update.component),
                             subject_key=update.entity_id,
                         )
-                        if _screen_result.outcome != "success":
+                        if _screen_result.outcome == "success":
+                            _batches_done += 1
+                        else:
                             _all_complete = False
                             log.warning(
                                 "screening_batch_incomplete",
@@ -1481,9 +1486,10 @@ async def _run_update_analysis(
                     ScreeningHighlight(**h) if isinstance(h, dict) else h for h in _hls
                 ]
                 _rpt.screening_complete = _all_complete
-                # Only "complete" if both deterministic report AND all screening finished
-                if not _all_complete and _rpt.completeness == "complete":
-                    _rpt.completeness = "incomplete"
+                _rpt.screening_batches_total = _batches_total
+                _rpt.screening_batches_done = _batches_done
+                # completeness stays the deterministic notes status: a stuck screening
+                # batch must not make the card claim the notes were missing (#1148).
                 try:
                     _report_dir = _get_dirs().state_dir / "update_reports"
                     _report_dir.mkdir(parents=True, exist_ok=True)

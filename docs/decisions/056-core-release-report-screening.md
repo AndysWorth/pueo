@@ -45,8 +45,8 @@ update_analysis WorkItem — all stages run sequentially inside one item
 `_get_update_release_notes` now short-circuits for Core updates when a report JSON
 exists: it calls `format_core_release_digest()` and returns at most 16 000 chars
 containing installed BCs, general BCs, flagged changes, highlights, and Farewell.
-`_release_notes_completeness` is set to `"complete"` only when both the deterministic
-report and all screening batches succeeded.
+`_release_notes_completeness` comes from the deterministic report's `completeness`
+only (amended #1148 — see below).
 
 ### `seed_update_core.md` changes
 
@@ -66,6 +66,27 @@ they are exempt from distillation because they evaluate mechanics, not diagnosis
 - Core update cards will consistently include the full BC list for installed integrations.
 - Each Core update analysis runs 1–N additional LLM calls (screening batches); on typical
   hardware this adds seconds to minutes before the main loop starts.
-- Completeness degrades gracefully: a failed batch marks the report `incomplete`, which
-  triggers the existing UNVERIFIED card path.
+- Completeness degrades gracefully: a failed batch marks the report
+  `screening_complete=False` (with `screening_batches_done/total`), which still forces a
+  card and caps confidence at 0.5 (see amendment).
 - Non-Core updates (add-ons, OS, Supervisor) are unaffected.
+
+## Amendment (#1148) — screening status is separate from notes completeness
+
+Originally a stuck or failed screening batch downgraded `report.completeness` to
+`incomplete`. That made the card say "Release notes could not be retrieved" when the
+notes were complete and only the all-changes screening was partial (2026.11: 6 of 7
+batches). Now:
+
+- `completeness` is the deterministic report status only. The screening pass records
+  `screening_complete`, `screening_batches_total` and `screening_batches_done` (both
+  optional, so older report JSON still loads).
+- `_get_update_release_notes` sets `_release_notes_completeness` from `completeness`
+  and stores `ToolExecutor._screening_gap = (done, total)` when screening was partial.
+- `_finish_update_analysis` treats a screening gap as unverified (forces a card, caps
+  confidence at 0.5, `effective_safe_to_update=false`). It uses the prefix "All-changes
+  screening incomplete (N of M batches) — some changelog entries were not reviewed."
+  The "Release notes could not be retrieved" prefix is kept for missing notes only.
+- When the model passes no `highlights`, the card falls back to the first 5 report
+  `screening_highlights` (`"<domain>: <feature>"`). `seed_update_core.md` step 7 asks
+  for 2–5 highlights.

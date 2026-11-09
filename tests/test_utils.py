@@ -12145,14 +12145,18 @@ class TestCoreReleaseReport:
         assert executor._release_notes_completeness == "complete"
         assert executor._installed_bc_found is True
 
-    def test_get_update_release_notes_incomplete_when_screening_incomplete(
+    def test_get_update_release_notes_screening_gap_keeps_notes_complete(
         self, tmp_path, pueo_dirs
     ):
-        """completeness=complete but screening_complete=False → release_notes_completeness=incomplete."""
+        """Partial screening leaves notes complete and records the batch gap (#1148)."""
         import asyncio
         from dataclasses import dataclass
 
-        from utils.knowledge.ha_release_report import BCEntry, CoreReleaseReport
+        from utils.knowledge.ha_release_report import (
+            BCEntry,
+            CoreReleaseReport,
+            ScreeningHighlight,
+        )
 
         @dataclass
         class _FakeUpdate:
@@ -12165,6 +12169,11 @@ class TestCoreReleaseReport:
             version="2026.11.0",
             bc_installed=[BCEntry(name="MQTT", domains=["mqtt"], body="change")],
             screening_complete=False,
+            screening_batches_done=6,
+            screening_batches_total=7,
+            screening_highlights=[
+                ScreeningHighlight(domain=f"d{i}", feature=f"f{i}") for i in range(7)
+            ],
             completeness="complete",
             built_at="2026-11-05T00:00:00+00:00",
         )
@@ -12181,4 +12190,58 @@ class TestCoreReleaseReport:
 
         result = asyncio.run(executor._get_update_release_notes("2026.11.0"))
         assert result.success
+        assert executor._release_notes_completeness == "complete"
+        assert executor._screening_gap == (6, 7)
+        assert executor._report_highlights == [f"d{i}: f{i}" for i in range(5)]
+
+    def test_get_update_release_notes_incomplete_report_no_gap(
+        self, tmp_path, pueo_dirs
+    ):
+        """Report completeness=incomplete → notes incomplete, no screening gap recorded."""
+        import asyncio
+        from dataclasses import dataclass
+
+        from utils.knowledge.ha_release_report import CoreReleaseReport
+
+        @dataclass
+        class _FakeUpdate:
+            latest_version: str
+            entity_id: str
+            installed_version: str = "2026.10.0"
+            release_url: str = ""
+
+        rpt = CoreReleaseReport(
+            version="2026.11.0",
+            screening_complete=False,
+            completeness="incomplete",
+        )
+        report_dir = pueo_dirs.state_dir / "update_reports"
+        report_dir.mkdir(parents=True, exist_ok=True)
+        (report_dir / "core_2026.11.0.json").write_text(
+            rpt.model_dump_json(), encoding="utf-8"
+        )
+
+        executor = self._make_executor()
+        executor.set_update_status(
+            _FakeUpdate(latest_version="2026.11.0", entity_id="update.ha_core")
+        )
+
+        asyncio.run(executor._get_update_release_notes("2026.11.0"))
         assert executor._release_notes_completeness == "incomplete"
+        assert executor._screening_gap is None
+        assert executor._report_highlights == []
+
+    def test_report_without_screening_counts_loads(self):
+        """Reports persisted before #1148 (no batch-count fields) still validate."""
+        import json
+
+        from utils.knowledge.ha_release_report import CoreReleaseReport
+
+        legacy = {"version": "2026.11.0", "completeness": "complete"}
+        rpt = CoreReleaseReport.model_validate_json(json.dumps(legacy))
+        assert rpt.screening_batches_total is None
+        assert rpt.screening_batches_done is None
+        rpt2 = CoreReleaseReport(
+            version="x", screening_batches_total=7, screening_batches_done=6
+        )
+        assert CoreReleaseReport.model_validate_json(rpt2.model_dump_json()) == rpt2
