@@ -55,6 +55,7 @@ class _GenericHtmlExtractor(HTMLParser):
         super().__init__()
         self._tag_stack: list[str] = []
         self._skip_depth = 0
+        self._tooltip_depth = 0
         self._buffers: dict[str, list[str]] = {c: [] for c in self._CONTAINERS}
         self._active_containers: list[str] = []
         self._start_id = urllib.parse.unquote(start_id).lower()
@@ -72,12 +73,22 @@ class _GenericHtmlExtractor(HTMLParser):
         if buf is not None:
             buf.append(text)
 
+    @staticmethod
+    def _has_tooltip_class(attrs: list) -> bool:
+        cls = dict(attrs).get("class", "")
+        return "terminology-tooltip" in cls.split()
+
     def handle_starttag(self, tag: str, attrs: list) -> None:
         self._tag_stack.append(tag)
         if tag in self._SKIP_TAGS:
             self._skip_depth += 1
             return
         if self._skip_depth > 0:
+            return
+        if tag == "span" and self._has_tooltip_class(attrs):
+            self._tooltip_depth += 1
+            return
+        if self._tooltip_depth > 0:
             return
         if tag in self._CONTAINERS:
             self._active_containers.append(tag)
@@ -105,6 +116,8 @@ class _GenericHtmlExtractor(HTMLParser):
         if tag in self._SKIP_TAGS:
             if self._skip_depth > 0:
                 self._skip_depth -= 1
+        elif tag == "span" and self._tooltip_depth > 0:
+            self._tooltip_depth -= 1
         if self._tag_stack and self._tag_stack[-1] == tag:
             self._tag_stack.pop()
         if (
@@ -115,7 +128,12 @@ class _GenericHtmlExtractor(HTMLParser):
             self._active_containers.pop()
 
     def handle_data(self, data: str) -> None:
-        if self._skip_depth > 0 or not self._active_containers or not self._found_start:
+        if (
+            self._skip_depth > 0
+            or self._tooltip_depth > 0
+            or not self._active_containers
+            or not self._found_start
+        ):
             return
         text = data.strip()
         if text:
@@ -163,6 +181,12 @@ class _ArticleExtractor(HTMLParser):
         self._details_domains: list[str] = []
         self._pending_a_domain: Optional[str] = None
         self._link_text_buf: list[str] = []
+        self._tooltip_depth = 0
+
+    @staticmethod
+    def _has_tooltip_class(attrs: list) -> bool:
+        cls = dict(attrs).get("class", "")
+        return "terminology-tooltip" in cls.split()
 
     def handle_starttag(self, tag: str, attrs: list) -> None:
         if tag == "article":
@@ -170,6 +194,11 @@ class _ArticleExtractor(HTMLParser):
         if not self._in_article:
             return
         self._tag_stack.append(tag)
+        if tag == "span" and self._has_tooltip_class(attrs):
+            self._tooltip_depth += 1
+            return
+        if self._tooltip_depth > 0:
+            return
         if tag == "details":
             self._in_details = True
             self._details_domains = []
@@ -194,6 +223,8 @@ class _ArticleExtractor(HTMLParser):
             self._buf.append("\n- ")
 
     def handle_endtag(self, tag: str) -> None:
+        if tag == "span" and self._tooltip_depth > 0:
+            self._tooltip_depth -= 1
         if self._tag_stack and self._tag_stack[-1] == tag:
             self._tag_stack.pop()
         if tag == "article":
@@ -211,7 +242,7 @@ class _ArticleExtractor(HTMLParser):
             self._link_text_buf = []
 
     def handle_data(self, data: str) -> None:
-        if self._in_article:
+        if self._in_article and self._tooltip_depth == 0:
             text = data.strip()
             if text:
                 self._buf.append(text + " ")

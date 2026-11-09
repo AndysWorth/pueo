@@ -2510,6 +2510,23 @@ class TestHABlogScraper:
         assert "### Philips Hue" in result
         assert "Entities without a unique_id" in result
 
+    def test_article_extractor_strips_terminology_tooltips(self):
+        """terminology-tooltip spans are dropped; outer term text is kept."""
+        from utils.knowledge.ha_blog_scraper import fetch_blog_post
+
+        html = (
+            "<article>"
+            "<p>Use an <span class='terminology'>entity"
+            "<span class='terminology-tooltip'>An entity represents a "
+            "device state. <a href='/docs/'>Learn more</a></span>"
+            "</span> here.</p>"
+            "</article>"
+        )
+        result = fetch_blog_post("http://example.com", _fetcher=lambda url: html)
+        assert "entity" in result
+        assert "An entity represents" not in result
+        assert "Learn more" not in result
+
     def test_extract_breaking_changes_parses_section(self):
         """extract_breaking_changes returns (name, domains, body) for each ### entry."""
         from utils.knowledge.ha_blog_scraper import extract_breaking_changes
@@ -2843,6 +2860,36 @@ class TestGenericHtmlExtractor:
 
         assert html_to_text("") == ""
         assert html_to_text("<html><head></head><body></body></html>") == ""
+
+    def test_strips_terminology_tooltip_spans(self):
+        from utils.knowledge.ha_blog_scraper import html_to_text
+
+        html = (
+            "<html><body><article>"
+            "<p>An <span class='terminology'>entity"
+            "<span class='terminology-tooltip'>An entity represents a device "
+            "state. <a href='/docs/glossary/'>Learn more</a></span>"
+            "</span> is important.</p>"
+            "</article></body></html>"
+        )
+        result = html_to_text(html)
+        assert "entity" in result
+        assert "An entity represents" not in result
+        assert "Learn more" not in result
+
+    def test_keeps_term_text_outside_tooltip(self):
+        from utils.knowledge.ha_blog_scraper import html_to_text
+
+        html = (
+            "<html><body><article>"
+            "<p>Use a <span class='terminology'>service"
+            "<span class='terminology-tooltip'>tooltip content</span>"
+            "</span> call.</p>"
+            "</article></body></html>"
+        )
+        result = html_to_text(html)
+        assert "service" in result
+        assert "tooltip content" not in result
 
 
 class TestParseReleaseSections:
