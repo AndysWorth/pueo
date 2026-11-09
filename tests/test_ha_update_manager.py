@@ -5357,217 +5357,230 @@ class TestGetUpdateReleaseNotesMultiVersion:
 
 
 # ---------------------------------------------------------------------------
-# _check_config_against_breaking_change — recursive grep
+# _check_config_against_breaking_change / check_automation_references (#1146)
 # ---------------------------------------------------------------------------
 
 
-class TestCheckConfigRecursiveGrep:
-    """_check_config_against_breaking_change searches packages/ and integrations/."""
+def _bc_executor(ssh):
+    from unittest.mock import AsyncMock, MagicMock
 
-    def _make_executor(self, ssh):
-        from unittest.mock import AsyncMock, MagicMock
+    from utils.agent.tool_executor import ToolExecutor
 
-        from utils.agent.tool_executor import ToolExecutor
+    notifier = MagicMock()
+    notifier.send = AsyncMock()
+    return ToolExecutor(
+        ha_ssh_client=ssh,
+        gate=MagicMock(),
+        notifier=notifier,
+        db_path=":memory:",
+    )
 
-        notifier = MagicMock()
-        notifier.send = AsyncMock()
-        executor = ToolExecutor(
-            ha_ssh_client=ssh,
-            gate=MagicMock(),
-            notifier=notifier,
-            db_path=":memory:",
-        )
-        return executor
 
-    def test_grep_command_includes_packages_dir(self, pueo_dirs):
+class TestCheckConfigAgainstBreakingChange:
+    """Config key search: BusyBox-safe command and exit-code mapping."""
+
+    def _run(self, ssh, key="recorder"):
         import asyncio
 
-        from utils.ha.ssh_client import FakeSSHClient
-
-        ssh = FakeSSHClient(command_results={"grep": (0, "not found", "")})
-        executor = self._make_executor(ssh)
-        asyncio.run(
-            executor._check_config_against_breaking_change(
-                "recorder", "recorder key removed"
+        return asyncio.run(
+            _bc_executor(ssh)._check_config_against_breaking_change(
+                key, "recorder key removed"
             )
         )
-        assert any(
-            "/config/packages/" in cmd for cmd in ssh.commands_run
-        ), "grep should include /config/packages/"
 
-    def test_grep_command_includes_integrations_dir(self, pueo_dirs):
-        import asyncio
-
+    def test_command_searches_packages_and_integrations(self, pueo_dirs):
         from utils.ha.ssh_client import FakeSSHClient
 
-        ssh = FakeSSHClient(command_results={"grep": (0, "not found", "")})
-        executor = self._make_executor(ssh)
-        asyncio.run(
-            executor._check_config_against_breaking_change(
-                "mqtt", "mqtt config removed"
-            )
-        )
-        assert any(
-            "/config/integrations/" in cmd for cmd in ssh.commands_run
-        ), "grep should include /config/integrations/"
+        ssh = FakeSSHClient(command_results={"grep": (1, "", "")})
+        self._run(ssh)
+        cmd = ssh.commands_run[-1]
+        assert "/config/configuration.yaml" in cmd
+        assert "/config/packages" in cmd
+        assert "/config/integrations" in cmd
+
+    def test_command_is_busybox_compatible(self, pueo_dirs):
+        from utils.ha.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(command_results={"grep": (1, "", "")})
+        self._run(ssh)
+        cmd = ssh.commands_run[-1]
+        assert "--include" not in cmd
+        assert "--exclude" not in cmd
+        assert "not found" not in cmd
+        assert "grep -nH -F -e" in cmd
 
     def test_secret_files_excluded(self, pueo_dirs):
-        import asyncio
-
         from utils.ha.ssh_client import FakeSSHClient
 
-        ssh = FakeSSHClient(command_results={"grep": (0, "not found", "")})
-        executor = self._make_executor(ssh)
-        asyncio.run(
-            executor._check_config_against_breaking_change("key", "key renamed")
-        )
+        ssh = FakeSSHClient(command_results={"grep": (1, "", "")})
+        self._run(ssh)
         cmd = ssh.commands_run[-1]
-        assert "--exclude='*secret*'" in cmd
-        assert "--exclude='*password*'" in cmd
+        assert "*secret*" in cmd
+        assert "*password*" in cmd
 
-    def test_match_in_packages_reported_present(self, pueo_dirs):
-        import asyncio
-
+    def test_rc0_reports_present(self, pueo_dirs):
         from utils.ha.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient(
             command_results={
-                "grep": (
-                    0,
-                    "/config/packages/lights.yaml:12:  recorder:",
-                    "",
-                )
+                "grep": (0, "/config/packages/lights.yaml:12:  recorder:", "")
             }
         )
-        executor = self._make_executor(ssh)
-        result = asyncio.run(
-            executor._check_config_against_breaking_change(
-                "recorder", "recorder key removed"
-            )
-        )
+        result = self._run(ssh)
         assert result.success
         assert "PRESENT" in result.output
         assert "lights.yaml" in result.output
 
-
-# ---------------------------------------------------------------------------
-# check_automation_references tool
-# ---------------------------------------------------------------------------
-
-
-class TestCheckAutomationReferences:
-    """check_automation_references searches automation YAML files."""
-
-    def _make_executor(self, ssh):
-        from unittest.mock import AsyncMock, MagicMock
-
-        from utils.agent.tool_executor import ToolExecutor
-
-        notifier = MagicMock()
-        notifier.send = AsyncMock()
-        return ToolExecutor(
-            ha_ssh_client=ssh,
-            gate=MagicMock(),
-            notifier=notifier,
-            db_path=":memory:",
-        )
-
-    def test_found_in_automations_yaml(self, pueo_dirs):
-        import asyncio
-
+    def test_rc1_reports_not_found(self, pueo_dirs):
         from utils.ha.ssh_client import FakeSSHClient
 
-        ssh = FakeSSHClient(
-            command_results={
-                "grep": (
-                    0,
-                    "/config/automations.yaml:5:  service: light.turn_on",
-                    "",
-                )
-            }
-        )
-        executor = self._make_executor(ssh)
-        result = asyncio.run(
-            executor._check_automation_references("light.turn_on", "service removed")
-        )
-        assert result.success
-        assert "FOUND" in result.output
-        assert "light.turn_on" in result.output
-
-    def test_not_found_returns_not_found(self, pueo_dirs):
-        import asyncio
-
-        from utils.ha.ssh_client import FakeSSHClient
-
-        ssh = FakeSSHClient(command_results={"grep": (0, "not found", "")})
-        executor = self._make_executor(ssh)
-        result = asyncio.run(
-            executor._check_automation_references("deprecated.service")
-        )
+        ssh = FakeSSHClient(command_results={"grep": (1, "", "")})
+        result = self._run(ssh)
         assert result.success
         assert "NOT FOUND" in result.output
 
-    def test_empty_pattern_returns_error(self, pueo_dirs):
-        import asyncio
-
+    def test_rc2_is_an_error_not_a_false_not_found(self, pueo_dirs):
         from utils.ha.ssh_client import FakeSSHClient
 
-        ssh = FakeSSHClient()
-        executor = self._make_executor(ssh)
-        result = asyncio.run(executor._check_automation_references(""))
+        ssh = FakeSSHClient(
+            command_results={"grep": (2, "", "grep: unrecognized option\n")}
+        )
+        result = self._run(ssh)
+        assert not result.success
+        assert "exit 2" in result.error
+        assert "unrecognized option" in result.error
+
+    def test_empty_key_returns_error(self, pueo_dirs):
+        from utils.ha.ssh_client import FakeSSHClient
+
+        result = self._run(FakeSSHClient(), key="")
         assert not result.success
         assert "required" in result.error
 
     def test_no_ssh_client_returns_error(self, pueo_dirs):
         import asyncio
-        from unittest.mock import AsyncMock, MagicMock
 
-        from utils.agent.tool_executor import ToolExecutor
-
-        notifier = MagicMock()
-        notifier.send = AsyncMock()
-        executor = ToolExecutor(
-            ha_ssh_client=None,
-            gate=MagicMock(),
-            notifier=notifier,
-            db_path=":memory:",
+        result = asyncio.run(
+            _bc_executor(None)._check_config_against_breaking_change("k", "d")
         )
-        result = asyncio.run(executor._check_automation_references("light.turn_on"))
         assert not result.success
         assert "SSH" in result.error
 
-    def test_searches_automations_subdirectory(self, pueo_dirs):
+    def test_ssh_exception_returns_error(self, pueo_dirs):
+        from utils.ha.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(command_errors={"grep": OSError("connection lost")})
+        result = self._run(ssh)
+        assert not result.success
+        assert "connection lost" in result.error
+
+
+class TestCheckAutomationReferences:
+    """Automation search: BusyBox-safe command and exit-code mapping."""
+
+    def _run(self, ssh, pattern="light.turn_on"):
         import asyncio
+
+        return asyncio.run(
+            _bc_executor(ssh)._check_automation_references(pattern, "service removed")
+        )
+
+    def test_rc0_reports_found(self, pueo_dirs):
+        from utils.ha.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(
+            command_results={
+                "grep": (0, "/config/automations.yaml:5:  service: light.turn_on", "")
+            }
+        )
+        result = self._run(ssh)
+        assert result.success
+        assert "FOUND" in result.output
+        assert "NOT FOUND" not in result.output
+        assert "light.turn_on" in result.output
+
+    def test_rc1_reports_not_found(self, pueo_dirs):
+        from utils.ha.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(command_results={"grep": (1, "", "")})
+        result = self._run(ssh, "deprecated.service")
+        assert result.success
+        assert "NOT FOUND" in result.output
+
+    def test_rc2_is_an_error_not_a_false_not_found(self, pueo_dirs):
+        from utils.ha.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(command_results={"grep": (2, "", "bad regex")})
+        result = self._run(ssh)
+        assert not result.success
+        assert "bad regex" in result.error
+
+    def test_searches_automations_scripts_scenes_packages(self, pueo_dirs):
+        from utils.ha.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(command_results={"grep": (1, "", "")})
+        self._run(ssh)
+        cmd = ssh.commands_run[-1]
+        for path in (
+            "/config/automations.yaml",
+            "/config/automations",
+            "/config/scripts.yaml",
+            "/config/scenes.yaml",
+            "/config/packages",
+        ):
+            assert path in cmd
+
+    def test_uses_extended_regex(self, pueo_dirs):
+        from utils.ha.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(command_results={"grep": (1, "", "")})
+        self._run(ssh, "notify\\.|light\\.")
+        assert "grep -nH -E -e" in ssh.commands_run[-1]
+
+    def test_pattern_with_quote_is_shell_quoted(self, pueo_dirs):
+        import shlex
 
         from utils.ha.ssh_client import FakeSSHClient
 
-        ssh = FakeSSHClient(command_results={"grep": (0, "not found", "")})
-        executor = self._make_executor(ssh)
-        asyncio.run(executor._check_automation_references("deprecated.scene"))
-        cmd = ssh.commands_run[-1]
-        assert "/config/automations/" in cmd
+        ssh = FakeSSHClient(command_results={"grep": (1, "", "")})
+        evil = "x'; touch /tmp/pwned; echo '"
+        self._run(ssh, evil)
+        # Outer sh -c argument unquotes to the script; the pattern inside it
+        # must be one shell word.
+        script = shlex.split(ssh.commands_run[-1])[2]
+        assert f"-e {shlex.quote(evil)} --" in script
 
-    def test_searches_packages_directory(self, pueo_dirs):
-        import asyncio
-
+    def test_empty_pattern_returns_error(self, pueo_dirs):
         from utils.ha.ssh_client import FakeSSHClient
 
-        ssh = FakeSSHClient(command_results={"grep": (0, "not found", "")})
-        executor = self._make_executor(ssh)
-        asyncio.run(executor._check_automation_references("deprecated.scene"))
-        cmd = ssh.commands_run[-1]
-        assert "/config/packages/" in cmd
+        result = self._run(FakeSSHClient(), "")
+        assert not result.success
+        assert "required" in result.error
+
+    def test_no_ssh_client_returns_error(self, pueo_dirs):
+        import asyncio
+
+        result = asyncio.run(_bc_executor(None)._check_automation_references("x"))
+        assert not result.success
+        assert "SSH" in result.error
+
+    def test_ssh_exception_returns_error(self, pueo_dirs):
+        from utils.ha.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(command_errors={"grep": OSError("connection lost")})
+        result = self._run(ssh)
+        assert not result.success
+        assert "connection lost" in result.error
 
     def test_dispatched_via_execute(self, pueo_dirs):
         import asyncio
 
-        from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.tool_registry import ToolCall
+        from utils.ha.ssh_client import FakeSSHClient
 
-        ssh = FakeSSHClient(command_results={"grep": (0, "not found", "")})
-        executor = self._make_executor(ssh)
+        ssh = FakeSSHClient(command_results={"grep": (1, "", "")})
         result = asyncio.run(
-            executor.execute(
+            _bc_executor(ssh).execute(
                 ToolCall(
                     name="check_automation_references",
                     arguments={
@@ -5579,6 +5592,84 @@ class TestCheckAutomationReferences:
         )
         assert result.success
         assert "NOT FOUND" in result.output
+
+
+class _LocalShellSSH:
+    """Runs the generated command in a local POSIX shell (no HA needed)."""
+
+    def __init__(self):
+        self.commands_run: list[str] = []
+
+    async def run(self, command, check=False):
+        import subprocess
+
+        self.commands_run.append(command)
+        proc = subprocess.run(  # nosec B603 B607
+            ["sh", "-c", command], capture_output=True, text=True, timeout=30
+        )
+        return proc.returncode, proc.stdout, proc.stderr
+
+
+class TestGrepConfigYamlRealShell:
+    """The generated script works in a real shell: missing paths skipped,
+    secret files excluded, grep exit codes preserved, pattern not injected."""
+
+    def _tree(self, tmp_path):
+        (tmp_path / "automations.yaml").write_text(
+            "- action: notify.mobile_app_phone\n"
+        )
+        pk = tmp_path / "packages"
+        pk.mkdir()
+        (pk / "lights.yaml").write_text("light:\n  - platform: group\n")
+        (pk / "my_secrets.yaml").write_text("notify.secret_target: hunter2\n")
+        return (
+            str(tmp_path / "automations.yaml"),
+            str(tmp_path / "missing_dir"),
+            str(pk),
+        )
+
+    def _grep(self, paths, pattern, extended=True):
+        import asyncio
+
+        return asyncio.run(
+            _bc_executor(_LocalShellSSH())._grep_config_yaml(pattern, paths, extended)
+        )
+
+    def test_match_despite_missing_path(self, pueo_dirs, tmp_path):
+        rc, out, _ = self._grep(self._tree(tmp_path), "notify\\.")
+        assert rc == 0
+        assert "automations.yaml:1:" in out
+        assert "hunter2" not in out
+
+    def test_match_in_package_dir(self, pueo_dirs, tmp_path):
+        rc, out, _ = self._grep(self._tree(tmp_path), "platform: group", False)
+        assert rc == 0
+        assert "lights.yaml:2:" in out
+
+    def test_no_match_is_rc1(self, pueo_dirs, tmp_path):
+        rc, out, _ = self._grep(self._tree(tmp_path), "zzz_nothing")
+        assert rc == 1
+        assert out == ""
+
+    def test_no_existing_paths_is_rc1(self, pueo_dirs, tmp_path):
+        rc, _, _ = self._grep((str(tmp_path / "nope"),), "x")
+        assert rc == 1
+
+    def test_no_yaml_files_is_rc1(self, pueo_dirs, tmp_path):
+        d = tmp_path / "empty"
+        d.mkdir()
+        rc, _, _ = self._grep((str(d),), "x")
+        assert rc == 1
+
+    def test_quote_in_pattern_is_not_executed(self, pueo_dirs, tmp_path):
+        marker = tmp_path / "pwned"
+        rc, _, _ = self._grep(self._tree(tmp_path), f"x'; touch {marker}; echo '")
+        assert rc == 1
+        assert not marker.exists()
+
+    def test_bad_regex_is_rc2(self, pueo_dirs, tmp_path):
+        rc, _, _ = self._grep(self._tree(tmp_path), "(unclosed")
+        assert rc >= 2
 
 
 # ---------------------------------------------------------------------------

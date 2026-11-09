@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import shlex
 import shutil
 import sqlite3
 import subprocess  # nosec B404 — commands are fixed CI tools (black, flake8, mypy, pytest), no user input
@@ -100,8 +101,32 @@ _HA_COMMAND_RISK: dict[str, str] = {
 
 # Seconds between get_about() polls after a NetAlertX restart (patchable in tests).
 _RESTART_VERIFY_POLL_INTERVAL_S: float = 10.0
+
 # Maximum number of poll attempts before declaring the restart failed.
 _RESTART_VERIFY_MAX_ATTEMPTS: int = 12  # 2 minutes total
+
+# Breaking-change config/automation search scope (#1146). Missing paths are
+# skipped on the host; files whose names suggest secrets are never read.
+_BC_CONFIG_SEARCH_PATHS: tuple[str, ...] = (
+    "/config/configuration.yaml",
+    "/config/packages",
+    "/config/integrations",
+)
+_BC_AUTOMATION_SEARCH_PATHS: tuple[str, ...] = (
+    "/config/automations.yaml",
+    "/config/automations",
+    "/config/scripts.yaml",
+    "/config/scripts",
+    "/config/scenes.yaml",
+    "/config/packages",
+)
+_BC_SEARCH_EXCLUDE_WORDS: tuple[str, ...] = (
+    "secret",
+    "credential",
+    "token",
+    "password",
+    "passwd",
+)
 
 # Validates HA app slugs (e.g. "mosquitto", "z-wave-js", "code_server").
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_\-]*$")
@@ -6484,6 +6509,29 @@ class ToolExecutor:
             output="Pueo HA dependency catalog:" + "\n".join(lines),
         )
 
+    async def _grep_config_yaml(
+        self, pattern: str, paths: tuple[str, ...], extended: bool
+    ) -> tuple[int, str, str]:
+        """Search YAML files under *paths* on the HA host for *pattern*.
+
+        HAOS ships BusyBox grep (no ``--include``/``--exclude``), so files are
+        listed with ``find`` and passed to grep explicitly. Missing paths are
+        skipped. The pattern is shell-quoted. Returns ``(rc, stdout, stderr)``
+        with grep semantics: 0 = match, 1 = no match, >=2 = error (#1146).
+        """
+        assert self._ha_ssh is not None  # nosec B101 — callers check first
+        excludes = " ".join(f"! -name '*{w}*'" for w in _BC_SEARCH_EXCLUDE_WORDS)
+        script = (
+            "set -f\nIFS='\n'\nset --\n"
+            f"for p in {' '.join(shlex.quote(x) for x in paths)}; do "
+            '[ -e "$p" ] && set -- "$@" "$p"; done\n'
+            "[ $# -eq 0 ] && exit 1\n"
+            f"files=$(find \"$@\" -type f -name '*.yaml' {excludes})\n"
+            '[ -z "$files" ] && exit 1\n'
+            f"grep -nH {'-E' if extended else '-F'} -e {shlex.quote(pattern)} -- $files\n"
+        )
+        return await self._ha_ssh.run(f"sh -c {shlex.quote(script)}", check=False)
+
     async def _check_config_against_breaking_change(
         self, config_key: str, breaking_change_desc: str
     ) -> ToolResult:
@@ -6503,19 +6551,17 @@ class ToolExecutor:
                 error="No SSH client available; cannot read live config",
             )
         try:
-            # Search root config plus packages/ and integrations/ subdirs.
-            # Skip files whose names suggest secrets to avoid leaking sensitive data.
-            _, content, _ = await self._ha_ssh.run(
-                f"grep -rn --include='*.yaml' "
-                f"--exclude='*secret*' --exclude='*credential*' "
-                f"--exclude='*token*' --exclude='*password*' --exclude='*passwd*' "
-                f"'{config_key}' "
-                f"/config/configuration.yaml /config/packages/ /config/integrations/ "
-                f"2>/dev/null || echo 'not found'",
-                check=False,
+            rc, content, stderr = await self._grep_config_yaml(
+                config_key, _BC_CONFIG_SEARCH_PATHS, extended=False
             )
-            present = content.strip() and "not found" not in content
-            status = "PRESENT" if present else "NOT FOUND"
+            if rc >= 2:
+                return ToolResult(
+                    tool_name="check_config_against_breaking_change",
+                    success=False,
+                    output="",
+                    error=f"config search failed (exit {rc}): {stderr.strip()[:300]}",
+                )
+            status = "PRESENT" if rc == 0 else "NOT FOUND"
             return ToolResult(
                 tool_name="check_config_against_breaking_change",
                 success=True,
@@ -6552,17 +6598,17 @@ class ToolExecutor:
                 error="No SSH client available; cannot read live automations",
             )
         try:
-            _, content, _ = await self._ha_ssh.run(
-                f"grep -rn --include='*.yaml' "
-                f"--exclude='*secret*' --exclude='*credential*' "
-                f"--exclude='*token*' --exclude='*password*' --exclude='*passwd*' "
-                f"'{pattern}' "
-                f"/config/automations.yaml /config/automations/ /config/packages/ "
-                f"2>/dev/null || echo 'not found'",
-                check=False,
+            rc, content, stderr = await self._grep_config_yaml(
+                pattern, _BC_AUTOMATION_SEARCH_PATHS, extended=True
             )
-            found = content.strip() and "not found" not in content
-            status = "FOUND" if found else "NOT FOUND"
+            if rc >= 2:
+                return ToolResult(
+                    tool_name="check_automation_references",
+                    success=False,
+                    output="",
+                    error=f"automation search failed (exit {rc}): {stderr.strip()[:300]}",
+                )
+            status = "FOUND" if rc == 0 else "NOT FOUND"
             desc_line = (
                 f"Pattern: {breaking_change_desc}\n" if breaking_change_desc else ""
             )
