@@ -2358,6 +2358,183 @@ class TestFinishUpdateAnalysisNoNotes:
 # ---------------------------------------------------------------------------
 
 
+class TestCoreScreeningBatchCounts:
+    """Screening orchestration records batch counts and keeps notes completeness (#1148)."""
+
+    def test_stuck_batch_counts_and_completeness(self, tmp_path, pueo_dirs):
+        import asyncio
+        from unittest import mock
+        from unittest.mock import AsyncMock, MagicMock
+
+        from utils.agent.tool_registry import AgentLoopResult
+        from utils.ha.ha_environment import HAEnvironmentProfile
+        from utils.knowledge.ha_release_report import CoreReleaseReport
+
+        db_path = _make_db(tmp_path)
+
+        class _FakeUpdate:
+            entity_id = "update.home_assistant_core_update"
+            component = "core"
+            installed_version = "2026.10.4"
+            latest_version = "2026.11.0"
+            release_url = None
+            release_summary = None
+
+        rpt = CoreReleaseReport(version="2026.11.0", completeness="complete")
+        # 3 screening batches + 1 blank (skipped) → main loop result last.
+        results = [
+            AgentLoopResult(outcome="success"),
+            AgentLoopResult(outcome="stuck"),
+            AgentLoopResult(outcome="success"),
+            AgentLoopResult(outcome="success"),
+        ]
+
+        with (
+            mock.patch("utils.agent.agent_loop.AgentLoop") as MockLoop,
+            mock.patch("utils.agent.supervisor.increment_active_agent"),
+            mock.patch("utils.agent.supervisor.decrement_active_agent"),
+            mock.patch(
+                "utils.agent.supervisor.make_activity_timeline_callback",
+                return_value=None,
+            ),
+            mock.patch(
+                "utils.llm.llm_factory.make_llm_client", return_value=MagicMock()
+            ),
+            mock.patch("agents.ha_update_manager.DB_PATH", db_path),
+            mock.patch("agents.ha_update_manager.HA_API_TOKEN", "tok"),
+            mock.patch("utils.ha.ha_ws_client.HAWebSocketClient"),
+            mock.patch(
+                "utils.knowledge.ha_release_report.build_core_release_report",
+                AsyncMock(return_value=rpt),
+            ),
+            mock.patch(
+                "utils.knowledge.ha_release_report.make_screening_batches",
+                return_value=["batch a", "  ", "batch b", "batch c"],
+            ),
+            mock.patch(
+                "utils.agent.work_queue.get_work_queue_or_none", return_value=None
+            ),
+        ):
+            mock_instance = MagicMock()
+            mock_instance.run = AsyncMock(side_effect=results)
+            MockLoop.return_value = mock_instance
+
+            from agents.ha_update_manager import _run_update_analysis
+            from utils.hitl.notify import FakeNotifier
+
+            asyncio.run(
+                _run_update_analysis(
+                    update=_FakeUpdate(),
+                    notifier=FakeNotifier(),
+                    ha_profile=HAEnvironmentProfile(installed_integrations=["mqtt"]),
+                )
+            )
+
+        saved = CoreReleaseReport.model_validate_json(
+            (pueo_dirs.state_dir / "update_reports" / "core_2026.11.0.json").read_text()
+        )
+        assert saved.screening_batches_total == 3
+        assert saved.screening_batches_done == 2
+        assert saved.screening_complete is False
+        assert saved.completeness == "complete"
+
+
+class TestFinishUpdateAnalysisScreeningGap:
+    """Partial screening with complete notes gets its own honest prefix (#1148)."""
+
+    def _run(self, tmp_path, *, gap, bc_found=False, highlights=None, notes="complete"):
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from utils.agent.autonomy import AutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+
+        notifier = MagicMock()
+        sent: list = []
+
+        async def _send(**kwargs):
+            sent.append(kwargs)
+
+        notifier.send = AsyncMock(side_effect=_send)
+        executor = ToolExecutor(
+            ha_ssh_client=MagicMock(),
+            gate=AutonomyGate(level=3),
+            notifier=notifier,
+            db_path=_make_db(tmp_path),
+        )
+        executor.set_update_status(
+            SimpleNamespace(
+                entity_id="update.home_assistant_core_update",
+                component="core",
+                installed_version="2026.10.4",
+                latest_version="2026.11.0",
+                release_url=None,
+                release_summary=None,
+            )
+        )
+        executor._release_notes_completeness = notes
+        executor._screening_gap = gap
+        executor._installed_bc_found = bc_found
+        executor._report_highlights = ["matter: cameras", "lifx: ceiling lights"]
+        with patch("agents.ha_log_monitor._update_mark_card_sent"):
+            asyncio.run(
+                executor._finish_update_analysis(
+                    safe_to_update=True,
+                    breaking_changes=[],
+                    affected_config_keys=[],
+                    pueo_command_risks=[],
+                    recommendation="Looks fine.",
+                    instance_impact="none",
+                    proposed_config_fixes=[],
+                    create_hitl_card=True,
+                    confidence=0.9,
+                    highlights=highlights,
+                )
+            )
+        assert sent, "card must be sent"
+        return sent[0]
+
+    def test_partial_screening_prefix(self, tmp_path, pueo_dirs):
+        card = self._run(tmp_path, gap=(6, 7))
+        text = str(card)
+        assert "All-changes screening incomplete (6 of 7 batches)" in text
+        assert "Release notes could not be retrieved" not in text
+        assert card["payload"]["effective_safe_to_update"] is False
+
+    def test_partial_screening_without_counts(self, tmp_path, pueo_dirs):
+        text = str(self._run(tmp_path, gap=(None, None)))
+        assert "All-changes screening incomplete —" in text
+
+    def test_notes_missing_prefix_unchanged(self, tmp_path, pueo_dirs):
+        text = str(self._run(tmp_path, gap=None, notes="incomplete"))
+        assert "Release notes could not be retrieved" in text
+        assert "screening incomplete" not in text
+
+    def test_bc_unchecked_and_partial_screening_both_reported(
+        self, tmp_path, pueo_dirs
+    ):
+        text = str(self._run(tmp_path, gap=(6, 7), bc_found=True))
+        assert "no config check was performed" in text
+        assert "All-changes screening incomplete (6 of 7 batches)" in text
+
+    def test_complete_screening_no_prefix(self, tmp_path, pueo_dirs):
+        text = str(self._run(tmp_path, gap=None))
+        assert "screening incomplete" not in text
+        assert "could not be retrieved" not in text
+
+    def test_highlights_fall_back_to_report(self, tmp_path, pueo_dirs):
+        card = self._run(tmp_path, gap=None, highlights=[])
+        assert card["payload"]["highlights"] == [
+            "matter: cameras",
+            "lifx: ceiling lights",
+        ]
+
+    def test_model_highlights_win_over_report(self, tmp_path, pueo_dirs):
+        card = self._run(tmp_path, gap=None, highlights=["mine"])
+        assert card["payload"]["highlights"] == ["mine"]
+
+
 class TestPollForUpdatesInProgress:
     """poll_for_updates skips updates that are already in_progress."""
 

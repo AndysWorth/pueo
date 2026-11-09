@@ -50,9 +50,14 @@ releases (2026.9.x → 2026.10.x) may carry breaking changes.
    Compare every removed, renamed, or replaced integration, API command, or service
    mentioned in the digest against the catalog entries.  For each match, add an entry to
    `pueo_command_risks`.
+   A catalog entry whose note says it falls back for the target version (e.g. `hacs/*` →
+   `marketplace/*` on 2026.11+) is **not** a risk — do not list it.
 
 6. For every installed-integration BC entry in the digest, state explicitly in
    `breaking_changes` whether it affects this instance (yes/no/unknown).
+
+7. Pass `highlights`: 2–5 one-sentence items from the digest's `Feature highlights`
+   section that matter to this install (`"<domain>: <feature>"`).
 
 ## Output guidance
 
