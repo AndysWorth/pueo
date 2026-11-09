@@ -11939,6 +11939,7 @@ class TestUpdateReportRoute:
         """Write a minimal CoreReleaseReport JSON to state_dir/update_reports/."""
         from utils.knowledge.ha_release_report import (
             BCEntry,
+            ChangeEntry,
             CoreReleaseReport,
             ScreeningFlag,
             ScreeningHighlight,
@@ -11953,7 +11954,9 @@ class TestUpdateReportRoute:
             ],
             bc_general=[BCEntry(name="Entity names", body="Names now unique.")],
             bc_other_names=["zwave_js"],
-            changes_by_domain={"mqtt": ["MQTT: auth overhaul (#123)"]},
+            changes_by_domain={
+                "mqtt": [ChangeEntry(text="MQTT: auth overhaul (#123)", prs=["123"])]
+            },
             screening_flags=[
                 ScreeningFlag(
                     domain="mqtt",

@@ -139,6 +139,57 @@ def discover_installed_integrations(
     return sorted(domains)
 
 
+def discover_loaded_components(
+    ha_url: str,
+    ha_token: str,
+) -> list[str]:
+    """Query HA REST /api/config to get a sorted list of all loaded component domains.
+
+    Unlike ``discover_installed_integrations``, this does **not** filter out
+    trivial/platform domains (auth, frontend, sun, …).  The full set is used
+    to match BC entries that affect built-in domains.
+
+    Falls back to [] if HA is unreachable or token is missing.
+    """
+    import json
+    import urllib.request
+
+    if not ha_token:
+        return []
+    try:
+        req = urllib.request.Request(
+            f"{ha_url}/api/config",
+            headers={"Authorization": f"Bearer {ha_token}"},
+        )
+        with urllib.request.urlopen(
+            req, timeout=10
+        ) as resp:  # nosec B310 — HA URL from user config
+            config_data = json.loads(resp.read())
+    except Exception as exc:
+        from utils.core.logging import get_logger
+
+        get_logger("ha_docs_scraper").warning(
+            "discover_components_failed", error=str(exc)
+        )
+        return []
+
+    components = config_data.get("components", [])
+    if not isinstance(components, list):
+        from utils.core.logging import get_logger
+
+        get_logger("ha_docs_scraper").warning(
+            "schema_drift_detected",
+            source="ha_api_config_loaded",
+            field="components",
+            actual_type=type(components).__name__,
+        )
+        return []
+    domains: set[str] = set()
+    for component in components:
+        domains.add(component.split(".")[0])
+    return sorted(domains)
+
+
 def parse_integration_doc(doc_text: str) -> list[str]:
     """Strip Jekyll front matter and split into Markdown sections, chunked to 3000 chars."""
     text = _FRONTMATTER.sub("", doc_text).strip()
