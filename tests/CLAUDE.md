@@ -42,6 +42,9 @@ Class-scoped fixtures (defined as `@pytest.fixture` methods inside a test class)
 ## Live-DB guard (#947)
 At import time, `conftest.py` points `PUEO_CONFIG` and every `PUEO_*_DIR` at a session temp directory. This happens before any test imports `config`, so `config.DB_PATH`, `NOTIFY_WATCH_DIR`, `CHROMADB_PATH` etc. never resolve to `~/Library/Application Support/Pueo/`. It also wraps `sqlite3.connect`: opening any SQLite file under the real platform state/data dirs fails the test with "Test opened the live Pueo database". The session DB has no tables. When code under test reads `config.DB_PATH` directly (e.g. the `ha_log_monitor` update dedup helpers, dashboard `approve()`), monkeypatch `config.DB_PATH` to a `tmp_path` DB with the tables it needs.
 
+## Network guard (#1162)
+`conftest.py` wraps `socket.getaddrinfo` and `socket.socket.connect`/`connect_ex`: any unit test that resolves or connects to a non-loopback host fails with "Unit test attempted a real network connection". Production code swallows most network errors, so without the guard a missing fake still passes while sending a real request (a fake bearer token to the developer's HA shows up there as a failed login). `tests/integration/` is exempt. To fix a failure, inject the fake client or callable the function accepts (`ssh_client=`, `notifier=`, `_discover_loaded=` …). For code that falls back to `ssh_client or AsyncSSHClient(...)`, the `unreachable_ha_ssh` fixture makes that fallback raise `OSError` without opening a socket. When adding an injectable network dependency to a function, update every existing test call site in the same change.
+
 ## Config isolation
 `config.py` loads at import time using the `PUEO_CONFIG` env var. Tests that exercise config loading use the `isolated_config` fixture from `conftest.py`, which:
 1. Points `PUEO_CONFIG` at a temp file

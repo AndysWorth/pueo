@@ -51,6 +51,7 @@ def _isolate_config_db(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("unreachable_ha_ssh")
 class TestUpdateAnalysisStuckBackoff:
     def test_stuck_outcome_writes_backoff(self, tmp_path, pueo_dirs):
         """outcome='stuck' writes a deferred backoff row for the entity_id."""
@@ -795,6 +796,7 @@ class TestCoreOsCardEnforcement:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("unreachable_ha_ssh")
 class TestAutoApplyBlock:
     """Auto-apply is always blocked for core/os/supervisor components."""
 
@@ -995,6 +997,7 @@ class _FakeUpdateBasic:
     release_summary = None
 
 
+@pytest.mark.usefixtures("unreachable_ha_ssh")
 class TestUpdateAnalysisContextBuilding:
     """Verify sanitize, device_context_summary, and upgrade_advisor wiring."""
 
@@ -2893,6 +2896,7 @@ class TestFakeWSClientReleaseNotes:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("unreachable_ha_ssh")
 class TestRunUpdateAnalysisKnowledgeStoreWiring:
     """_run_update_analysis must forward knowledge_store to the ToolExecutor it builds.
 
@@ -4048,6 +4052,7 @@ class TestCompletenessGateAndHonestCard:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("unreachable_ha_ssh")
 class TestUpdateTypeClassification:
     """_update_type is set correctly for hacs, device, and addon entities."""
 
@@ -4184,6 +4189,7 @@ class TestClassifyUpdateType:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("unreachable_ha_ssh")
 class TestUpdateAnalysisExceptionBackoff:
     """An exception raised by loop.run() writes a 30-min backoff row."""
 
@@ -4405,7 +4411,7 @@ class TestGetUpdateReleaseNotesVersionMismatch:
     def test_matching_version_is_accepted(self, tmp_path, pueo_dirs):
         """Requesting the exact pending version succeeds normally."""
         import asyncio
-        from unittest.mock import patch
+        from unittest.mock import AsyncMock, patch
 
         from utils.ha.ha_ws_client import FakeHAWebSocketClient
 
@@ -4417,8 +4423,16 @@ class TestGetUpdateReleaseNotesVersionMismatch:
         executor.set_ws_client(ws)
         import config as _cfg
 
-        with patch.object(
-            _cfg, "HA_UPDATE_RELEASE_NOTES_CACHE_DIR", str(tmp_path / "cache")
+        # The release URL must not be fetched for real; an empty result makes
+        # the tool fall back to the WebSocket notes.  (#1162)
+        with (
+            patch.object(
+                _cfg, "HA_UPDATE_RELEASE_NOTES_CACHE_DIR", str(tmp_path / "cache")
+            ),
+            patch(
+                "agents.ha_update_manager._fetch_release_notes_from_url",
+                new=AsyncMock(return_value=""),
+            ),
         ):
             result = asyncio.run(executor._get_update_release_notes("5.11.1"))
 
