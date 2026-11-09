@@ -641,6 +641,7 @@ class AgentLoop:
         on_llm_call_start: Optional[Callable[[str, str], None]] = None,
         on_llm_call_done: Optional[Callable[[str, float], None]] = None,
         capture_llm: bool = False,
+        distill: bool = True,
     ) -> None:
         if model is _UNSET:
             from utils.llm.llm_factory import _default_model_for_provider
@@ -667,6 +668,7 @@ class AgentLoop:
         self._on_llm_call_start = on_llm_call_start
         self._on_llm_call_done = on_llm_call_done
         self._capture_llm = capture_llm
+        self._distill = distill
         self._llm_captures: list = []
         self._tool_call_records: list[ToolCallRecord] = []
         self._seen_calls: dict[tuple[str, str], tuple[int, str]] = {}
@@ -1372,6 +1374,8 @@ class AgentLoop:
         (no LLM needed).  Outside the supervisor (standalone runs, tests) the queue is
         absent; gap writing still happens for non-success.
         """
+        if not self._distill:
+            return
         if self._knowledge_store is None or self._db_path is None:
             return
 
