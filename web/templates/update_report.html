@@ -83,6 +83,47 @@
 </div>
 {% endif %}
 
+{# BC verdicts (three groups) — only when verdicts exist #}
+{% if report.bc_verdicts %}
+{% set _yes_vds = report.bc_verdicts | selectattr("affects", "eq", "yes") | list %}
+{% set _unk_vds = report.bc_verdicts | selectattr("affects", "eq", "unknown") | list %}
+{% set _no_vds  = report.bc_verdicts | selectattr("affects", "eq", "no") | list %}
+{% if _yes_vds %}
+<div class="rpt-section">
+  <h3 style="color:var(--red,#b91c1c);">⚠️ Affects This Install</h3>
+  {% for v in _yes_vds %}
+  {% set entry = report.bc_installed | selectattr("name", "eq", v.bc) | first | default(None) %}
+  {% if not entry %}{% set entry = report.bc_general | selectattr("name", "eq", v.bc) | first | default(None) %}{% endif %}
+  <div class="bc-entry">
+    <div><span class="bc-name">{{ v.bc }}</span>{% if entry and entry.domains %}<span class="bc-domains">{{ entry.domains | join(", ") }}</span>{% endif %}</div>
+    <div style="font-size:0.82rem;color:var(--red,#b91c1c);margin-top:0.15rem;">{{ v.reason }}</div>
+    {% if entry and entry.body %}<div class="bc-body">{{ entry.body }}</div>{% endif %}
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+{% if _unk_vds %}
+<div class="rpt-section">
+  <h3 style="color:var(--orange,#b45309);">⚑ Check Manually</h3>
+  {% for v in _unk_vds %}
+  {% set entry = report.bc_installed | selectattr("name", "eq", v.bc) | first | default(None) %}
+  {% if not entry %}{% set entry = report.bc_general | selectattr("name", "eq", v.bc) | first | default(None) %}{% endif %}
+  <div class="bc-entry">
+    <div><span class="bc-name">{{ v.bc }}</span>{% if entry and entry.domains %}<span class="bc-domains">{{ entry.domains | join(", ") }}</span>{% endif %}</div>
+    <div style="font-size:0.82rem;color:var(--orange,#b45309);margin-top:0.15rem;">{{ v.reason }}</div>
+    {% if entry and entry.body %}<div class="bc-body">{{ entry.body }}</div>{% endif %}
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+{% if _no_vds %}
+<div class="rpt-section">
+  <h3 style="color:var(--green,#2a9d4e);">✅ Not Affected</h3>
+  <ul style="margin:0 0 0 1.25rem;">{% for v in _no_vds %}<li style="font-size:0.85rem;margin-bottom:0.2rem;"><strong>{{ v.bc }}</strong>{% if v.reason %} — {{ v.reason }}{% endif %}</li>{% endfor %}</ul>
+</div>
+{% endif %}
+{% else %}
+{# Legacy: no verdicts — show raw BC lists #}
 {# Installed BCs #}
 {% if report.bc_installed %}
 <div class="rpt-section">
@@ -110,6 +151,7 @@
   </div>
   {% endfor %}
 </div>
+{% endif %}
 {% endif %}
 
 {# BC names for other integrations (not installed) #}

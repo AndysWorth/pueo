@@ -7650,3 +7650,300 @@ class TestBuildBCEvidenceAsync:
         )
         evidence = asyncio.run(build_bc_evidence(rpt, ws_client=ws))
         assert "Entity names change" in evidence
+
+
+# ---------------------------------------------------------------------------
+# _normalize_bc_verdicts + _derive_instance_impact
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizeBcVerdicts:
+    """Unit tests for the bc_verdicts normalization helpers."""
+
+    def test_exact_match_preserved(self):
+        from utils.agent.tool_executor import _normalize_bc_verdicts
+
+        result = _normalize_bc_verdicts(
+            [{"bc": "Tuya entities", "affects": "yes", "reason": "3 lights found"}],
+            ["Tuya entities", "Matter sensors"],
+        )
+        assert result[0] == {
+            "bc": "Tuya entities",
+            "affects": "yes",
+            "reason": "3 lights found",
+        }
+
+    def test_case_insensitive_match(self):
+        from utils.agent.tool_executor import _normalize_bc_verdicts
+
+        result = _normalize_bc_verdicts(
+            [{"bc": "tuya entities", "affects": "no", "reason": "none"}],
+            ["Tuya entities"],
+        )
+        assert result[0]["bc"] == "Tuya entities"
+        assert result[0]["affects"] == "no"
+
+    def test_fuzzy_substring_match(self):
+        from utils.agent.tool_executor import _normalize_bc_verdicts
+
+        result = _normalize_bc_verdicts(
+            [{"bc": "Matter concentration", "affects": "no", "reason": "no sensors"}],
+            ["Matter concentration sensors"],
+        )
+        assert result[0]["bc"] == "Matter concentration sensors"
+        assert result[0]["affects"] == "no"
+
+    def test_missing_bc_filled_as_unknown(self):
+        from utils.agent.tool_executor import _normalize_bc_verdicts
+
+        result = _normalize_bc_verdicts(
+            [],
+            ["Tuya entities", "Matter sensors"],
+        )
+        assert len(result) == 2
+        assert result[0] == {
+            "bc": "Tuya entities",
+            "affects": "unknown",
+            "reason": "not assessed",
+        }
+        assert result[1] == {
+            "bc": "Matter sensors",
+            "affects": "unknown",
+            "reason": "not assessed",
+        }
+
+    def test_unmatched_verdict_dropped(self):
+        from utils.agent.tool_executor import _normalize_bc_verdicts
+
+        result = _normalize_bc_verdicts(
+            [{"bc": "Completely unknown BC", "affects": "no", "reason": ""}],
+            ["Tuya entities"],
+        )
+        # Unmatched verdict dropped; Tuya filled as unknown
+        assert len(result) == 1
+        assert result[0]["bc"] == "Tuya entities"
+        assert result[0]["affects"] == "unknown"
+
+    def test_empty_bc_names_returns_empty(self):
+        from utils.agent.tool_executor import _normalize_bc_verdicts
+
+        result = _normalize_bc_verdicts(
+            [{"bc": "Something", "affects": "yes", "reason": "x"}],
+            [],
+        )
+        assert result == []
+
+    def test_result_in_report_order(self):
+        from utils.agent.tool_executor import _normalize_bc_verdicts
+
+        names = ["Alpha BC", "Beta BC", "Gamma BC"]
+        raw = [
+            {"bc": "Beta BC", "affects": "yes", "reason": "y"},
+            {"bc": "Alpha BC", "affects": "no", "reason": "n"},
+        ]
+        result = _normalize_bc_verdicts(raw, names)
+        assert [r["bc"] for r in result] == names
+        assert result[2]["affects"] == "unknown"  # Gamma filled
+
+
+class TestDeriveInstanceImpact:
+    """Unit tests for _derive_instance_impact."""
+
+    def test_any_yes_gives_high(self):
+        from utils.agent.tool_executor import _derive_instance_impact
+
+        verdicts = [
+            {"affects": "yes"},
+            {"affects": "no"},
+            {"affects": "unknown"},
+        ]
+        assert _derive_instance_impact(verdicts) == "high"
+
+    def test_only_unknown_gives_low(self):
+        from utils.agent.tool_executor import _derive_instance_impact
+
+        verdicts = [{"affects": "unknown"}, {"affects": "no"}]
+        assert _derive_instance_impact(verdicts) == "low"
+
+    def test_all_no_gives_none(self):
+        from utils.agent.tool_executor import _derive_instance_impact
+
+        verdicts = [{"affects": "no"}, {"affects": "no"}]
+        assert _derive_instance_impact(verdicts) == "none"
+
+    def test_empty_gives_none(self):
+        from utils.agent.tool_executor import _derive_instance_impact
+
+        assert _derive_instance_impact([]) == "none"
+
+
+class TestFinishUpdateAnalysisWithVerdicts:
+    """finish_update_analysis normalises bc_verdicts and derives impact."""
+
+    def _make_executor_with_report(self, bc_installed=None, bc_general=None):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from utils.agent.autonomy import AutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.knowledge.ha_release_report import BCEntry, CoreReleaseReport
+
+        notifier = MagicMock()
+        notifier.send = AsyncMock()
+        gate = AutonomyGate(level=2)
+        executor = ToolExecutor(
+            ha_ssh_client=MagicMock(),
+            gate=gate,
+            notifier=notifier,
+            db_path=":memory:",
+        )
+        rpt = CoreReleaseReport(
+            version="2026.11.0",
+            completeness="complete",
+            bc_installed=bc_installed or [],
+            bc_general=bc_general or [],
+        )
+        executor._core_release_report = rpt
+        executor._release_notes_completeness = "complete"
+        return executor, notifier
+
+    def _make_update(self):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            entity_id="update.home_assistant_core_update",
+            component="core",
+            installed_version="2026.10.4",
+            latest_version="2026.11.0",
+            release_url=None,
+            release_summary=None,
+        )
+
+    def test_verdicts_populate_payload(self, pueo_dirs):
+        import asyncio
+
+        from utils.knowledge.ha_release_report import BCEntry
+
+        bc = BCEntry(name="Tuya entities", domains=["tuya"])
+        executor, notifier = self._make_executor_with_report(bc_installed=[bc])
+        executor.set_update_status(self._make_update())
+
+        with __import__("unittest.mock", fromlist=["patch"]).patch(
+            "agents.ha_log_monitor._update_mark_card_sent"
+        ):
+            asyncio.run(
+                executor._finish_update_analysis(
+                    safe_to_update=True,
+                    breaking_changes=[],
+                    affected_config_keys=[],
+                    pueo_command_risks=[],
+                    recommendation="Looks safe.",
+                    instance_impact="none",
+                    proposed_config_fixes=[],
+                    create_hitl_card=True,
+                    bc_verdicts=[
+                        {"bc": "Tuya entities", "affects": "no", "reason": "no lights"}
+                    ],
+                )
+            )
+
+        payload = notifier.send.call_args[1]["payload"]
+        assert payload["bc_verdicts"] == [
+            {"bc": "Tuya entities", "affects": "no", "reason": "no lights"}
+        ]
+        assert payload["instance_impact"] == "none"
+
+    def test_yes_verdict_overrides_impact(self, pueo_dirs):
+        import asyncio
+
+        from utils.knowledge.ha_release_report import BCEntry
+
+        bc = BCEntry(name="Tuya entities", domains=["tuya"])
+        executor, notifier = self._make_executor_with_report(bc_installed=[bc])
+        executor.set_update_status(self._make_update())
+
+        with __import__("unittest.mock", fromlist=["patch"]).patch(
+            "agents.ha_log_monitor._update_mark_card_sent"
+        ):
+            asyncio.run(
+                executor._finish_update_analysis(
+                    safe_to_update=True,
+                    breaking_changes=[],
+                    affected_config_keys=[],
+                    pueo_command_risks=[],
+                    recommendation="Needs review.",
+                    instance_impact="none",
+                    proposed_config_fixes=[],
+                    create_hitl_card=True,
+                    bc_verdicts=[
+                        {"bc": "Tuya entities", "affects": "yes", "reason": "3 lights"}
+                    ],
+                )
+            )
+
+        payload = notifier.send.call_args[1]["payload"]
+        assert payload["instance_impact"] == "high"
+        assert payload["bc_verdicts"][0]["affects"] == "yes"
+
+    def test_missing_bc_filled_as_unknown(self, pueo_dirs):
+        import asyncio
+
+        from utils.knowledge.ha_release_report import BCEntry
+
+        bc1 = BCEntry(name="Tuya entities", domains=["tuya"])
+        bc2 = BCEntry(name="Matter sensors", domains=["matter"])
+        executor, notifier = self._make_executor_with_report(bc_installed=[bc1, bc2])
+        executor.set_update_status(self._make_update())
+
+        with __import__("unittest.mock", fromlist=["patch"]).patch(
+            "agents.ha_log_monitor._update_mark_card_sent"
+        ):
+            asyncio.run(
+                executor._finish_update_analysis(
+                    safe_to_update=True,
+                    breaking_changes=[],
+                    affected_config_keys=[],
+                    pueo_command_risks=[],
+                    recommendation="Needs review.",
+                    instance_impact="none",
+                    proposed_config_fixes=[],
+                    create_hitl_card=True,
+                    bc_verdicts=[
+                        {"bc": "Tuya entities", "affects": "no", "reason": "none"}
+                        # Matter sensors intentionally omitted
+                    ],
+                )
+            )
+
+        payload = notifier.send.call_args[1]["payload"]
+        verdicts = {v["bc"]: v for v in payload["bc_verdicts"]}
+        assert verdicts["Tuya entities"]["affects"] == "no"
+        assert verdicts["Matter sensors"]["affects"] == "unknown"
+        assert payload["instance_impact"] == "low"
+
+    def test_no_verdicts_uses_original_impact(self, pueo_dirs):
+        """When bc_verdicts is None, original instance_impact is preserved."""
+        import asyncio
+
+        executor, notifier = self._make_executor_with_report()
+        executor.set_update_status(self._make_update())
+
+        with __import__("unittest.mock", fromlist=["patch"]).patch(
+            "agents.ha_log_monitor._update_mark_card_sent"
+        ):
+            asyncio.run(
+                executor._finish_update_analysis(
+                    safe_to_update=True,
+                    breaking_changes=[],
+                    affected_config_keys=[],
+                    pueo_command_risks=[],
+                    recommendation="All good.",
+                    instance_impact="low",
+                    proposed_config_fixes=[],
+                    create_hitl_card=True,
+                    bc_verdicts=None,
+                )
+            )
+
+        payload = notifier.send.call_args[1]["payload"]
+        assert payload["bc_verdicts"] == []
+        assert payload["instance_impact"] == "low"

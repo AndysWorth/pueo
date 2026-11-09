@@ -361,6 +361,64 @@ def _screening_gap_prefix(gap: tuple[int | None, int | None] | None) -> str:
     )
 
 
+def _normalize_bc_verdicts(
+    bc_verdicts_raw: Optional[list],
+    all_bc_names: list[str],
+) -> list[dict]:
+    """Normalise LLM bc_verdicts against canonical BC names from the report.
+
+    Fuzzy-matches each raw verdict to a canonical name, fills missing BCs as
+    unknown, and drops verdicts for BCs not in the report.
+    Returns entries in report order.
+    """
+    if not all_bc_names:
+        return []
+    name_lower = {n.lower(): n for n in all_bc_names}
+    matched: dict[str, dict] = {}
+    for v in bc_verdicts_raw or []:
+        raw_bc = str(v.get("bc", "")).strip()
+        if not raw_bc:
+            continue
+        raw_lower = raw_bc.lower()
+        if raw_lower in name_lower:
+            canonical: Optional[str] = name_lower[raw_lower]
+        else:
+            canonical = None
+            best_len = 0
+            for lname, cname in name_lower.items():
+                if raw_lower in lname or lname in raw_lower:
+                    match_len = min(len(raw_lower), len(lname))
+                    if match_len > best_len:
+                        best_len = match_len
+                        canonical = cname
+        if canonical and canonical not in matched:
+            matched[canonical] = {
+                "bc": canonical,
+                "affects": str(v.get("affects", "unknown")),
+                "reason": str(v.get("reason", "")),
+            }
+    result = []
+    for name in all_bc_names:
+        if name in matched:
+            result.append(matched[name])
+        else:
+            result.append({"bc": name, "affects": "unknown", "reason": "not assessed"})
+    return result
+
+
+def _derive_instance_impact(bc_verdicts: list[dict]) -> str:
+    """Derive instance_impact from normalised bc_verdicts.
+
+    any 'yes' → 'high'; no 'yes' but some 'unknown' → 'low'; else 'none'.
+    """
+    affects = {v.get("affects") for v in bc_verdicts}
+    if "yes" in affects:
+        return "high"
+    if "unknown" in affects:
+        return "low"
+    return "none"
+
+
 def _update_card_is_pending(suppression_key: str, db_path: str) -> bool:
     """Return True when a HITL update card for *suppression_key* is awaiting a decision.
 
@@ -481,6 +539,9 @@ class ToolExecutor:
         # Blog URL from CoreReleaseReport (populated when report is loaded); persists
         # across inner loops so _finish_update_analysis can stamp it on the card payload.
         self._core_report_blog_url: Optional[str] = None
+        # Full CoreReleaseReport (populated when report is loaded); used by
+        # _finish_update_analysis to normalise bc_verdicts.
+        self._core_release_report: Optional[Any] = None
         self._lovelace_suspicious: list[str] = []
         self._event_subscriber: Optional[Any] = None
         # Per-session KB tracking (reset in reset())
@@ -973,6 +1034,7 @@ class ToolExecutor:
                     confidence=args.get("confidence"),
                     verification_question=args.get("verification_question"),
                     highlights=args.get("highlights"),
+                    bc_verdicts=args.get("bc_verdicts"),
                 )
             if name == "finish_host_health":
                 self._capture_declared_runbook(args)
@@ -6383,6 +6445,7 @@ class ToolExecutor:
                         ]
                         self._installed_bc_found = bool(_rpt.bc_installed)
                         self._core_report_blog_url = _rpt.blog_url
+                        self._core_release_report = _rpt
                         if not digest.strip():
                             digest = "Release report built but no relevant changes found for installed integrations."
                         return ToolResult(
@@ -6682,9 +6745,28 @@ class ToolExecutor:
         confidence: Optional[float] = None,
         verification_question: Optional[str] = None,
         highlights: Optional[list] = None,
+        bc_verdicts: Optional[list] = None,
         **_extra: Any,
     ) -> ToolResult:
         """Create a HITL approval card for the pending HA update."""
+        # Normalise bc_verdicts against report BC names and derive instance_impact.
+        _rpt = self._core_release_report
+        _all_bc_names: list[str] = []
+        if _rpt is not None:
+            _all_bc_names = [
+                e.name for e in list(_rpt.bc_installed) + list(_rpt.bc_general)
+            ]
+        _normalized_verdicts = _normalize_bc_verdicts(bc_verdicts, _all_bc_names)
+        if _normalized_verdicts:
+            instance_impact = _derive_instance_impact(_normalized_verdicts)
+            safe_to_update = instance_impact != "high"
+            # Regenerate breaking_changes from verdicts for backward compat.
+            breaking_changes = [
+                v["bc"]
+                for v in _normalized_verdicts
+                if v["affects"] in ("yes", "unknown")
+            ] or breaking_changes
+
         # Server-side enforcement: core/OS/Supervisor always require a card at levels 0–3.
         # Level 4 + high confidence + safe_to_update is the only allowed bypass (ADR 035).
         if (
@@ -6962,17 +7044,33 @@ class ToolExecutor:
             body_parts.append(f"Pueo assessment: {risk_score}")
         if update.release_summary:
             body_parts.append(f"Summary: {update.release_summary}")
-        body_parts.append(f"Advisory: {advisory} — {recommendation}")
-        if instance_impact != "none":
-            body_parts.append(f"⚠️ Instance impact: {instance_impact.upper()}")
-            if not safe_to_update:
+        if _normalized_verdicts:
+            _yes_bcs = [v["bc"] for v in _normalized_verdicts if v["affects"] == "yes"]
+            _unk_bcs = [
+                v["bc"] for v in _normalized_verdicts if v["affects"] == "unknown"
+            ]
+            if _yes_bcs:
+                body_parts.append(f"⚠️ Affects this install: {', '.join(_yes_bcs)}")
+                if not safe_to_update and proposed_config_fixes:
+                    body_parts.append(
+                        "🚫 Config fixes required before updating — see details below."
+                    )
+            elif _unk_bcs:
+                body_parts.append(f"Advisory: {advisory} — {recommendation}")
+            else:
+                body_parts.append("✅ No breaking changes affect this install.")
+        else:
+            body_parts.append(f"Advisory: {advisory} — {recommendation}")
+            if instance_impact != "none":
+                body_parts.append(f"⚠️ Instance impact: {instance_impact.upper()}")
+                if not safe_to_update:
+                    body_parts.append(
+                        "🚫 Config fixes required before updating — see details below."
+                    )
+            elif breaking_changes:
                 body_parts.append(
-                    "🚫 Config fixes required before updating — see details below."
+                    "✅ None of the breaking changes affect your install. Safe to proceed."
                 )
-        elif breaking_changes:
-            body_parts.append(
-                "✅ None of the breaking changes affect your install. Safe to proceed."
-            )
 
         _rs = get_resource_status()
         disk_headroom_warning: Optional[str] = None
@@ -7028,6 +7126,7 @@ class ToolExecutor:
                 if update.component.lower() in ("core", "homeassistant")
                 else ""
             ),
+            "bc_verdicts": _normalized_verdicts,
         }
         # Verification comes from the post-update result card (run_pueo_self_check /
         # add-on version poll), not from a pre-analysis digest question.  Accept an
@@ -7042,6 +7141,29 @@ class ToolExecutor:
             subject,
         )
         await self._notifier.send(subject=subject, body=body, payload=payload)
+        # Persist verdicts to the CoreReleaseReport JSON for the report page.
+        if (
+            _normalized_verdicts
+            and _rpt is not None
+            and update.component.lower()
+            in (
+                "core",
+                "homeassistant",
+            )
+        ):
+            _rpt_path = (
+                _get_dirs().state_dir
+                / "update_reports"
+                / f"core_{update.latest_version}.json"
+            )
+            if _rpt_path.exists():
+                try:
+                    _rpt.bc_verdicts = _normalized_verdicts
+                    _rpt_path.write_text(
+                        _rpt.model_dump_json(indent=2), encoding="utf-8"
+                    )
+                except Exception:  # nosec B110
+                    pass
         self._hitl_card_queued = True
         self._hitl_card_id = payload["notification_id"]
         log.info(

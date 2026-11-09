@@ -116,3 +116,34 @@ batches). Now:
 - When the model passes no `highlights`, the card falls back to the first 5 report
   `screening_highlights` (`"<domain>: <feature>"`). `seed_update_core.md` step 7 asks
   for 2–5 highlights.
+
+## Amendment (#1160) — installed components, bc_verdicts, evidence-based card
+
+Three additions across S1–S4 of the Core update analysis v3 plan:
+
+**S1 — Report coverage:**
+- `discover_loaded_components()` replaces `discover_installed_integrations()` as the BC
+  domain list for `build_core_release_report()`. `_TRIVIAL_DOMAINS` no longer filters BCs.
+- Changelog parser walks heading levels: `#####` = integration, `#### Other changes` =
+  `core`, `### Frontend` = `frontend` (always "installed"). Section bodies end at any
+  heading.
+- PR refs retained in `ChangeEntry.prs`; lines whose PR appears in a BC body are skipped
+  in screening. `_is_mechanical_change` removes dependency/test/refactor lines.
+
+**S3 — BC evidence builder:**
+- `build_bc_evidence(report, ws, rest, ssh)` gathers entity counts, automation/dashboard
+  hits, and token matches per BC. Stored in `CoreReleaseReport.bc_evidence`. Rendered in
+  the digest under each BC as an `Evidence:` block.
+
+**S4 — bc_verdicts + per-item card:**
+- `finish_update_analysis` accepts `bc_verdicts: [{bc, affects, reason}]`. Code normalises
+  against report BC names (fuzzy match), fills missing BCs as `unknown`, and derives
+  `instance_impact` from verdicts: any `yes` → `high`; only `unknown` → `low`; all `no`
+  → `none`.
+- `CoreReleaseReport.bc_verdicts` is populated after the analysis and persisted to the
+  report JSON so the report page can display the three groups.
+- HITL card shows three groups: **Affects this install** / **Check manually** /
+  **Not affected** (collapsed). Legacy `breaking_changes` list is kept for backward compat.
+- `seed_update_core.md` requires `bc_verdicts`, forbids `read_source` / `get_ha_profile
+  config_entries` / broad single-word greps, and limits `check_config_against_breaking_change`
+  to cases where the Evidence block is insufficient.

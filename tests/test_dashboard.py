@@ -12050,3 +12050,95 @@ class TestUpdateReportRoute:
         assert "/updates/report/core_2026.11.0" in html
         assert "HA release notes" in html
         assert "MQTT 5.0 support" in html
+
+    def test_update_card_shows_bc_verdicts_three_groups(self, tmp_path, monkeypatch):
+        """Index card renders Affects this install / Check manually / Not affected groups."""
+        import json as _json
+        import time as _time
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        nid = "upd_verdicts_test"
+        (tmp_path / f"{nid}.json").write_text(
+            _json.dumps(
+                {
+                    "notification_id": nid,
+                    "subject": "Update available: core 2026.11.0",
+                    "body": "Core 2026.10.4 → 2026.11.0",
+                    "payload": {
+                        "card_type": "update",
+                        "component": "homeassistant",
+                        "installed_version": "2026.10.4",
+                        "latest_version": "2026.11.0",
+                        "bc_verdicts": [
+                            {
+                                "bc": "Tuya entities",
+                                "affects": "yes",
+                                "reason": "3 Tuya lights found",
+                            },
+                            {
+                                "bc": "Entity names",
+                                "affects": "unknown",
+                                "reason": "dashboard cards not checked",
+                            },
+                            {
+                                "bc": "Matter sensors",
+                                "affects": "no",
+                                "reason": "no concentration sensors",
+                            },
+                        ],
+                        "breaking_changes": [],
+                    },
+                    "sent_at": int(_time.time()) - 30,
+                }
+            )
+        )
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/queue").text
+        assert "Affects this install" in html
+        assert "Tuya entities" in html
+        assert "3 Tuya lights found" in html
+        assert "Check manually" in html
+        assert "Entity names" in html
+        assert "Not affected" in html
+        assert "Matter sensors" in html
+
+    def test_update_report_shows_bc_verdicts_three_groups(self, pueo_dirs, monkeypatch):
+        """Report page renders verdicts when bc_verdicts is populated."""
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+        from utils.knowledge.ha_release_report import (
+            BCEntry,
+            CoreReleaseReport,
+            ScreeningFlag,
+            ScreeningHighlight,
+        )
+
+        version = "2026.11.0"
+        state_dir = pueo_dirs.state_dir
+        report_dir = state_dir / "update_reports"
+        report_dir.mkdir(parents=True, exist_ok=True)
+        report = CoreReleaseReport(
+            version=version,
+            bc_installed=[
+                BCEntry(name="Tuya entities", domains=["tuya"], body="Tuya body")
+            ],
+            bc_general=[BCEntry(name="Entity names", body="Rename check.")],
+            bc_verdicts=[
+                {"bc": "Tuya entities", "affects": "yes", "reason": "3 lights found"},
+                {"bc": "Entity names", "affects": "unknown", "reason": "not checked"},
+            ],
+            completeness="complete",
+            screening_complete=True,
+            built_at="2026-11-06T12:00:00+00:00",
+        )
+        (report_dir / f"core_{version}.json").write_text(report.model_dump_json())
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get(f"/updates/report/core_{version}").text
+        assert "Affects This Install" in html
+        assert "Tuya entities" in html
+        assert "3 lights found" in html
+        assert "Check Manually" in html
+        assert "Entity names" in html
