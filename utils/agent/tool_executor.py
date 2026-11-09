@@ -6162,7 +6162,15 @@ class ToolExecutor:
         Results are stored on the executor so the orchestrating _coro can read them
         back after each AgentLoop.run() and persist them to the report.
         """
-        self._screening_flags.extend(flagged)
+        existing_keys = {
+            (f.get("domain", ""), f.get("change", "").lower())
+            for f in self._screening_flags
+        }
+        for flag in flagged:
+            key = (flag.get("domain", ""), flag.get("change", "").lower())
+            if key not in existing_keys:
+                self._screening_flags.append(flag)
+                existing_keys.add(key)
         self._screening_highlights.extend(highlights)
         if not batch_complete:
             self._screening_complete = False

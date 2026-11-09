@@ -31,13 +31,24 @@ update_analysis WorkItem — all stages run sequentially inside one item
 
 ### Screening sessions
 
+- Batches contain **changelog sections only** (no BC entries). BC entries are delivered
+  verbatim to the main analysis loop via the digest; re-screening them added 2 of 7
+  batches for 2026.11 and triggered false flags.  Amended #1150.
 - Each batch is cut at integration boundaries to ≤ `_SCREENING_BATCH_CHARS` (6 000 chars).
-- Registry: `read_config`, `query_knowledge`, `finish_change_screening`.
+- Registry: `finish_change_screening` only (no `read_config`, no `query_knowledge`).
+  Those tools caused ~17 LLM calls per batch and enabled instance-fact hallucination.
+  Amended #1150.
+- `max_tool_calls=3` per batch session. Amended #1150.
 - Prompt: `task_change_screening.md` + `seed_update_screening.md`.
+  Seed carries PR-title vocabulary rules (never flag "Clarify", "Move … classes",
+  "Mark … final", "leftovers", "Bump"; `high` only for removal of a documented user-
+  facing service or YAML option; never mention specific automations or entities).
+  Amended #1150.
 - Sessions write **no** `session_outcomes` / distillation rows — they are mechanics, not
   judgments (the main loop's `finish_update_analysis` owns the verdict).
 - Results (`screening_flags`, `screening_highlights`) are accumulated on `ToolExecutor`
   via `_finish_change_screening` / `clear_screening_state` / `get_screening_results`.
+  Flags are deduped on `(domain, change.lower())` across batches.  Amended #1150.
 - Persisted to the report JSON after all batches finish.
 
 ### Compact digest

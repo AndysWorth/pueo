@@ -2945,18 +2945,13 @@ def build_update_analysis_registry() -> ToolRegistry:
 def build_change_screening_registry() -> ToolRegistry:
     """Registry for a Core release-change screening session.
 
-    A lightweight session that reviews a batch of changelog entries and BC items
-    for installed integrations, then calls finish_change_screening.
-    No SSH tools — read_config is included so the agent can verify whether a
-    flagged BC key is actually present in this install's config.
+    Text-only: the agent judges each PR title from the text alone.
+    No config access and no knowledge retrieval — keeping read_config and
+    query_knowledge here caused the model to call them on every entry (~17
+    calls per batch) and to infer instance facts it cannot verify.
     """
     reg = ToolRegistry()
-    for tool in (
-        READ_CONFIG,
-        QUERY_KNOWLEDGE,
-        FINISH_CHANGE_SCREENING,
-    ):
-        reg.register(tool)
+    reg.register(FINISH_CHANGE_SCREENING)
     return reg
 
 
