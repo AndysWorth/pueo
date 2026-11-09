@@ -285,66 +285,114 @@ async def build_core_release_report(
     return report
 
 
+_DIGEST_CAP = 15000
+_SEP = "\n\n---\n\n"
+
+
 def format_core_release_digest(report: "CoreReleaseReport") -> str:
     """Build a compact digest string from a CoreReleaseReport for the main AgentLoop.
 
-    Contains: installed BCs, general BCs, flagged changes, highlight candidates,
-    and the Farewell section.  Capped at 15 000 chars.
+    Ordering (high-priority first so truncation never cuts flags or highlights):
+    1. Flagged changes sorted high → medium → low
+    2. Feature highlights (≤ 8)
+    3. Farewell / removed section
+    4. Backward-incompatible changes — per-entry truncation on whatever budget remains
+
+    Total capped at _DIGEST_CAP chars.
     """
-    parts: list[str] = []
+    _SEV_ORDER = {"high": 0, "medium": 1, "low": 2}
+    priority_parts: list[str] = []
 
-    # Installed BC entries
-    if report.bc_installed:
-        installed_lines = "\n\n".join(
-            f"### {e.name}\n\n{e.body}" if e.body else f"### {e.name}"
-            for e in report.bc_installed
-        )
-        parts.append(
-            "## Backward-incompatible changes\n\n"
-            "**Affects this instance:**\n\n" + installed_lines
-        )
-    if report.bc_general:
-        general_lines = "\n\n".join(
-            f"### {e.name}\n\n{e.body}" if e.body else f"### {e.name}"
-            for e in report.bc_general
-        )
-        general_header = "**General (applies to all installs):**\n\n" + general_lines
-        if report.bc_installed:
-            parts[-1] += "\n\n" + general_header
-        else:
-            parts.append("## Backward-incompatible changes\n\n" + general_header)
-    if report.bc_other_names:
-        other_line = (
-            "**Other affected integrations (not installed here):** "
-            + ", ".join(report.bc_other_names)
-        )
-        if parts:
-            parts[-1] += "\n\n" + other_line
-        else:
-            parts.append("## Backward-incompatible changes\n\n" + other_line)
-
-    # Flagged changes from screening pass
+    # 1. Flagged changes — sorted high → low
     if report.screening_flags:
-        flag_lines = []
-        for f in report.screening_flags:
-            flag_lines.append(
-                f"- **{f.domain}** [{f.severity}]: {f.change} — {f.concern}"
-            )
-        parts.append("## Flagged changes (from screening)\n\n" + "\n".join(flag_lines))
+        sorted_flags = sorted(
+            report.screening_flags, key=lambda f: _SEV_ORDER.get(f.severity, 1)
+        )
+        flag_lines = [
+            f"- **{f.domain}** [{f.severity}]: {f.change} — {f.concern}"
+            for f in sorted_flags
+        ]
+        priority_parts.append(
+            "## Flagged changes (from screening)\n\n" + "\n".join(flag_lines)
+        )
 
-    # Highlight candidates from screening pass
+    # 2. Feature highlights (≤ 8)
     if report.screening_highlights:
-        hl_lines = []
-        for h in report.screening_highlights:
-            hl_lines.append(f"- **{h.domain}**: {h.feature}")
-        parts.append("## Feature highlights (from screening)\n\n" + "\n".join(hl_lines))
+        hl_lines = [
+            f"- **{h.domain}**: {h.feature}" for h in report.screening_highlights[:8]
+        ]
+        priority_parts.append(
+            "## Feature highlights (from screening)\n\n" + "\n".join(hl_lines)
+        )
 
-    # Farewell / removed section
+    # 3. Farewell / removed section
     if report.farewell:
-        parts.append(report.farewell)
+        priority_parts.append(report.farewell)
 
-    result = "\n\n---\n\n".join(parts)
-    return result[:15000]
+    priority_text = _SEP.join(priority_parts)
+    bc_budget = _DIGEST_CAP - len(priority_text) - (len(_SEP) if priority_text else 0)
+
+    # 4. BCs — per-entry truncation so the whole section fits in remaining budget
+    _BC_HEADER = "## Backward-incompatible changes\n\n"
+    _INST_HEADER = "**Affects this instance:**\n\n"
+    _GEN_HEADER = "**General (applies to all installs):**\n\n"
+    _TRUNC_MARKER = "…(truncated)"
+    bc_parts: list[str] = []
+    if report.bc_installed or report.bc_general or report.bc_other_names:
+        # Reserve space for all fixed sub-headers and separators upfront
+        overhead = len(_BC_HEADER)
+        if report.bc_installed:
+            overhead += len(_INST_HEADER)
+        if report.bc_general:
+            overhead += len(_GEN_HEADER) + 2  # "\n\n" separator
+        entry_budget = bc_budget - overhead
+
+        installed_entries: list[str] = []
+        for e in report.bc_installed:
+            entry_text = f"### {e.name}\n\n{e.body}" if e.body else f"### {e.name}"
+            if entry_budget > 0:
+                if len(entry_text) > entry_budget:
+                    entry_text = (
+                        entry_text[: entry_budget - len(_TRUNC_MARKER)] + _TRUNC_MARKER
+                    )
+                installed_entries.append(entry_text)
+                entry_budget -= len(entry_text) + 2  # +2 for "\n\n" separator
+
+        general_entries: list[str] = []
+        for e in report.bc_general:
+            entry_text = f"### {e.name}\n\n{e.body}" if e.body else f"### {e.name}"
+            if entry_budget > 0:
+                if len(entry_text) > entry_budget:
+                    entry_text = (
+                        entry_text[: entry_budget - len(_TRUNC_MARKER)] + _TRUNC_MARKER
+                    )
+                general_entries.append(entry_text)
+                entry_budget -= len(entry_text) + 2
+
+        bc_section = _BC_HEADER
+        if installed_entries:
+            bc_section += _INST_HEADER + "\n\n".join(installed_entries)
+        if general_entries:
+            general_header_str = _GEN_HEADER + "\n\n".join(general_entries)
+            if installed_entries:
+                bc_section += "\n\n" + general_header_str
+            else:
+                bc_section += general_header_str
+        if report.bc_other_names and entry_budget > 0:
+            other_line = (
+                "**Other affected integrations (not installed here):** "
+                + ", ".join(report.bc_other_names)
+            )
+            if installed_entries or general_entries:
+                bc_section += "\n\n" + other_line
+            else:
+                bc_section += other_line
+        bc_parts.append(bc_section)
+
+    bc_text = _SEP.join(bc_parts)
+    if priority_text and bc_text:
+        return (priority_text + _SEP + bc_text)[:_DIGEST_CAP]
+    return (priority_text or bc_text)[:_DIGEST_CAP]
 
 
 # Screening batch size budget (chars).  Cut at integration boundaries.

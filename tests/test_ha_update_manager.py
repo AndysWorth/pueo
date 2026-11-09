@@ -7005,3 +7005,124 @@ class TestFinishUpdateAnalysisReportPayload:
         assert (
             payload["blog_url"] == "https://www.home-assistant.io/latest-release-notes/"
         )
+
+
+class TestCoreReleaseDigest:
+    """Tests for format_core_release_digest ordering and truncation."""
+
+    def _make_report(self, **kwargs):
+        from utils.knowledge.ha_release_report import (
+            BCEntry,
+            CoreReleaseReport,
+            ScreeningFlag,
+            ScreeningHighlight,
+        )
+
+        defaults = dict(
+            version="2026.11.0",
+            completeness="complete",
+            screening_complete=True,
+        )
+        defaults.update(kwargs)
+        return CoreReleaseReport(**defaults)
+
+    def _flag(self, domain="mqtt", severity="medium", change="ch", concern="co"):
+        from utils.knowledge.ha_release_report import ScreeningFlag
+
+        return ScreeningFlag(
+            domain=domain, severity=severity, change=change, concern=concern
+        )
+
+    def _highlight(self, domain="mqtt", feature="feat"):
+        from utils.knowledge.ha_release_report import ScreeningHighlight
+
+        return ScreeningHighlight(domain=domain, feature=feature)
+
+    def _bc(self, name="MQTT", body="Some detail."):
+        from utils.knowledge.ha_release_report import BCEntry
+
+        return BCEntry(name=name, body=body)
+
+    def test_flags_appear_before_bcs(self):
+        from utils.knowledge.ha_release_report import format_core_release_digest
+
+        report = self._make_report(
+            bc_installed=[self._bc()],
+            screening_flags=[self._flag()],
+        )
+        result = format_core_release_digest(report)
+        flags_pos = result.index("Flagged changes")
+        bc_pos = result.index("Backward-incompatible")
+        assert flags_pos < bc_pos
+
+    def test_highlights_appear_before_bcs(self):
+        from utils.knowledge.ha_release_report import format_core_release_digest
+
+        report = self._make_report(
+            bc_installed=[self._bc()],
+            screening_highlights=[self._highlight()],
+        )
+        result = format_core_release_digest(report)
+        hl_pos = result.index("Feature highlights")
+        bc_pos = result.index("Backward-incompatible")
+        assert hl_pos < bc_pos
+
+    def test_flags_sorted_high_before_medium(self):
+        from utils.knowledge.ha_release_report import format_core_release_digest
+
+        report = self._make_report(
+            screening_flags=[
+                self._flag(domain="a", severity="medium"),
+                self._flag(domain="b", severity="high"),
+                self._flag(domain="c", severity="low"),
+            ],
+        )
+        result = format_core_release_digest(report)
+        pos_b = result.index("**b**")
+        pos_a = result.index("**a**")
+        pos_c = result.index("**c**")
+        assert pos_b < pos_a < pos_c
+
+    def test_oversized_bc_does_not_cut_flags(self):
+        """When BC entries are very large, flags and highlights still appear."""
+        from utils.knowledge.ha_release_report import format_core_release_digest
+
+        report = self._make_report(
+            bc_installed=[self._bc(body="x" * 20000)],
+            screening_flags=[self._flag(domain="econet", severity="high")],
+            screening_highlights=[
+                self._highlight(domain="econet", feature="heat pump")
+            ],
+        )
+        result = format_core_release_digest(report)
+        assert "econet" in result
+        assert "heat pump" in result
+        assert len(result) <= 15000
+
+    def test_oversized_bc_entry_truncated(self):
+        """A BC entry larger than remaining budget is truncated, not dropped."""
+        from utils.knowledge.ha_release_report import format_core_release_digest
+
+        big_body = "y" * 20000
+        report = self._make_report(bc_installed=[self._bc(body=big_body)])
+        result = format_core_release_digest(report)
+        assert "MQTT" in result
+        assert "…(truncated)" in result
+        assert len(result) <= 15000
+
+    def test_highlights_capped_at_eight(self):
+        from utils.knowledge.ha_release_report import format_core_release_digest
+
+        report = self._make_report(
+            screening_highlights=[self._highlight(domain=f"d{i}") for i in range(12)],
+        )
+        result = format_core_release_digest(report)
+        # d8–d11 should not appear; d0–d7 should
+        assert "**d7**" in result
+        assert "**d8**" not in result
+
+    def test_empty_report_returns_empty(self):
+        from utils.knowledge.ha_release_report import format_core_release_digest
+
+        report = self._make_report()
+        assert format_core_release_digest(report) == ""
