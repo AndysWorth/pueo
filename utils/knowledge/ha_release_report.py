@@ -352,7 +352,11 @@ _SCREENING_BATCH_CHARS = 6000
 
 
 def make_screening_batches(report: "CoreReleaseReport") -> list[str]:
-    """Split the report's BC + changelog content into LLM-sized batches.
+    """Split the report's changelog content into LLM-sized batches.
+
+    BC entries are excluded: the main analysis loop receives them verbatim via
+    the release digest, so re-screening them wastes time and can produce false
+    flags.  Only changelog sections (changes_by_domain) are batched.
 
     Each batch is a self-contained text block ≤ _SCREENING_BATCH_CHARS that
     cuts at integration boundaries (never mid-entry).  Returns a list of
@@ -360,16 +364,7 @@ def make_screening_batches(report: "CoreReleaseReport") -> list[str]:
     """
     sections: list[str] = []
 
-    # BC entries (installed + general) first
-    for entry in report.bc_installed + report.bc_general:
-        text = (
-            f"### BC: {entry.name}\n\n{entry.body}"
-            if entry.body
-            else f"### BC: {entry.name}"
-        )
-        sections.append(text)
-
-    # Changelog sections per domain
+    # Changelog sections per domain only (no BC entries)
     for domain, lines in report.changes_by_domain.items():
         text = f"### Changes: {domain}\n\n" + "\n".join(f"- {l}" for l in lines)
         sections.append(text)

@@ -11958,7 +11958,10 @@ class TestCoreReleaseReport:
                 len(b) <= _SCREENING_BATCH_CHARS + 2000
             )  # one section can exceed if large
 
-    def test_batches_no_mid_entry_split(self):
+    def test_batches_exclude_bc_entries(self):
+        # BC entries are screened by the main analysis loop verbatim; screening
+        # batches should contain only changelog sections to avoid double-work and
+        # false flags from mixing instance facts with PR-title judgements.
         from utils.knowledge.ha_release_report import (
             BCEntry,
             CoreReleaseReport,
@@ -11974,11 +11977,30 @@ class TestCoreReleaseReport:
             built_at="2026-11-05T00:00:00+00:00",
         )
         batches = make_screening_batches(rpt)
-        # All entries should appear across batches exactly once
         combined = "\n".join(batches)
-        assert "MQTT" in combined
-        assert "Entity names" in combined
+        # BC entries must NOT appear
+        assert "MQTT" not in combined
+        assert "Entity names" not in combined
+        # Changelog section must appear
         assert "hue" in combined
+
+    def test_batches_no_mid_entry_split(self):
+        from utils.knowledge.ha_release_report import (
+            CoreReleaseReport,
+            make_screening_batches,
+        )
+
+        rpt = CoreReleaseReport(
+            version="2026.11.0",
+            changes_by_domain={"hue": ["change C"], "mqtt": ["change D"]},
+            completeness="complete",
+            built_at="2026-11-05T00:00:00+00:00",
+        )
+        batches = make_screening_batches(rpt)
+        # All changelog sections appear across batches exactly once
+        combined = "\n".join(batches)
+        assert "hue" in combined
+        assert "mqtt" in combined
 
     def test_batches_empty_report(self):
         from utils.knowledge.ha_release_report import (
@@ -12063,16 +12085,60 @@ class TestCoreReleaseReport:
         assert len(hls) == 1
         assert complete is True
 
+    def test_finish_change_screening_dedupes_flags(self):
+        # Duplicate (domain, change) across batches must not produce duplicate flags.
+        executor = self._make_executor()
+        executor.clear_screening_state()
+        executor._finish_change_screening(
+            flagged=[
+                {
+                    "domain": "mqtt",
+                    "change": "API removed",
+                    "concern": "break",
+                    "severity": "high",
+                }
+            ],
+            highlights=[],
+            batch_complete=True,
+        )
+        # Same flag again (different case in change)
+        executor._finish_change_screening(
+            flagged=[
+                {
+                    "domain": "mqtt",
+                    "change": "API Removed",
+                    "concern": "dupe",
+                    "severity": "high",
+                },
+                {
+                    "domain": "hue",
+                    "change": "entity rename",
+                    "concern": "break",
+                    "severity": "medium",
+                },
+            ],
+            highlights=[],
+            batch_complete=True,
+        )
+        flags, _, _ = executor.get_screening_results()
+        # mqtt/API removed is a duplicate; hue/entity rename is distinct
+        assert len(flags) == 2
+        domains = {f["domain"] for f in flags}
+        assert domains == {"mqtt", "hue"}
+
     # ── build_change_screening_registry ───────────────────────────────────
 
     def test_change_screening_registry_contents(self):
+        # Screening is text-only: only finish_change_screening is registered.
+        # read_config and query_knowledge caused ~17 tool calls per batch (#1150).
         from utils.agent.tool_registry import build_change_screening_registry
 
         reg = build_change_screening_registry()
         names = set(reg.names())
-        assert "read_config" in names
-        assert "query_knowledge" in names
         assert "finish_change_screening" in names
+        # read_config and query_knowledge must NOT be in the screening registry
+        assert "read_config" not in names
+        assert "query_knowledge" not in names
         # SSH write tools must NOT be in the screening registry
         assert "apply_fix" not in names
         assert "trigger_backup" not in names

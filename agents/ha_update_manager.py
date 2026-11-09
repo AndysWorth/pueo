@@ -1447,15 +1447,12 @@ async def _run_update_analysis(
                             db_path=DB_PATH,
                             knowledge_store=knowledge_store,
                             capture_llm=False,
+                            max_tool_calls=3,
                         )
                         _screen_result = await _screen_loop.run(
                             (
                                 f"HA Core {update.latest_version} — batch {_batch_idx + 1}"
                                 f" of {len(_batches)}:\n\n{_batch_text}"
-                            ),
-                            knowledge_query=(
-                                f"HA Core {update.latest_version} breaking changes "
-                                "installed integrations"
                             ),
                             signature=_sig_update("core_screen", update.component),
                             subject_key=update.entity_id,
