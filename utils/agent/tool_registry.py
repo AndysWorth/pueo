@@ -2463,8 +2463,8 @@ CHECK_AUTOMATION_REFERENCES = ToolDefinition(
     name="check_automation_references",
     description=(
         "Search automation YAML files for deprecated service calls or entity platforms "
-        "mentioned in release notes. Targets automations.yaml, automations/*.yaml, and "
-        "packages/**/*.yaml. Returns matched lines with file:line context. "
+        "mentioned in release notes. Targets automations, scripts, scenes, and "
+        "packages YAML. Returns matched lines with file:line context. "
         "Call for breaking changes that affect service calls or entity platforms."
     ),
     parameters={
@@ -2473,8 +2473,8 @@ CHECK_AUTOMATION_REFERENCES = ToolDefinition(
             "pattern": {
                 "type": "string",
                 "description": (
-                    "The service call or entity platform to search for "
-                    "(e.g. 'light.turn_on', 'homeassistant.scene')."
+                    "Extended regex for the service call or entity platform "
+                    "(e.g. 'light\\.turn_on', 'notify\\.|homeassistant\\.scene')."
                 ),
             },
             "breaking_change_desc": {
