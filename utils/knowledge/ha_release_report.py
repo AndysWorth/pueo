@@ -46,6 +46,19 @@ class ScreeningHighlight(BaseModel):
     feature: str
 
 
+class BCEvidence(BaseModel):
+    """Entity and configuration evidence for a single BC entry."""
+
+    domains: list[str] = []
+    entity_count: int = 0
+    entity_examples: list[str] = []
+    multi_channel_devices: list[str] = []
+    tokens: list[str] = []
+    automation_hits: list[str] = []
+    dashboard_hits: list[str] = []
+    found: bool = False
+
+
 class CoreReleaseReport(BaseModel):
     version: str
     blog_url: Optional[str] = None
@@ -65,6 +78,8 @@ class CoreReleaseReport(BaseModel):
     screening_batches_done: Optional[int] = None
     # Mechanical-noise lines dropped during changelog parsing; None on old reports.
     screening_noise_dropped: Optional[int] = None
+    # Per-BC entity and config evidence; populated by utils.ha.update_bc_evidence.
+    bc_evidence: dict[str, BCEvidence] = {}
     # Deterministic report status (blog + changelog parsed).  Screening status is
     # tracked separately in screening_complete / screening_batches_* (#1148).
     completeness: str = "incomplete"
@@ -406,6 +421,42 @@ _DIGEST_CAP = 15000
 _SEP = "\n\n---\n\n"
 
 
+def _format_bc_entry(e: "BCEntry", evidence: Optional["BCEvidence"] = None) -> str:
+    """Format a single BC entry as Markdown, appending evidence when available."""
+    text = f"### {e.name}\n\n{e.body}" if e.body else f"### {e.name}"
+    if evidence is None:
+        return text
+    ev_lines: list[str] = []
+    if evidence.domains or evidence.entity_count > 0:
+        if evidence.entity_count > 0:
+            ex = ", ".join(evidence.entity_examples[:5])
+            suffix = "…" if len(evidence.entity_examples) > 5 else ""
+            ev_lines.append(f"Entities ({evidence.entity_count}): {ex}{suffix}")
+            if evidence.multi_channel_devices:
+                ev_lines.append(
+                    f"Multi-channel devices: {', '.join(evidence.multi_channel_devices)}"
+                )
+        elif evidence.domains:
+            ev_lines.append(
+                f"No {'/'.join(evidence.domains)} entities on this instance"
+            )
+    if evidence.automation_hits:
+        ev_lines.append(
+            f"Config refs ({len(evidence.automation_hits)}): "
+            + "; ".join(evidence.automation_hits[:2])
+        )
+    if evidence.dashboard_hits:
+        ev_lines.append(
+            f"Dashboard refs ({len(evidence.dashboard_hits)}): "
+            + "; ".join(evidence.dashboard_hits[:2])
+        )
+    if evidence.tokens:
+        ev_lines.append(f"Tokens checked: {', '.join(evidence.tokens[:8])}")
+    if ev_lines:
+        text += "\n\nEvidence:\n" + "\n".join(f"- {line}" for line in ev_lines)
+    return text
+
+
 def format_core_release_digest(report: "CoreReleaseReport") -> str:
     """Build a compact digest string from a CoreReleaseReport for the main AgentLoop.
 
@@ -466,7 +517,7 @@ def format_core_release_digest(report: "CoreReleaseReport") -> str:
 
         installed_entries: list[str] = []
         for e in report.bc_installed:
-            entry_text = f"### {e.name}\n\n{e.body}" if e.body else f"### {e.name}"
+            entry_text = _format_bc_entry(e, report.bc_evidence.get(e.name))
             if entry_budget > 0:
                 if len(entry_text) > entry_budget:
                     entry_text = (
@@ -477,7 +528,7 @@ def format_core_release_digest(report: "CoreReleaseReport") -> str:
 
         general_entries: list[str] = []
         for e in report.bc_general:
-            entry_text = f"### {e.name}\n\n{e.body}" if e.body else f"### {e.name}"
+            entry_text = _format_bc_entry(e, report.bc_evidence.get(e.name))
             if entry_budget > 0:
                 if len(entry_text) > entry_budget:
                     entry_text = (

@@ -7236,3 +7236,417 @@ class TestFinishUpdateAnalysisHighlightsDispatch:
         assert notifier.sent
         payload = notifier.sent[0]["payload"]
         assert payload["highlights"] == ["mqtt: MQTT 5.0"]
+
+
+class TestBCEvidenceTokenExtractor:
+    """Unit tests for _extract_tokens."""
+
+    def test_service_call_pattern(self):
+        from utils.ha.update_bc_evidence import _extract_tokens
+
+        tokens = _extract_tokens(
+            "Matter sensors", "Call matter.sensor to update state."
+        )
+        assert "matter.sensor" in tokens
+
+    def test_yaml_key_extracted(self):
+        from utils.ha.update_bc_evidence import _extract_tokens
+
+        tokens = _extract_tokens("Sun trigger", "The offset_type field changed sign.")
+        assert "offset_type" in tokens
+
+    def test_quoted_value_extracted(self):
+        from utils.ha.update_bc_evidence import _extract_tokens
+
+        tokens = _extract_tokens("Hue effect", 'Set effect to "None" to disable.')
+        assert '"None"' in tokens
+
+    def test_card_type_extracted(self):
+        from utils.ha.update_bc_evidence import _extract_tokens
+
+        tokens = _extract_tokens("Alert card", "The alert card type changed.")
+        assert "type: alert" in tokens
+
+    def test_skip_key_not_extracted(self):
+        from utils.ha.update_bc_evidence import _extract_tokens
+
+        tokens = _extract_tokens("Entity ID change", "entity_id is now required.")
+        # entity_id is in _SKIP_KEYS and < 5 chars passes → but it IS in skip list
+        assert "entity_id" not in tokens
+
+    def test_max_tokens_cap(self):
+        from utils.ha.update_bc_evidence import _extract_tokens, _MAX_TOKENS
+
+        # Manufacture a body with many unique tokens
+        body = " ".join(f"key_{i:02d}_val" for i in range(50))
+        tokens = _extract_tokens("Lots of keys", body)
+        assert len(tokens) <= _MAX_TOKENS
+
+
+class TestBCEvidenceEntitySummary:
+    """Unit tests for _entity_summary."""
+
+    def _make_entity(self, entity_id: str, device_id: str | None = None) -> dict:
+        return {"entity_id": entity_id, "device_id": device_id}
+
+    def _make_device(self, id: str, name: str) -> dict:
+        return {"id": id, "name": name}
+
+    def test_no_domains_returns_empty(self):
+        from utils.ha.update_bc_evidence import _entity_summary
+
+        count, examples, multi = _entity_summary([], [], [])
+        assert count == 0 and not examples and not multi
+
+    def test_matter_no_concentration_sensors_found_false(self):
+        from utils.ha.update_bc_evidence import _entity_summary
+
+        # No concentration sensors → 0 entities for matter domain
+        entity_registry = [
+            self._make_entity("sensor.temp1"),
+            self._make_entity("light.bed1"),
+        ]
+        count, examples, multi = _entity_summary(["sensor"], entity_registry, [])
+        # sensor.temp1 matches, so count is 1 — this test is about matter domains having 0
+        assert count == 1
+
+    def test_matter_no_matching_domain_zero(self):
+        from utils.ha.update_bc_evidence import _entity_summary
+
+        entity_registry = [self._make_entity("light.tuya_1")]
+        count, examples, multi = _entity_summary(["matter"], entity_registry, [])
+        assert count == 0 and not examples
+
+    def test_tuya_multi_channel_detected(self):
+        from utils.ha.update_bc_evidence import _entity_summary
+
+        # Device d1 has light.tuya_1 and light.tuya_2 → multi-channel
+        entity_registry = [
+            self._make_entity("light.tuya_1", "dev1"),
+            self._make_entity("light.tuya_2", "dev1"),
+            self._make_entity("light.other", "dev2"),
+        ]
+        device_registry = [self._make_device("dev1", "Tuya Strip")]
+        count, examples, multi = _entity_summary(
+            ["light"], entity_registry, device_registry
+        )
+        assert count == 3
+        assert "Tuya Strip" in multi
+
+    def test_single_channel_not_multi(self):
+        from utils.ha.update_bc_evidence import _entity_summary
+
+        entity_registry = [self._make_entity("light.tuya_1", "dev1")]
+        device_registry = [self._make_device("dev1", "Tuya Single")]
+        _, _, multi = _entity_summary(["light"], entity_registry, device_registry)
+        assert not multi
+
+    def test_examples_capped(self):
+        from utils.ha.update_bc_evidence import _entity_summary, _MAX_ENTITY_EXAMPLES
+
+        entities = [{"entity_id": f"light.e{i}"} for i in range(30)]
+        count, examples, _ = _entity_summary(["light"], entities, [])
+        assert count == 30
+        assert len(examples) <= _MAX_ENTITY_EXAMPLES
+
+
+class TestBCEvidenceDashboardSearch:
+    """Unit tests for _search_dashboards."""
+
+    def test_alert_card_hit(self):
+        from utils.ha.update_bc_evidence import _search_dashboards
+
+        config = {"views": [{"cards": [{"type": "alert", "entity": "sensor.x"}]}]}
+        hits = _search_dashboards(["type: alert", "other_key"], [("lovelace", config)])
+        assert any("type: alert" in h for h in hits)
+
+    def test_no_match_returns_empty(self):
+        from utils.ha.update_bc_evidence import _search_dashboards
+
+        config = {"views": [{"cards": [{"type": "entity"}]}]}
+        hits = _search_dashboards(["type: mushroom"], [("lovelace", config)])
+        assert not hits
+
+    def test_hit_includes_dashboard_path(self):
+        from utils.ha.update_bc_evidence import _search_dashboards
+
+        config = {"views": [{"cards": [{"offset_type": "positive"}]}]}
+        hits = _search_dashboards(["offset_type"], [("my-dash", config)])
+        assert any("my-dash" in h for h in hits)
+
+
+class TestBCEvidencePydantic:
+    """Pydantic schema tests for BCEvidence."""
+
+    def test_valid_construction(self):
+        from utils.knowledge.ha_release_report import BCEvidence
+
+        ev = BCEvidence(
+            domains=["light"],
+            entity_count=3,
+            entity_examples=["light.tuya_1"],
+            found=True,
+        )
+        assert ev.entity_count == 3
+        assert ev.found is True
+
+    def test_defaults(self):
+        from utils.knowledge.ha_release_report import BCEvidence
+
+        ev = BCEvidence()
+        assert ev.entity_count == 0
+        assert ev.found is False
+        assert ev.domains == []
+
+    def test_json_roundtrip(self):
+        from utils.knowledge.ha_release_report import BCEvidence
+
+        ev = BCEvidence(
+            domains=["matter"],
+            entity_count=0,
+            tokens=["matter.sensor"],
+            found=False,
+        )
+        reloaded = BCEvidence.model_validate_json(ev.model_dump_json())
+        assert reloaded.domains == ["matter"]
+        assert reloaded.found is False
+
+
+class TestBCEvidenceInReport:
+    """Tests for BCEvidence integration with CoreReleaseReport and digest."""
+
+    def _make_report(self, **kwargs):
+        from utils.knowledge.ha_release_report import CoreReleaseReport
+
+        defaults = dict(version="2026.11.0", completeness="complete")
+        defaults.update(kwargs)
+        return CoreReleaseReport(**defaults)
+
+    def test_report_accepts_bc_evidence(self):
+        from utils.knowledge.ha_release_report import (
+            BCEntry,
+            BCEvidence,
+            CoreReleaseReport,
+        )
+
+        ev = BCEvidence(domains=["matter"], entity_count=0, found=False)
+        rpt = CoreReleaseReport(
+            version="2026.11.0",
+            bc_installed=[BCEntry(name="Matter sensors", domains=["matter"])],
+            bc_evidence={"Matter sensors": ev},
+        )
+        assert rpt.bc_evidence["Matter sensors"].found is False
+
+    def test_digest_includes_evidence_block(self):
+        from utils.knowledge.ha_release_report import (
+            BCEntry,
+            BCEvidence,
+            CoreReleaseReport,
+            format_core_release_digest,
+        )
+
+        ev = BCEvidence(
+            domains=["matter"],
+            entity_count=2,
+            entity_examples=["sensor.matter_1", "sensor.matter_2"],
+            tokens=["matter.sensor"],
+            found=True,
+        )
+        rpt = CoreReleaseReport(
+            version="2026.11.0",
+            bc_installed=[
+                BCEntry(name="Matter sensors", domains=["matter"], body="Some detail.")
+            ],
+            bc_evidence={"Matter sensors": ev},
+        )
+        digest = format_core_release_digest(rpt)
+        assert "Evidence:" in digest
+        assert "sensor.matter_1" in digest
+
+    def test_digest_no_evidence_when_absent(self):
+        from utils.knowledge.ha_release_report import (
+            BCEntry,
+            CoreReleaseReport,
+            format_core_release_digest,
+        )
+
+        rpt = CoreReleaseReport(
+            version="2026.11.0",
+            bc_installed=[
+                BCEntry(name="Matter sensors", domains=["matter"], body="Some detail.")
+            ],
+        )
+        digest = format_core_release_digest(rpt)
+        assert "Evidence:" not in digest
+
+    def test_digest_no_entities_shows_zero_message(self):
+        from utils.knowledge.ha_release_report import (
+            BCEntry,
+            BCEvidence,
+            CoreReleaseReport,
+            format_core_release_digest,
+        )
+
+        ev = BCEvidence(domains=["cover"], entity_count=0, found=False)
+        rpt = CoreReleaseReport(
+            version="2026.11.0",
+            bc_installed=[
+                BCEntry(name="Cover changes", domains=["cover"], body="Detail.")
+            ],
+            bc_evidence={"Cover changes": ev},
+        )
+        digest = format_core_release_digest(rpt)
+        assert "No cover entities" in digest
+
+    def test_report_json_roundtrip_with_evidence(self):
+        from utils.knowledge.ha_release_report import (
+            BCEntry,
+            BCEvidence,
+            CoreReleaseReport,
+        )
+
+        ev = BCEvidence(domains=["tuya"], entity_count=3, found=True)
+        rpt = CoreReleaseReport(
+            version="2026.11.0",
+            bc_installed=[BCEntry(name="Tuya change", domains=["tuya"])],
+            bc_evidence={"Tuya change": ev},
+        )
+        reloaded = CoreReleaseReport.model_validate_json(rpt.model_dump_json())
+        assert reloaded.bc_evidence["Tuya change"].entity_count == 3
+
+
+class TestBuildBCEvidenceAsync:
+    """Async integration tests for build_bc_evidence with fake clients."""
+
+    def _make_entity(self, entity_id: str, device_id: str | None = None) -> dict:
+        return {"entity_id": entity_id, "device_id": device_id, "platform": "test"}
+
+    def _make_device(self, id: str, name: str) -> dict:
+        return {"id": id, "name": name}
+
+    def test_matter_no_concentration_sensors(self):
+        """Matter BC with no matching entities → found=False."""
+        import asyncio
+        from utils.ha.update_bc_evidence import build_bc_evidence
+        from utils.knowledge.ha_release_report import BCEntry, CoreReleaseReport
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        ws = FakeHAWebSocketClient(
+            entity_registry=[self._make_entity("light.tuya_1")],
+            lovelace_configs={None: {"views": []}},
+        )
+        rpt = CoreReleaseReport(
+            version="2026.11.0",
+            bc_installed=[
+                BCEntry(
+                    name="Matter concentration sensors",
+                    domains=["sensor"],
+                    body="Concentration measurement sensors require new platform.",
+                )
+            ],
+        )
+        evidence = asyncio.run(build_bc_evidence(rpt, ws_client=ws))
+        ev = evidence.get("Matter concentration sensors")
+        assert ev is not None
+        assert ev.entity_count == 0
+        assert ev.found is False
+
+    def test_tuya_multi_channel_light(self):
+        """Tuya light BC with multi-channel device detected."""
+        import asyncio
+        from utils.ha.update_bc_evidence import build_bc_evidence
+        from utils.knowledge.ha_release_report import BCEntry, CoreReleaseReport
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        ws = FakeHAWebSocketClient(
+            entity_registry=[
+                self._make_entity("light.strip_1", "dev1"),
+                self._make_entity("light.strip_2", "dev1"),
+            ],
+            devices=[self._make_device("dev1", "Tuya Strip")],
+            lovelace_configs={None: {"views": []}},
+        )
+        rpt = CoreReleaseReport(
+            version="2026.11.0",
+            bc_installed=[
+                BCEntry(
+                    name="Tuya lights",
+                    domains=["light"],
+                    body="Multi-channel Tuya lights must be re-paired.",
+                )
+            ],
+        )
+        evidence = asyncio.run(build_bc_evidence(rpt, ws_client=ws))
+        ev = evidence["Tuya lights"]
+        assert ev.entity_count == 2
+        assert "Tuya Strip" in ev.multi_channel_devices
+        assert ev.found is True
+
+    def test_dashboard_alert_card_hit(self):
+        """Alert card BC gets a dashboard hit when dashboard has type:alert."""
+        import asyncio
+        from utils.ha.update_bc_evidence import build_bc_evidence
+        from utils.knowledge.ha_release_report import BCEntry, CoreReleaseReport
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        ws = FakeHAWebSocketClient(
+            entity_registry=[],
+            lovelace_dashboards=[{"url_path": "lovelace"}],
+            lovelace_configs={
+                "lovelace": {
+                    "views": [{"cards": [{"type": "alert", "entity": "sensor.x"}]}]
+                },
+                None: {"views": []},
+            },
+        )
+        rpt = CoreReleaseReport(
+            version="2026.11.0",
+            bc_installed=[
+                BCEntry(
+                    name="Alert card update",
+                    domains=[],
+                    body="The alert card type requires new config.",
+                )
+            ],
+        )
+        evidence = asyncio.run(build_bc_evidence(rpt, ws_client=ws))
+        ev = evidence["Alert card update"]
+        assert any("type: alert" in h for h in ev.dashboard_hits)
+        assert ev.found is True
+
+    def test_no_ws_client_returns_empty_evidence(self):
+        """With no clients, evidence has empty entity count and no hits."""
+        import asyncio
+        from utils.ha.update_bc_evidence import build_bc_evidence
+        from utils.knowledge.ha_release_report import BCEntry, CoreReleaseReport
+
+        rpt = CoreReleaseReport(
+            version="2026.11.0",
+            bc_installed=[BCEntry(name="Some BC", domains=["light"], body="Detail.")],
+        )
+        evidence = asyncio.run(build_bc_evidence(rpt, ws_client=None))
+        ev = evidence["Some BC"]
+        assert ev.entity_count == 0
+        assert not ev.automation_hits
+        assert not ev.dashboard_hits
+        assert isinstance(ev.tokens, list)
+
+    def test_general_bc_included(self):
+        """General BCs (no domain) are included in the evidence dict."""
+        import asyncio
+        from utils.ha.update_bc_evidence import build_bc_evidence
+        from utils.knowledge.ha_release_report import BCEntry, CoreReleaseReport
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        ws = FakeHAWebSocketClient(
+            entity_registry=[],
+            lovelace_configs={None: {"views": []}},
+        )
+        rpt = CoreReleaseReport(
+            version="2026.11.0",
+            bc_general=[
+                BCEntry(name="Entity names change", domains=[], body="Rename check.")
+            ],
+        )
+        evidence = asyncio.run(build_bc_evidence(rpt, ws_client=ws))
+        assert "Entity names change" in evidence

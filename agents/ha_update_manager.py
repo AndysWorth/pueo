@@ -1509,6 +1509,36 @@ async def _run_update_analysis(
                         error=str(_persist_exc),
                     )
 
+                # Step 3 (new): BC evidence builder — gather entity/dashboard facts per BC
+                try:
+                    from utils.ha.update_bc_evidence import (
+                        build_bc_evidence as _build_bc_ev,
+                    )
+
+                    _evidence = await _build_bc_ev(
+                        _rpt,
+                        ws_client=_ws_client,
+                        rest_client=ha_rest_client,
+                        ssh_client=_ssh,
+                    )
+                    if _evidence:
+                        _rpt.bc_evidence = _evidence
+                        _ev_path = (
+                            _get_dirs().state_dir
+                            / "update_reports"
+                            / f"core_{update.latest_version}.json"
+                        )
+                        _ev_path.write_text(
+                            _rpt.model_dump_json(indent=2), encoding="utf-8"
+                        )
+                        log.info(
+                            "core_bc_evidence_built",
+                            version=update.latest_version,
+                            bcs=len(_evidence),
+                        )
+                except Exception as _ev_exc:
+                    log.warning("core_bc_evidence_failed", error=str(_ev_exc))
+
         llm_client = make_llm_client()  # pragma: no cover
         loop = AgentLoop(
             llm_client=llm_client,
