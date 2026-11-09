@@ -26,6 +26,7 @@ class HAEnvironmentProfile:
     os_version: str = ""
     supervisor_version: str = ""
     installed_integrations: list[str] = field(default_factory=list)
+    loaded_components: list[str] = field(default_factory=list)
     hacs_integrations: list[str] = field(default_factory=list)
     config_yaml_top_keys: list[str] = field(default_factory=list)
     config_entries: list[dict] = field(default_factory=list)
@@ -52,19 +53,25 @@ async def build_environment_profile(
     *,
     _discover_integrations: Optional[Callable] = None,
     _discover_hacs: Optional[Callable] = None,
+    _discover_loaded: Optional[Callable] = None,
 ) -> HAEnvironmentProfile:
     """Assemble an HAEnvironmentProfile from all available sources.
 
     Every sub-call is wrapped in try/except so failures produce empty values
     rather than aborting the whole profile build.
     """
-    from utils.knowledge.ha_docs_scraper import discover_installed_integrations
+    from utils.knowledge.ha_docs_scraper import (
+        discover_installed_integrations,
+        discover_loaded_components,
+    )
     from utils.knowledge.hacs_scraper import discover_hacs_integrations
 
     if _discover_integrations is None:
         _discover_integrations = discover_installed_integrations  # pragma: no cover
     if _discover_hacs is None:
         _discover_hacs = discover_hacs_integrations  # pragma: no cover
+    if _discover_loaded is None:
+        _discover_loaded = discover_loaded_components  # pragma: no cover
 
     profile = HAEnvironmentProfile(last_updated=time.time())
 
@@ -99,7 +106,7 @@ async def build_environment_profile(
         log.warning("ha_profile_field_failed", field="supervisor_version", exc=str(e))
         profile.fetch_errors["supervisor_version"] = str(e)
 
-    # 3. installed_integrations via REST /api/config
+    # 3. installed_integrations and loaded_components via REST /api/config
     try:
         profile.installed_integrations = _discover_integrations(ha_url, ha_token)
     except Exception as e:  # nosec B110
@@ -107,6 +114,12 @@ async def build_environment_profile(
             "ha_profile_field_failed", field="installed_integrations", exc=str(e)
         )
         profile.fetch_errors["installed_integrations"] = str(e)
+
+    try:
+        profile.loaded_components = _discover_loaded(ha_url, ha_token)
+    except Exception as e:  # nosec B110
+        log.warning("ha_profile_field_failed", field="loaded_components", exc=str(e))
+        profile.fetch_errors["loaded_components"] = str(e)
 
     # 4. hacs_integrations — extract slugs from (slug, repo, domain, repo_id) 4-tuples;
     #    compute hacs_unloaded_domains = HACS domains not present as loaded components;

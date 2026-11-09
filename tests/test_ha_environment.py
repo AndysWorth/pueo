@@ -271,6 +271,7 @@ class TestLoadEnvironmentProfile:
             data = {f.name: f.default for f in dataclasses.fields(HAEnvironmentProfile)}
             # Patch defaults that are not simple values (field(default_factory=...))
             data["installed_integrations"] = []
+            data["loaded_components"] = []
             data["hacs_integrations"] = []
             data["hacs_unloaded_domains"] = []
             data["hacs_repo_map"] = {}
@@ -315,6 +316,7 @@ class TestLoadEnvironmentProfile:
             )
             data = {f.name: f.default for f in dataclasses.fields(HAEnvironmentProfile)}
             data["installed_integrations"] = []
+            data["loaded_components"] = []
             data["hacs_integrations"] = []
             data["hacs_unloaded_domains"] = []
             data["hacs_repo_map"] = {}

@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from utils.core.logging import get_logger
 
@@ -21,6 +21,11 @@ log = get_logger("ha_release_report")
 _CHANGELOG_BASE = "https://www.home-assistant.io/changelogs/core-{yymm}"
 # GitHub author/PR credit like "(by @user - #123)" at end of changelog lines
 _ATTR_REF_RE = re.compile(r"\s*\([^)]*@[^)]*#\d+[^)]*\)\s*$")
+
+
+class ChangeEntry(BaseModel):
+    text: str
+    prs: list[str] = []
 
 
 class BCEntry(BaseModel):
@@ -48,7 +53,7 @@ class CoreReleaseReport(BaseModel):
     bc_installed: list[BCEntry] = []
     bc_general: list[BCEntry] = []
     bc_other_names: list[str] = []
-    changes_by_domain: dict[str, list[str]] = {}
+    changes_by_domain: dict[str, list[ChangeEntry]] = {}
     farewell: Optional[str] = None
     # Populated by S3 screening pass
     screening_flags: list[ScreeningFlag] = []
@@ -58,10 +63,29 @@ class CoreReleaseReport(BaseModel):
     # Batch counts from the screening pass; None on reports persisted before #1148.
     screening_batches_total: Optional[int] = None
     screening_batches_done: Optional[int] = None
+    # Mechanical-noise lines dropped during changelog parsing; None on old reports.
+    screening_noise_dropped: Optional[int] = None
     # Deterministic report status (blog + changelog parsed).  Screening status is
     # tracked separately in screening_complete / screening_batches_* (#1148).
     completeness: str = "incomplete"
     built_at: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_changes_by_domain(cls, data: Any) -> Any:
+        """Accept old list[str] format from reports persisted before S1."""
+        if isinstance(data, dict):
+            changes = data.get("changes_by_domain")
+            if isinstance(changes, dict):
+                coerced: dict[str, list[Any]] = {}
+                for domain, entries in changes.items():
+                    coerced[domain] = [
+                        {"text": e, "prs": []} if isinstance(e, str) else e
+                        for e in entries
+                    ]
+                data = dict(data)
+                data["changes_by_domain"] = coerced
+        return data
 
 
 def _derive_changelog_url(version: str) -> str:
@@ -120,36 +144,120 @@ def _matches_name_installed(name: str, installed_set: set[str]) -> bool:
     return any(d.replace("_", "") == bare for d in installed_set)
 
 
+# Heading levels in the HA changelog hierarchy
+_HEADING_RE = re.compile(r"^(#{1,6})\s*(.*)")
+# PR number references in line text: (#123) or #123
+_PR_NUM_RE = re.compile(r"#(\d+)")
+
+# Mechanical-noise patterns — refactor/test/dependency lines that cannot be user-facing
+_MECHANICAL_PREFIX_RE = re.compile(
+    r"^(?:"
+    r"Bump\s"
+    r"|Update\s+(?:all\s+)?dependenc"
+    r"|Move\b.+\bto\b.+\bmodule\b"
+    r"|Define\s+public\s+names"
+    r"|Fix\s+flaky\b"
+    r"|Add\s+exception\s+translations"
+    r"|(?:Add|Fix|Update)\s+tests?\b"
+    r")",
+    re.IGNORECASE,
+)
+_MECHANICAL_CONTAINS_RE = re.compile(r"quality[_ ]scale", re.IGNORECASE)
+
+
+def _is_mechanical_change(text: str) -> bool:
+    """Return True for refactor/test/dependency lines that cannot be user-facing."""
+    return bool(
+        _MECHANICAL_PREFIX_RE.match(text) or _MECHANICAL_CONTAINS_RE.search(text)
+    )
+
+
+def _extract_bc_prs(entries: list[BCEntry]) -> set[str]:
+    """Return all PR numbers referenced in BC entry bodies."""
+    prs: set[str] = set()
+    for entry in entries:
+        for m in _PR_NUM_RE.finditer(entry.body):
+            prs.add(m.group(1))
+    return prs
+
+
 def parse_changelog_sections(
     changelog_text: str,
     installed_set: set[str],
     name_to_domain: dict[str, str],
-) -> dict[str, list[str]]:
+    *,
+    bc_prs: Optional[set[str]] = None,
+) -> tuple[dict[str, list[ChangeEntry]], int]:
     """Parse changelog text into per-domain change lists (installed only).
 
-    Expects ``##### Heading`` sections as produced by ``html_to_text``.
-    Author/PR credit refs are stripped from each change line.
+    Handles multiple heading levels:
+    - ``#####`` — integration section (resolved against installed_set)
+    - ``#### <single letter>`` — alphabetical separator; ignored (no section change)
+    - ``#### Other changes`` — pseudo-domain ``core`` (always included)
+    - ``### Frontend`` — pseudo-domain ``frontend`` (always included)
+    - Any other heading — ends the current section
+
+    Author/PR credit refs are stripped from each change line.  Lines whose PR
+    numbers appear in ``bc_prs`` are dropped (the BC entry is the authority).
+    Mechanical-noise lines (bumps, test-only, refactor) are filtered and counted.
+
+    Returns ``(changes_by_domain, noise_dropped_count)``.
     """
-    result: dict[str, list[str]] = {}
-    # Prepend newline so the split pattern \n##### always matches the first section
-    parts = re.split(r"\n#{5}\s+", "\n" + changelog_text)
-    for part in parts[1:]:  # parts[0] is preamble before first #####
-        head_line, _, body = part.partition("\n")
-        heading = head_line.strip()
-        domain = _resolve_domain(heading, installed_set, name_to_domain)
-        if domain is None:
+    # Pseudo-domains are always "installed"
+    effective_installed = installed_set | {"core", "frontend"}
+    bc_prs = bc_prs or set()
+
+    result: dict[str, list[ChangeEntry]] = {}
+    current_domain: Optional[str] = None
+    noise_dropped = 0
+
+    for raw_line in changelog_text.splitlines():
+        m = _HEADING_RE.match(raw_line)
+        if m:
+            level = len(m.group(1))
+            heading = m.group(2).strip()
+
+            if level == 5:
+                current_domain = _resolve_domain(
+                    heading, effective_installed, name_to_domain
+                )
+            elif level == 4:
+                stripped = heading.strip()
+                if len(stripped) == 1 and stripped.upper() == stripped:
+                    pass  # alphabetical separator — keep current_domain
+                elif stripped.lower() == "other changes":
+                    current_domain = "core"
+                else:
+                    current_domain = None
+            elif level == 3 and heading.lower() == "frontend":
+                current_domain = "frontend"
+            else:
+                current_domain = None
             continue
-        lines = []
-        for raw in body.splitlines():
-            line = raw.strip().lstrip("*-• ").strip()
-            if not line:
-                continue
-            line = _strip_attr_refs(line)
-            if line:
-                lines.append(line)
-        if lines:
-            result.setdefault(domain, []).extend(lines)
-    return result
+
+        if current_domain is None:
+            continue
+
+        line = raw_line.strip().lstrip("*-• ").strip()
+        if not line:
+            continue
+
+        prs = _PR_NUM_RE.findall(line)
+        line = _strip_attr_refs(line)
+        if not line:
+            continue
+
+        # Skip lines whose PR number is already in a BC body
+        if bc_prs and any(pr in bc_prs for pr in prs):
+            continue
+
+        if _is_mechanical_change(line):
+            noise_dropped += 1
+            continue
+
+        result.setdefault(current_domain, []).append(ChangeEntry(text=line, prs=prs))
+
+    return result, noise_dropped
 
 
 async def build_core_release_report(
@@ -266,8 +374,17 @@ async def build_core_release_report(
             cache_path.write_text(changelog_text, encoding="utf-8")
             changelog_parsed = True
 
-        report.changes_by_domain = parse_changelog_sections(
-            changelog_text, installed_set, name_to_domain
+        bc_prs = _extract_bc_prs(report.bc_installed + report.bc_general)
+        result, noise_dropped = parse_changelog_sections(
+            changelog_text, installed_set, name_to_domain, bc_prs=bc_prs
+        )
+        report.changes_by_domain = result
+        report.screening_noise_dropped = noise_dropped
+        log.info(
+            "changelog_parsed",
+            version=version,
+            domains=len(result),
+            noise_dropped=noise_dropped,
         )
     except Exception as exc:
         log.warning("release_report_changelog_failed", version=version, error=str(exc))
@@ -413,8 +530,8 @@ def make_screening_batches(report: "CoreReleaseReport") -> list[str]:
     sections: list[str] = []
 
     # Changelog sections per domain only (no BC entries)
-    for domain, lines in report.changes_by_domain.items():
-        text = f"### Changes: {domain}\n\n" + "\n".join(f"- {l}" for l in lines)
+    for domain, entries in report.changes_by_domain.items():
+        text = f"### Changes: {domain}\n\n" + "\n".join(f"- {e.text}" for e in entries)
         sections.append(text)
 
     batches: list[str] = []

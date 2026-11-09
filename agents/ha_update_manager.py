@@ -1388,7 +1388,9 @@ async def _run_update_analysis(
             from paths import get_dirs as _get_dirs
             import config as _cfg
 
-            _installed = list(_profile.installed_integrations or [])
+            _installed = list(
+                _profile.loaded_components or _profile.installed_integrations or []
+            )
             _report_path = (
                 _get_dirs().state_dir
                 / "update_reports"

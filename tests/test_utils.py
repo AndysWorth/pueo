@@ -11650,17 +11650,17 @@ class TestCoreReleaseReport:
             "##### adguard\n"
             "- Other change\n"
         )
-        result = parse_changelog_sections(text, {"mqtt"}, {"MQTT": "mqtt"})
+        result, _ = parse_changelog_sections(text, {"mqtt"}, {"MQTT": "mqtt"})
         assert "mqtt" in result
-        assert result["mqtt"] == ["Change 1", "Change 2"]
+        assert [e.text for e in result["mqtt"]] == ["Change 1", "Change 2"]
         assert "adguard" not in result
 
     def test_parse_changelog_sections_strips_attr_refs(self):
         from utils.knowledge.ha_release_report import parse_changelog_sections
 
         text = "##### Sun\n- Fix sunrise calc (by @dev - #9999)\n"
-        result = parse_changelog_sections(text, {"sun"}, {})
-        assert result["sun"] == ["Fix sunrise calc"]
+        result, _ = parse_changelog_sections(text, {"sun"}, {})
+        assert [e.text for e in result["sun"]] == ["Fix sunrise calc"]
 
     def test_parse_changelog_sections_normalized_match(self):
         from utils.knowledge.ha_release_report import parse_changelog_sections
@@ -11668,7 +11668,7 @@ class TestCoreReleaseReport:
         # Heading "Home Assistant Cloud" with no manifest entry; normalized = "home_assistant_cloud"
         # domain "cloud" won't match, but "home_assistant_cloud" might if installed
         text = "##### Home Assistant Cloud\n- Cloud update\n"
-        result = parse_changelog_sections(text, {"home_assistant_cloud"}, {})
+        result, _ = parse_changelog_sections(text, {"home_assistant_cloud"}, {})
         assert "home_assistant_cloud" in result
 
     def test_parse_changelog_sections_multiple_domains(self):
@@ -11679,10 +11679,86 @@ class TestCoreReleaseReport:
             "##### Sun\n- Fix B\n"
             "##### Other\n- Not installed\n"
         )
-        result = parse_changelog_sections(
+        result, _ = parse_changelog_sections(
             text, {"mqtt", "sun"}, {"MQTT": "mqtt", "Sun": "sun"}
         )
         assert set(result.keys()) == {"mqtt", "sun"}
+
+    def test_parse_changelog_sections_other_changes_pseudo_domain(self):
+        from utils.knowledge.ha_release_report import parse_changelog_sections
+
+        text = (
+            "##### Zonneplan\n- Zonneplan fix\n"
+            "#### C\n"
+            "##### MQTT\n- MQTT fix\n"
+            "#### Other changes\n- Core fix 1\n- Core fix 2\n"
+        )
+        result, _ = parse_changelog_sections(
+            text, {"zonneplan", "mqtt"}, {"MQTT": "mqtt"}
+        )
+        assert "core" in result
+        assert [e.text for e in result["core"]] == ["Core fix 1", "Core fix 2"]
+        assert "zonneplan" in result or "mqtt" in result
+
+    def test_parse_changelog_sections_frontend_pseudo_domain(self):
+        from utils.knowledge.ha_release_report import parse_changelog_sections
+
+        text = (
+            "##### Last integration\n- some change\n"
+            "### Frontend\n- Frontend fix 1\n- Frontend fix 2\n"
+        )
+        result, _ = parse_changelog_sections(
+            text, {"last_integration"}, {"Last integration": "last_integration"}
+        )
+        assert "frontend" in result
+        assert [e.text for e in result["frontend"]] == [
+            "Frontend fix 1",
+            "Frontend fix 2",
+        ]
+
+    def test_parse_changelog_sections_letter_separator_no_leakage(self):
+        from utils.knowledge.ha_release_report import parse_changelog_sections
+
+        # Lines under letter separators must NOT leak into the previous section
+        text = "##### MQTT\n- MQTT change\n" "#### B\n" "##### Sun\n- Sun change\n"
+        result, _ = parse_changelog_sections(
+            text, {"mqtt", "sun"}, {"MQTT": "mqtt", "Sun": "sun"}
+        )
+        assert [e.text for e in result["mqtt"]] == ["MQTT change"]
+        assert [e.text for e in result["sun"]] == ["Sun change"]
+
+    def test_parse_changelog_sections_bc_pr_dedup(self):
+        from utils.knowledge.ha_release_report import parse_changelog_sections
+
+        text = "##### MQTT\n- Fix entity unique_id (by @user - #9999)\n- Other fix\n"
+        result, _ = parse_changelog_sections(text, {"mqtt"}, {}, bc_prs={"9999"})
+        # Line with PR #9999 is in a BC body → dropped
+        assert [e.text for e in result["mqtt"]] == ["Other fix"]
+
+    def test_parse_changelog_sections_noise_filter(self):
+        from utils.knowledge.ha_release_report import parse_changelog_sections
+
+        text = (
+            "##### MQTT\n"
+            "- Real user-visible change\n"
+            "- Bump aiohttp to 3.9\n"
+            "- Update dependency httpx\n"
+            "- Fix flaky test\n"
+            "- Add tests for entity registry\n"
+            "- Adjust quality_scale to platinum\n"
+        )
+        result, noise = parse_changelog_sections(text, {"mqtt"}, {})
+        assert [e.text for e in result["mqtt"]] == ["Real user-visible change"]
+        assert noise == 5
+
+    def test_parse_changelog_sections_prs_stored_on_entry(self):
+        from utils.knowledge.ha_release_report import parse_changelog_sections
+
+        text = "##### MQTT\n- Fix entity (#123, #456)\n"
+        result, _ = parse_changelog_sections(text, {"mqtt"}, {})
+        entry = result["mqtt"][0]
+        assert "123" in entry.prs
+        assert "456" in entry.prs
 
     # ── build_core_release_report (async, via fakes) ────────────────────────
 
@@ -11766,7 +11842,7 @@ class TestCoreReleaseReport:
         general_names = {e.name for e in report.bc_general}
         assert "Entity names" in general_names
         assert "mqtt" in report.changes_by_domain
-        assert report.changes_by_domain["mqtt"] == ["Fix A", "Fix B"]
+        assert [e.text for e in report.changes_by_domain["mqtt"]] == ["Fix A", "Fix B"]
         assert "adguard" not in report.changes_by_domain
         assert "list_manifests" in ws.calls
 
@@ -12154,6 +12230,142 @@ class TestCoreReleaseReport:
         batches = make_screening_batches(rpt)
         # Empty report should produce at most one (empty) batch, which the caller skips
         assert all(isinstance(b, str) for b in batches)
+
+    # ── ChangeEntry Pydantic model ─────────────────────────────────────────
+
+    def test_change_entry_valid_construction(self):
+        from utils.knowledge.ha_release_report import ChangeEntry
+
+        e = ChangeEntry(text="Fix entity unique_id", prs=["123", "456"])
+        assert e.text == "Fix entity unique_id"
+        assert e.prs == ["123", "456"]
+
+    def test_change_entry_invalid_missing_text(self):
+        from pydantic import ValidationError
+        from utils.knowledge.ha_release_report import ChangeEntry
+
+        with pytest.raises(ValidationError):
+            ChangeEntry(prs=["1"])  # type: ignore[call-arg]
+
+    def test_change_entry_json_roundtrip(self):
+        from utils.knowledge.ha_release_report import ChangeEntry
+
+        e = ChangeEntry(text="Fix sunrise calc", prs=["9999"])
+        e2 = ChangeEntry.model_validate_json(e.model_dump_json())
+        assert e2 == e
+
+    def test_core_release_report_legacy_changes_by_domain(self):
+        """Old reports with list[str] changes_by_domain are coerced on load."""
+        import json
+        from utils.knowledge.ha_release_report import ChangeEntry, CoreReleaseReport
+
+        old_data = {
+            "version": "2026.10.0",
+            "changes_by_domain": {"mqtt": ["Fix A", "Fix B"]},
+            "completeness": "complete",
+            "built_at": "2026-10-05T00:00:00+00:00",
+        }
+        rpt = CoreReleaseReport.model_validate(old_data)
+        assert len(rpt.changes_by_domain["mqtt"]) == 2
+        assert all(isinstance(e, ChangeEntry) for e in rpt.changes_by_domain["mqtt"])
+        assert rpt.changes_by_domain["mqtt"][0].text == "Fix A"
+        assert rpt.changes_by_domain["mqtt"][0].prs == []
+
+    def test_core_release_report_new_changes_by_domain_roundtrip(self):
+        """New ChangeEntry format survives JSON round-trip."""
+        import json
+        from utils.knowledge.ha_release_report import ChangeEntry, CoreReleaseReport
+
+        rpt = CoreReleaseReport(
+            version="2026.11.0",
+            changes_by_domain={
+                "hue": [ChangeEntry(text="Fix effect none", prs=["100"])]
+            },
+            completeness="complete",
+            built_at="2026-11-05T00:00:00+00:00",
+        )
+        rpt2 = CoreReleaseReport.model_validate_json(rpt.model_dump_json())
+        assert rpt2.changes_by_domain["hue"][0].text == "Fix effect none"
+        assert rpt2.changes_by_domain["hue"][0].prs == ["100"]
+
+    # ── discover_loaded_components ─────────────────────────────────────────
+
+    def test_discover_loaded_components_returns_all_domains(self):
+        """discover_loaded_components does not filter trivial domains."""
+        import json
+        from unittest.mock import MagicMock, patch
+        from utils.knowledge.ha_docs_scraper import discover_loaded_components
+
+        api_response = {
+            "components": ["auth", "frontend", "mqtt", "mqtt.sensor", "sun", "tuya"]
+        }
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps(api_response).encode()
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            result = discover_loaded_components(
+                "http://homeassistant.local:8123", "token"
+            )
+
+        # All domains present — no trivial filter
+        assert "auth" in result
+        assert "frontend" in result
+        assert "mqtt" in result
+        assert "sun" in result
+        assert "tuya" in result
+        # Deduped (mqtt.sensor → mqtt)
+        assert result.count("mqtt") == 1
+
+    def test_discover_loaded_components_empty_token(self):
+        from utils.knowledge.ha_docs_scraper import discover_loaded_components
+
+        result = discover_loaded_components("http://homeassistant.local:8123", "")
+        assert result == []
+
+    # ── HAEnvironmentProfile.loaded_components ─────────────────────────────
+
+    def test_ha_environment_profile_loaded_components_default(self):
+        from utils.ha.ha_environment import HAEnvironmentProfile
+
+        p = HAEnvironmentProfile()
+        assert p.loaded_components == []
+
+    def test_build_environment_profile_populates_loaded_components(self):
+        import asyncio
+        from utils.ha.ha_environment import build_environment_profile
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        ssh = FakeSSHClient()
+        ws = FakeHAWebSocketClient()
+        called = []
+
+        def _fake_discover(url, token):
+            return ["mqtt", "sun", "tuya"]
+
+        def _fake_loaded(url, token):
+            called.append((url, token))
+            return ["auth", "mqtt", "sun", "tuya", "frontend"]
+
+        profile = asyncio.run(
+            build_environment_profile(
+                ssh_client=ssh,
+                ws_client=ws,
+                ha_token="tok",
+                ha_url="http://ha.local:8123",
+                config_remote_path="/config/configuration.yaml",
+                _discover_integrations=_fake_discover,
+                _discover_hacs=lambda u, t: [],
+                _discover_loaded=_fake_loaded,
+            )
+        )
+
+        assert called == [("http://ha.local:8123", "tok")]
+        assert "auth" in profile.loaded_components
+        assert "frontend" in profile.loaded_components
+        assert len(profile.loaded_components) == 5
 
     # ── ToolExecutor screening state ───────────────────────────────────────
 
