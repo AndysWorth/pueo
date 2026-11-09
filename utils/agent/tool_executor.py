@@ -972,6 +972,7 @@ class ToolExecutor:
                     risk_score=args.get("risk_score"),
                     confidence=args.get("confidence"),
                     verification_question=args.get("verification_question"),
+                    highlights=args.get("highlights"),
                 )
             if name == "finish_host_health":
                 self._capture_declared_runbook(args)

@@ -7126,3 +7126,113 @@ class TestCoreReleaseDigest:
 
         report = self._make_report()
         assert format_core_release_digest(report) == ""
+
+
+# ---------------------------------------------------------------------------
+# finish_update_analysis dispatch: highlights pass-through
+# ---------------------------------------------------------------------------
+
+
+class TestFinishUpdateAnalysisHighlightsDispatch:
+    """finish_update_analysis dispatch must pass highlights from args to the card."""
+
+    def _make_executor(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+
+        notifier = FakeNotifier()
+        executor = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=notifier,
+            db_path=":memory:",
+        )
+        update = SimpleNamespace(
+            entity_id="update.ha_core",
+            component="homeassistant",
+            installed_version="2026.10.0",
+            latest_version="2026.11.0",
+            release_url=None,
+            release_summary=None,
+        )
+        executor.set_update_status(update)
+        executor._release_notes_completeness = "complete"
+        return executor, notifier
+
+    def test_llm_highlights_win_over_report_fallback(self, pueo_dirs):
+        """Dispatch passes LLM highlights; they take precedence over _report_highlights."""
+        import asyncio
+        from unittest.mock import patch
+
+        from utils.agent.tool_registry import ToolCall
+
+        executor, notifier = self._make_executor()
+        executor._report_highlights = ["fallback_domain: fallback_feature"]
+
+        with patch("agents.ha_log_monitor._update_mark_card_sent"):
+            result = asyncio.run(
+                executor.execute(
+                    ToolCall(
+                        name="finish_update_analysis",
+                        arguments={
+                            "safe_to_update": True,
+                            "breaking_changes": [],
+                            "affected_config_keys": [],
+                            "pueo_command_risks": [],
+                            "recommendation": "Safe",
+                            "instance_impact": "none",
+                            "proposed_config_fixes": [],
+                            "create_hitl_card": True,
+                            "highlights": [
+                                {"domain": "zigbee", "feature": "new grouping support"}
+                            ],
+                        },
+                    )
+                )
+            )
+
+        assert result.success
+        assert notifier.sent, "card must be sent"
+        payload = notifier.sent[0]["payload"]
+        assert payload["highlights"] == [
+            {"domain": "zigbee", "feature": "new grouping support"}
+        ], "LLM-provided highlights must win over the report fallback"
+
+    def test_report_fallback_used_when_llm_omits_highlights(self, pueo_dirs):
+        """When highlights absent from args, _report_highlights is the fallback."""
+        import asyncio
+        from unittest.mock import patch
+
+        from utils.agent.tool_registry import ToolCall
+
+        executor, notifier = self._make_executor()
+        executor._report_highlights = ["mqtt: MQTT 5.0"]
+
+        with patch("agents.ha_log_monitor._update_mark_card_sent"):
+            asyncio.run(
+                executor.execute(
+                    ToolCall(
+                        name="finish_update_analysis",
+                        arguments={
+                            "safe_to_update": True,
+                            "breaking_changes": [],
+                            "affected_config_keys": [],
+                            "pueo_command_risks": [],
+                            "recommendation": "Safe",
+                            "instance_impact": "none",
+                            "proposed_config_fixes": [],
+                            "create_hitl_card": True,
+                            # no highlights key
+                        },
+                    )
+                )
+            )
+
+        assert notifier.sent
+        payload = notifier.sent[0]["payload"]
+        assert payload["highlights"] == ["mqtt: MQTT 5.0"]

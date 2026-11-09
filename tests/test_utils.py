@@ -6884,6 +6884,97 @@ class TestAgentLoopEpisodeRecording:
         assert len(load_episodes(db_path)) == 0
 
 
+# ── AgentLoop distill flag ────────────────────────────────────────────────────────
+
+
+class TestAgentLoopDistillFlag:
+    """distill=False skips session_outcomes write and auto-verify enqueue."""
+
+    @pytest.fixture
+    def db_path(self, monkeypatch, tmp_path):
+        path = str(tmp_path / "test.db")
+        monkeypatch.setattr(_haa_mod, "DB_PATH", path)
+        _haa_mod.init_local_database()
+        return path
+
+    def _make_loop(self, db_path, distill, store=None):
+        import asyncio  # noqa: F401
+
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import build_ha_tool_registry
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+
+        ex = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+        )
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_repair",
+                                "arguments": {
+                                    "summary": "done",
+                                    "action_taken": "no_fix_needed",
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
+        return AgentLoop(
+            llm_client=llm,
+            tool_executor=ex,
+            tool_registry=build_ha_tool_registry(),
+            max_tool_calls=5,
+            trigger="update_poll",
+            activity_type="change_screening",
+            db_path=db_path,
+            knowledge_store=store,
+            distill=distill,
+        )
+
+    def test_distill_false_skips_session_outcome_write(self, db_path, monkeypatch):
+        """distill=False: session_outcomes row is never written."""
+        import asyncio
+        import sqlite3
+
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        loop = self._make_loop(db_path, distill=False, store=store)
+        result = asyncio.run(loop.run("Screen this changelog batch"))
+
+        assert result.outcome == "success"
+        with sqlite3.connect(db_path) as conn:
+            rows = conn.execute("SELECT COUNT(*) FROM session_outcomes").fetchone()[0]
+        assert rows == 0, "distill=False must skip session_outcomes write"
+
+    def test_distill_true_writes_session_outcome(self, db_path, monkeypatch):
+        """Control: distill=True (default) writes the session_outcomes row."""
+        import asyncio
+        import sqlite3
+
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        loop = self._make_loop(db_path, distill=True, store=store)
+        asyncio.run(loop.run("Screen this changelog batch"))
+
+        with sqlite3.connect(db_path) as conn:
+            rows = conn.execute("SELECT COUNT(*) FROM session_outcomes").fetchone()[0]
+        assert rows == 1, "distill=True must write one session_outcomes row"
+
+
 # ── utils/anonymizer.py ──────────────────────────────────────────────────────────
 
 

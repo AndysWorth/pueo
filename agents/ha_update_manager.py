@@ -1448,6 +1448,7 @@ async def _run_update_analysis(
                             knowledge_store=knowledge_store,
                             capture_llm=False,
                             max_tool_calls=3,
+                            distill=False,
                         )
                         _screen_result = await _screen_loop.run(
                             (
