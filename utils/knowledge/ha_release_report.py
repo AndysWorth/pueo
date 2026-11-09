@@ -80,6 +80,9 @@ class CoreReleaseReport(BaseModel):
     screening_noise_dropped: Optional[int] = None
     # Per-BC entity and config evidence; populated by utils.ha.update_bc_evidence.
     bc_evidence: dict[str, BCEvidence] = {}
+    # Per-BC verdicts from the LLM analysis; persisted by _finish_update_analysis.
+    # Each entry: {bc: str, affects: "yes"|"no"|"unknown", reason: str}
+    bc_verdicts: list[dict] = []
     # Deterministic report status (blog + changelog parsed).  Screening status is
     # tracked separately in screening_complete / screening_batches_* (#1148).
     completeness: str = "incomplete"

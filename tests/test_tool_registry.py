@@ -332,12 +332,13 @@ class TestRegistryMembership:
         assert "get_area_layout" in _MCP_TOOL_NAMES
 
     def test_registry_schema_token_budget(self):
-        """Token cost of chat + ha registry schemas must stay within a safe ceiling."""
+        """Token cost of chat + ha + update-analysis registry schemas must stay within ceilings."""
         import json
 
         from utils.agent.tool_registry import (
             build_chat_tool_registry,
             build_ha_tool_registry,
+            build_update_analysis_registry,
         )
         from utils.core.context import estimate_tokens
 
@@ -347,19 +348,28 @@ class TestRegistryMembership:
         ha_tokens = estimate_tokens(
             json.dumps(build_ha_tool_registry().get_ollama_tools())
         )
+        update_tokens = estimate_tokens(
+            json.dumps(build_update_analysis_registry().get_ollama_tools())
+        )
 
         # Ceiling = observed value at test-write time + 25% headroom.
-        # chat registry: ~9500 tokens; ha registry: ~8000 tokens.
+        # chat registry: ~9827 tokens; ha registry: ~8709 tokens; update: ~3686 tokens.
         # Bump these numbers (with the same +25% formula) when you intentionally
         # add new tools, not as a shortcut past a surprise regression.
-        CHAT_CEILING = 12_000
-        HA_CEILING = 10_100
+        CHAT_CEILING = 12_300
+        HA_CEILING = 10_900
+        UPDATE_CEILING = 4_700
         assert chat_tokens <= CHAT_CEILING, (
             f"Chat registry schema is {chat_tokens} tokens (ceiling {CHAT_CEILING}). "
             "Either the registry grew unexpectedly or the ceiling needs bumping."
         )
         assert ha_tokens <= HA_CEILING, (
             f"HA registry schema is {ha_tokens} tokens (ceiling {HA_CEILING}). "
+            "Either the registry grew unexpectedly or the ceiling needs bumping."
+        )
+        assert update_tokens <= UPDATE_CEILING, (
+            f"Update analysis registry schema is {update_tokens} tokens "
+            f"(ceiling {UPDATE_CEILING}). "
             "Either the registry grew unexpectedly or the ceiling needs bumping."
         )
 

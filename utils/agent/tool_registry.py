@@ -2593,6 +2593,36 @@ FINISH_UPDATE_ANALYSIS = ToolDefinition(
                     "if no highlights stand out for this installation."
                 ),
             },
+            "bc_verdicts": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "bc": {
+                            "type": "string",
+                            "description": "The BC name, exactly as it appears in the digest.",
+                        },
+                        "affects": {
+                            "type": "string",
+                            "enum": ["yes", "no", "unknown"],
+                            "description": (
+                                "'yes' if this BC affects this installation, "
+                                "'no' if confirmed not affected, "
+                                "'unknown' if the evidence was insufficient to decide."
+                            ),
+                        },
+                        "reason": {
+                            "type": "string",
+                            "description": "One sentence explaining the verdict.",
+                        },
+                    },
+                    "required": ["bc", "affects", "reason"],
+                },
+                "description": (
+                    "One entry per BC in the digest (bc_installed + bc_general). "
+                    "Cover every BC — missing ones will be filled as 'unknown'."
+                ),
+            },
             "deviated_from_runbook": {
                 "type": "object",
                 "description": (

@@ -74,9 +74,35 @@
       {% if r.payload.get("disk_critical") %}<em>(CRITICAL — below threshold)</em>{% elif r.payload.get("disk_warn") %}<em>(Warning — low)</em>{% endif %}
     </p>
     {% endif %}
-    {% if r.payload.get("breaking_changes") %}
+    {% if r.payload.get("bc_verdicts") or r.payload.get("breaking_changes") %}
     <details open>
       <summary><span class="section-label label-diagnosis">Breaking Changes</span>Advisory — review before updating</summary>
+      {% if r.payload.get("bc_verdicts") %}
+      {# Three-group verdict display #}
+      {% set _yes_vds = r.payload.bc_verdicts | selectattr("affects", "eq", "yes") | list %}
+      {% set _unk_vds = r.payload.bc_verdicts | selectattr("affects", "eq", "unknown") | list %}
+      {% set _no_vds  = r.payload.bc_verdicts | selectattr("affects", "eq", "no") | list %}
+      {% if _yes_vds %}
+      <p style="font-weight:600;color:var(--red,#b91c1c);margin:0.4rem 0 0.3rem;">⚠️ Affects this install</p>
+      <ul style="margin:0 0 0.5rem 1.25rem;">{% for v in _yes_vds %}<li style="margin-bottom:0.2rem;"><strong>{{ v.bc }}</strong>{% if v.reason %} — {{ v.reason }}{% endif %}</li>{% endfor %}</ul>
+      {% if not r.payload.get("effective_safe_to_update") and r.payload.get("proposed_config_fixes") %}
+      <p style="color:var(--red);font-weight:600;">🚫 Config fixes required before updating safely.</p>
+      {% endif %}
+      {% elif not _unk_vds %}
+      <p style="color:var(--green,#2a9d4e);font-weight:600;">✅ No breaking changes affect this install.</p>
+      {% endif %}
+      {% if _unk_vds %}
+      <p style="font-weight:600;color:var(--orange,#b45309);margin:0.4rem 0 0.3rem;">Check manually</p>
+      <ul style="margin:0 0 0.5rem 1.25rem;">{% for v in _unk_vds %}<li style="margin-bottom:0.2rem;"><strong>{{ v.bc }}</strong>{% if v.reason %} — {{ v.reason }}{% endif %}</li>{% endfor %}</ul>
+      {% endif %}
+      {% if _no_vds %}
+      <details style="margin-top:0.3rem;">
+        <summary style="font-size:0.82rem;color:#555;cursor:pointer;">Not affected ({{ _no_vds | length }})</summary>
+        <ul style="margin:0.3rem 0 0 1.25rem;">{% for v in _no_vds %}<li style="font-size:0.82rem;color:#555;margin-bottom:0.1rem;">{{ v.bc }}{% if v.reason %} — {{ v.reason }}{% endif %}</li>{% endfor %}</ul>
+      </details>
+      {% endif %}
+      {% else %}
+      {# Legacy: no verdicts — fall back to flat list #}
       {% set _impact = r.payload.get("instance_impact") %}
       {% if _impact == "none" %}
       <p style="color:var(--green,#2a9d4e);font-weight:600;">✅ None of the breaking changes affect your install.</p>
@@ -89,6 +115,7 @@
       {% endif %}
       {% endif %}
       <ul>{% for bc in r.payload.breaking_changes %}<li>{{ bc }}</li>{% endfor %}</ul>
+      {% endif %}
       {% if r.payload.get("affected_config_keys") %}
       <p><strong>Affected config keys:</strong> {{ r.payload.affected_config_keys | join(", ") }}</p>
       {% endif %}
