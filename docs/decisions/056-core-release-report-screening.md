@@ -82,6 +82,21 @@ they are exempt from distillation because they evaluate mechanics, not diagnosis
   card and caps confidence at 0.5 (see amendment).
 - Non-Core updates (add-ons, OS, Supervisor) are unaffected.
 
+## Amendment (#1158) — BC evidence builder
+
+After screening completes, `build_bc_evidence()` in `utils/ha/update_bc_evidence.py`
+runs against all BCs in `bc_installed + bc_general`. It gathers:
+- Entity counts by domain from the WS entity registry (capped at 15 examples)
+- Multi-channel device detection (devices with >1 same-domain entity ending in a digit)
+- Searchable tokens extracted from each BC body (service calls, YAML keys, quoted values,
+  card type names, template function names)
+- Token matches in lovelace dashboard JSON and automation/script YAML (via SSH grep)
+
+Results are stored as `CoreReleaseReport.bc_evidence` (dict keyed by BC name) and
+rendered under each BC in `format_core_release_digest()` as an Evidence block. The LLM
+receives grounded entity facts and can return `bc_verdicts` in S4 without needing to
+grep for them. All clients may be `None`; each data source degrades gracefully.
+
 ## Amendment (#1148) — screening status is separate from notes completeness
 
 Originally a stuck or failed screening batch downgraded `report.completeness` to
