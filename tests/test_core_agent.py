@@ -1206,6 +1206,7 @@ class TestHAEnvironmentProfile:
                 ha_token="tok",
                 ha_url="http://homeassistant.local:8123",
                 config_remote_path="/config/configuration.yaml",
+                _discover_loaded=lambda *a: [],
                 _discover_integrations=lambda url, token: ["zha", "mqtt"],
                 _discover_hacs=lambda url, token: [
                     ("hacs_integ", "owner/repo", "hacs_integ", "12345")
@@ -1243,6 +1244,7 @@ class TestHAEnvironmentProfile:
                 ha_token="tok",
                 ha_url="http://homeassistant.local:8123",
                 config_remote_path="/config/configuration.yaml",
+                _discover_loaded=lambda *a: [],
                 _discover_integrations=lambda url, token: ["mqtt"],
                 _discover_hacs=lambda url, token: [],
             )
@@ -5532,6 +5534,7 @@ class TestFetchReleaseNotesCached:
 
 
 # ── request_update_approval ───────────────────────────────────────────────────────
+@pytest.mark.usefixtures("unreachable_ha_ssh")
 class TestRequestUpdateApproval:
     def _make_update(self, component: str = "core"):
         from utils.ha.ha_rest_client import UpdateStatus

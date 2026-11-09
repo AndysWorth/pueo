@@ -67,6 +67,7 @@ class TestBuildEnvironmentProfileHappyPath:
                 ha_token="tok",
                 ha_url="http://ha.local:8123",
                 config_remote_path="/config/configuration.yaml",
+                _discover_loaded=lambda *a: [],
                 _discover_integrations=lambda url, token: ["zha", "mqtt"],
                 _discover_hacs=lambda url, token: [],
             )
@@ -88,6 +89,7 @@ class TestBuildEnvironmentProfileHappyPath:
                 ha_token="tok",
                 ha_url="http://ha.local:8123",
                 config_remote_path="/config/configuration.yaml",
+                _discover_loaded=lambda *a: [],
                 _discover_integrations=lambda *a: [],
                 _discover_hacs=lambda *a: [],
             )
@@ -107,6 +109,7 @@ class TestBuildEnvironmentProfileErrors:
             ha_token="tok",
             ha_url="http://ha.local:8123",
             config_remote_path="/config/configuration.yaml",
+            _discover_loaded=lambda *a: [],
             _discover_integrations=lambda *a: [],
             _discover_hacs=lambda *a: [],
         )
@@ -359,6 +362,7 @@ class TestConfigYamlTopKeysRegex:
                 ha_token="tok",
                 ha_url="http://ha.local:8123",
                 config_remote_path="/config/configuration.yaml",
+                _discover_loaded=lambda *a: [],
                 _discover_integrations=lambda *a: [],
                 _discover_hacs=lambda *a: [],
             )
@@ -479,6 +483,7 @@ class TestSpookDetection:
                 ha_token="tok",
                 ha_url="http://ha.local:8123",
                 config_remote_path="/config/configuration.yaml",
+                _discover_loaded=lambda *a: [],
                 _discover_integrations=lambda *a: integrations,
                 _discover_hacs=lambda *a: [],
             )
@@ -519,6 +524,7 @@ class TestSpookDetection:
                 ha_token="tok",
                 ha_url="http://ha.local:8123",
                 config_remote_path="/config/configuration.yaml",
+                _discover_loaded=lambda *a: [],
                 _discover_integrations=lambda *a: (_ for _ in ()).throw(
                     RuntimeError("API unreachable")
                 ),
@@ -555,6 +561,7 @@ class TestUpgradeAdvisorDetection:
                 ha_token="tok",
                 ha_url="http://ha.local:8123",
                 config_remote_path="/config/configuration.yaml",
+                _discover_loaded=lambda *a: [],
                 _discover_integrations=lambda *a: integrations,
                 _discover_hacs=lambda *a: [],
             )
@@ -620,6 +627,7 @@ class TestAiAgentHaDetection:
                 ha_token="tok",
                 ha_url="http://ha.local:8123",
                 config_remote_path="/config/configuration.yaml",
+                _discover_loaded=lambda *a: [],
                 _discover_integrations=lambda *a: integrations,
                 _discover_hacs=lambda *a: [],
             )
@@ -685,6 +693,7 @@ class TestMqttConfiguredDetection:
                 ha_token="tok",
                 ha_url="http://ha.local:8123",
                 config_remote_path="/config/configuration.yaml",
+                _discover_loaded=lambda *a: [],
                 _discover_integrations=lambda *a: integrations,
                 _discover_hacs=lambda *a: [],
             )
@@ -732,6 +741,7 @@ class TestSentinelInstalledDetection:
                 ha_token="tok",
                 ha_url="http://ha.local:8123",
                 config_remote_path="/config/configuration.yaml",
+                _discover_loaded=lambda *a: [],
                 _discover_integrations=lambda *a: integrations,
                 _discover_hacs=lambda *a: [],
             )
@@ -779,6 +789,7 @@ class TestBatteryNotesDetection:
                 ha_token="tok",
                 ha_url="http://ha.local:8123",
                 config_remote_path="/config/configuration.yaml",
+                _discover_loaded=lambda *a: [],
                 _discover_integrations=lambda *a: integrations,
                 _discover_hacs=lambda *a: [],
             )
@@ -888,6 +899,7 @@ class TestBuildEnvironmentProfileOsVersionJson:
                 ha_token="tok",
                 ha_url="http://ha.local:8123",
                 config_remote_path="/config/configuration.yaml",
+                _discover_loaded=lambda *a: [],
                 _discover_integrations=lambda *a: [],
                 _discover_hacs=lambda *a: [],
             )
@@ -954,6 +966,7 @@ class TestHacsUnloadedDomains:
                 ha_token="tok",
                 ha_url="http://ha.local:8123",
                 config_remote_path="/config/configuration.yaml",
+                _discover_loaded=lambda *a: [],
                 _discover_integrations=lambda *a: installed,
                 _discover_hacs=lambda *a: hacs_triples,
             )

@@ -4,6 +4,7 @@ import atexit
 import importlib
 import os
 import shutil
+import socket
 import sqlite3
 import sys
 import tempfile
@@ -79,6 +80,73 @@ def _guarded_sqlite_connect(database, *args, **kwargs):
 
 sqlite3.connect = _guarded_sqlite_connect
 
+# ── Network guard (#1162) ────────────────────────────────────────────────────
+# No unit test may reach the network.  Production code wraps most HTTP/SSH/WS
+# calls in `except Exception`, so a test that forgets to inject a fake client
+# still passes while sending a real request -- e.g. a fake bearer token to the
+# developer's Home Assistant, which HA reports as a failed login.  The guard
+# fails the test at the socket layer instead.  tests/integration/ is exempt.
+_LOOPBACK_HOSTS = frozenset({"", "localhost", "::1", "0.0.0.0", "::"})  # nosec B104
+_network_violations: list[str] = []
+
+_real_getaddrinfo = socket.getaddrinfo
+_real_socket_connect = socket.socket.connect
+_real_socket_connect_ex = socket.socket.connect_ex
+
+
+def _is_loopback_host(host) -> bool:
+    if host is None:
+        return True
+    name = os.fsdecode(host) if isinstance(host, bytes) else str(host)
+    name = name.split("%", 1)[0].strip("[]").lower()
+    return name in _LOOPBACK_HOSTS or name.startswith("127.")
+
+
+def _network_guard_active() -> bool:
+    current = os.environ.get("PYTEST_CURRENT_TEST", "")
+    return bool(current) and "tests/integration/" not in current
+
+
+def _block_network(target: str) -> None:
+    _network_violations.append(target)
+    # pytest.fail raises a BaseException, so production code's
+    # `except Exception` handlers cannot swallow it.
+    pytest.fail(
+        f"Unit test attempted a real network connection to {target}. "
+        "Inject a fake client or patch the network call.  (#1162)"
+    )
+
+
+def _guarded_getaddrinfo(host, *args, **kwargs):
+    if _network_guard_active() and not _is_loopback_host(host):
+        _block_network(str(host))
+    return _real_getaddrinfo(host, *args, **kwargs)
+
+
+def _guarded_socket_connect(self, address):
+    if (
+        self.family in (socket.AF_INET, socket.AF_INET6)
+        and _network_guard_active()
+        and not _is_loopback_host(address[0])
+    ):
+        _block_network(f"{address[0]}:{address[1]}")
+    return _real_socket_connect(self, address)
+
+
+def _guarded_socket_connect_ex(self, address):
+    if (
+        self.family in (socket.AF_INET, socket.AF_INET6)
+        and _network_guard_active()
+        and not _is_loopback_host(address[0])
+    ):
+        _block_network(f"{address[0]}:{address[1]}")
+    return _real_socket_connect_ex(self, address)
+
+
+socket.getaddrinfo = _guarded_getaddrinfo
+socket.socket.connect = _guarded_socket_connect  # type: ignore[method-assign]
+socket.socket.connect_ex = _guarded_socket_connect_ex  # type: ignore[method-assign]
+
 _DEFAULT_CONFIG_YAML = "homeassistant:\n  name: Home\n\nhttp:\n  server_port: 8123\n"
 
 _PRODUCTION_LOG_PREFIXES = (
@@ -117,6 +185,24 @@ def fake_ssh_client():
         file_contents={"/config/configuration.yaml": _DEFAULT_CONFIG_YAML},
         command_results=_DEFAULT_COMMAND_RESULTS,
     )
+
+
+@pytest.fixture
+def unreachable_ha_ssh(monkeypatch):
+    """Replace the default ``AsyncSSHClient`` with one whose commands fail.
+
+    Code that falls back to ``ssh_client or AsyncSSHClient(...)`` then behaves
+    as it does when HA is unreachable, without opening a socket.  Only affects
+    call sites that import the class at call time.  (#1162)
+    """
+    import utils.ha.ssh_client as ssh_mod
+
+    def _factory(*args, **kwargs):
+        return ssh_mod.FakeSSHClient(
+            command_errors={"": OSError("HA unreachable in unit tests")}
+        )
+
+    monkeypatch.setattr(ssh_mod, "AsyncSSHClient", _factory)
 
 
 @pytest.fixture
@@ -188,6 +274,21 @@ def isolated_config(monkeypatch, tmp_path, pueo_dirs):
     yield cfg_path
     cfg_path.write_text("")  # reset to empty so reloaded modules get defaults
     _reload_all_modules()
+
+
+@pytest.fixture(autouse=True)
+def _fail_on_network_access():
+    """Fail a test whose network attempt was swallowed by `except BaseException`
+    or raised on a worker thread nobody awaited.  (#1162)"""
+    _network_violations.clear()
+    yield
+    if _network_violations:
+        targets = ", ".join(sorted(set(_network_violations)))
+        _network_violations.clear()
+        pytest.fail(
+            f"Unit test attempted real network connections: {targets}. "
+            "Inject a fake client or patch the network call.  (#1162)"
+        )
 
 
 @pytest.fixture(autouse=True)

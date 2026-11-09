@@ -8906,6 +8906,7 @@ class TestOneShotDiagnoseTokenPreRead:
         import config as _cfg
         from netalertx.one_shot_diagnose import run_diagnose
         from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
 
         monkeypatch.setattr(_cfg, "NETALERTX_API_TOKEN", "")
         import netalertx.one_shot_diagnose as _diag_mod
@@ -8963,6 +8964,9 @@ class TestOneShotDiagnoseTokenPreRead:
                 api_client=fake_api,
                 ha_ssh_client=ha_ssh,
                 llm_client=None,
+                # Without this the default notifier is built from config and
+                # can POST to a real ntfy server.  (#1162)
+                notifier=FakeNotifier(),
             )
         )
         assert tokens_set, "set_token was never called — token pre-read did not fire"
