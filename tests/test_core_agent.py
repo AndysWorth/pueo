@@ -13447,6 +13447,264 @@ class TestAgentLoop:
         assert result.steps[0].tool_call.name == "read_config"
         assert result.steps[1].tool_call.name == "finish_repair"
 
+    # ── extended text-form parser tests (#1165) ───────────────────────────
+
+    def test_parse_code_fenced_json(self):
+        """Code-fenced JSON is unwrapped and dispatched."""
+        from utils.agent.agent_loop import _parse_content_as_tool_call
+
+        known = {"finish_change_screening"}
+        content = (
+            "```json\n"
+            '{"name": "finish_change_screening", "arguments": {"flagged": []}}\n'
+            "```"
+        )
+        result = _parse_content_as_tool_call(content, known)
+        assert result is not None
+        assert result[0]["function"]["name"] == "finish_change_screening"
+        assert result[0]["function"]["arguments"] == {"flagged": []}
+
+    def test_parse_functions_dot_name_form(self):
+        """functions.NAME({...}) form from the 2026-11-09 live run is parsed."""
+        from utils.agent.agent_loop import _parse_content_as_tool_call
+
+        known = {"finish_change_screening"}
+        content = 'functions.finish_change_screening({"flagged": ["lights"]})'
+        result = _parse_content_as_tool_call(content, known)
+        assert result is not None
+        assert result[0]["function"]["name"] == "finish_change_screening"
+        assert result[0]["function"]["arguments"] == {"flagged": ["lights"]}
+
+    def test_parse_name_paren_form(self):
+        """NAME({...}) without functions. prefix is also accepted."""
+        from utils.agent.agent_loop import _parse_content_as_tool_call
+
+        known = {"read_config", "finish_repair"}
+        content = 'read_config({"path": "/config/configuration.yaml"})'
+        result = _parse_content_as_tool_call(content, known)
+        assert result is not None
+        assert result[0]["function"]["name"] == "read_config"
+        assert result[0]["function"]["arguments"] == {
+            "path": "/config/configuration.yaml"
+        }
+
+    def test_parse_function_equals_xml_form(self):
+        """<function=NAME>{...} XML form is parsed."""
+        from utils.agent.agent_loop import _parse_content_as_tool_call
+
+        known = {"finish_change_screening"}
+        content = '<function=finish_change_screening>{"flagged": []}'
+        result = _parse_content_as_tool_call(content, known)
+        assert result is not None
+        assert result[0]["function"]["name"] == "finish_change_screening"
+        assert result[0]["function"]["arguments"] == {"flagged": []}
+
+    def test_parse_function_name_tag_xml_form(self):
+        """<function_name>NAME</function_name>...<function_arguments>{...} is parsed."""
+        from utils.agent.agent_loop import _parse_content_as_tool_call
+
+        known = {"finish_change_screening"}
+        content = (
+            "<function_results>"
+            "<function_name>finish_change_screening</function_name>"
+            "<function_arguments>"
+            '{"flagged": ["sensor.temp"]}'
+            "</function_arguments>"
+            "</function_results>"
+        )
+        result = _parse_content_as_tool_call(content, known)
+        assert result is not None
+        assert result[0]["function"]["name"] == "finish_change_screening"
+        assert result[0]["function"]["arguments"] == {"flagged": ["sensor.temp"]}
+
+    def test_parse_function_name_tag_functions_prefix(self):
+        """<function_name>functions.NAME</function_name> prefix is stripped."""
+        from utils.agent.agent_loop import _parse_content_as_tool_call
+
+        known = {"finish_change_screening"}
+        content = (
+            "<function_name>functions.finish_change_screening</function_name>"
+            '<function_arguments>{"flagged": []}</function_arguments>'
+        )
+        result = _parse_content_as_tool_call(content, known)
+        assert result is not None
+        assert result[0]["function"]["name"] == "finish_change_screening"
+
+    def test_parse_bare_args_single_tool_registry(self):
+        """Bare args dict is accepted when known_names has exactly one entry."""
+        from utils.agent.agent_loop import _parse_content_as_tool_call
+
+        known = {"finish_change_screening"}
+        content = '{"flagged": ["sensor.temp", "light.kitchen"]}'
+        result = _parse_content_as_tool_call(content, known)
+        assert result is not None
+        assert result[0]["function"]["name"] == "finish_change_screening"
+        assert result[0]["function"]["arguments"] == {
+            "flagged": ["sensor.temp", "light.kitchen"]
+        }
+
+    def test_parse_bare_args_multi_tool_registry_returns_none(self):
+        """Bare args dict with multiple registered tools is not recoverable."""
+        from utils.agent.agent_loop import _parse_content_as_tool_call
+
+        known = {"finish_change_screening", "read_config"}
+        content = '{"flagged": ["sensor.temp"]}'
+        assert _parse_content_as_tool_call(content, known) is None
+
+    def test_parse_unknown_tool_name_returns_none(self):
+        """functions.UNKNOWN_TOOL({...}) is rejected (not in known set)."""
+        from utils.agent.agent_loop import _parse_content_as_tool_call
+
+        known = {"finish_change_screening"}
+        content = 'functions.rm_rf({"path": "/"})'
+        assert _parse_content_as_tool_call(content, known) is None
+
+    def test_parse_mid_prose_tool_mention_returns_none(self):
+        """A tool call mentioned mid-prose is not extracted (anchored at start)."""
+        from utils.agent.agent_loop import _parse_content_as_tool_call
+
+        known = {"finish_change_screening"}
+        content = (
+            "I will now call the tool. "
+            'functions.finish_change_screening({"flagged": []})'
+        )
+        assert _parse_content_as_tool_call(content, known) is None
+
+    def test_parse_malformed_json_args_returns_none(self):
+        """Malformed JSON in arguments returns None."""
+        from utils.agent.agent_loop import _parse_content_as_tool_call
+
+        known = {"finish_change_screening"}
+        assert (
+            _parse_content_as_tool_call(
+                "functions.finish_change_screening({bad json})", known
+            )
+            is None
+        )
+
+    def test_nudge_single_tool_registry_names_tool(self):
+        """Single-tool registry produces a targeted nudge, not investigative hints."""
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import ToolRegistry, ToolDefinition
+
+        snapshots: list[list[dict]] = []
+        responses = [
+            {"role": "assistant", "content": "Some plain text answer."},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "function": {
+                            "name": "finish_change_screening",
+                            "arguments": {"flagged": []},
+                        }
+                    }
+                ],
+            },
+        ]
+
+        class _Cap:
+            async def chat_with_tools(
+                self, model, messages, tools, options=None, think=None, keep_alive=None
+            ):
+                snapshots.append(list(messages))
+                return responses.pop(0) if responses else {"content": ""}
+
+        reg = ToolRegistry()
+        reg.register(
+            ToolDefinition(
+                name="finish_change_screening",
+                description="screening terminal",
+                parameters={"type": "object", "properties": {}, "required": []},
+            )
+        )
+        executor = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(auto_execute_result=True, approval_result=True),
+            notifier=FakeNotifier(approve=True),
+        )
+        loop = AgentLoop(
+            llm_client=_Cap(),
+            tool_executor=executor,
+            tool_registry=reg,
+            max_tool_calls=5,
+            max_wall_seconds=30.0,
+        )
+        asyncio.run(loop.run("Screen these changes"))
+
+        nudge_msg = snapshots[1][-1]["content"]
+        assert "tool-calling interface" in nudge_msg
+        assert "finish_change_screening" in nudge_msg
+        # Must NOT mention investigative tools not in this registry
+        assert "read_config" not in nudge_msg
+        assert "get_disk_usage" not in nudge_msg
+
+    def test_nudge_multi_tool_registry_no_tool_name_in_content_keeps_general(self):
+        """Multi-tool registry with generic text keeps the general nudge."""
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import ToolRegistry, ToolDefinition
+
+        snapshots: list[list[dict]] = []
+        responses = [
+            {"role": "assistant", "content": "Looks fine."},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "function": {
+                            "name": "finish_repair",
+                            "arguments": {
+                                "summary": "ok",
+                                "action_taken": "no_fix_needed",
+                            },
+                        }
+                    }
+                ],
+            },
+        ]
+
+        class _Cap:
+            async def chat_with_tools(
+                self, model, messages, tools, options=None, think=None, keep_alive=None
+            ):
+                snapshots.append(list(messages))
+                return responses.pop(0) if responses else {"content": ""}
+
+        reg = ToolRegistry()
+        for name in ("read_config", "finish_repair"):
+            reg.register(
+                ToolDefinition(
+                    name=name,
+                    description=f"{name} tool",
+                    parameters={"type": "object", "properties": {}, "required": []},
+                )
+            )
+        executor = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(auto_execute_result=True, approval_result=True),
+            notifier=FakeNotifier(approve=True),
+        )
+        loop = AgentLoop(
+            llm_client=_Cap(),
+            tool_executor=executor,
+            tool_registry=reg,
+            max_tool_calls=5,
+            max_wall_seconds=30.0,
+        )
+        asyncio.run(loop.run("Check config"))
+
+        nudge_msg = snapshots[1][-1]["content"]
+        # General nudge: mentions investigative tools
+        assert "read_config" in nudge_msg or "get_disk_usage" in nudge_msg
+
     def test_executor_reset_called_on_run(self):
         """AgentLoop.run() must reset the executor so apply_fix cap resets."""
         from utils.agent.agent_loop import AgentLoop

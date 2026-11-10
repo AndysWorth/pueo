@@ -508,23 +508,95 @@ def _parse_content_as_tool_call(
 ) -> list[dict] | None:
     """Fallback for models that put tool calls in content instead of tool_calls.
 
-    Some models (e.g. qwen2.5-coder:7b) respond with a JSON object like
-    {"name": "read_config", "arguments": {}} in the content field rather than
-    a proper tool_calls list.  If the content parses as a single tool call
-    whose name is in the known registry, synthesise a tool_calls entry so the
-    loop can dispatch it normally.  Returns None for ordinary text content.
+    Accepts several text-form tool-call shapes produced by thinking models:
+      - {"name": NAME, "arguments": {...}}  (original qwen shape)
+      - ```json\\n{"name": NAME, ...}\\n```  (code-fenced JSON)
+      - functions.NAME({...}) or NAME({...})
+      - <function=NAME>{...}
+      - <function_name>[functions.]NAME</function_name>...<function_arguments>{...}
+      - bare args dict {…} when known_names has exactly one entry
+
+    NAME must be in known_names; arguments must parse as a dict.
+    Anchoring to the start of the content prevents a tool call quoted inside
+    prose from being executed.  Returns None for unrecognised content.
     """
     stripped = (content or "").strip()
-    if not stripped.startswith("{"):
+    if not stripped:
         return None
-    try:
-        parsed, _ = json.JSONDecoder().raw_decode(stripped)
-    except (json.JSONDecodeError, ValueError):
+
+    # Strip code fence: ```json\\n...\\n``` or ```\\n...\\n```
+    if stripped.startswith("```"):
+        lines = stripped.split("\n")
+        end = len(lines) - 1 if lines[-1].strip() == "```" else len(lines)
+        stripped = "\n".join(lines[1:end]).strip()
+
+    # {"name": NAME, "arguments": {...}} — original shape + bare-args fallback
+    if stripped.startswith("{"):
+        try:
+            parsed, _ = json.JSONDecoder().raw_decode(stripped)
+        except (json.JSONDecodeError, ValueError):
+            return None
+        if not isinstance(parsed, dict):
+            return None
+        name = parsed.get("name", "")
+        args = parsed.get("arguments")
+        if name in known_names and isinstance(args, dict):
+            return [{"function": {"name": name, "arguments": args}}]
+        # If it has name/arguments keys but wrong tool, don't repurpose it.
+        if "name" in parsed or "arguments" in parsed:
+            return None
+        # Bare args dict: single-tool registry — we know the tool name.
+        if len(known_names) == 1 and isinstance(parsed, dict):
+            tool_name = next(iter(known_names))
+            return [{"function": {"name": tool_name, "arguments": parsed}}]
         return None
-    name = parsed.get("name", "")
-    args = parsed.get("arguments")
-    if name in known_names and isinstance(args, dict):
-        return [{"function": {"name": name, "arguments": args}}]
+
+    # functions.NAME({...}) or NAME({...})
+    m = _re.match(r"^(?:functions\.)?(\w+)\s*\((\{)", stripped, _re.DOTALL)
+    if m:
+        name = m.group(1)
+        if name in known_names:
+            brace_start = stripped.index("{", m.start(2))
+            try:
+                args, _ = json.JSONDecoder().raw_decode(stripped[brace_start:])
+                if isinstance(args, dict):
+                    return [{"function": {"name": name, "arguments": args}}]
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+    # <function=NAME>{...}  (bare JSON after the opening tag)
+    m = _re.match(r"^<function=(\w+)>", stripped)
+    if m:
+        name = m.group(1)
+        if name in known_names:
+            rest = stripped[m.end() :]
+            brace_idx = rest.find("{")
+            if brace_idx >= 0:
+                try:
+                    args, _ = json.JSONDecoder().raw_decode(rest[brace_idx:])
+                    if isinstance(args, dict):
+                        return [{"function": {"name": name, "arguments": args}}]
+                except (json.JSONDecodeError, ValueError):
+                    pass
+
+    # <function_name>[functions.]NAME</function_name>...<function_arguments>{...}
+    m = _re.search(r"<function_name>(?:functions\.)?(\w+)</function_name>", stripped)
+    if m:
+        name = m.group(1)
+        if name in known_names:
+            after = stripped[m.end() :]
+            fa = after.find("<function_arguments>")
+            if fa >= 0:
+                args_str = after[fa + len("<function_arguments>") :]
+                brace_idx = args_str.find("{")
+                if brace_idx >= 0:
+                    try:
+                        args, _ = json.JSONDecoder().raw_decode(args_str[brace_idx:])
+                        if isinstance(args, dict):
+                            return [{"function": {"name": name, "arguments": args}}]
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+
     return None
 
 
@@ -1874,15 +1946,29 @@ class AgentLoop:
                         self._terminal_tool_name, "summary"
                     )
                     if tool_call_count == 0:
-                        nudge = (
-                            "You must call a tool — do not return plain text. "
-                            "For questions requiring live HA data (disk, config, "
-                            "logs, backups), call the appropriate investigative tool "
-                            f"first (e.g. get_disk_usage, read_config, read_logs). "
-                            f"For general knowledge questions, call "
-                            f"{self._terminal_tool_name} with your answer in the "
-                            f'"{_primary_field}" field.'
-                        )
+                        # When the content already names a registered tool, or the
+                        # registry holds only the terminal tool (e.g. a screening
+                        # session), the model wrote the call as text.  Tell it to
+                        # resend via the tool-calling interface — no mention of
+                        # investigative tools that don't exist in this registry.
+                        _named_tool = next((n for n in known if n in content), None)
+                        if _named_tool or len(tools) == 1:
+                            _target = _named_tool or tools[0]["function"]["name"]
+                            nudge = (
+                                f"Your response was written as text and was not "
+                                f"executed. Call {_target} through the tool-calling "
+                                f"interface now with the same arguments."
+                            )
+                        else:
+                            nudge = (
+                                "You must call a tool — do not return plain text. "
+                                "For questions requiring live HA data (disk, config, "
+                                "logs, backups), call the appropriate investigative "
+                                f"tool first (e.g. get_disk_usage, read_config, "
+                                f"read_logs). For general knowledge questions, call "
+                                f"{self._terminal_tool_name} with your answer in the "
+                                f'"{_primary_field}" field.'
+                            )
                     else:
                         calls_remaining = self._max_tool_calls - tool_call_count
                         if calls_remaining <= 2:
