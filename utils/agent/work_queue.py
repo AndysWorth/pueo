@@ -85,6 +85,7 @@ class PueoWorkQueue:
         self._lock = asyncio.Lock()
         self._event = asyncio.Event()
         self._running: WorkItem | None = None
+        self._running_detail: str | None = None
         self._active_types: set[str] = set()
         self._consumer_task: asyncio.Task | None = None  # type: ignore[type-arg]
 
@@ -181,6 +182,7 @@ class PueoWorkQueue:
             finally:
                 async with self._lock:
                     self._running = None
+                    self._running_detail = None
                     self._active_types.discard(item.activity_type)
                     # Wake up the consumer in case suppressed items can now run
                     if self._pending:
@@ -206,16 +208,24 @@ class PueoWorkQueue:
             for item in self._pending
         ]
 
+    def set_running_detail(self, text: str | None) -> None:
+        """Update the progress detail for the currently running item and push an SSE update."""
+        self._running_detail = text
+        self._publish_queue_update()
+
     def running_snapshot(self) -> dict | None:
         """Return the currently running item, or None."""
         r = self._running
         if r is None:
             return None
-        return {
+        snap: dict = {
             "activity_type": r.activity_type,
             "description": r.description,
             "priority": _PRIORITY_LABELS.get(r.priority, str(r.priority)),
         }
+        if self._running_detail is not None:
+            snap["detail"] = self._running_detail
+        return snap
 
     def _publish_queue_update(self) -> None:
         try:

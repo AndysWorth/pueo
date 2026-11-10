@@ -996,9 +996,15 @@
     while (body.rows.length > 10) body.deleteRow(body.rows.length - 1);
   }
 
+  function _esc(s) {
+    var d = document.createElement('div');
+    d.appendChild(document.createTextNode(String(s)));
+    return d.innerHTML;
+  }
+
   var _activityHideTimer = null;
   var _runningStaleTimer = null;
-  var _runningItem = null;   // {activity_type, description} | null — source of truth from queue_update
+  var _runningItem = null;   // {activity_type, description, detail?} | null — source of truth from queue_update
   var _queuedItems = [];     // [{activity_type, description}] — source of truth from queue_update
   var ACTIVITY_HEADINGS = {
     'ha_repair': 'HA Repair',
@@ -1029,8 +1035,11 @@
       var desc = _runningItem.description
         ? ' — <span style="color:var(--muted);font-style:italic;">' + _runningItem.description + '</span>'
         : '';
+      var detail = _runningItem.detail
+        ? ' <span style="color:var(--muted);font-size:0.9em;">(' + _esc(_runningItem.detail) + ')</span>'
+        : '';
       html += '<li><span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#28a745;margin-right:5px;"></span>'
-        + '<strong>Running:</strong> ' + _activityShortLabel(_runningItem.activity_type) + desc + '</li>';
+        + '<strong>Running:</strong> ' + _activityShortLabel(_runningItem.activity_type) + desc + detail + '</li>';
     }
     ul.innerHTML = html;
     // Queued items appear after the step trace, in queue-pending-list
