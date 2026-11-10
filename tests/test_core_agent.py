@@ -19479,6 +19479,137 @@ class TestAgentLoopLLMCallbacks:
         assert result.outcome in ("success", "exhausted", "timeout", "stuck", "error")
 
 
+class TestAgentLoopThinkOverride:
+    """AgentLoop.think= overrides the derived think level for a loop session."""
+
+    def _make_finish_llm(self):
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        return FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_repair",
+                                "arguments": {
+                                    "summary": "done",
+                                    "action_taken": "no_fix_needed",
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
+
+    def _make_executor(self):
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+
+        return ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+        )
+
+    def _stub_call_opts(self, think, monkeypatch):
+        from utils.llm.model_options import ModelCallOptions
+        import utils.agent.agent_loop as al
+
+        opts = ModelCallOptions(
+            think=think, num_ctx=0, temperature=0.0, keep_alive="5m"
+        )
+        monkeypatch.setattr(al, "_derive_loop_call_options", lambda _: opts)
+
+    def test_override_false_reaches_chat_with_tools(self, monkeypatch):
+        """think=False override replaces a derived 'high' think level in the LLM call."""
+        import asyncio
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.tool_registry import build_ha_tool_registry
+
+        self._stub_call_opts("high", monkeypatch)
+        llm = self._make_finish_llm()
+        loop = AgentLoop(
+            llm_client=llm,
+            tool_executor=self._make_executor(),
+            tool_registry=build_ha_tool_registry(),
+            think=False,
+        )
+        asyncio.run(loop.run("check config"))
+        assert llm.calls, "no LLM call recorded"
+        assert llm.calls[0]["think"] is False
+
+    def test_override_unset_keeps_derived_value(self, monkeypatch):
+        """When think is not provided the derived think level is used unchanged."""
+        import asyncio
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.tool_registry import build_ha_tool_registry
+
+        self._stub_call_opts("low", monkeypatch)
+        llm = self._make_finish_llm()
+        loop = AgentLoop(
+            llm_client=llm,
+            tool_executor=self._make_executor(),
+            tool_registry=build_ha_tool_registry(),
+        )
+        asyncio.run(loop.run("check config"))
+        assert llm.calls, "no LLM call recorded"
+        assert llm.calls[0]["think"] == "low"
+
+    def test_override_ignored_for_non_thinking_model(self, monkeypatch):
+        """think=False override is ignored when the derived think is None (non-thinking model)."""
+        import asyncio
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.tool_registry import build_ha_tool_registry
+
+        self._stub_call_opts(None, monkeypatch)
+        llm = self._make_finish_llm()
+        loop = AgentLoop(
+            llm_client=llm,
+            tool_executor=self._make_executor(),
+            tool_registry=build_ha_tool_registry(),
+            think=False,
+        )
+        asyncio.run(loop.run("check config"))
+        assert llm.calls, "no LLM call recorded"
+        assert llm.calls[0]["think"] is None
+
+    def test_screening_construction_passes_think_false(self, monkeypatch):
+        """change_screening AgentLoop is constructed with think=False."""
+        import unittest.mock as mock
+        from utils.agent.agent_loop import AgentLoop
+
+        captured_kwargs: list[dict] = []
+        original_init = AgentLoop.__init__
+
+        def _capturing_init(self, *args, **kwargs):
+            captured_kwargs.append(dict(kwargs))
+            original_init(self, *args, **kwargs)
+
+        monkeypatch.setattr(AgentLoop, "__init__", _capturing_init)
+        # Patch _run_update_analysis to only run the screening part via
+        # direct inspection of captured kwargs — we don't need a full run.
+        from agents.ha_update_manager import _run_update_analysis
+        from utils.ha.ha_rest_client import FakeHARestClient
+        from utils.hitl.notify import FakeNotifier
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        # Verify the kwarg from the source directly instead of a full analysis run.
+        # The screening construction is at ha_update_manager.py:1441.
+        import inspect
+        import agents.ha_update_manager as um
+
+        src = inspect.getsource(um._run_update_analysis)
+        assert (
+            "think=False" in src
+        ), "screening AgentLoop construction must pass think=False"
+
+
 class TestAgentLoopActivityType:
     """AgentLoop stores activity_type and writes timeline events at start/end of run()."""
 

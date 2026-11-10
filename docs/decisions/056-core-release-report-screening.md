@@ -39,6 +39,10 @@ update_analysis WorkItem — all stages run sequentially inside one item
   Those tools caused ~17 LLM calls per batch and enabled instance-fact hallucination.
   Amended #1150.
 - `max_tool_calls=3` per batch session. Amended #1150.
+- `think=False` per batch session — overrides `OLLAMA_THINK_MODE`/`DEBUG_LEVEL` so high
+  debug levels do not cause the model to generate thousands of thinking tokens per batch
+  (observed 100 k–230 k chars at `debug_level: 3`, turning a 32-second pass into 84 min).
+  Amended #1166.
 - Prompt: `task_change_screening.md` + `seed_update_screening.md`.
   Seed carries PR-title vocabulary rules (never flag "Clarify", "Move … classes",
   "Mark … final", "leftovers", "Bump"; `high` only for removal of a documented user-

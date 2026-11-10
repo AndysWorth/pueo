@@ -80,7 +80,7 @@ OLLAMA_KEEP_ALIVE  (config.py + config.yaml.default + setup.sh)
 - `LLMClientProtocol.chat_with_tools()` gains `think` parameter (default `None` — backward-compatible)
 - `OllamaClient.chat_with_tools()` passes `think` and `keep_alive` to the Ollama SDK when set
 - `ClaudeAPIClient.chat_with_tools()` accepts `think` (ignored — Anthropic uses its own mechanism); sets `_thinking` on result unconditionally when thinking blocks are present
-- `AgentLoop._loop_body()` calls `_derive_loop_call_options()` once per session before the loop
+- `AgentLoop._loop_body()` calls `_derive_loop_call_options()` once per session before the loop; a per-loop `think=` override (passed to `AgentLoop.__init__`) replaces the derived value when set and the model supports thinking — used by screening sessions to force `think=False` regardless of `DEBUG_LEVEL`
 - Five one-shot callers (`ha_log_monitor`, `config_analysis`, `tool_executor`, `netalertx/diagnosis`, `netalertx/log_monitor`) use `one_shot_options()` instead of `{"temperature": 0.0}`
 - `_review_limit()` in `AgentLoop` retains `{"temperature": 0.0}` — it is a one-off self-assessment call, not a tool-calling session
 - `setup.sh` hardware tier table updated to recommend `qwen3` family instead of `qwen2.5-coder`
