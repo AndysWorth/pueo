@@ -30,7 +30,7 @@ from config import (
     RAG_MIN_SCORE,
 )
 from utils.ha.context_sanitizer import sanitize_update_context
-from utils.llm.model_options import ModelCallOptions, derive_call_options
+from utils.llm.model_options import ModelCallOptions, ThinkValue, derive_call_options
 from utils.core.logging import get_logger
 from utils.core.prompts import load_agent_prompt, load_prompt
 from utils.agent.tool_registry import AgentLoopResult, AgentStep, ToolCall, ToolResult
@@ -38,6 +38,7 @@ from utils.agent.tool_result_guardrail import ToolResultGuardrail
 from utils.debug.capture import ToolCallRecord
 
 _UNSET = object()  # sentinel for provider-aware model default
+_THINK_UNSET = object()  # sentinel for per-loop think override
 
 if TYPE_CHECKING:
     from interfaces import KnowledgeStoreClientProtocol, LLMClientProtocol
@@ -714,6 +715,7 @@ class AgentLoop:
         on_llm_call_done: Optional[Callable[[str, float], None]] = None,
         capture_llm: bool = False,
         distill: bool = True,
+        think: "ThinkValue | object" = _THINK_UNSET,
     ) -> None:
         if model is _UNSET:
             from utils.llm.llm_factory import _default_model_for_provider
@@ -741,6 +743,7 @@ class AgentLoop:
         self._on_llm_call_done = on_llm_call_done
         self._capture_llm = capture_llm
         self._distill = distill
+        self._think_override: object = think
         self._llm_captures: list = []
         self._tool_call_records: list[ToolCallRecord] = []
         self._seen_calls: dict[tuple[str, str], tuple[int, str]] = {}
@@ -1717,6 +1720,11 @@ class AgentLoop:
 
         # Derive call options once per session from model capabilities + runtime context.
         _call_opts = await asyncio.to_thread(_derive_loop_call_options, self._model)
+        # Apply per-loop think override when set and model supports thinking.
+        # _call_opts.think is None for non-thinking models and openai_compat — keep None.
+        _effective_think: "ThinkValue | None" = _call_opts.think
+        if self._think_override is not _THINK_UNSET and _call_opts.think is not None:
+            _effective_think = self._think_override  # type: ignore[assignment]
 
         while True:
             # Budget check at top of loop so extensions can continue without restart.
@@ -1746,7 +1754,7 @@ class AgentLoop:
                         messages=messages,
                         tools=tools,
                         options=_call_options,
-                        think=_call_opts.think,
+                        think=_effective_think,
                         keep_alive=_call_opts.keep_alive,
                     ),
                     timeout=per_call_secs,
