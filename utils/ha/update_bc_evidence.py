@@ -103,8 +103,10 @@ def _entity_summary(
     """Return (count, example_entity_ids, multi_channel_device_names).
 
     Match entity domains or integration platforms (e.g. light.* on Tuya).
-    Multi-channel: devices with >1 entity of the same domain/platform whose entity_ids
-    end in a digit (a common pattern for Tuya/Z-Wave multi-endpoint devices).
+    Multi-channel: devices with >1 matched entity of the same entity type (the
+    entity_id prefix) where one entity_id ends in a digit, a common pattern for
+    Tuya/Z-Wave multi-endpoint devices. Grouping is by entity type even for a
+    platform match, so a device's mixed sensors and switches are not channels.
     """
     if not bc_domains:
         return 0, [], []
@@ -122,12 +124,14 @@ def _entity_summary(
         e["entity_id"] for e in matching[:_MAX_ENTITY_EXAMPLES] if "entity_id" in e
     ]
 
-    # Multi-channel detection
-    device_to_entities: dict[str, list[dict]] = {}
+    # Multi-channel detection: group by (device, entity type)
+    channel_groups: dict[tuple[str, str], list[str]] = {}
     for e in matching:
         dev_id = e.get("device_id")
+        entity_id = e.get("entity_id", "")
         if dev_id:
-            device_to_entities.setdefault(dev_id, []).append(e)
+            key = (dev_id, entity_id.split(".")[0])
+            channel_groups.setdefault(key, []).append(entity_id)
 
     device_id_to_name: dict[str, str] = {
         d.get("id", ""): d.get("name_by_user") or d.get("name", "")
@@ -136,20 +140,11 @@ def _entity_summary(
     }
 
     multi_channel: list[str] = []
-    for dev_id, entities in device_to_entities.items():
-        for domain in domain_set:
-            same_domain = [
-                e
-                for e in entities
-                if e.get("entity_id", "").split(".")[0] == domain
-                or e.get("platform", "") == domain
-            ]
-            if len(same_domain) > 1 and any(
-                e.get("entity_id", "")[-1:].isdigit() for e in same_domain
-            ):
-                name = device_id_to_name.get(dev_id, dev_id[:8])
-                if name and name not in multi_channel:
-                    multi_channel.append(name)
+    for (dev_id, _entity_type), entity_ids in channel_groups.items():
+        if len(entity_ids) > 1 and any(eid[-1:].isdigit() for eid in entity_ids):
+            name = device_id_to_name.get(dev_id, dev_id[:8])
+            if name and name not in multi_channel:
+                multi_channel.append(name)
 
     return count, examples, multi_channel[:5]
 
