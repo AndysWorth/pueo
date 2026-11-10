@@ -7347,6 +7347,44 @@ class TestBCEvidenceEntitySummary:
         assert count == 3
         assert "Tuya Strip" in multi
 
+    def test_integration_platform_counts_generic_entity_domains(self):
+        from utils.ha.update_bc_evidence import _entity_summary
+
+        entities = [
+            {"entity_id": "light.strip_1", "platform": "tuya", "device_id": "dev1"},
+            {"entity_id": "light.strip_2", "platform": "tuya", "device_id": "dev1"},
+            {"entity_id": "sensor.temperature", "platform": "tuya"},
+            {"entity_id": "light.other", "platform": "hue"},
+            {"entity_id": "sensor.unrelated"},
+        ]
+        assert _entity_summary(
+            ["tuya"], entities, [self._make_device("dev1", "Test Strip")]
+        ) == (
+            3,
+            ["light.strip_1", "light.strip_2", "sensor.temperature"],
+            ["Test Strip"],
+        )
+
+    def test_platform_and_entity_domain_matches_are_not_double_counted(self):
+        from utils.ha.update_bc_evidence import _entity_summary
+
+        entities = [
+            {"entity_id": "light.strip_1", "platform": "tuya", "device_id": "dev1"},
+            {"entity_id": "light.strip_2", "platform": "tuya", "device_id": "dev1"},
+        ]
+        assert _entity_summary(
+            ["tuya", "light"], entities, [self._make_device("dev1", "Test Strip")]
+        ) == (2, ["light.strip_1", "light.strip_2"], ["Test Strip"])
+
+    def test_single_platform_match_does_not_make_a_multi_channel_device(self):
+        from utils.ha.update_bc_evidence import _entity_summary
+
+        entities = [
+            {"entity_id": "light.channel_1", "platform": "tuya", "device_id": "dev1"},
+            {"entity_id": "light.channel_2", "platform": "hue", "device_id": "dev1"},
+        ]
+        assert _entity_summary(["tuya"], entities, []) == (1, ["light.channel_1"], [])
+
     def test_single_channel_not_multi(self):
         from utils.ha.update_bc_evidence import _entity_summary
 

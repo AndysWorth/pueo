@@ -102,7 +102,8 @@ def _entity_summary(
 ) -> tuple[int, list[str], list[str]]:
     """Return (count, example_entity_ids, multi_channel_device_names).
 
-    Multi-channel: devices with >1 entity of the same domain whose entity_ids
+    Match entity domains or integration platforms (e.g. light.* on Tuya).
+    Multi-channel: devices with >1 entity of the same domain/platform whose entity_ids
     end in a digit (a common pattern for Tuya/Z-Wave multi-endpoint devices).
     """
     if not bc_domains:
@@ -110,7 +111,10 @@ def _entity_summary(
 
     domain_set = set(bc_domains)
     matching = [
-        e for e in entity_registry if e.get("entity_id", "").split(".")[0] in domain_set
+        e
+        for e in entity_registry
+        if e.get("entity_id", "").split(".")[0] in domain_set
+        or e.get("platform", "") in domain_set
     ]
 
     count = len(matching)
@@ -135,7 +139,10 @@ def _entity_summary(
     for dev_id, entities in device_to_entities.items():
         for domain in domain_set:
             same_domain = [
-                e for e in entities if e.get("entity_id", "").split(".")[0] == domain
+                e
+                for e in entities
+                if e.get("entity_id", "").split(".")[0] == domain
+                or e.get("platform", "") == domain
             ]
             if len(same_domain) > 1 and any(
                 e.get("entity_id", "")[-1:].isdigit() for e in same_domain
