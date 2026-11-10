@@ -7385,6 +7385,65 @@ class TestBCEvidenceEntitySummary:
         ]
         assert _entity_summary(["tuya"], entities, []) == (1, ["light.channel_1"], [])
 
+    def test_mixed_entity_types_on_platform_device_not_multi_channel(self):
+        from utils.ha.update_bc_evidence import _entity_summary
+
+        # One sensor of each kind plus HA's "_2" collision suffix: not channels (#1168)
+        entities = [
+            {
+                "entity_id": "sensor.bedroom_temperature",
+                "platform": "tuya",
+                "device_id": "dev1",
+            },
+            {
+                "entity_id": "switch.bedroom_plug_2",
+                "platform": "tuya",
+                "device_id": "dev1",
+            },
+        ]
+        count, _, multi = _entity_summary(
+            ["tuya"], entities, [self._make_device("dev1", "Bedroom Plug")]
+        )
+        assert count == 2
+        assert multi == []
+
+    def test_same_entity_type_channels_on_platform_device_are_multi_channel(self):
+        from utils.ha.update_bc_evidence import _entity_summary
+
+        entities = [
+            {"entity_id": "switch.strip_1", "platform": "tuya", "device_id": "dev1"},
+            {"entity_id": "switch.strip_2", "platform": "tuya", "device_id": "dev1"},
+            {
+                "entity_id": "sensor.strip_power",
+                "platform": "tuya",
+                "device_id": "dev1",
+            },
+        ]
+        _, _, multi = _entity_summary(
+            ["tuya"], entities, [self._make_device("dev1", "Power Strip")]
+        )
+        assert multi == ["Power Strip"]
+
+    def test_multi_channel_device_listed_once_across_entity_types(self):
+        from utils.ha.update_bc_evidence import _entity_summary
+
+        entities = [
+            {"entity_id": "switch.strip_1", "platform": "tuya", "device_id": "dev1"},
+            {"entity_id": "switch.strip_2", "platform": "tuya", "device_id": "dev1"},
+            {"entity_id": "light.strip_1", "platform": "tuya", "device_id": "dev1"},
+            {"entity_id": "light.strip_2", "platform": "tuya", "device_id": "dev1"},
+        ]
+        _, _, multi = _entity_summary(
+            ["tuya"], entities, [self._make_device("dev1", "Power Strip")]
+        )
+        assert multi == ["Power Strip"]
+
+    def test_null_platform_does_not_match_or_raise(self):
+        from utils.ha.update_bc_evidence import _entity_summary
+
+        entities = [{"entity_id": "light.x", "platform": None, "device_id": "dev1"}]
+        assert _entity_summary(["tuya"], entities, []) == (0, [], [])
+
     def test_single_channel_not_multi(self):
         from utils.ha.update_bc_evidence import _entity_summary
 
