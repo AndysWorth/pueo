@@ -2441,6 +2441,92 @@ class TestCoreScreeningBatchCounts:
         assert saved.screening_complete is False
         assert saved.completeness == "complete"
 
+    def test_screening_sets_running_detail(self, tmp_path, pueo_dirs):
+        """Screening loop calls set_running_detail per batch and 'analysing' before main loop."""
+        import asyncio
+        from unittest import mock
+        from unittest.mock import AsyncMock, MagicMock
+
+        from utils.agent.tool_registry import AgentLoopResult
+        from utils.ha.ha_environment import HAEnvironmentProfile
+        from utils.knowledge.ha_release_report import CoreReleaseReport
+
+        db_path = _make_db(tmp_path)
+
+        class _FakeUpdate:
+            entity_id = "update.home_assistant_core_update"
+            component = "core"
+            installed_version = "2026.10.4"
+            latest_version = "2026.11.0"
+            release_url = None
+            release_summary = None
+
+        rpt = CoreReleaseReport(version="2026.11.0", completeness="complete")
+        # 2 batches → 2 screening calls + 1 main loop call
+        results = [
+            AgentLoopResult(outcome="success"),
+            AgentLoopResult(outcome="success"),
+            AgentLoopResult(outcome="success"),
+        ]
+        detail_calls = []
+        fake_wq = MagicMock()
+
+        async def _run_coro(item):
+            await item.coro_factory()
+            return True
+
+        fake_wq.submit = AsyncMock(side_effect=_run_coro)
+        fake_wq.set_running_detail = MagicMock(
+            side_effect=lambda s: detail_calls.append(s)
+        )
+
+        with (
+            mock.patch("utils.agent.agent_loop.AgentLoop") as MockLoop,
+            mock.patch("utils.agent.supervisor.increment_active_agent"),
+            mock.patch("utils.agent.supervisor.decrement_active_agent"),
+            mock.patch(
+                "utils.agent.supervisor.make_activity_timeline_callback",
+                return_value=None,
+            ),
+            mock.patch(
+                "utils.llm.llm_factory.make_llm_client", return_value=MagicMock()
+            ),
+            mock.patch("agents.ha_update_manager.DB_PATH", db_path),
+            mock.patch("agents.ha_update_manager.HA_API_TOKEN", "tok"),
+            mock.patch("utils.ha.ha_ws_client.HAWebSocketClient"),
+            mock.patch(
+                "utils.knowledge.ha_release_report.build_core_release_report",
+                AsyncMock(return_value=rpt),
+            ),
+            mock.patch(
+                "utils.knowledge.ha_release_report.make_screening_batches",
+                return_value=["batch a", "batch b"],
+            ),
+            mock.patch(
+                "utils.agent.work_queue.get_work_queue_or_none",
+                return_value=fake_wq,
+            ),
+        ):
+            mock_instance = MagicMock()
+            mock_instance.run = AsyncMock(side_effect=results)
+            MockLoop.return_value = mock_instance
+
+            from agents.ha_update_manager import _run_update_analysis
+            from utils.hitl.notify import FakeNotifier
+
+            asyncio.run(
+                _run_update_analysis(
+                    update=_FakeUpdate(),
+                    notifier=FakeNotifier(),
+                    ha_profile=HAEnvironmentProfile(installed_integrations=["mqtt"]),
+                )
+            )
+
+        # Screening sets "screening batch N of M" before each batch, then "analysing"
+        assert detail_calls[0] == "screening batch 1 of 2"
+        assert detail_calls[1] == "screening batch 2 of 2"
+        assert "analysing" in detail_calls
+
 
 class TestFinishUpdateAnalysisScreeningGap:
     """Partial screening with complete notes gets its own honest prefix (#1148)."""

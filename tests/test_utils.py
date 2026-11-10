@@ -10190,6 +10190,121 @@ class TestPueoWorkQueue:
         order = asyncio.run(run())
         assert order == ["critical", "normal", "low"]
 
+    def test_set_running_detail_appears_in_snapshot(self):
+        """Detail set during a running item appears in running_snapshot."""
+        from utils.agent.work_queue import PRIORITY_NORMAL, PueoWorkQueue, WorkItem
+
+        snapshots = []
+
+        async def run():
+            q = PueoWorkQueue()
+            q.start()
+
+            async def _coro():
+                q.set_running_detail("batch 2 of 5")
+                snapshots.append(q.running_snapshot())
+
+            await q.submit(
+                WorkItem(
+                    priority=PRIORITY_NORMAL,
+                    activity_type="update_analysis",
+                    description="Core update",
+                    dedup_key="",
+                    suppress_while_running=frozenset(),
+                    coro_factory=_coro,
+                )
+            )
+            await asyncio.sleep(0.05)
+            await self._cancel_queue(q)
+
+        asyncio.run(run())
+        assert len(snapshots) == 1
+        assert snapshots[0]["detail"] == "batch 2 of 5"
+
+    def test_set_running_detail_cleared_on_completion(self):
+        """running_snapshot has no detail key after the item finishes."""
+        from utils.agent.work_queue import PRIORITY_NORMAL, PueoWorkQueue, WorkItem
+
+        snapshots_after = []
+
+        async def run():
+            q = PueoWorkQueue()
+            barrier = asyncio.Event()
+            done = asyncio.Event()
+
+            async def _first():
+                q.set_running_detail("step 1")
+                done.set()
+                await barrier.wait()
+
+            async def _second():
+                snapshots_after.append(q.running_snapshot())
+
+            await q.submit(
+                WorkItem(
+                    priority=PRIORITY_NORMAL,
+                    activity_type="a",
+                    description="first",
+                    dedup_key="",
+                    suppress_while_running=frozenset(),
+                    coro_factory=_first,
+                )
+            )
+            await q.submit(
+                WorkItem(
+                    priority=PRIORITY_NORMAL,
+                    activity_type="b",
+                    description="second",
+                    dedup_key="",
+                    suppress_while_running=frozenset(),
+                    coro_factory=_second,
+                )
+            )
+            q.start()
+            await done.wait()
+            barrier.set()
+            await asyncio.sleep(0.05)
+            await self._cancel_queue(q)
+
+        asyncio.run(run())
+        assert len(snapshots_after) == 1
+        assert "detail" not in snapshots_after[0]
+
+    def test_set_running_detail_publishes_queue_update(self):
+        """set_running_detail triggers _publish_queue_update."""
+        from unittest.mock import MagicMock, patch
+
+        from utils.agent.work_queue import PRIORITY_NORMAL, PueoWorkQueue, WorkItem
+
+        published = []
+
+        async def run():
+            q = PueoWorkQueue()
+            q.start()
+
+            async def _coro():
+                with patch(
+                    "utils.agent.work_queue.PueoWorkQueue._publish_queue_update",
+                    side_effect=lambda: published.append(q._running_detail),
+                ):
+                    q.set_running_detail("screening batch 3 of 9")
+
+            await q.submit(
+                WorkItem(
+                    priority=PRIORITY_NORMAL,
+                    activity_type="update_analysis",
+                    description="x",
+                    dedup_key="",
+                    suppress_while_running=frozenset(),
+                    coro_factory=_coro,
+                )
+            )
+            await asyncio.sleep(0.05)
+            await self._cancel_queue(q)
+
+        asyncio.run(run())
+        assert "screening batch 3 of 9" in published
+
 
 # ── FD monitoring helpers (utils/disk/resource.py, #769) ─────────────────────
 

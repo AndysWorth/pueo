@@ -1433,6 +1433,17 @@ async def _run_update_analysis(
                     if not _batch_text.strip():
                         continue
                     _batches_total += 1
+                    _screen_wq = get_work_queue_or_none()
+                    if _screen_wq is not None:
+                        _screen_wq.set_running_detail(
+                            f"screening batch {_batch_idx + 1} of {len(_batches)}"
+                        )
+                    _screen_t0 = time.monotonic()
+                    log.info(
+                        "screening_batch_started",
+                        batch=_batch_idx + 1,
+                        total=len(_batches),
+                    )
                     try:
                         _screen_prompt = load_agent_prompt(
                             "change_screening", "finish_change_screening"
@@ -1461,6 +1472,7 @@ async def _run_update_analysis(
                             signature=_sig_update("core_screen", update.component),
                             subject_key=update.entity_id,
                         )
+                        _screen_elapsed = round(time.monotonic() - _screen_t0, 1)
                         if _screen_result.outcome == "success":
                             _batches_done += 1
                         else:
@@ -1470,12 +1482,27 @@ async def _run_update_analysis(
                                 batch=_batch_idx + 1,
                                 outcome=_screen_result.outcome,
                             )
+                        log.info(
+                            "screening_batch_done",
+                            batch=_batch_idx + 1,
+                            total=len(_batches),
+                            elapsed=_screen_elapsed,
+                            outcome=_screen_result.outcome,
+                        )
                     except Exception as _se:
+                        _screen_elapsed = round(time.monotonic() - _screen_t0, 1)
                         _all_complete = False
                         log.warning(
                             "screening_batch_failed",
                             batch=_batch_idx + 1,
                             error=str(_se),
+                        )
+                        log.info(
+                            "screening_batch_done",
+                            batch=_batch_idx + 1,
+                            total=len(_batches),
+                            elapsed=_screen_elapsed,
+                            outcome="failed",
                         )
 
                 # Persist screening results to report
@@ -1540,6 +1567,9 @@ async def _run_update_analysis(
                 except Exception as _ev_exc:
                     log.warning("core_bc_evidence_failed", error=str(_ev_exc))
 
+        _analyse_wq = get_work_queue_or_none()
+        if _analyse_wq is not None:
+            _analyse_wq.set_running_detail("analysing")
         llm_client = make_llm_client()  # pragma: no cover
         loop = AgentLoop(
             llm_client=llm_client,
