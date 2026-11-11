@@ -110,11 +110,36 @@
       <p style="color:{% if _impact == 'high' %}var(--red){% else %}var(--orange){% endif %};font-weight:600;">
         ⚠️ Instance impact: {{ _impact | upper }} — {{ r.payload.get("instance_impact_summary", "") }}
       </p>
-      {% if not r.payload.get("effective_safe_to_update") %}
+      {% if not r.payload.get("effective_safe_to_update") and r.payload.get("proposed_config_fixes") %}
       <p style="color:var(--red);font-weight:600;">🚫 Config fixes required before updating safely.</p>
+      {% elif not r.payload.get("effective_safe_to_update") %}
+      <p style="color:var(--orange);font-weight:600;">Review the items below before updating.</p>
       {% endif %}
       {% endif %}
       <ul>{% for bc in r.payload.breaking_changes %}<li>{{ bc }}</li>{% endfor %}</ul>
+      {% endif %}
+      {# Flagged by screening — below the three BC groups #}
+      {% if r.payload.get("flag_verdicts") %}
+      {% set _yes_fvds = r.payload.flag_verdicts | selectattr("affects", "eq", "yes") | list %}
+      {% set _unk_fvds = r.payload.flag_verdicts | selectattr("affects", "eq", "unknown") | list %}
+      {% set _no_fvds  = r.payload.flag_verdicts | selectattr("affects", "eq", "no")  | list %}
+      {% if _yes_fvds or _unk_fvds %}
+      <p style="font-weight:600;color:#555;margin:0.5rem 0 0.3rem;border-top:1px solid #eee;padding-top:0.5rem;">⚑ Flagged by screening</p>
+      {% if _yes_fvds %}
+      <p style="font-weight:600;color:var(--red,#b91c1c);margin:0.2rem 0;">Affects this install</p>
+      <ul style="margin:0 0 0.4rem 1.25rem;">{% for v in _yes_fvds %}<li style="margin-bottom:0.2rem;font-size:0.88rem;"><strong>{{ v.flag }}</strong>{% if v.reason %} — {{ v.reason }}{% endif %}</li>{% endfor %}</ul>
+      {% endif %}
+      {% if _unk_fvds %}
+      <p style="font-weight:600;color:var(--orange,#b45309);margin:0.2rem 0;">Check manually</p>
+      <ul style="margin:0 0 0.4rem 1.25rem;">{% for v in _unk_fvds %}<li style="margin-bottom:0.2rem;font-size:0.88rem;"><strong>{{ v.flag }}</strong>{% if v.reason %} — {{ v.reason }}{% endif %}</li>{% endfor %}</ul>
+      {% endif %}
+      {% if _no_fvds %}
+      <details style="margin-top:0.2rem;">
+        <summary style="font-size:0.82rem;color:#555;cursor:pointer;">Not flagged ({{ _no_fvds | length }})</summary>
+        <ul style="margin:0.2rem 0 0 1.25rem;">{% for v in _no_fvds %}<li style="font-size:0.8rem;color:#555;margin-bottom:0.1rem;">{{ v.flag }}{% if v.reason %} — {{ v.reason }}{% endif %}</li>{% endfor %}</ul>
+      </details>
+      {% endif %}
+      {% endif %}
       {% endif %}
       {% if r.payload.get("affected_config_keys") %}
       <p><strong>Affected config keys:</strong> {{ r.payload.affected_config_keys | join(", ") }}</p>

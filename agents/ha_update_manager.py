@@ -1544,14 +1544,15 @@ async def _run_update_analysis(
                         build_bc_evidence as _build_bc_ev,
                     )
 
-                    _evidence = await _build_bc_ev(
+                    _bc_ev, _flag_ev = await _build_bc_ev(
                         _rpt,
                         ws_client=_ws_client,
                         rest_client=ha_rest_client,
                         ssh_client=_ssh,
                     )
-                    if _evidence:
-                        _rpt.bc_evidence = _evidence
+                    if _bc_ev or _flag_ev:
+                        _rpt.bc_evidence = _bc_ev
+                        _rpt.flag_evidence = _flag_ev
                         _ev_path = (
                             _get_dirs().state_dir
                             / "update_reports"
@@ -1563,7 +1564,8 @@ async def _run_update_analysis(
                         log.info(
                             "core_bc_evidence_built",
                             version=update.latest_version,
-                            bcs=len(_evidence),
+                            bcs=len(_bc_ev),
+                            flags=len(_flag_ev),
                         )
                 except Exception as _ev_exc:
                     log.warning("core_bc_evidence_failed", error=str(_ev_exc))

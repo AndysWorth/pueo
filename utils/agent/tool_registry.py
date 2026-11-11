@@ -2623,6 +2623,37 @@ FINISH_UPDATE_ANALYSIS = ToolDefinition(
                     "Cover every BC — missing ones will be filled as 'unknown'."
                 ),
             },
+            "flag_verdicts": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "flag": {
+                            "type": "string",
+                            "description": "The flag change text, exactly as it appears in the digest.",
+                        },
+                        "affects": {
+                            "type": "string",
+                            "enum": ["yes", "no", "unknown"],
+                            "description": (
+                                "'yes' if this flagged change affects this installation, "
+                                "'no' if confirmed not affected, "
+                                "'unknown' if the evidence was insufficient to decide."
+                            ),
+                        },
+                        "reason": {
+                            "type": "string",
+                            "description": "One sentence explaining the verdict.",
+                        },
+                    },
+                    "required": ["flag", "affects", "reason"],
+                },
+                "description": (
+                    "One entry per flagged change from 'Flagged changes (from screening)'. "
+                    "A flag verdict of 'yes' raises instance_impact to high. "
+                    "Missing flags are filled as 'unknown' and do not affect impact."
+                ),
+            },
             "deviated_from_runbook": {
                 "type": "object",
                 "description": (

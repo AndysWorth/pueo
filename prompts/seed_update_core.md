@@ -62,8 +62,13 @@ releases (2026.9.x → 2026.10.x) may carry breaking changes.
 
 - `bc_verdicts`: **required**. One entry per BC (bc_installed + bc_general). Every BC must
   have an entry — missing ones are filled as `unknown` automatically.
+- `flag_verdicts`: one entry per flagged change from `Flagged changes (from screening)`.
+  Use the flag's `Evidence:` block (entity counts, config refs, dashboard hits) to judge
+  `yes`/`no`/`unknown`. A `yes` verdict raises `instance_impact` to `high`; `unknown`
+  does not change impact. Flags are distinct from BCs — do not list them in `bc_verdicts`.
 - `affected_config_keys`: only keys confirmed present in this install's config.
 - `proposed_config_fixes`: concrete YAML diff the user must apply before updating.
+  Omit if no fixes are needed — an empty list suppresses the "Config fixes required" notice.
 - `prerequisites`: any manual steps before applying (e.g. "Update Supervisor first",
   "Create a manual backup").
 - `confidence`: 0.9+ only when the digest was `complete` and you assessed every BC.

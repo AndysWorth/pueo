@@ -7227,6 +7227,38 @@ class TestCoreReleaseDigest:
         report = self._make_report()
         assert format_core_release_digest(report) == ""
 
+    def test_flag_evidence_rendered_in_digest(self):
+        """Flag evidence block appears under the flag in the digest."""
+        from utils.knowledge.ha_release_report import (
+            BCEvidence,
+            format_core_release_digest,
+        )
+
+        ev = BCEvidence(
+            domains=["light"],
+            entity_count=5,
+            entity_examples=["light.bulb1"],
+            found=True,
+        )
+        report = self._make_report(
+            screening_flags=[self._flag(domain="light", change="Tuya changed")],
+            flag_evidence={"Tuya changed": ev},
+        )
+        result = format_core_release_digest(report)
+        assert "Evidence:" in result
+        assert "Entities (5)" in result
+
+    def test_flag_no_evidence_no_evidence_block(self):
+        """Flags without evidence in flag_evidence dict render without Evidence block."""
+        from utils.knowledge.ha_release_report import format_core_release_digest
+
+        report = self._make_report(
+            screening_flags=[self._flag(domain="light", change="Tuya changed")],
+        )
+        result = format_core_release_digest(report)
+        assert "Flagged changes" in result
+        assert "Evidence:" not in result
+
 
 # ---------------------------------------------------------------------------
 # finish_update_analysis dispatch: highlights pass-through
@@ -7711,6 +7743,60 @@ class TestBCEvidenceInReport:
         reloaded = CoreReleaseReport.model_validate_json(rpt.model_dump_json())
         assert reloaded.bc_evidence["Tuya change"].entity_count == 3
 
+    def test_flag_evidence_valid_construction(self):
+        from utils.knowledge.ha_release_report import BCEvidence, CoreReleaseReport
+
+        ev = BCEvidence(domains=["light"], entity_count=5, found=True)
+        rpt = CoreReleaseReport(
+            version="2026.11.0",
+            flag_evidence={"Some flag change": ev},
+        )
+        assert rpt.flag_evidence["Some flag change"].entity_count == 5
+
+    def test_flag_evidence_defaults_empty(self):
+        from utils.knowledge.ha_release_report import CoreReleaseReport
+
+        rpt = CoreReleaseReport(version="2026.11.0")
+        assert rpt.flag_evidence == {}
+
+    def test_flag_evidence_json_roundtrip(self):
+        from utils.knowledge.ha_release_report import BCEvidence, CoreReleaseReport
+
+        ev = BCEvidence(domains=["sensor"], entity_count=2, found=True, tokens=["t1"])
+        rpt = CoreReleaseReport(
+            version="2026.11.0",
+            flag_evidence={"Flag text here": ev},
+        )
+        reloaded = CoreReleaseReport.model_validate_json(rpt.model_dump_json())
+        assert reloaded.flag_evidence["Flag text here"].entity_count == 2
+        assert reloaded.flag_evidence["Flag text here"].tokens == ["t1"]
+
+    def test_flag_verdicts_valid_construction(self):
+        from utils.knowledge.ha_release_report import CoreReleaseReport
+
+        rpt = CoreReleaseReport(
+            version="2026.11.0",
+            flag_verdicts=[{"flag": "F1", "affects": "yes", "reason": "found"}],
+        )
+        assert rpt.flag_verdicts[0]["affects"] == "yes"
+
+    def test_flag_verdicts_defaults_empty(self):
+        from utils.knowledge.ha_release_report import CoreReleaseReport
+
+        rpt = CoreReleaseReport(version="2026.11.0")
+        assert rpt.flag_verdicts == []
+
+    def test_flag_verdicts_json_roundtrip(self):
+        from utils.knowledge.ha_release_report import CoreReleaseReport
+
+        rpt = CoreReleaseReport(
+            version="2026.11.0",
+            flag_verdicts=[{"flag": "F1", "affects": "no", "reason": "none found"}],
+        )
+        reloaded = CoreReleaseReport.model_validate_json(rpt.model_dump_json())
+        assert reloaded.flag_verdicts[0]["flag"] == "F1"
+        assert reloaded.flag_verdicts[0]["affects"] == "no"
+
 
 class TestBuildBCEvidenceAsync:
     """Async integration tests for build_bc_evidence with fake clients."""
@@ -7742,8 +7828,8 @@ class TestBuildBCEvidenceAsync:
                 )
             ],
         )
-        evidence = asyncio.run(build_bc_evidence(rpt, ws_client=ws))
-        ev = evidence.get("Matter concentration sensors")
+        bc_evidence, _flag_evidence = asyncio.run(build_bc_evidence(rpt, ws_client=ws))
+        ev = bc_evidence.get("Matter concentration sensors")
         assert ev is not None
         assert ev.entity_count == 0
         assert ev.found is False
@@ -7773,8 +7859,8 @@ class TestBuildBCEvidenceAsync:
                 )
             ],
         )
-        evidence = asyncio.run(build_bc_evidence(rpt, ws_client=ws))
-        ev = evidence["Tuya lights"]
+        bc_evidence, _flag_evidence = asyncio.run(build_bc_evidence(rpt, ws_client=ws))
+        ev = bc_evidence["Tuya lights"]
         assert ev.entity_count == 2
         assert "Tuya Strip" in ev.multi_channel_devices
         assert ev.found is True
@@ -7806,8 +7892,8 @@ class TestBuildBCEvidenceAsync:
                 )
             ],
         )
-        evidence = asyncio.run(build_bc_evidence(rpt, ws_client=ws))
-        ev = evidence["Alert card update"]
+        bc_evidence, _flag_evidence = asyncio.run(build_bc_evidence(rpt, ws_client=ws))
+        ev = bc_evidence["Alert card update"]
         assert any("type: alert" in h for h in ev.dashboard_hits)
         assert ev.found is True
 
@@ -7821,8 +7907,10 @@ class TestBuildBCEvidenceAsync:
             version="2026.11.0",
             bc_installed=[BCEntry(name="Some BC", domains=["light"], body="Detail.")],
         )
-        evidence = asyncio.run(build_bc_evidence(rpt, ws_client=None))
-        ev = evidence["Some BC"]
+        bc_evidence, _flag_evidence = asyncio.run(
+            build_bc_evidence(rpt, ws_client=None)
+        )
+        ev = bc_evidence["Some BC"]
         assert ev.entity_count == 0
         assert not ev.automation_hits
         assert not ev.dashboard_hits
@@ -7845,8 +7933,54 @@ class TestBuildBCEvidenceAsync:
                 BCEntry(name="Entity names change", domains=[], body="Rename check.")
             ],
         )
-        evidence = asyncio.run(build_bc_evidence(rpt, ws_client=ws))
-        assert "Entity names change" in evidence
+        bc_evidence, _flag_evidence = asyncio.run(build_bc_evidence(rpt, ws_client=ws))
+        assert "Entity names change" in bc_evidence
+
+    def test_flag_evidence_built_for_screening_flags(self):
+        """Screening flags get their own evidence dict keyed by change text."""
+        import asyncio
+        from utils.ha.update_bc_evidence import build_bc_evidence
+        from utils.knowledge.ha_release_report import (
+            CoreReleaseReport,
+            ScreeningFlag,
+        )
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        ws = FakeHAWebSocketClient(
+            entity_registry=[self._make_entity("light.tuya_1")],
+            lovelace_configs={None: {"views": []}},
+        )
+        rpt = CoreReleaseReport(
+            version="2026.11.0",
+            screening_flags=[
+                ScreeningFlag(
+                    domain="light",
+                    change="Tuya light pairing changed",
+                    concern="Re-pairing may be required",
+                    severity="medium",
+                )
+            ],
+        )
+        _bc_evidence, flag_evidence = asyncio.run(build_bc_evidence(rpt, ws_client=ws))
+        assert "Tuya light pairing changed" in flag_evidence
+        ev = flag_evidence["Tuya light pairing changed"]
+        assert ev.entity_count == 1  # light.tuya_1 matches domain "light"
+        assert ev.found is True
+
+    def test_flag_evidence_empty_when_no_flags(self):
+        """Empty screening_flags → empty flag_evidence."""
+        import asyncio
+        from utils.ha.update_bc_evidence import build_bc_evidence
+        from utils.knowledge.ha_release_report import BCEntry, CoreReleaseReport
+
+        rpt = CoreReleaseReport(
+            version="2026.11.0",
+            bc_installed=[BCEntry(name="Some BC", domains=[], body="")],
+        )
+        _bc_evidence, flag_evidence = asyncio.run(
+            build_bc_evidence(rpt, ws_client=None)
+        )
+        assert flag_evidence == {}
 
 
 # ---------------------------------------------------------------------------
@@ -7972,6 +8106,70 @@ class TestDeriveInstanceImpact:
         from utils.agent.tool_executor import _derive_instance_impact
 
         assert _derive_instance_impact([]) == "none"
+
+    def test_flag_yes_gives_high(self):
+        from utils.agent.tool_executor import _derive_instance_impact
+
+        bc = [{"affects": "no"}]
+        flags = [{"affects": "yes"}]
+        assert _derive_instance_impact(bc, flags) == "high"
+
+    def test_flag_unknown_alone_gives_none(self):
+        from utils.agent.tool_executor import _derive_instance_impact
+
+        bc = [{"affects": "no"}]
+        flags = [{"affects": "unknown"}]
+        assert _derive_instance_impact(bc, flags) == "none"
+
+    def test_bc_unknown_plus_flag_unknown_gives_low(self):
+        from utils.agent.tool_executor import _derive_instance_impact
+
+        bc = [{"affects": "unknown"}]
+        flags = [{"affects": "unknown"}]
+        assert _derive_instance_impact(bc, flags) == "low"
+
+
+class TestNormalizeFlagVerdicts:
+    """Unit tests for _normalize_flag_verdicts."""
+
+    def test_exact_match(self):
+        from utils.agent.tool_executor import _normalize_flag_verdicts
+
+        result = _normalize_flag_verdicts(
+            [{"flag": "Device tracker renamed", "affects": "yes", "reason": "used"}],
+            ["Device tracker renamed"],
+        )
+        assert result[0] == {
+            "flag": "Device tracker renamed",
+            "affects": "yes",
+            "reason": "used",
+        }
+
+    def test_missing_flag_filled_unknown(self):
+        from utils.agent.tool_executor import _normalize_flag_verdicts
+
+        result = _normalize_flag_verdicts([], ["Flag A", "Flag B"])
+        assert len(result) == 2
+        assert all(r["affects"] == "unknown" for r in result)
+
+    def test_unmatched_verdict_dropped(self):
+        from utils.agent.tool_executor import _normalize_flag_verdicts
+
+        result = _normalize_flag_verdicts(
+            [{"flag": "Completely unrelated", "affects": "no", "reason": ""}],
+            ["Flag A"],
+        )
+        assert len(result) == 1
+        assert result[0]["affects"] == "unknown"
+
+    def test_empty_flag_changes_returns_empty(self):
+        from utils.agent.tool_executor import _normalize_flag_verdicts
+
+        result = _normalize_flag_verdicts(
+            [{"flag": "Something", "affects": "yes", "reason": "x"}],
+            [],
+        )
+        assert result == []
 
 
 class TestFinishUpdateAnalysisWithVerdicts:
@@ -8144,6 +8342,196 @@ class TestFinishUpdateAnalysisWithVerdicts:
         payload = notifier.send.call_args[1]["payload"]
         assert payload["bc_verdicts"] == []
         assert payload["instance_impact"] == "low"
+
+    def test_flag_yes_verdict_raises_impact_to_high(self, pueo_dirs):
+        """A flag_verdict 'yes' raises instance_impact to high."""
+        import asyncio
+
+        from utils.knowledge.ha_release_report import CoreReleaseReport, ScreeningFlag
+        from unittest.mock import AsyncMock, MagicMock
+        from utils.agent.autonomy import AutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+
+        notifier = MagicMock()
+        notifier.send = AsyncMock()
+        gate = AutonomyGate(level=2)
+        executor = ToolExecutor(
+            ha_ssh_client=MagicMock(),
+            gate=gate,
+            notifier=notifier,
+            db_path=":memory:",
+        )
+        rpt = CoreReleaseReport(
+            version="2026.11.0",
+            completeness="complete",
+            screening_flags=[
+                ScreeningFlag(
+                    domain="light",
+                    change="Tuya light pairing changed",
+                    concern="Re-pairing may be required",
+                    severity="medium",
+                )
+            ],
+        )
+        executor._core_release_report = rpt
+        executor._release_notes_completeness = "complete"
+        executor.set_update_status(self._make_update())
+
+        with __import__("unittest.mock", fromlist=["patch"]).patch(
+            "agents.ha_log_monitor._update_mark_card_sent"
+        ):
+            asyncio.run(
+                executor._finish_update_analysis(
+                    safe_to_update=True,
+                    breaking_changes=[],
+                    affected_config_keys=[],
+                    pueo_command_risks=[],
+                    recommendation="One flag affects install.",
+                    instance_impact="none",
+                    proposed_config_fixes=[],
+                    create_hitl_card=True,
+                    bc_verdicts=[],
+                    flag_verdicts=[
+                        {
+                            "flag": "Tuya light pairing changed",
+                            "affects": "yes",
+                            "reason": "10 Tuya lights found",
+                        }
+                    ],
+                )
+            )
+
+        payload = notifier.send.call_args[1]["payload"]
+        assert payload["instance_impact"] == "high"
+        assert payload["flag_verdicts"][0]["affects"] == "yes"
+
+    def test_flag_unknown_does_not_raise_impact(self, pueo_dirs):
+        """A flag_verdict 'unknown' does not raise instance_impact."""
+        import asyncio
+
+        from utils.knowledge.ha_release_report import CoreReleaseReport, ScreeningFlag
+        from unittest.mock import AsyncMock, MagicMock
+        from utils.agent.autonomy import AutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+
+        notifier = MagicMock()
+        notifier.send = AsyncMock()
+        gate = AutonomyGate(level=2)
+        executor = ToolExecutor(
+            ha_ssh_client=MagicMock(),
+            gate=gate,
+            notifier=notifier,
+            db_path=":memory:",
+        )
+        rpt = CoreReleaseReport(
+            version="2026.11.0",
+            completeness="complete",
+            screening_flags=[
+                ScreeningFlag(
+                    domain="sensor",
+                    change="Sensor precision changed",
+                    concern="Check sensor values",
+                    severity="low",
+                )
+            ],
+        )
+        executor._core_release_report = rpt
+        executor._release_notes_completeness = "complete"
+        executor.set_update_status(self._make_update())
+
+        with __import__("unittest.mock", fromlist=["patch"]).patch(
+            "agents.ha_log_monitor._update_mark_card_sent"
+        ):
+            asyncio.run(
+                executor._finish_update_analysis(
+                    safe_to_update=True,
+                    breaking_changes=[],
+                    affected_config_keys=[],
+                    pueo_command_risks=[],
+                    recommendation="Flags unclear.",
+                    instance_impact="none",
+                    proposed_config_fixes=[],
+                    create_hitl_card=True,
+                    bc_verdicts=[],
+                    flag_verdicts=[
+                        {
+                            "flag": "Sensor precision changed",
+                            "affects": "unknown",
+                            "reason": "Couldn't determine",
+                        }
+                    ],
+                )
+            )
+
+        payload = notifier.send.call_args[1]["payload"]
+        assert payload["instance_impact"] == "none"
+
+    def test_config_fixes_required_only_when_fixes_exist(self, pueo_dirs):
+        """'Config fixes required' body line only appears when proposed_config_fixes is non-empty."""
+        import asyncio
+
+        from utils.knowledge.ha_release_report import BCEntry
+
+        bc = BCEntry(name="Tuya entities", domains=["tuya"])
+        executor, notifier = self._make_executor_with_report(bc_installed=[bc])
+        executor.set_update_status(self._make_update())
+
+        with __import__("unittest.mock", fromlist=["patch"]).patch(
+            "agents.ha_log_monitor._update_mark_card_sent"
+        ):
+            asyncio.run(
+                executor._finish_update_analysis(
+                    safe_to_update=False,
+                    breaking_changes=[],
+                    affected_config_keys=[],
+                    pueo_command_risks=[],
+                    recommendation="Needs manual review.",
+                    instance_impact="high",
+                    proposed_config_fixes=[],  # empty — no fixes
+                    create_hitl_card=True,
+                    bc_verdicts=[
+                        {"bc": "Tuya entities", "affects": "yes", "reason": "found"}
+                    ],
+                )
+            )
+
+        # Notifier body should NOT contain "Config fixes required"
+        body = notifier.send.call_args[1]["body"]
+        assert "Config fixes required" not in body
+        assert "Review the items below before updating" in body
+
+    def test_bc_verdicts_only_from_report_when_flags_in_breaking_changes(
+        self, pueo_dirs
+    ):
+        """breaking_changes in payload comes only from BC verdicts, not model free text."""
+        import asyncio
+
+        from utils.knowledge.ha_release_report import BCEntry
+
+        bc = BCEntry(name="Real BC", domains=["sensor"])
+        executor, notifier = self._make_executor_with_report(bc_installed=[bc])
+        executor.set_update_status(self._make_update())
+
+        with __import__("unittest.mock", fromlist=["patch"]).patch(
+            "agents.ha_log_monitor._update_mark_card_sent"
+        ):
+            asyncio.run(
+                executor._finish_update_analysis(
+                    safe_to_update=True,
+                    breaking_changes=["Fake flag relabelled as BC"],  # model free text
+                    affected_config_keys=[],
+                    pueo_command_risks=[],
+                    recommendation="All good.",
+                    instance_impact="none",
+                    proposed_config_fixes=[],
+                    create_hitl_card=True,
+                    bc_verdicts=[{"bc": "Real BC", "affects": "no", "reason": "none"}],
+                )
+            )
+
+        payload = notifier.send.call_args[1]["payload"]
+        # Only "no" verdict → breaking_changes should be empty (not the model's free text)
+        assert payload["breaking_changes"] == []
 
 
 # ---------------------------------------------------------------------------
