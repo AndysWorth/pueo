@@ -1445,65 +1445,80 @@ async def _run_update_analysis(
                         batch=_batch_idx + 1,
                         total=len(_batches),
                     )
-                    try:
-                        _screen_prompt = load_agent_prompt(
-                            "change_screening", "finish_change_screening"
-                        )
-                        _screen_llm = make_llm_client()  # pragma: no cover
-                        _screen_loop = AgentLoop(
-                            llm_client=_screen_llm,
-                            tool_executor=executor,
-                            tool_registry=build_change_screening_registry(),
-                            system_prompt=_screen_prompt,
-                            terminal_tool_name="finish_change_screening",
-                            trigger="update_poll",
-                            activity_type="change_screening",
-                            db_path=DB_PATH,
-                            knowledge_store=knowledge_store,
-                            capture_llm=False,
-                            max_tool_calls=3,
-                            distill=False,
-                            think=False,
-                        )
-                        _screen_result = await _screen_loop.run(
-                            (
-                                f"HA Core {update.latest_version} — batch {_batch_idx + 1}"
-                                f" of {len(_batches)}:\n\n{_batch_text}"
-                            ),
-                            signature=_sig_update("core_screen", update.component),
-                            subject_key=update.entity_id,
-                        )
-                        _screen_elapsed = round(time.monotonic() - _screen_t0, 1)
-                        if _screen_result.outcome == "success":
-                            _batches_done += 1
-                        else:
-                            _all_complete = False
-                            log.warning(
-                                "screening_batch_incomplete",
-                                batch=_batch_idx + 1,
-                                outcome=_screen_result.outcome,
+                    _batch_outcome = "failed"
+                    for _attempt in range(2):
+                        _screen_t0 = time.monotonic()
+                        try:
+                            _screen_prompt = load_agent_prompt(
+                                "change_screening", "finish_change_screening"
                             )
-                        log.info(
-                            "screening_batch_done",
-                            batch=_batch_idx + 1,
-                            total=len(_batches),
-                            elapsed=_screen_elapsed,
-                            outcome=_screen_result.outcome,
-                        )
-                    except Exception as _se:
-                        _screen_elapsed = round(time.monotonic() - _screen_t0, 1)
+                            _screen_llm = make_llm_client()  # pragma: no cover
+                            _screen_loop = AgentLoop(
+                                llm_client=_screen_llm,
+                                tool_executor=executor,
+                                tool_registry=build_change_screening_registry(),
+                                system_prompt=_screen_prompt,
+                                terminal_tool_name="finish_change_screening",
+                                trigger="update_poll",
+                                activity_type="change_screening",
+                                db_path=DB_PATH,
+                                knowledge_store=knowledge_store,
+                                capture_llm=False,
+                                max_tool_calls=3,
+                                distill=False,
+                                think=False,
+                            )
+                            _screen_result = await _screen_loop.run(
+                                (
+                                    f"HA Core {update.latest_version} — batch"
+                                    f" {_batch_idx + 1} of {len(_batches)}:"
+                                    f"\n\n{_batch_text}"
+                                ),
+                                signature=_sig_update("core_screen", update.component),
+                                subject_key=update.entity_id,
+                            )
+                            _screen_elapsed = round(time.monotonic() - _screen_t0, 1)
+                            _batch_outcome = _screen_result.outcome
+                            log.info(
+                                "screening_batch_done",
+                                batch=_batch_idx + 1,
+                                total=len(_batches),
+                                elapsed=_screen_elapsed,
+                                outcome=_batch_outcome,
+                                attempt=_attempt + 1,
+                            )
+                            if _batch_outcome == "success":
+                                break
+                            if _attempt == 0:
+                                log.warning(
+                                    "screening_batch_incomplete_retrying",
+                                    batch=_batch_idx + 1,
+                                    outcome=_batch_outcome,
+                                )
+                        except Exception as _se:
+                            _screen_elapsed = round(time.monotonic() - _screen_t0, 1)
+                            log.warning(
+                                "screening_batch_failed",
+                                batch=_batch_idx + 1,
+                                attempt=_attempt + 1,
+                                error=str(_se),
+                            )
+                            log.info(
+                                "screening_batch_done",
+                                batch=_batch_idx + 1,
+                                total=len(_batches),
+                                elapsed=_screen_elapsed,
+                                outcome="failed",
+                                attempt=_attempt + 1,
+                            )
+                    if _batch_outcome == "success":
+                        _batches_done += 1
+                    else:
                         _all_complete = False
                         log.warning(
-                            "screening_batch_failed",
+                            "screening_batch_incomplete",
                             batch=_batch_idx + 1,
-                            error=str(_se),
-                        )
-                        log.info(
-                            "screening_batch_done",
-                            batch=_batch_idx + 1,
-                            total=len(_batches),
-                            elapsed=_screen_elapsed,
-                            outcome="failed",
+                            outcome=_batch_outcome,
                         )
 
                 # Persist screening results to report

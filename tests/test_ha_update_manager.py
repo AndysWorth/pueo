@@ -2385,11 +2385,13 @@ class TestCoreScreeningBatchCounts:
 
         rpt = CoreReleaseReport(version="2026.11.0", completeness="complete")
         # 3 screening batches + 1 blank (skipped) → main loop result last.
+        # Batch 2 is stuck on both attempts (retry), so it consumes 2 results.
         results = [
-            AgentLoopResult(outcome="success"),
-            AgentLoopResult(outcome="stuck"),
-            AgentLoopResult(outcome="success"),
-            AgentLoopResult(outcome="success"),
+            AgentLoopResult(outcome="success"),  # batch 1
+            AgentLoopResult(outcome="stuck"),  # batch 2, attempt 1 → retry
+            AgentLoopResult(outcome="stuck"),  # batch 2, attempt 2 → still stuck
+            AgentLoopResult(outcome="success"),  # batch 3
+            AgentLoopResult(outcome="success"),  # main analysis loop
         ]
 
         with (
