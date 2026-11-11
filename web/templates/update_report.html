@@ -67,21 +67,6 @@
 </div>
 {% endif %}
 
-{# Screening flags #}
-{% if report.screening_flags %}
-<div class="rpt-section">
-  <h3>⚑ Flagged Changes</h3>
-  {% for f in report.screening_flags %}
-  <div class="flag-entry flag-{{ f.severity | lower }}">
-    <div><span class="flag-domain">{{ f.domain }}</span>
-      <span style="font-size:0.72rem;font-weight:700;color:#555;margin-left:0.4rem;">[{{ f.severity | upper }}]</span>
-    </div>
-    <div>{{ f.change }}</div>
-    <div class="flag-concern">⚠ {{ f.concern }}</div>
-  </div>
-  {% endfor %}
-</div>
-{% endif %}
 
 {# BC verdicts (three groups) — only when verdicts exist #}
 {% if report.bc_verdicts %}
@@ -154,6 +139,59 @@
 {% endif %}
 {% endif %}
 
+{# Flagged by screening — with verdicts when available #}
+{% if report.flag_verdicts %}
+{% set _yes_fvds = report.flag_verdicts | selectattr("affects", "eq", "yes") | list %}
+{% set _unk_fvds = report.flag_verdicts | selectattr("affects", "eq", "unknown") | list %}
+{% set _no_fvds  = report.flag_verdicts | selectattr("affects", "eq", "no")  | list %}
+{% if _yes_fvds %}
+<div class="rpt-section">
+  <h3 style="color:var(--red,#b91c1c);">⚑ Flagged — Affects This Install</h3>
+  {% for v in _yes_fvds %}
+  {% set flag_obj = report.screening_flags | selectattr("change", "eq", v.flag) | first | default(None) %}
+  <div class="bc-entry">
+    <div><span class="bc-name">{{ v.flag }}</span>{% if flag_obj %}<span class="bc-domains" style="margin-left:0.5rem;">{{ flag_obj.domain }} [{{ flag_obj.severity | upper }}]</span>{% endif %}</div>
+    <div style="font-size:0.82rem;color:var(--red,#b91c1c);margin-top:0.15rem;">{{ v.reason }}</div>
+    {% if flag_obj and flag_obj.concern %}<div class="bc-body">{{ flag_obj.concern }}</div>{% endif %}
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+{% if _unk_fvds %}
+<div class="rpt-section">
+  <h3 style="color:var(--orange,#b45309);">⚑ Flagged — Check Manually</h3>
+  {% for v in _unk_fvds %}
+  {% set flag_obj = report.screening_flags | selectattr("change", "eq", v.flag) | first | default(None) %}
+  <div class="bc-entry">
+    <div><span class="bc-name">{{ v.flag }}</span>{% if flag_obj %}<span class="bc-domains" style="margin-left:0.5rem;">{{ flag_obj.domain }} [{{ flag_obj.severity | upper }}]</span>{% endif %}</div>
+    <div style="font-size:0.82rem;color:var(--orange,#b45309);margin-top:0.15rem;">{{ v.reason }}</div>
+    {% if flag_obj and flag_obj.concern %}<div class="bc-body">{{ flag_obj.concern }}</div>{% endif %}
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+{% if _no_fvds %}
+<div class="rpt-section">
+  <h3 style="color:var(--green,#2a9d4e);">⚑ Flagged — Not Affected</h3>
+  <ul style="margin:0 0 0 1.25rem;">{% for v in _no_fvds %}<li style="font-size:0.85rem;margin-bottom:0.2rem;"><strong>{{ v.flag }}</strong>{% if v.reason %} — {{ v.reason }}{% endif %}</li>{% endfor %}</ul>
+</div>
+{% endif %}
+{% elif report.screening_flags %}
+{# No verdicts yet — fall back to plain flag list #}
+<div class="rpt-section">
+  <h3>⚑ Flagged Changes (not yet assessed)</h3>
+  {% for f in report.screening_flags %}
+  <div class="flag-entry flag-{{ f.severity | lower }}">
+    <div><span class="flag-domain">{{ f.domain }}</span>
+      <span style="font-size:0.72rem;font-weight:700;color:#555;margin-left:0.4rem;">[{{ f.severity | upper }}]</span>
+    </div>
+    <div>{{ f.change }}</div>
+    <div class="flag-concern">⚠ {{ f.concern }}</div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
 {# BC names for other integrations (not installed) #}
 {% if report.bc_other_names %}
 <div class="rpt-section">
@@ -180,7 +218,7 @@
 {% endif %}
 
 {# No content fallback #}
-{% if not report.bc_installed and not report.bc_general and not report.screening_flags and not report.screening_highlights and not report.changes_by_domain %}
+{% if not report.bc_installed and not report.bc_general and not report.screening_flags and not report.flag_verdicts and not report.screening_highlights and not report.changes_by_domain %}
 <div class="rpt-section">
   <p class="rpt-empty">No relevant changes found for installed integrations.</p>
 </div>

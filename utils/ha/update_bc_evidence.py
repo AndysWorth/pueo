@@ -238,19 +238,53 @@ async def _grep_automation_yaml(
     return hits
 
 
+async def _build_one_evidence(
+    name: str,
+    body: str,
+    domains: list[str],
+    entity_registry: list[dict],
+    device_registry: list[dict],
+    lovelace_configs: list[tuple[str, dict]],
+    ssh_client: Optional[Any],
+) -> "Any":
+    """Build BCEvidence for a single entry (BC or flag).  Returns a BCEvidence."""
+    from utils.knowledge.ha_release_report import BCEvidence
+
+    entity_count, entity_examples, multi_channel = _entity_summary(
+        domains, entity_registry, device_registry
+    )
+    tokens = _extract_tokens(name, body)
+    dashboard_hits = _search_dashboards(tokens, lovelace_configs)
+    automation_hits: list[str] = []
+    if ssh_client is not None and tokens:
+        automation_hits = await _grep_automation_yaml(tokens, ssh_client)
+
+    found = entity_count > 0 or bool(automation_hits) or bool(dashboard_hits)
+    return BCEvidence(
+        domains=domains,
+        entity_count=entity_count,
+        entity_examples=entity_examples,
+        multi_channel_devices=multi_channel,
+        tokens=tokens,
+        automation_hits=automation_hits,
+        dashboard_hits=dashboard_hits,
+        found=found,
+    )
+
+
 async def build_bc_evidence(
     report: Any,  # CoreReleaseReport
     ws_client: Optional[Any] = None,
     rest_client: Optional[Any] = None,  # noqa: ARG001 — reserved for future use
     ssh_client: Optional[Any] = None,
-) -> "dict[str, Any]":
-    """Build per-BC evidence for all BCs in a CoreReleaseReport.
+) -> "tuple[dict[str, Any], dict[str, Any]]":
+    """Build per-BC and per-flag evidence for all entries in a CoreReleaseReport.
 
-    Returns a dict keyed by BCEntry.name with BCEvidence values.
+    Returns (bc_evidence, flag_evidence):
+      bc_evidence  — dict keyed by BCEntry.name
+      flag_evidence — dict keyed by ScreeningFlag.change text
     Clients may be None — each data source degrades gracefully.
     """
-    from utils.knowledge.ha_release_report import BCEvidence
-
     # ── Gather shared data once ───────────────────────────────────────────
     entity_registry: list[dict] = []
     device_registry: list[dict] = []
@@ -284,43 +318,42 @@ async def build_bc_evidence(
         except Exception as exc:
             log.warning("bc_evidence_lovelace_failed", error=str(exc))
 
+    _shared = (entity_registry, device_registry, lovelace_configs, ssh_client)
+
     # ── Per-BC evidence ───────────────────────────────────────────────────
     all_bcs = list(report.bc_installed) + list(report.bc_general)
-    result: dict[str, Any] = {}
+    bc_result: dict[str, Any] = {}
 
     for bc in all_bcs:
         name: str = bc.name
-        body: str = bc.body or ""
-        domains: list[str] = bc.domains or []
-
-        entity_count, entity_examples, multi_channel = _entity_summary(
-            domains, entity_registry, device_registry
-        )
-        tokens = _extract_tokens(name, body)
-        dashboard_hits = _search_dashboards(tokens, lovelace_configs)
-        automation_hits: list[str] = []
-        if ssh_client is not None and tokens:
-            automation_hits = await _grep_automation_yaml(tokens, ssh_client)
-
-        found = entity_count > 0 or bool(automation_hits) or bool(dashboard_hits)
-
-        result[name] = BCEvidence(
-            domains=domains,
-            entity_count=entity_count,
-            entity_examples=entity_examples,
-            multi_channel_devices=multi_channel,
-            tokens=tokens,
-            automation_hits=automation_hits,
-            dashboard_hits=dashboard_hits,
-            found=found,
-        )
+        ev = await _build_one_evidence(name, bc.body or "", bc.domains or [], *_shared)
+        bc_result[name] = ev
         log.info(
             "bc_evidence_built",
             bc=name,
-            entity_count=entity_count,
-            dashboard_hits=len(dashboard_hits),
-            automation_hits=len(automation_hits),
-            found=found,
+            entity_count=ev.entity_count,
+            dashboard_hits=len(ev.dashboard_hits),
+            automation_hits=len(ev.automation_hits),
+            found=ev.found,
         )
 
-    return result
+    # ── Per-flag evidence ─────────────────────────────────────────────────
+    flag_result: dict[str, Any] = {}
+
+    for flag in list(getattr(report, "screening_flags", [])):
+        change_text: str = flag.change
+        domains: list[str] = [flag.domain] if flag.domain else []
+        ev = await _build_one_evidence(
+            change_text, flag.concern or "", domains, *_shared
+        )
+        flag_result[change_text] = ev
+        log.info(
+            "flag_evidence_built",
+            flag_domain=flag.domain,
+            entity_count=ev.entity_count,
+            dashboard_hits=len(ev.dashboard_hits),
+            automation_hits=len(ev.automation_hits),
+            found=ev.found,
+        )
+
+    return bc_result, flag_result

@@ -406,15 +406,67 @@ def _normalize_bc_verdicts(
     return result
 
 
-def _derive_instance_impact(bc_verdicts: list[dict]) -> str:
-    """Derive instance_impact from normalised bc_verdicts.
+def _normalize_flag_verdicts(
+    flag_verdicts_raw: Optional[list],
+    all_flag_changes: list[str],
+) -> list[dict]:
+    """Normalise LLM flag_verdicts against canonical flag change texts.
 
-    any 'yes' → 'high'; no 'yes' but some 'unknown' → 'low'; else 'none'.
+    Fuzzy-matches each raw verdict to a canonical change text, fills missing
+    flags as unknown, and drops verdicts for flags not in the report.
+    Returns entries in report order.
     """
-    affects = {v.get("affects") for v in bc_verdicts}
-    if "yes" in affects:
+    if not all_flag_changes:
+        return []
+    change_lower = {c.lower(): c for c in all_flag_changes}
+    matched: dict[str, dict] = {}
+    for v in flag_verdicts_raw or []:
+        raw_flag = str(v.get("flag", "")).strip()
+        if not raw_flag:
+            continue
+        raw_lower = raw_flag.lower()
+        if raw_lower in change_lower:
+            canonical: Optional[str] = change_lower[raw_lower]
+        else:
+            canonical = None
+            best_len = 0
+            for lname, cname in change_lower.items():
+                if raw_lower in lname or lname in raw_lower:
+                    match_len = min(len(raw_lower), len(lname))
+                    if match_len > best_len:
+                        best_len = match_len
+                        canonical = cname
+        if canonical and canonical not in matched:
+            matched[canonical] = {
+                "flag": canonical,
+                "affects": str(v.get("affects", "unknown")),
+                "reason": str(v.get("reason", "")),
+            }
+    result = []
+    for change in all_flag_changes:
+        if change in matched:
+            result.append(matched[change])
+        else:
+            result.append(
+                {"flag": change, "affects": "unknown", "reason": "not assessed"}
+            )
+    return result
+
+
+def _derive_instance_impact(
+    bc_verdicts: list[dict],
+    flag_verdicts: Optional[list[dict]] = None,
+) -> str:
+    """Derive instance_impact from normalised bc_verdicts and flag_verdicts.
+
+    any BC or flag 'yes' → 'high'; BC 'unknown' (not flag) → 'low'; else 'none'.
+    Flag 'unknown' verdicts never raise impact on their own.
+    """
+    bc_affects = {v.get("affects") for v in bc_verdicts}
+    flag_affects = {v.get("affects") for v in (flag_verdicts or [])}
+    if "yes" in bc_affects or "yes" in flag_affects:
         return "high"
-    if "unknown" in affects:
+    if "unknown" in bc_affects:
         return "low"
     return "none"
 
@@ -1035,6 +1087,7 @@ class ToolExecutor:
                     verification_question=args.get("verification_question"),
                     highlights=args.get("highlights"),
                     bc_verdicts=args.get("bc_verdicts"),
+                    flag_verdicts=args.get("flag_verdicts"),
                 )
             if name == "finish_host_health":
                 self._capture_declared_runbook(args)
@@ -6758,26 +6811,36 @@ class ToolExecutor:
         verification_question: Optional[str] = None,
         highlights: Optional[list] = None,
         bc_verdicts: Optional[list] = None,
+        flag_verdicts: Optional[list] = None,
         **_extra: Any,
     ) -> ToolResult:
         """Create a HITL approval card for the pending HA update."""
-        # Normalise bc_verdicts against report BC names and derive instance_impact.
+        # Normalise bc_verdicts and flag_verdicts against report names.
         _rpt = self._core_release_report
         _all_bc_names: list[str] = []
+        _all_flag_changes: list[str] = []
         if _rpt is not None:
             _all_bc_names = [
                 e.name for e in list(_rpt.bc_installed) + list(_rpt.bc_general)
             ]
+            _all_flag_changes = [f.change for f in list(_rpt.screening_flags)]
         _normalized_verdicts = _normalize_bc_verdicts(bc_verdicts, _all_bc_names)
-        if _normalized_verdicts:
-            instance_impact = _derive_instance_impact(_normalized_verdicts)
+        _normalized_flag_verdicts = _normalize_flag_verdicts(
+            flag_verdicts, _all_flag_changes
+        )
+        if _normalized_verdicts or _normalized_flag_verdicts:
+            instance_impact = _derive_instance_impact(
+                _normalized_verdicts, _normalized_flag_verdicts
+            )
             safe_to_update = instance_impact != "high"
-            # Regenerate breaking_changes from verdicts for backward compat.
-            breaking_changes = [
-                v["bc"]
-                for v in _normalized_verdicts
-                if v["affects"] in ("yes", "unknown")
-            ] or breaking_changes
+            # When verdicts exist, breaking_changes comes only from BC verdicts —
+            # never from model free text, so flags cannot be relabelled as BCs.
+            if _normalized_verdicts:
+                breaking_changes = [
+                    v["bc"]
+                    for v in _normalized_verdicts
+                    if v["affects"] in ("yes", "unknown")
+                ]
 
         # Server-side enforcement: core/OS/Supervisor always require a card at levels 0–3.
         # Level 4 + high confidence + safe_to_update is the only allowed bypass (ADR 035).
@@ -7067,6 +7130,8 @@ class ToolExecutor:
                     body_parts.append(
                         "🚫 Config fixes required before updating — see details below."
                     )
+                elif not safe_to_update:
+                    body_parts.append("Review the items below before updating.")
             elif _unk_bcs:
                 body_parts.append(f"Advisory: {advisory} — {recommendation}")
             else:
@@ -7075,13 +7140,25 @@ class ToolExecutor:
             body_parts.append(f"Advisory: {advisory} — {recommendation}")
             if instance_impact != "none":
                 body_parts.append(f"⚠️ Instance impact: {instance_impact.upper()}")
-                if not safe_to_update:
+                if not safe_to_update and proposed_config_fixes:
                     body_parts.append(
                         "🚫 Config fixes required before updating — see details below."
                     )
+                elif not safe_to_update:
+                    body_parts.append("Review the items below before updating.")
             elif breaking_changes:
                 body_parts.append(
                     "✅ None of the breaking changes affect your install. Safe to proceed."
+                )
+        # Summarise flag verdicts that affect this install in the notification body.
+        if _normalized_flag_verdicts:
+            _yes_flags = [
+                v["flag"] for v in _normalized_flag_verdicts if v["affects"] == "yes"
+            ]
+            if _yes_flags:
+                body_parts.append(
+                    f"⚑ Flagged changes affect this install: "
+                    + ", ".join(_yes_flags[:3])
                 )
 
         _rs = get_resource_status()
@@ -7139,6 +7216,7 @@ class ToolExecutor:
                 else ""
             ),
             "bc_verdicts": _normalized_verdicts,
+            "flag_verdicts": _normalized_flag_verdicts,
         }
         # Verification comes from the post-update result card (run_pueo_self_check /
         # add-on version poll), not from a pre-analysis digest question.  Accept an
@@ -7155,7 +7233,7 @@ class ToolExecutor:
         await self._notifier.send(subject=subject, body=body, payload=payload)
         # Persist verdicts to the CoreReleaseReport JSON for the report page.
         if (
-            _normalized_verdicts
+            (_normalized_verdicts or _normalized_flag_verdicts)
             and _rpt is not None
             and update.component.lower()
             in (
@@ -7171,6 +7249,7 @@ class ToolExecutor:
             if _rpt_path.exists():
                 try:
                     _rpt.bc_verdicts = _normalized_verdicts
+                    _rpt.flag_verdicts = _normalized_flag_verdicts
                     _rpt_path.write_text(
                         _rpt.model_dump_json(indent=2), encoding="utf-8"
                     )

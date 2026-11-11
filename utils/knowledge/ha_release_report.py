@@ -103,9 +103,13 @@ class CoreReleaseReport(BaseModel):
     screening_noise_dropped: Optional[int] = None
     # Per-BC entity and config evidence; populated by utils.ha.update_bc_evidence.
     bc_evidence: dict[str, BCEvidence] = {}
+    # Per-screening-flag entity and config evidence; keyed by flag change text.
+    flag_evidence: dict[str, BCEvidence] = {}
     # Per-BC verdicts from the LLM analysis; persisted by _finish_update_analysis.
     # Each entry: {bc: str, affects: "yes"|"no"|"unknown", reason: str}
     bc_verdicts: list[dict] = []
+    # Per-flag verdicts; each entry: {flag: str, affects: "yes"|"no"|"unknown", reason: str}
+    flag_verdicts: list[dict] = []
     # Deterministic report status (blog + changelog parsed).  Screening status is
     # tracked separately in screening_complete / screening_batches_* (#1148).
     completeness: str = "incomplete"
@@ -636,11 +640,8 @@ _DIGEST_CAP = 15000
 _SEP = "\n\n---\n\n"
 
 
-def _format_bc_entry(e: "BCEntry", evidence: Optional["BCEvidence"] = None) -> str:
-    """Format a single BC entry as Markdown, appending evidence when available."""
-    text = f"### {e.name}\n\n{e.body}" if e.body else f"### {e.name}"
-    if evidence is None:
-        return text
+def _evidence_lines(evidence: "BCEvidence") -> list[str]:
+    """Return bullet lines summarising a BCEvidence object."""
     ev_lines: list[str] = []
     if evidence.domains or evidence.entity_count > 0:
         if evidence.entity_count > 0:
@@ -667,8 +668,30 @@ def _format_bc_entry(e: "BCEntry", evidence: Optional["BCEvidence"] = None) -> s
         )
     if evidence.tokens:
         ev_lines.append(f"Tokens checked: {', '.join(evidence.tokens[:8])}")
+    return ev_lines
+
+
+def _format_bc_entry(e: "BCEntry", evidence: Optional["BCEvidence"] = None) -> str:
+    """Format a single BC entry as Markdown, appending evidence when available."""
+    text = f"### {e.name}\n\n{e.body}" if e.body else f"### {e.name}"
+    if evidence is None:
+        return text
+    ev_lines = _evidence_lines(evidence)
     if ev_lines:
         text += "\n\nEvidence:\n" + "\n".join(f"- {line}" for line in ev_lines)
+    return text
+
+
+def _format_flag_entry(
+    f: "ScreeningFlag", evidence: Optional["BCEvidence"] = None
+) -> str:
+    """Format a screening flag as Markdown, appending evidence when available."""
+    text = f"- **{f.domain}** [{f.severity}]: {f.change} — {f.concern}"
+    if evidence is None:
+        return text
+    ev_lines = _evidence_lines(evidence)
+    if ev_lines:
+        text += "\n  Evidence:\n" + "\n".join(f"  - {line}" for line in ev_lines)
     return text
 
 
@@ -686,13 +709,13 @@ def format_core_release_digest(report: "CoreReleaseReport") -> str:
     _SEV_ORDER = {"high": 0, "medium": 1, "low": 2}
     priority_parts: list[str] = []
 
-    # 1. Flagged changes — sorted high → low
+    # 1. Flagged changes — sorted high → low, with per-flag evidence
     if report.screening_flags:
         sorted_flags = sorted(
             report.screening_flags, key=lambda f: _SEV_ORDER.get(f.severity, 1)
         )
         flag_lines = [
-            f"- **{f.domain}** [{f.severity}]: {f.change} — {f.concern}"
+            _format_flag_entry(f, report.flag_evidence.get(f.change))
             for f in sorted_flags
         ]
         priority_parts.append(
