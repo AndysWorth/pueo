@@ -21,6 +21,18 @@ log = get_logger("ha_release_report")
 _CHANGELOG_BASE = "https://www.home-assistant.io/changelogs/core-{yymm}"
 # GitHub author/PR credit like "(by @user - #123)" at end of changelog lines
 _ATTR_REF_RE = re.compile(r"\s*\([^)]*@[^)]*#\d+[^)]*\)\s*$")
+# HA integration docs URL in a patch body line — extracts the domain slug
+_PATCH_HA_DOMAIN_RE = re.compile(
+    r"https?://www\.home-assistant\.io/integrations/([^/)#\s\"'>]+)"
+)
+# Trailing sections to strip from patch note text: ([@user] - [#n]), ([docs](url)), (label)
+_PATCH_TRAIL_RE = re.compile(
+    r"(?:"
+    r"\s*\(\[@[^\]]+\](?:[^)]*[#\d]+[^)]*)?\s*\)"  # ([@user] - [#123])
+    r"|\s*\(\[[^\]]+\]\([^)]+\)\)"  # ([text](url))
+    r"|\s*\([^)]+\)"  # (anything else)
+    r")+$"
+)
 
 
 class ChangeEntry(BaseModel):
@@ -32,6 +44,7 @@ class BCEntry(BaseModel):
     name: str
     domains: list[str] = []
     body: str = ""
+    release: str = ""  # "2026.11" for BC from that monthly release; "" = unknown
 
 
 class ScreeningFlag(BaseModel):
@@ -61,12 +74,22 @@ class BCEvidence(BaseModel):
 
 class CoreReleaseReport(BaseModel):
     version: str
+    # installed_version at the time the report was built; "" on old reports.
+    # Used to detect stale cached reports when the starting version changes.
+    installed_version: str = ""
     blog_url: Optional[str] = None
+    # Blog URLs per month covered (YYYY.M → url); populated by multi-month path.
+    blog_urls: dict[str, str] = {}
     changelog_url: Optional[str] = None
     bc_installed: list[BCEntry] = []
     bc_general: list[BCEntry] = []
     bc_other_names: list[str] = []
     changes_by_domain: dict[str, list[ChangeEntry]] = {}
+    # Patch note changes by domain (from GitHub patch bodies, not the changelog).
+    patch_changes_by_domain: dict[str, list[ChangeEntry]] = {}
+    # Items that could not be fetched/parsed; e.g. "blog:2026.10", "patch:2026.11.1".
+    # Non-empty → completeness="incomplete".
+    missing: list[str] = []
     farewell: Optional[str] = None
     # Populated by S3 screening pass
     screening_flags: list[ScreeningFlag] = []
@@ -278,6 +301,92 @@ def parse_changelog_sections(
     return result, noise_dropped
 
 
+def release_span(installed: str, target: str) -> tuple[list[str], list[str]]:
+    """Return (months, patches) for the upgrade from installed to target.
+
+    months: YYYY.M strings, one per monthly release after the installed month
+            up to and including the target month.  Empty for a same-month update.
+    patches: patch versions whose notes should be fetched.
+             Crossing months → target_month.1 through target (inclusive).
+             Same month → installed_patch+1 through target_patch (inclusive).
+
+    Returns ([], []) when either version cannot be parsed.
+    """
+
+    def _parse(v: str) -> Optional[tuple[int, int, int]]:
+        parts = v.split(".")
+        if len(parts) >= 3 and len(parts[0]) == 4 and parts[0].startswith("20"):
+            try:
+                return (int(parts[0]), int(parts[1]), int(parts[2]))
+            except ValueError:
+                pass
+        return None
+
+    iv = _parse(installed)
+    tv = _parse(target)
+    if iv is None or tv is None:
+        return [], []
+
+    iy, im, ip = iv
+    ty, tm, tp = tv
+
+    months: list[str] = []
+    curr_y, curr_m = iy, im + 1
+    if curr_m > 12:  # installed in December: start in January of next year
+        curr_m = 1
+        curr_y += 1
+    while (curr_y, curr_m) <= (ty, tm):
+        months.append(f"{curr_y}.{curr_m}")
+        curr_m += 1
+        if curr_m > 12:
+            curr_m = 1
+            curr_y += 1
+
+    if months:
+        patches = [f"{ty}.{tm}.{p}" for p in range(1, tp + 1)]
+    else:
+        patches = [f"{ty}.{tm}.{p}" for p in range(ip + 1, tp + 1)]
+
+    return months, patches
+
+
+def parse_patch_notes(
+    body: str,
+    installed_set: set[str],
+    name_to_domain: dict[str, str],
+) -> dict[str, list[ChangeEntry]]:
+    """Parse a GitHub patch release body into per-domain change lists.
+
+    Line format: - text ([@author] - [#n]) ([domain docs](url)) (dependency)
+    Extracts the domain slug from the HA integration URL, keeps only lines for
+    installed integrations, drops mechanical-noise lines.
+    """
+    result: dict[str, list[ChangeEntry]] = {}
+    for raw_line in body.splitlines():
+        line = raw_line.strip().lstrip("*-• ").strip()
+        if not line:
+            continue
+        domain_m = _PATCH_HA_DOMAIN_RE.search(line)
+        if domain_m is None:
+            continue
+        domain = domain_m.group(1).rstrip("/")
+        if domain not in installed_set:
+            norm = domain.replace("-", "_")
+            if norm in installed_set:
+                domain = norm
+            else:
+                continue
+        prs = _PR_NUM_RE.findall(line)
+        # Strip trailing attribution/docs/label parentheticals to get display text
+        text = _PATCH_TRAIL_RE.sub("", line).strip()
+        if not text:
+            continue
+        if _is_mechanical_change(text):
+            continue
+        result.setdefault(domain, []).append(ChangeEntry(text=text, prs=prs))
+    return result
+
+
 async def build_core_release_report(
     version: str,
     installed_integrations: list[str],
@@ -285,19 +394,26 @@ async def build_core_release_report(
     cache_dir: str,
     state_dir: Path,
     *,
+    installed_version: str = "",
     _github_fetcher: Optional[Callable[[str], str]] = None,
     _blog_fetcher: Optional[Callable[[str], Any]] = None,
     _changelog_fetcher: Optional[Callable[[str], str]] = None,
 ) -> CoreReleaseReport:
     """Build a structured Core release report.
 
-    Fetches the GitHub release stub, extracts the blog URL, parses BCs, then
-    fetches the changelog and maps sections to installed integrations.
-    Persists the result to ``state_dir/update_reports/core_<version>.json``.
+    Fetches the GitHub release stubs, extracts blog URLs per monthly release,
+    parses BCs, patch notes, and the changelog.  Persists the result to
+    ``state_dir/update_reports/core_<version>.json``.
+
+    When ``installed_version`` is supplied the report covers every monthly
+    release between the installed and target versions (BCs from each blog) plus
+    every patch in the target month.  Completeness fails closed: ``"complete"``
+    only when every required fetch and parse succeeded.
     """
     import asyncio
 
     from utils.knowledge.ha_blog_scraper import (
+        _BC_SECTION_RE,
         extract_blog_url_from_stub,
         extract_breaking_changes,
         fetch_blog_post,
@@ -305,35 +421,26 @@ async def build_core_release_report(
     )
 
     installed_set = set(installed_integrations)
+    months, patches = (
+        release_span(installed_version, version) if installed_version else ([], [])
+    )
+
     report = CoreReleaseReport(
         version=version,
+        installed_version=installed_version,
         built_at=datetime.now(timezone.utc).isoformat(),
     )
-    blog_parsed = False
-    changelog_parsed = False
 
-    # ── 1. Blog: GitHub stub → blog URL → blog text ───────────────────────
-    try:
+    async def _get_stub(ver: str) -> str:
         if _github_fetcher is not None:
-            stub = _github_fetcher(version)
-        else:  # pragma: no cover
-            stub = await _fetch_core_github_stub(version)
+            return _github_fetcher(ver)
+        return await _fetch_core_github_stub(ver)  # pragma: no cover
 
-        if len(stub.strip()) < 500:
-            report.blog_url = extract_blog_url_from_stub(stub)
-
-        if report.blog_url:
-            if _blog_fetcher is not None:
-                blog_text = fetch_blog_post(report.blog_url, _fetcher=_blog_fetcher)
-            else:  # pragma: no cover
-                blog_text = await asyncio.to_thread(fetch_blog_post, report.blog_url)
-        else:
-            # Non-GA stub: the stub body IS the full notes
-            blog_text = stub
-
-        bc_entries = extract_breaking_changes(blog_text)
+    def _add_bc_entries(bc_entries: list, release_label: str) -> None:
         for name, domains, body in bc_entries:
-            entry = BCEntry(name=name, domains=domains, body=body)
+            entry = BCEntry(
+                name=name, domains=domains, body=body, release=release_label
+            )
             if not domains:
                 if _matches_name_installed(name, installed_set):
                     report.bc_installed.append(entry)
@@ -342,19 +449,86 @@ async def build_core_release_report(
             elif installed_set.intersection(domains):
                 report.bc_installed.append(entry)
             else:
-                report.bc_other_names.append(name)
+                if name not in report.bc_other_names:
+                    report.bc_other_names.append(name)
 
-        # Farewell/removed section
-        farewell_m = re.search(r"\n##\s+Farewell\b", blog_text, re.IGNORECASE)
-        if farewell_m:
-            fw_start = farewell_m.start()
-            next_fw = re.search(r"\n##\s+", blog_text[fw_start + 4 :])
-            fw_end = fw_start + 4 + next_fw.start() if next_fw else len(blog_text)
-            report.farewell = blog_text[fw_start:fw_end].strip()
+    # ── 1. Blog and BCs ───────────────────────────────────────────────────
+    if months:
+        # New path: fetch .0 stub for each monthly release in range
+        for month in months:
+            month_zero = f"{month}.0"
+            try:
+                stub = await _get_stub(month_zero)
+                blog_url = (
+                    extract_blog_url_from_stub(stub)
+                    if len(stub.strip()) < 500
+                    else None
+                )
+                if not blog_url:
+                    report.missing.append(f"blog:{month}")
+                    continue
+                report.blog_urls[month] = blog_url
+                if month == months[-1]:
+                    report.blog_url = blog_url
 
-        blog_parsed = True
-    except Exception as exc:
-        log.warning("release_report_blog_failed", version=version, error=str(exc))
+                if _blog_fetcher is not None:
+                    blog_text = fetch_blog_post(blog_url, _fetcher=_blog_fetcher)
+                else:  # pragma: no cover
+                    blog_text = await asyncio.to_thread(fetch_blog_post, blog_url)
+
+                if not _BC_SECTION_RE.search(blog_text):
+                    report.missing.append(f"bc_section:{month}")
+
+                _add_bc_entries(extract_breaking_changes(blog_text), month)
+
+                if month == months[-1]:
+                    farewell_m = re.search(
+                        r"\n##\s+Farewell\b", blog_text, re.IGNORECASE
+                    )
+                    if farewell_m:
+                        fw_start = farewell_m.start()
+                        next_fw = re.search(r"\n##\s+", blog_text[fw_start + 4 :])
+                        fw_end = (
+                            fw_start + 4 + next_fw.start()
+                            if next_fw
+                            else len(blog_text)
+                        )
+                        report.farewell = blog_text[fw_start:fw_end].strip()
+            except Exception as exc:
+                log.warning(
+                    "release_report_blog_failed", version=month_zero, error=str(exc)
+                )
+                if f"blog:{month}" not in report.missing:
+                    report.missing.append(f"blog:{month}")
+    elif not installed_version:
+        # Fallback/backward-compat: fetch target version's stub directly.
+        # Only used when installed_version is not known.  When installed_version
+        # is set and months=[], this is a same-month patch — no blog to fetch.
+        blog_parsed_legacy = False
+        try:
+            stub = await _get_stub(version)
+            if len(stub.strip()) < 500:
+                report.blog_url = extract_blog_url_from_stub(stub)
+            if report.blog_url:
+                if _blog_fetcher is not None:
+                    blog_text = fetch_blog_post(report.blog_url, _fetcher=_blog_fetcher)
+                else:  # pragma: no cover
+                    blog_text = await asyncio.to_thread(
+                        fetch_blog_post, report.blog_url
+                    )
+            else:
+                blog_text = stub
+
+            _add_bc_entries(extract_breaking_changes(blog_text), "")
+            farewell_m = re.search(r"\n##\s+Farewell\b", blog_text, re.IGNORECASE)
+            if farewell_m:
+                fw_start = farewell_m.start()
+                next_fw = re.search(r"\n##\s+", blog_text[fw_start + 4 :])
+                fw_end = fw_start + 4 + next_fw.start() if next_fw else len(blog_text)
+                report.farewell = blog_text[fw_start:fw_end].strip()
+            blog_parsed_legacy = True
+        except Exception as exc:
+            log.warning("release_report_blog_failed", version=version, error=str(exc))
 
     # ── 2. Manifest map: display name → domain ────────────────────────────
     name_to_domain: dict[str, str] = {}
@@ -368,49 +542,87 @@ async def build_core_release_report(
     except Exception as exc:
         log.warning("release_report_manifest_failed", version=version, error=str(exc))
 
-    # ── 3. Changelog: fetch, parse, map to installed domains ─────────────
+    # ── 3. Patch notes (from GitHub patch bodies) ─────────────────────────
+    for patch in patches:
+        try:
+            patch_body = await _get_stub(patch)
+            patch_changes = parse_patch_notes(patch_body, installed_set, name_to_domain)
+            for domain, entries in patch_changes.items():
+                report.patch_changes_by_domain.setdefault(domain, []).extend(entries)
+            log.info(
+                "patch_notes_parsed",
+                patch=patch,
+                domains=len(patch_changes),
+            )
+        except Exception as exc:
+            log.warning("release_report_patch_failed", patch=patch, error=str(exc))
+            report.missing.append(f"patch:{patch}")
+
+    # ── 4. Changelog (target month or legacy .0 release) ─────────────────
+    # Fetch when crossing months (new path) OR when installed_version is unknown
+    # (legacy path for .0 upgrades). Same-month patches skip this entirely.
     report.changelog_url = _derive_changelog_url(version)
-    try:
-        yymm = version.rsplit(".", 1)[0]
-        cache_path = Path(cache_dir) / f"changelog_core-{yymm}.txt"
+    changelog_parsed = False
+    if months or not installed_version:
+        try:
+            yymm = version.rsplit(".", 1)[0]
+            cache_path = Path(cache_dir) / f"changelog_core-{yymm}.txt"
 
-        if cache_path.exists():
-            changelog_text = cache_path.read_text(encoding="utf-8")
-            changelog_parsed = True
-        else:
-            if _changelog_fetcher is not None:
-                raw = _changelog_fetcher(report.changelog_url)
-            else:  # pragma: no cover
-                raw = await _fetch_text_url(report.changelog_url)
-
-            if "<" in raw and ">" in raw:
-                changelog_text = html_to_text(raw)
+            if cache_path.exists():
+                changelog_text = cache_path.read_text(encoding="utf-8")
             else:
-                changelog_text = raw
+                if _changelog_fetcher is not None:
+                    raw = _changelog_fetcher(report.changelog_url)
+                else:  # pragma: no cover
+                    raw = await _fetch_text_url(report.changelog_url)
 
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
-            cache_path.write_text(changelog_text, encoding="utf-8")
+                if "<" in raw and ">" in raw:
+                    changelog_text = html_to_text(raw)
+                else:
+                    changelog_text = raw
+
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                cache_path.write_text(changelog_text, encoding="utf-8")
+
+            bc_prs = _extract_bc_prs(report.bc_installed + report.bc_general)
+            changes, noise_dropped = parse_changelog_sections(
+                changelog_text, installed_set, name_to_domain, bc_prs=bc_prs
+            )
+            report.changes_by_domain = changes
+            report.screening_noise_dropped = noise_dropped
             changelog_parsed = True
+            log.info(
+                "changelog_parsed",
+                version=version,
+                domains=len(changes),
+                noise_dropped=noise_dropped,
+            )
+        except Exception as exc:
+            log.warning(
+                "release_report_changelog_failed", version=version, error=str(exc)
+            )
+            report.missing.append(f"changelog:{version.rsplit('.', 1)[0]}")
+    else:
+        # Same-month patch (installed_version set, months=[]): changelog not needed
+        changelog_parsed = True
 
-        bc_prs = _extract_bc_prs(report.bc_installed + report.bc_general)
-        result, noise_dropped = parse_changelog_sections(
-            changelog_text, installed_set, name_to_domain, bc_prs=bc_prs
-        )
-        report.changes_by_domain = result
-        report.screening_noise_dropped = noise_dropped
-        log.info(
-            "changelog_parsed",
-            version=version,
-            domains=len(result),
-            noise_dropped=noise_dropped,
-        )
-    except Exception as exc:
-        log.warning("release_report_changelog_failed", version=version, error=str(exc))
+    # ── 5. Completeness ───────────────────────────────────────────────────
+    if months:
+        # New path: complete only when nothing is missing
+        if not report.missing:
+            report.completeness = "complete"
+    elif installed_version:
+        # Same-month patch (installed_version set, months=[]): complete when
+        # all patches fetched and changelog not required
+        if not report.missing:
+            report.completeness = "complete"
+    else:
+        # Legacy path (installed_version not known): use old blog+changelog gate
+        if blog_parsed_legacy and changelog_parsed:  # type: ignore[possibly-undefined]
+            if not report.missing:
+                report.completeness = "complete"
 
-    # ── 4. Completeness + persist ─────────────────────────────────────────
-    if blog_parsed and changelog_parsed:
-        report.completeness = "complete"
-
+    # ── 6. Persist ────────────────────────────────────────────────────────
     report_dir = state_dir / "update_reports"
     report_dir.mkdir(parents=True, exist_ok=True)
     (report_dir / f"core_{version}.json").write_text(
@@ -508,30 +720,46 @@ def format_core_release_digest(report: "CoreReleaseReport") -> str:
     _INST_HEADER = "**Affects this instance:**\n\n"
     _GEN_HEADER = "**General (applies to all installs):**\n\n"
     _TRUNC_MARKER = "…(truncated)"
+
+    # Show release label on individual entries only when multiple months are covered
+    _releases = {
+        e.release for e in report.bc_installed + report.bc_general if e.release
+    }
+    _show_release = len(_releases) > 1
+
+    def _fmt_entry_with_label(e: BCEntry) -> str:
+        text = _format_bc_entry(e, report.bc_evidence.get(e.name))
+        if _show_release and e.release:
+            text = f"[{e.release}] " + text
+        return text
+
     bc_parts: list[str] = []
-    if report.bc_installed or report.bc_general or report.bc_other_names:
-        # Reserve space for all fixed sub-headers and separators upfront
+    has_any_bc = bool(report.bc_installed or report.bc_general or report.bc_other_names)
+    # Emit the BC section whenever there are entries, or when there's context to explain
+    # why there are none (installed_version set, or missing data recorded).
+    _has_bc_context = has_any_bc or bool(report.installed_version or report.missing)
+    if _has_bc_context:
         overhead = len(_BC_HEADER)
         if report.bc_installed:
             overhead += len(_INST_HEADER)
         if report.bc_general:
-            overhead += len(_GEN_HEADER) + 2  # "\n\n" separator
+            overhead += len(_GEN_HEADER) + 2
         entry_budget = bc_budget - overhead
 
         installed_entries: list[str] = []
         for e in report.bc_installed:
-            entry_text = _format_bc_entry(e, report.bc_evidence.get(e.name))
+            entry_text = _fmt_entry_with_label(e)
             if entry_budget > 0:
                 if len(entry_text) > entry_budget:
                     entry_text = (
                         entry_text[: entry_budget - len(_TRUNC_MARKER)] + _TRUNC_MARKER
                     )
                 installed_entries.append(entry_text)
-                entry_budget -= len(entry_text) + 2  # +2 for "\n\n" separator
+                entry_budget -= len(entry_text) + 2
 
         general_entries: list[str] = []
         for e in report.bc_general:
-            entry_text = _format_bc_entry(e, report.bc_evidence.get(e.name))
+            entry_text = _fmt_entry_with_label(e)
             if entry_budget > 0:
                 if len(entry_text) > entry_budget:
                     entry_text = (
@@ -558,6 +786,32 @@ def format_core_release_digest(report: "CoreReleaseReport") -> str:
                 bc_section += "\n\n" + other_line
             else:
                 bc_section += other_line
+
+        if not has_any_bc:
+            # Explain why the BC section is empty
+            bc_missing = [
+                m
+                for m in report.missing
+                if m.startswith(("blog:", "bc_section:", "changelog:"))
+            ]
+            if bc_missing:
+                bc_section += (
+                    "Backward-incompatible changes could not be read for: "
+                    + ", ".join(bc_missing)
+                )
+            elif report.installed_version:
+                months_span, _ = release_span(report.installed_version, report.version)
+                if not months_span:
+                    yymm = report.version.rsplit(".", 1)[0]
+                    bc_section += (
+                        f"No backward-incompatible changes apply "
+                        f"(patch update within {yymm})"
+                    )
+                else:
+                    bc_section += (
+                        "No backward-incompatible changes found for this instance"
+                    )
+
         bc_parts.append(bc_section)
 
     bc_text = _SEP.join(bc_parts)
@@ -586,6 +840,15 @@ def make_screening_batches(report: "CoreReleaseReport") -> list[str]:
     # Changelog sections per domain only (no BC entries)
     for domain, entries in report.changes_by_domain.items():
         text = f"### Changes: {domain}\n\n" + "\n".join(f"- {e.text}" for e in entries)
+        sections.append(text)
+
+    # Patch note sections (merged with changelog sections if same domain)
+    for domain, entries in report.patch_changes_by_domain.items():
+        if domain in report.changes_by_domain:
+            continue  # already covered by changelog section
+        text = f"### Patch changes: {domain}\n\n" + "\n".join(
+            f"- {e.text}" for e in entries
+        )
         sections.append(text)
 
     batches: list[str] = []

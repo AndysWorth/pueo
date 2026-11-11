@@ -151,3 +151,44 @@ Three additions across S1–S4 of the Core update analysis v3 plan:
 - `seed_update_core.md` requires `bc_verdicts`, forbids `read_source` / `get_ha_profile
   config_entries` / broad single-word greps, and limits `check_config_against_breaking_change`
   to cases where the Evidence block is insufficient.
+
+## Amendment (#1173) — version-range-aware report
+
+**Context:** When upgrading across a patch/month boundary (e.g. 2026.10.4 → 2026.11.1),
+`build_core_release_report` previously fetched the target patch tag's GitHub body
+(a 14 k-char fix list, not a blog stub), so `len(stub) < 500` failed → `blog_url=None` →
+0 BCs extracted → `completeness="complete"` despite missing BC data. Patch notes and
+multi-month BC coverage were also absent.
+
+**Changes to `build_core_release_report`:**
+
+- Accepts a new `installed_version: str = ""` keyword argument.
+- `release_span(installed, target)` → `(months, patches)`: pure helper that computes
+  which monthly releases and patch versions to fetch when upgrading between two HA Core
+  versions. `months` = monthly releases after the installed month up to and including
+  the target month. `patches` = individual patch versions within those months.
+- **Multi-month blog fetch:** for each `YYYY.M` in `months`, fetch the `.0` stub → extract
+  blog URL → fetch blog as HTML → run `extract_breaking_changes()` with a `release` label.
+  `BCEntry` gains a `release: str` field (shown in digest only when multiple months are covered).
+- **Patch notes:** `parse_patch_notes(body, installed_set, name_to_domain)` parses flat
+  GitHub patch body lines into `ChangeEntry` rows keyed by HA integration domain.
+  Stored in `CoreReleaseReport.patch_changes_by_domain`. Included as `### Patch changes: {domain}`
+  screening batches for domains not already in `changes_by_domain`.
+- **Same-month patch path:** when `installed_version` is set and `months=[]`, no blog or
+  changelog is fetched; `changes_by_domain` stays empty.
+- **Legacy path** (no `installed_version`): behavior unchanged — fetches the target version
+  stub and changelog as before; changelog is now also fetched for this path.
+- **Fail-closed completeness:** `CoreReleaseReport.missing` list tracks each
+  fetch/parse failure (`"blog:YYYY.M"`, `"bc_section:YYYY.M"`, `"patch:X.Y.Z"`,
+  `"changelog:YYYY.M"`). `completeness="complete"` only when `missing` is empty.
+- `CoreReleaseReport` gains `installed_version: str`, `blog_urls: dict[str, str]`,
+  `patch_changes_by_domain: dict[str, list[ChangeEntry]]`, `missing: list[str]`.
+- `format_core_release_digest` emits the BC section when `installed_version` is set, with
+  appropriate empty-BC messages: "patch update within X.Y" (same-month), "could not be
+  read for: ..." (missing entries), "No backward-incompatible changes found" (complete, 0 BCs).
+
+**Stale report detection in `tool_executor.py`:** invalidates a cached `CoreReleaseReport`
+when the report's `installed_version` differs from the pending update's `installed_version`.
+
+**`ha_update_manager.py`:** passes `installed_version=update.installed_version or ""`
+to `build_core_release_report`.
