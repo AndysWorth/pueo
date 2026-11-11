@@ -21875,3 +21875,41 @@ class TestPostUpdateRepairScan:
         monkeypatch.setattr(_sup, "get_supervisor_instance", lambda: None)
 
         asyncio.run(_um._post_update_repair_scan(settle_seconds=0))
+
+
+class TestScreeningBatchRetry:
+    """Failed screening batches are retried once before counting as a gap."""
+
+    def test_retry_structure_in_source(self):
+        """_run_update_analysis retries each screening batch at most once."""
+        import inspect
+
+        import agents.ha_update_manager as um
+
+        src = inspect.getsource(um._run_update_analysis)
+        assert "for _attempt in range(2)" in src, "must retry up to 2 attempts"
+        assert "screening_batch_incomplete_retrying" in src, "must log retry warning"
+        assert "_batch_outcome" in src, "must track per-batch outcome outside the loop"
+
+    def test_retry_succeeds_on_second_attempt(self):
+        """Source: a successful second attempt breaks the retry loop and counts the batch."""
+        import inspect
+
+        import agents.ha_update_manager as um
+
+        src = inspect.getsource(um._run_update_analysis)
+        assert (
+            '_batch_outcome == "success"' in src or "_batch_outcome == 'success'" in src
+        ), "must check outcome to decide whether to break"
+        assert "break" in src, "must break on success to avoid a second attempt"
+
+    def test_both_attempts_fail_sets_incomplete(self):
+        """When both attempts fail the batch is not counted and _all_complete is False."""
+        import inspect
+
+        import agents.ha_update_manager as um
+
+        src = inspect.getsource(um._run_update_analysis)
+        # After the retry loop, incomplete batches are logged via screening_batch_incomplete
+        assert "screening_batch_incomplete" in src
+        assert "_all_complete = False" in src

@@ -2110,9 +2110,26 @@ class AgentLoop:
                     )
                     continue  # no budget increment for cached calls
 
-                if self._pre_step_callback is not None:
-                    await self._pre_step_callback(tool_call)
-                tool_result = await self._executor.execute(tool_call)
+                if tool_call.name not in self._registry:
+                    _offered = ", ".join(self._registry.names())
+                    log.warning(
+                        "agent_loop_unregistered_tool_call",
+                        tool=tool_call.name,
+                        offered=_offered[:200],
+                    )
+                    tool_result = ToolResult(
+                        tool_name=tool_call.name,
+                        success=False,
+                        output="",
+                        error=(
+                            f"Tool '{tool_call.name}' is not available in this "
+                            f"session. Available tools: {_offered}"
+                        ),
+                    )
+                else:
+                    if self._pre_step_callback is not None:
+                        await self._pre_step_callback(tool_call)
+                    tool_result = await self._executor.execute(tool_call)
                 _tc_duration_ms = round((time.time() - ts) * 1000, 1)
                 _tc_rec: ToolCallRecord | None = None
                 if self._capture_llm:

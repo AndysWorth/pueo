@@ -12776,3 +12776,165 @@ class TestCoreReleaseReport:
             version="x", screening_batches_total=7, screening_batches_done=6
         )
         assert CoreReleaseReport.model_validate_json(rpt2.model_dump_json()) == rpt2
+
+
+class TestAgentLoopUnregisteredTool:
+    """AgentLoop rejects tool calls whose name is not in the registry."""
+
+    def _make_loop(self, llm, registry=None):
+        import asyncio  # noqa: F401
+
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import ToolRegistry, build_ha_tool_registry
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+
+        ex = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+        )
+        return AgentLoop(
+            llm_client=llm,
+            tool_executor=ex,
+            tool_registry=registry or build_ha_tool_registry(),
+            max_tool_calls=10,
+            trigger="test",
+        )
+
+    def _tc(self, name, arguments=None):
+        return {"function": {"name": name, "arguments": arguments or {}}}
+
+    def _make_minimal_registry(self):
+        """Registry with only finish_repair — no investigative tools."""
+        from utils.agent.tool_registry import FINISH_REPAIR, ToolRegistry
+
+        reg = ToolRegistry()
+        reg.register(FINISH_REPAIR)
+        return reg
+
+    def test_unregistered_tool_returns_error_not_executor_output(self):
+        """Calling a tool not in the registry returns an error result, not executor output."""
+        import asyncio
+
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        # read_config is a real executor tool but not in the minimal registry
+        llm = FakeToolCallingLLMClient(
+            [
+                {"tool_calls": [self._tc("read_config")]},
+                {
+                    "tool_calls": [
+                        self._tc(
+                            "finish_repair",
+                            {"summary": "done", "action_taken": "no_fix_needed"},
+                        )
+                    ]
+                },
+            ]
+        )
+        loop = self._make_loop(llm, registry=self._make_minimal_registry())
+        result = asyncio.run(loop.run("Test unregistered tool."))
+
+        assert result.outcome == "success"
+        # The error message must name the unavailable tool
+        tool_messages = [
+            m
+            for call in llm.calls
+            for m in call["messages"]
+            if m.get("role") == "tool" and m.get("name") == "read_config"
+        ]
+        assert tool_messages, "no tool-role message for read_config found in history"
+        assert "not available" in tool_messages[0]["content"]
+        assert "finish_repair" in tool_messages[0]["content"]
+
+    def test_unregistered_tool_counts_toward_budget(self):
+        """Rejecting an unregistered tool still increments the tool-call budget."""
+        import asyncio
+
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        llm = FakeToolCallingLLMClient(
+            [
+                {"tool_calls": [self._tc("read_config")]},  # unregistered
+                {
+                    "tool_calls": [
+                        self._tc(
+                            "finish_repair",
+                            {"summary": "done", "action_taken": "no_fix_needed"},
+                        )
+                    ]
+                },
+            ]
+        )
+        reg = self._make_minimal_registry()
+        loop = self._make_loop(llm, registry=reg)
+        result = asyncio.run(loop.run("Test budget count."))
+
+        assert result.outcome == "success"
+        # finish_repair is step 2 (1-indexed): step 1 was the rejected read_config
+        terminal = result.steps[-1]
+        assert terminal.step_number == 2
+
+    def test_unregistered_tool_does_not_reach_executor(self, caplog):
+        """An unregistered tool call must not be dispatched to the executor."""
+        import asyncio
+        import logging
+
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import FINISH_REPAIR, ToolRegistry
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        execute_calls: list[str] = []
+
+        class _TrackingExecutor(ToolExecutor):
+            async def execute(self, tool_call):
+                execute_calls.append(tool_call.name)
+                return await super().execute(tool_call)
+
+        ex = _TrackingExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+        )
+        reg = ToolRegistry()
+        reg.register(FINISH_REPAIR)
+
+        llm = FakeToolCallingLLMClient(
+            [
+                {"tool_calls": [self._tc("read_config")]},  # not in registry
+                {
+                    "tool_calls": [
+                        self._tc(
+                            "finish_repair",
+                            {"summary": "done", "action_taken": "no_fix_needed"},
+                        )
+                    ]
+                },
+            ]
+        )
+        loop = AgentLoop(
+            llm_client=llm,
+            tool_executor=ex,
+            tool_registry=reg,
+            max_tool_calls=10,
+            trigger="test",
+        )
+        with caplog.at_level(logging.WARNING, logger="pueo"):
+            asyncio.run(loop.run("Test executor not called."))
+
+        assert (
+            "read_config" not in execute_calls
+        ), "executor must not run unregistered tool"
+        assert "finish_repair" in execute_calls
+        assert any(
+            "agent_loop_unregistered_tool_call" in r.message
+            or "unregistered" in r.message
+            for r in caplog.records
+        )
