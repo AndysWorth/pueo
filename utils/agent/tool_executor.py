@@ -7323,6 +7323,18 @@ class ToolExecutor:
         )
         from utils.hitl.hitl_tracker import mark_card_sent, stable_nid
 
+        if prediction is not None and normalize_prediction(prediction) is None:
+            return ToolResult(
+                tool_name="finish_host_health",
+                success=False,
+                output="",
+                error=(
+                    "Invalid prediction shape. Expected "
+                    '{"kind": "recovers_without_action"|"recovers_after_reload"|"stays_offline",'
+                    ' "within_minutes": <int>}.'
+                ),
+            )
+
         finding = self._host_health_finding
         if finding is None:
             return ToolResult(
@@ -7390,10 +7402,10 @@ class ToolExecutor:
             _payload["signature"] = self._session_signature
         if fact_if_yes:
             _payload["fact_if_yes"] = fact_if_yes
-        _prediction = normalize_prediction(prediction)
-        if _prediction is not None:
-            _payload["prediction"] = _prediction
-            _payload["prediction_text"] = describe_prediction(_prediction)
+        if prediction is not None:
+            # Already validated above; normalize_prediction cannot return None here.
+            _payload["prediction"] = normalize_prediction(prediction)
+            _payload["prediction_text"] = describe_prediction(_payload["prediction"])
         await self._notifier.send(
             subject=f"Pueo: Host health — {finding.kind}",
             body=summary,
@@ -7440,6 +7452,18 @@ class ToolExecutor:
         )
         from utils.hitl.hitl_tracker import mark_card_sent, stable_nid
 
+        if prediction is not None and normalize_prediction(prediction) is None:
+            return ToolResult(
+                tool_name="finish_device_availability",
+                success=False,
+                output="",
+                error=(
+                    "Invalid prediction shape. Expected "
+                    '{"kind": "recovers_without_action"|"recovers_after_reload"|"stays_offline",'
+                    ' "within_minutes": <int>}.'
+                ),
+            )
+
         finding = self._device_availability_finding
         if finding is None:
             return ToolResult(
@@ -7485,10 +7509,10 @@ class ToolExecutor:
             _payload["signature"] = self._session_signature
         if fact_if_yes:
             _payload["fact_if_yes"] = fact_if_yes
-        _prediction = normalize_prediction(prediction)
-        if _prediction is not None:
-            _payload["prediction"] = _prediction
-            _payload["prediction_text"] = describe_prediction(_prediction)
+        if prediction is not None:
+            # Already validated above; normalize_prediction cannot return None here.
+            _payload["prediction"] = normalize_prediction(prediction)
+            _payload["prediction_text"] = describe_prediction(_payload["prediction"])
         subject = f"Pueo: Device offline — {', '.join(device_names[:3])}"
         if len(device_names) > 3:
             subject += f" (+{len(device_names) - 3} more)"

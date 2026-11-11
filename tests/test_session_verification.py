@@ -108,6 +108,19 @@ def _step(name: str, success: bool) -> dict:
     }
 
 
+def _ha_cmd_step(command: str, success: bool) -> dict:
+    return {
+        "step_number": 1,
+        "tool_call": {"name": "run_ha_command", "arguments": {"command": command}},
+        "tool_result": {
+            "tool_name": "run_ha_command",
+            "success": success,
+            "output": "",
+        },
+        "timestamp": 0.0,
+    }
+
+
 # ---------------------------------------------------------------------------
 # normalize / describe
 # ---------------------------------------------------------------------------
@@ -213,6 +226,28 @@ class TestSessionActions:
         assert session_actions([_step("reload_integration", False)]) == (False, False)
         assert session_actions([_step("call_service", True)]) == (True, False)
         assert session_actions([_step("reload_integration", True)]) == (True, True)
+
+    def test_read_only_ha_command_not_actioned(self):
+        # Read-only commands must not set actioned=True (ADR 050).
+        assert session_actions([_ha_cmd_step("ha core stats", True)]) == (False, False)
+        assert session_actions([_ha_cmd_step("ha host info --raw-json", True)]) == (
+            False,
+            False,
+        )
+        assert session_actions([_ha_cmd_step("ha apps list", True)]) == (False, False)
+        # Failed gated command also does not set actioned.
+        assert session_actions([_ha_cmd_step("ha core restart", False)]) == (
+            False,
+            False,
+        )
+
+    def test_gated_ha_command_is_actioned(self):
+        # State-changing commands that go through the autonomy gate must set actioned.
+        assert session_actions([_ha_cmd_step("ha core restart", True)]) == (True, False)
+        assert session_actions([_ha_cmd_step("ha supervisor repair", True)]) == (
+            True,
+            False,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -779,6 +814,25 @@ class TestVerifyHostHealthSessions:
 
         db = self._setup(tmp_path, monkeypatch)
         _insert_session(db, "e1", subject_key="swap_pressure")
+        n = asyncio.run(
+            verify_host_health_sessions(db, time.time(), {"swap_pressure"}, set())
+        )
+        assert n == 0
+        assert _row(db, "e1")[0] == "pending"
+
+    def test_cleared_with_read_only_ha_command_stays_pending(
+        self, tmp_path, monkeypatch
+    ):
+        """Read-only ha commands must not set actioned; no verdict without an action."""
+        from utils.disk.resource import verify_host_health_sessions
+
+        db = self._setup(tmp_path, monkeypatch)
+        _insert_session(
+            db,
+            "e1",
+            subject_key="swap_pressure",
+            steps=[_ha_cmd_step("ha core stats", True)],
+        )
         n = asyncio.run(
             verify_host_health_sessions(db, time.time(), {"swap_pressure"}, set())
         )

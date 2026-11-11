@@ -40,7 +40,10 @@ _KIND_TEXT = {
 }
 
 # Successful calls to these tools mean Pueo acted during the session.
-_ACTION_TOOLS = frozenset({"reload_integration", "call_service", "run_ha_command"})
+# run_ha_command is included only when the specific command has a non-None risk tier
+# (i.e. it is a state-changing command routed through the autonomy gate).  Read-only
+# commands like `ha core stats` must not set actioned=True.
+_ACTION_TOOLS = frozenset({"reload_integration", "call_service"})
 
 
 def normalize_prediction(raw: object) -> Optional[dict]:
@@ -134,11 +137,23 @@ def session_actions(steps: list) -> tuple[bool, bool]:
     for step in steps or []:
         if not isinstance(step, dict):
             continue
-        name = (step.get("tool_call") or {}).get("name", "")
+        tc = step.get("tool_call") or {}
+        name = tc.get("name", "")
         ok = bool((step.get("tool_result") or {}).get("success"))
-        if ok and name in _ACTION_TOOLS:
+        if not ok:
+            continue
+        if name in _ACTION_TOOLS:
             actioned = True
             reloaded = reloaded or name == "reload_integration"
+        elif name == "run_ha_command":
+            # Count as an action only when the command has a non-None risk tier,
+            # i.e. it is a state-changing command that went through the autonomy gate.
+            # Read-only commands like `ha core stats` must not set actioned=True.
+            from utils.agent.tool_executor import _ha_command_risk
+
+            cmd = " ".join(str(tc.get("arguments", {}).get("command", "")).split())
+            if _ha_command_risk(cmd) is not None:
+                actioned = True
     return actioned, reloaded
 
 

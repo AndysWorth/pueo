@@ -6054,6 +6054,61 @@ class TestHitlCardQueuedFlag:
         )
         assert ex._hitl_card_queued is True
 
+    def test_finish_host_health_malformed_prediction_returns_error(self, tmp_path):
+        """Malformed prediction must return a tool error, not be silently dropped."""
+        import asyncio
+
+        from utils.disk.host_health import HostHealthFinding
+
+        ex = self._make_executor(self._make_db(tmp_path))
+        finding = HostHealthFinding(
+            key="swap_pressure",
+            kind="swap_pressure",
+            severity="HIGH",
+        )
+        ex.set_host_health_finding(finding)
+        result = asyncio.run(
+            ex._finish_host_health(
+                summary="Swap pressure",
+                root_cause="High memory usage",
+                outcome="monitoring",
+                recommended_actions=[],
+                prediction={"recovers_without_action": False, "stays_offline": False},
+            )
+        )
+        assert result.success is False
+        assert "Invalid prediction shape" in result.error
+        # Card must NOT have been queued when prediction is rejected.
+        assert ex._hitl_card_queued is False
+
+    def test_finish_device_availability_malformed_prediction_returns_error(
+        self, tmp_path
+    ):
+        """Malformed device-availability prediction must return a tool error."""
+        import asyncio
+
+        from utils.ha.device_availability import OfflineFinding
+
+        ex = self._make_executor(self._make_db(tmp_path))
+        finding = OfflineFinding(
+            domain="zwave_js",
+            config_entry_id="abc",
+            devices=[{"name": "Sensor", "device_id": "d1", "offline_since": 0.0}],
+        )
+        ex.set_device_availability_finding(finding)
+        result = asyncio.run(
+            ex._finish_device_availability(
+                summary="Offline",
+                root_cause="Unknown",
+                outcome="monitoring",
+                recommended_actions=[],
+                prediction={"recovers_without_action": False, "stays_offline": False},
+            )
+        )
+        assert result.success is False
+        assert "Invalid prediction shape" in result.error
+        assert ex._hitl_card_queued is False
+
     def test_finish_notification_requires_hitl_sets_flag(self, tmp_path, monkeypatch):
         """finish_notification_investigation with requires_hitl=True sets _hitl_card_queued."""
         import asyncio
