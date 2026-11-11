@@ -1405,6 +1405,7 @@ async def _run_update_analysis(
                     ws_client=_ws_client,
                     cache_dir=_cfg.HA_UPDATE_RELEASE_NOTES_CACHE_DIR,
                     state_dir=_get_dirs().state_dir,
+                    installed_version=update.installed_version or "",
                 )
                 log.info(
                     "core_release_report_built",

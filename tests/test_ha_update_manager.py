@@ -8144,3 +8144,501 @@ class TestFinishUpdateAnalysisWithVerdicts:
         payload = notifier.send.call_args[1]["payload"]
         assert payload["bc_verdicts"] == []
         assert payload["instance_impact"] == "low"
+
+
+# ---------------------------------------------------------------------------
+# release_span — pure helper table tests
+# ---------------------------------------------------------------------------
+
+
+class TestReleaseSpan:
+    """Unit tests for release_span()."""
+
+    def _span(self, installed, target):
+        from utils.knowledge.ha_release_report import release_span
+
+        return release_span(installed, target)
+
+    def test_same_month_patch_one_step(self):
+        months, patches = self._span("2026.11.0", "2026.11.1")
+        assert months == []
+        assert patches == ["2026.11.1"]
+
+    def test_same_month_patch_multi_step(self):
+        months, patches = self._span("2026.11.1", "2026.11.3")
+        assert months == []
+        assert patches == ["2026.11.2", "2026.11.3"]
+
+    def test_same_month_no_patch(self):
+        months, patches = self._span("2026.11.0", "2026.11.0")
+        assert months == []
+        assert patches == []
+
+    def test_cross_month_single(self):
+        months, patches = self._span("2026.10.4", "2026.11.1")
+        assert months == ["2026.11"]
+        assert patches == ["2026.11.1"]
+
+    def test_cross_month_target_zero(self):
+        months, patches = self._span("2026.10.4", "2026.11.0")
+        assert months == ["2026.11"]
+        assert patches == []
+
+    def test_cross_two_months_skipped(self):
+        months, patches = self._span("2026.9.4", "2026.11.1")
+        assert months == ["2026.10", "2026.11"]
+        assert patches == ["2026.11.1"]
+
+    def test_december_to_january_rollover(self):
+        months, patches = self._span("2026.12.4", "2027.1.1")
+        assert months == ["2027.1"]
+        assert patches == ["2027.1.1"]
+
+    def test_unparseable_installed_returns_empty(self):
+        months, patches = self._span("bad", "2026.11.1")
+        assert months == []
+        assert patches == []
+
+    def test_unparseable_target_returns_empty(self):
+        months, patches = self._span("2026.10.4", "not-a-version")
+        assert months == []
+        assert patches == []
+
+
+# ---------------------------------------------------------------------------
+# parse_patch_notes — domain mapping and noise filtering
+# ---------------------------------------------------------------------------
+
+
+class TestParsePatchNotes:
+    """Unit tests for parse_patch_notes()."""
+
+    def _parse(self, body, installed, name_to_domain=None):
+        from utils.knowledge.ha_release_report import parse_patch_notes
+
+        return parse_patch_notes(body, set(installed), name_to_domain or {})
+
+    def test_maps_domain_from_integration_url(self):
+        body = (
+            "- Fix foo ([@user] - [#1]) "
+            "([Device Tracker docs](https://www.home-assistant.io/integrations/device_tracker))\n"
+        )
+        result = self._parse(body, ["device_tracker"])
+        assert "device_tracker" in result
+        assert result["device_tracker"][0].text == "Fix foo"
+
+    def test_hyphen_to_underscore_normalisation(self):
+        body = (
+            "- Fix bar ([@user] - [#2]) "
+            "([Foo Bar docs](https://www.home-assistant.io/integrations/foo-bar))\n"
+        )
+        result = self._parse(body, ["foo_bar"])
+        assert "foo_bar" in result
+
+    def test_not_installed_domain_dropped(self):
+        body = (
+            "- Fix baz ([@user] - [#3]) "
+            "([MQTT docs](https://www.home-assistant.io/integrations/mqtt))\n"
+        )
+        result = self._parse(body, ["hue"])
+        assert result == {}
+
+    def test_line_without_integration_url_dropped(self):
+        body = "- Internal refactor without domain tag\n"
+        result = self._parse(body, ["hue"])
+        assert result == {}
+
+    def test_mechanical_change_dropped(self):
+        body = (
+            "- Bump some_lib from 1.0 to 1.1 ([@user] - [#4]) "
+            "([Hue docs](https://www.home-assistant.io/integrations/hue))\n"
+        )
+        result = self._parse(body, ["hue"])
+        assert result == {}
+
+    def test_multiple_entries_same_domain(self):
+        body = (
+            "- Fix A ([@u] - [#1]) ([Hue docs](https://www.home-assistant.io/integrations/hue))\n"
+            "- Fix B ([@u] - [#2]) ([Hue docs](https://www.home-assistant.io/integrations/hue))\n"
+        )
+        result = self._parse(body, ["hue"])
+        assert len(result["hue"]) == 2
+
+    def test_pr_numbers_captured(self):
+        body = (
+            "- Fix something ([@u] - [#9999]) "
+            "([Device Tracker docs](https://www.home-assistant.io/integrations/device_tracker))\n"
+        )
+        result = self._parse(body, ["device_tracker"])
+        assert "9999" in result["device_tracker"][0].prs
+
+
+# ---------------------------------------------------------------------------
+# CoreReleaseReport schema — new fields
+# ---------------------------------------------------------------------------
+
+
+class TestCoreReleaseReportNewFields:
+    """Schema trio (valid, invalid, round-trip) for new CoreReleaseReport fields."""
+
+    def test_new_fields_have_defaults(self):
+        from utils.knowledge.ha_release_report import CoreReleaseReport
+
+        r = CoreReleaseReport(version="2026.11.1")
+        assert r.installed_version == ""
+        assert r.blog_urls == {}
+        assert r.patch_changes_by_domain == {}
+        assert r.missing == []
+
+    def test_bc_entry_has_release_field(self):
+        from utils.knowledge.ha_release_report import BCEntry
+
+        e = BCEntry(name="MQTT", release="2026.11")
+        assert e.release == "2026.11"
+        e2 = BCEntry(name="MQTT")
+        assert e2.release == ""
+
+    def test_round_trip_preserves_new_fields(self):
+        from utils.knowledge.ha_release_report import (
+            BCEntry,
+            ChangeEntry,
+            CoreReleaseReport,
+        )
+
+        r = CoreReleaseReport(
+            version="2026.11.1",
+            installed_version="2026.10.4",
+            blog_urls={
+                "2026.11": "https://www.home-assistant.io/blog/2026/11/04/release-202611/"
+            },
+            patch_changes_by_domain={
+                "hue": [ChangeEntry(text="Fix flicker", prs=["12345"])]
+            },
+            missing=["patch:2026.11.1"],
+            bc_installed=[BCEntry(name="MQTT", release="2026.11")],
+        )
+        reloaded = CoreReleaseReport.model_validate_json(r.model_dump_json())
+        assert reloaded.installed_version == "2026.10.4"
+        assert reloaded.blog_urls == r.blog_urls
+        assert reloaded.missing == ["patch:2026.11.1"]
+        assert reloaded.bc_installed[0].release == "2026.11"
+        assert reloaded.patch_changes_by_domain["hue"][0].text == "Fix flicker"
+
+
+# ---------------------------------------------------------------------------
+# format_core_release_digest — empty-BC wording
+# ---------------------------------------------------------------------------
+
+
+class TestCoreReleaseDigestEmptyBCWording:
+    """Digest emits the BC section with appropriate wording when BCs are absent."""
+
+    def _make_report(self, **kwargs):
+        from utils.knowledge.ha_release_report import CoreReleaseReport
+
+        return CoreReleaseReport(version="2026.11.1", **kwargs)
+
+    def test_no_installed_version_no_bc_still_empty(self):
+        from utils.knowledge.ha_release_report import format_core_release_digest
+
+        r = self._make_report(completeness="complete", screening_complete=True)
+        assert format_core_release_digest(r) == ""
+
+    def test_patch_update_no_bc_shows_patch_message(self):
+        from utils.knowledge.ha_release_report import format_core_release_digest
+
+        r = self._make_report(installed_version="2026.11.0", completeness="complete")
+        digest = format_core_release_digest(r)
+        assert "Backward-incompatible changes" in digest
+        assert "patch update within 2026.11" in digest
+
+    def test_cross_month_no_bc_shows_no_bc_found_message(self):
+        from utils.knowledge.ha_release_report import format_core_release_digest
+
+        r = self._make_report(installed_version="2026.10.4", completeness="complete")
+        digest = format_core_release_digest(r)
+        assert "Backward-incompatible changes" in digest
+        assert "No backward-incompatible changes found" in digest
+
+    def test_missing_blog_shows_could_not_read_message(self):
+        from utils.knowledge.ha_release_report import format_core_release_digest
+
+        r = self._make_report(
+            installed_version="2026.10.4",
+            missing=["blog:2026.11"],
+            completeness="incomplete",
+        )
+        digest = format_core_release_digest(r)
+        assert "could not be read for" in digest
+        assert "blog:2026.11" in digest
+
+    def test_release_label_shown_only_when_multiple_months(self):
+        from utils.knowledge.ha_release_report import (
+            BCEntry,
+            format_core_release_digest,
+        )
+
+        # Single month: no label
+        r1 = self._make_report(
+            installed_version="2026.10.4",
+            bc_installed=[BCEntry(name="MQTT", body="x", release="2026.11")],
+            completeness="complete",
+        )
+        d1 = format_core_release_digest(r1)
+        assert "[2026.11]" not in d1
+
+        # Two months: label shown
+        r2 = self._make_report(
+            installed_version="2026.9.4",
+            bc_installed=[
+                BCEntry(name="MQTT", body="x", release="2026.10"),
+                BCEntry(name="Hue", body="y", release="2026.11"),
+            ],
+            completeness="complete",
+        )
+        d2 = format_core_release_digest(r2)
+        assert "[2026.10]" in d2
+        assert "[2026.11]" in d2
+
+
+# ---------------------------------------------------------------------------
+# build_core_release_report — integration tests with fake fetchers
+# ---------------------------------------------------------------------------
+
+
+class TestBuildCoreReleaseReport:
+    """Integration tests for build_core_release_report using injected fetchers."""
+
+    _STUB_11_0 = "[Release 2026.11](https://www.home-assistant.io/blog/2026/11/04/release-202611/)"
+    # Minimal HTML that _ArticleExtractor can parse: <article> with BC section
+    _BLOG_11 = b"""<html><body><article>
+<h2>Backward-incompatible changes</h2>
+<details>
+<summary>Device tracker</summary>
+<p>Tracking method changed.</p>
+<a href="/integrations/device_tracker/">Device Tracker documentation</a>
+</details>
+<details>
+<summary>Some integration</summary>
+<p>General change.</p>
+</details>
+<h2>Farewell</h2>
+<p>Goodbye integration.</p>
+</article></body></html>"""
+    _CHANGELOG_11 = """
+##### Device Tracker
+
+- Some new feature
+
+#### Other changes
+
+- Core improvement
+"""
+    _STUB_11_1 = "- Fix device_tracker lag ([@user] - [#99]) ([Device Tracker docs](https://www.home-assistant.io/integrations/device_tracker))\n- Internal refactor\n"
+
+    def _run(
+        self,
+        version,
+        installed_integrations,
+        stubs,
+        blogs,
+        changelogs,
+        state_dir,
+        installed_version="",
+    ):
+        import asyncio
+        from unittest.mock import MagicMock
+
+        from utils.knowledge.ha_release_report import build_core_release_report
+
+        ws = MagicMock()
+        ws.list_manifests = asyncio.coroutine(lambda: [])
+
+        async def _ws_coro():
+            return []
+
+        ws.list_manifests = lambda: _ws_coro()
+
+        return asyncio.run(
+            build_core_release_report(
+                version,
+                installed_integrations,
+                ws_client=ws,
+                cache_dir=str(state_dir / "cache"),
+                state_dir=state_dir,
+                installed_version=installed_version,
+                _github_fetcher=stubs.__getitem__,
+                _blog_fetcher=blogs.__getitem__,
+                _changelog_fetcher=changelogs.__getitem__,
+            )
+        )
+
+    def test_cross_month_patch_fetches_bc_from_zero_stub(self, tmp_path):
+        """2026.10.4 → 2026.11.1: BCs come from the 2026.11.0 blog."""
+        import asyncio
+        from unittest.mock import MagicMock
+
+        from utils.knowledge.ha_release_report import build_core_release_report
+
+        ws = MagicMock()
+
+        async def _manifests():
+            return []
+
+        ws.list_manifests = _manifests
+
+        stubs = {
+            "2026.11.0": self._STUB_11_0,
+            "2026.11.1": self._STUB_11_1,
+        }
+        blogs = {
+            "https://www.home-assistant.io/blog/2026/11/04/release-202611/": self._BLOG_11
+        }
+        changelog_url = "https://www.home-assistant.io/changelogs/core-2026.11"
+        changelogs = {changelog_url: self._CHANGELOG_11}
+
+        rpt = asyncio.run(
+            build_core_release_report(
+                "2026.11.1",
+                ["device_tracker"],
+                ws_client=ws,
+                cache_dir=str(tmp_path / "cache"),
+                state_dir=tmp_path,
+                installed_version="2026.10.4",
+                _github_fetcher=stubs.__getitem__,
+                _blog_fetcher=blogs.__getitem__,
+                _changelog_fetcher=changelogs.__getitem__,
+            )
+        )
+
+        assert rpt.completeness == "complete"
+        assert len(rpt.bc_installed) == 1
+        assert rpt.bc_installed[0].name == "Device tracker"
+        assert rpt.bc_installed[0].release == "2026.11"
+        assert len(rpt.bc_general) == 1
+        assert rpt.bc_general[0].name == "Some integration"
+        assert rpt.patch_changes_by_domain.get("device_tracker") is not None
+        assert rpt.installed_version == "2026.10.4"
+        assert rpt.missing == []
+
+    def test_same_month_patch_no_bc_no_changelog(self, tmp_path):
+        """2026.11.0 → 2026.11.1: no blog fetch, no changelog, patch notes only."""
+        import asyncio
+        from unittest.mock import MagicMock
+
+        from utils.knowledge.ha_release_report import build_core_release_report
+
+        ws = MagicMock()
+
+        async def _manifests():
+            return []
+
+        ws.list_manifests = _manifests
+
+        fetched = []
+
+        def _github(ver):
+            fetched.append(ver)
+            return self._STUB_11_1
+
+        rpt = asyncio.run(
+            build_core_release_report(
+                "2026.11.1",
+                ["device_tracker"],
+                ws_client=ws,
+                cache_dir=str(tmp_path / "cache"),
+                state_dir=tmp_path,
+                installed_version="2026.11.0",
+                _github_fetcher=_github,
+                _blog_fetcher=lambda url: b"",
+                _changelog_fetcher=lambda url: "",
+            )
+        )
+
+        assert rpt.completeness == "complete"
+        assert rpt.bc_installed == []
+        assert rpt.bc_general == []
+        assert rpt.changes_by_domain == {}
+        # Only the patch version stub should have been fetched
+        assert fetched == ["2026.11.1"]
+        assert rpt.patch_changes_by_domain.get("device_tracker") is not None
+
+    def test_missing_blog_gives_incomplete_and_missing_entry(self, tmp_path):
+        """When the blog URL cannot be extracted, report is incomplete and missing is populated."""
+        import asyncio
+        from unittest.mock import MagicMock
+
+        from utils.knowledge.ha_release_report import build_core_release_report
+
+        ws = MagicMock()
+
+        async def _manifests():
+            return []
+
+        ws.list_manifests = _manifests
+
+        def _github(ver):
+            if ver == "2026.11.0":
+                return "x" * 600  # too long — no blog URL extracted
+            return ""
+
+        rpt = asyncio.run(
+            build_core_release_report(
+                "2026.11.1",
+                ["device_tracker"],
+                ws_client=ws,
+                cache_dir=str(tmp_path / "cache"),
+                state_dir=tmp_path,
+                installed_version="2026.10.4",
+                _github_fetcher=_github,
+                _blog_fetcher=lambda url: b"",
+                _changelog_fetcher=lambda url: "",
+            )
+        )
+
+        assert rpt.completeness == "incomplete"
+        assert "blog:2026.11" in rpt.missing
+
+    def test_installed_version_persisted_to_json(self, tmp_path):
+        """installed_version is saved to the JSON report file."""
+        import asyncio
+        from unittest.mock import MagicMock
+
+        from utils.knowledge.ha_release_report import (
+            CoreReleaseReport,
+            build_core_release_report,
+        )
+
+        ws = MagicMock()
+
+        async def _manifests():
+            return []
+
+        ws.list_manifests = _manifests
+
+        stubs = {"2026.11.0": self._STUB_11_0, "2026.11.1": self._STUB_11_1}
+        blogs = {
+            "https://www.home-assistant.io/blog/2026/11/04/release-202611/": self._BLOG_11
+        }
+        changelogs = {
+            "https://www.home-assistant.io/changelogs/core-2026.11": self._CHANGELOG_11
+        }
+
+        asyncio.run(
+            build_core_release_report(
+                "2026.11.1",
+                ["device_tracker"],
+                ws_client=ws,
+                cache_dir=str(tmp_path / "cache"),
+                state_dir=tmp_path,
+                installed_version="2026.10.4",
+                _github_fetcher=stubs.__getitem__,
+                _blog_fetcher=blogs.__getitem__,
+                _changelog_fetcher=changelogs.__getitem__,
+            )
+        )
+
+        saved_path = tmp_path / "update_reports" / "core_2026.11.1.json"
+        assert saved_path.exists()
+        saved = CoreReleaseReport.model_validate_json(saved_path.read_text())
+        assert saved.installed_version == "2026.10.4"

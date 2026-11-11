@@ -6427,6 +6427,18 @@ class ToolExecutor:
                         _rpt = _CRR.model_validate_json(
                             _report_path.read_text(encoding="utf-8")
                         )
+                        # Invalidate reports built for a different installed version
+                        _rpt_iv = _rpt.installed_version
+                        _pending_iv = (
+                            self._pending_update_status.installed_version or ""
+                            if self._pending_update_status is not None
+                            else ""
+                        )
+                        if _rpt_iv and _pending_iv and _rpt_iv != _pending_iv:
+                            raise ValueError(
+                                f"stale report: built from {_rpt_iv!r}, "
+                                f"current installed {_pending_iv!r}"
+                            )
                         digest = format_core_release_digest(_rpt)
                         # Notes completeness comes from the deterministic report only;
                         # a partial screening pass is tracked separately (#1148).
