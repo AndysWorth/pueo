@@ -2623,37 +2623,6 @@ FINISH_UPDATE_ANALYSIS = ToolDefinition(
                     "Cover every BC — missing ones will be filled as 'unknown'."
                 ),
             },
-            "flag_verdicts": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "flag": {
-                            "type": "string",
-                            "description": "The flag change text, exactly as it appears in the digest.",
-                        },
-                        "affects": {
-                            "type": "string",
-                            "enum": ["yes", "no", "unknown"],
-                            "description": (
-                                "'yes' if this flagged change affects this installation, "
-                                "'no' if confirmed not affected, "
-                                "'unknown' if the evidence was insufficient to decide."
-                            ),
-                        },
-                        "reason": {
-                            "type": "string",
-                            "description": "One sentence explaining the verdict.",
-                        },
-                    },
-                    "required": ["flag", "affects", "reason"],
-                },
-                "description": (
-                    "One entry per flagged change from 'Flagged changes (from screening)'. "
-                    "A flag verdict of 'yes' raises instance_impact to high. "
-                    "Missing flags are filled as 'unknown' and do not affect impact."
-                ),
-            },
             "deviated_from_runbook": {
                 "type": "object",
                 "description": (
@@ -2684,6 +2653,59 @@ FINISH_UPDATE_ANALYSIS = ToolDefinition(
             "proposed_config_fixes",
             "create_hitl_card",
         ],
+    },
+)
+
+
+FINISH_BC_ASSESSMENT = ToolDefinition(
+    name="finish_bc_assessment",
+    description=(
+        "Report the verdict for a single breaking-change assessment and close the session. "
+        "Call exactly once after reviewing the BC evidence block."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "affects": {
+                "type": "string",
+                "enum": ["yes", "no", "unknown"],
+                "description": (
+                    "'yes' if this BC affects this installation (entity, config key, or "
+                    "automation hit confirmed), 'no' if confirmed not affected, "
+                    "'unknown' if the evidence is insufficient to decide."
+                ),
+            },
+            "reason": {
+                "type": "string",
+                "description": "One sentence explaining the verdict.",
+            },
+            "evidence_cited": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Tool names called this session whose output supports the verdict "
+                    "(e.g. ['check_config_against_breaking_change'])."
+                ),
+            },
+            "config_fix": {
+                "type": "object",
+                "description": (
+                    "Only when affects='yes' and a concrete YAML fix is needed. "
+                    "The old value must be text found verbatim in a tool output this session."
+                ),
+                "properties": {
+                    "description": {"type": "string"},
+                    "fix_description": {"type": "string"},
+                    "config_fix_yaml": {"type": "string"},
+                    "old": {
+                        "type": "string",
+                        "description": "Existing YAML text that must change.",
+                    },
+                },
+                "required": ["description", "config_fix_yaml", "old"],
+            },
+        },
+        "required": ["affects", "reason"],
     },
 )
 
@@ -3014,6 +3036,24 @@ def build_change_screening_registry() -> ToolRegistry:
     """
     reg = ToolRegistry()
     reg.register(FINISH_CHANGE_SCREENING)
+    return reg
+
+
+def build_bc_assessment_registry() -> ToolRegistry:
+    """Registry for a per-BC breaking-change assessment session.
+
+    Small session: judge one BC from its evidence block plus targeted config
+    and automation lookups.  No knowledge retrieval and no escalation path.
+    """
+    reg = ToolRegistry()
+    for tool in (
+        CHECK_CONFIG_AGAINST_BREAKING_CHANGE,
+        CHECK_AUTOMATION_REFERENCES,
+        READ_FILE,
+        GET_HA_PROFILE,
+        FINISH_BC_ASSESSMENT,
+    ):
+        reg.register(tool)
     return reg
 
 

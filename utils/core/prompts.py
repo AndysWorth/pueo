@@ -6,6 +6,7 @@ _prompt_ref = importlib.resources.files("prompts")
 
 _VALID_TASKS = frozenset(
     {
+        "bc_assessment",
         "chat",
         "change_screening",
         "config_repair",

@@ -694,7 +694,7 @@ async def build_core_release_report(
     return report
 
 
-_DIGEST_CAP = 15000
+_DIGEST_SOFT_CAP = 12000
 _SEP = "\n\n---\n\n"
 
 
@@ -776,151 +776,77 @@ def _format_flag_entry(
     return text
 
 
+def _verdict_symbol(affects: str) -> str:
+    return {"yes": "⚠️ yes", "no": "✅ no"}.get(affects, "❓ unknown")
+
+
 def format_core_release_digest(report: "CoreReleaseReport") -> str:
-    """Build a compact digest string from a CoreReleaseReport for the main AgentLoop.
+    """Build a compact digest for the main AgentLoop from a CoreReleaseReport.
 
-    Ordering (high-priority first so truncation never cuts flags or highlights):
-    1. Flagged changes sorted high → medium → low
-    2. Feature highlights (≤ 8)
-    3. Farewell / removed section
-    4. Backward-incompatible changes — per-entry truncation on whatever budget remains
+    Ordering:
+    1. BC verdict table (name | verdict | reason | fix note)
+    2. Patch changes
+    3. Feature highlights (≤ 8)
+    4. Flags — high/medium only, one line each, marked informational
+    5. Other-integration names
 
-    Total capped at _DIGEST_CAP chars.
+    No hard char slice.  When the text would exceed _DIGEST_SOFT_CAP, flags are
+    dropped first, then highlights, and an explicit "omitted: …" note is appended.
+    "digest:flags_omitted" or "digest:highlights_omitted" is added to report.missing
+    so completeness is downgraded.
     """
     _SEV_ORDER = {"high": 0, "medium": 1, "low": 2}
-    priority_parts: list[str] = []
-
-    # 1. Flagged changes — sorted high → low, with per-flag evidence
-    if report.screening_flags:
-        sorted_flags = sorted(
-            report.screening_flags, key=lambda f: _SEV_ORDER.get(f.severity, 1)
-        )
-        flag_lines = [
-            _format_flag_entry(f, report.flag_evidence.get(f.change))
-            for f in sorted_flags
-        ]
-        priority_parts.append(
-            "## Flagged changes (from screening)\n\n" + "\n".join(flag_lines)
-        )
-
-    # 2. Feature highlights (≤ 8)
-    if report.screening_highlights:
-        hl_lines = [
-            f"- **{h.domain}**: {h.feature}" for h in report.screening_highlights[:8]
-        ]
-        priority_parts.append(
-            "## Feature highlights (from screening)\n\n" + "\n".join(hl_lines)
-        )
-
-    # 3. Farewell / removed section
-    if report.farewell:
-        priority_parts.append(report.farewell)
-
-    priority_text = _SEP.join(priority_parts)
-    bc_budget = _DIGEST_CAP - len(priority_text) - (len(_SEP) if priority_text else 0)
-
-    # 4. BCs — per-entry truncation so the whole section fits in remaining budget
-    _BC_HEADER = "## Backward-incompatible changes\n\n"
-    _INST_HEADER = "**Affects this instance:**\n\n"
-    _GEN_HEADER = "**General (applies to all installs):**\n\n"
-    _TRUNC_MARKER = "…(truncated)"
-
-    # Show release label on individual entries only when multiple months are covered
-    _releases = {
-        e.release for e in report.bc_installed + report.bc_general if e.release
+    all_bc = list(report.bc_installed) + list(report.bc_general)
+    # Build a lookup from report.bc_verdicts (may be pre-populated by assessment pass)
+    _verdict_map: dict[str, dict] = {
+        v["bc"]: v for v in report.bc_verdicts if isinstance(v, dict) and "bc" in v
     }
-    _show_release = len(_releases) > 1
 
-    def _fmt_entry_with_label(e: BCEntry) -> str:
-        text = _format_bc_entry(e, report.bc_evidence.get(e.name))
-        if _show_release and e.release:
-            text = f"[{e.release}] " + text
-        return text
-
-    bc_parts: list[str] = []
-    has_any_bc = bool(report.bc_installed or report.bc_general or report.bc_other_names)
-    # Emit the BC section whenever there are entries, or when there's context to explain
-    # why there are none (installed_version set, or missing data recorded).
-    _has_bc_context = has_any_bc or bool(report.installed_version or report.missing)
-    if _has_bc_context:
-        overhead = len(_BC_HEADER)
-        if report.bc_installed:
-            overhead += len(_INST_HEADER)
-        if report.bc_general:
-            overhead += len(_GEN_HEADER) + 2
-        entry_budget = bc_budget - overhead
-
-        installed_entries: list[str] = []
-        for e in report.bc_installed:
-            entry_text = _fmt_entry_with_label(e)
-            if entry_budget > 0:
-                if len(entry_text) > entry_budget:
-                    entry_text = (
-                        entry_text[: entry_budget - len(_TRUNC_MARKER)] + _TRUNC_MARKER
-                    )
-                installed_entries.append(entry_text)
-                entry_budget -= len(entry_text) + 2
-
-        general_entries: list[str] = []
-        for e in report.bc_general:
-            entry_text = _fmt_entry_with_label(e)
-            if entry_budget > 0:
-                if len(entry_text) > entry_budget:
-                    entry_text = (
-                        entry_text[: entry_budget - len(_TRUNC_MARKER)] + _TRUNC_MARKER
-                    )
-                general_entries.append(entry_text)
-                entry_budget -= len(entry_text) + 2
-
-        bc_section = _BC_HEADER
-        if installed_entries:
-            bc_section += _INST_HEADER + "\n\n".join(installed_entries)
-        if general_entries:
-            general_header_str = _GEN_HEADER + "\n\n".join(general_entries)
-            if installed_entries:
-                bc_section += "\n\n" + general_header_str
+    # 1. BC verdict table
+    _bc_rows: list[str] = []
+    for e in all_bc:
+        v = _verdict_map.get(e.name, {})
+        affects = v.get("affects", "unknown")
+        reason = v.get("reason", "not yet assessed")
+        fix = v.get("config_fix")
+        fix_note = f" | fix: {fix.get('description', '')}." if fix else ""
+        label = "installed" if e in report.bc_installed else "general"
+        _bc_rows.append(
+            f"- **{e.name}** [{label}]: {_verdict_symbol(affects)} — {reason}{fix_note}"
+        )
+    # Empty-BC explanation
+    if not all_bc:
+        bc_missing = [
+            m
+            for m in report.missing
+            if m.startswith(("blog:", "bc_section:", "changelog:"))
+        ]
+        if bc_missing:
+            _bc_rows.append(
+                "Could not read breaking-change data for: " + ", ".join(bc_missing)
+            )
+        elif report.installed_version:
+            months_span, _ = release_span(report.installed_version, report.version)
+            if not months_span:
+                yymm = report.version.rsplit(".", 1)[0]
+                _bc_rows.append(
+                    f"No backward-incompatible changes apply (patch update within {yymm})"
+                )
             else:
-                bc_section += general_header_str
-        if report.bc_other_names and entry_budget > 0:
-            other_line = (
-                "**Other affected integrations (not installed here):** "
+                _bc_rows.append(
+                    "No backward-incompatible changes found for this instance"
+                )
+
+    bc_section = ""
+    if _bc_rows or all_bc:
+        bc_section = "## Backward-incompatible changes\n\n" + "\n".join(_bc_rows)
+        if report.bc_other_names:
+            bc_section += (
+                "\n\n**Other integrations (not installed here):** "
                 + ", ".join(report.bc_other_names)
             )
-            if installed_entries or general_entries:
-                bc_section += "\n\n" + other_line
-            else:
-                bc_section += other_line
 
-        if not has_any_bc:
-            # Explain why the BC section is empty
-            bc_missing = [
-                m
-                for m in report.missing
-                if m.startswith(("blog:", "bc_section:", "changelog:"))
-            ]
-            if bc_missing:
-                bc_section += (
-                    "Backward-incompatible changes could not be read for: "
-                    + ", ".join(bc_missing)
-                )
-            elif report.installed_version:
-                months_span, _ = release_span(report.installed_version, report.version)
-                if not months_span:
-                    yymm = report.version.rsplit(".", 1)[0]
-                    bc_section += (
-                        f"No backward-incompatible changes apply "
-                        f"(patch update within {yymm})"
-                    )
-                else:
-                    bc_section += (
-                        "No backward-incompatible changes found for this instance"
-                    )
-
-        bc_parts.append(bc_section)
-
-    bc_text = _SEP.join(bc_parts)
-
-    # Patch changes (installed domains only — parse_patch_notes already filtered)
+    # 2. Patch changes (installed domains only — parse_patch_notes already filtered)
     patch_text = ""
     if report.patch_changes_by_domain:
         patch_lines: list[str] = []
@@ -929,8 +855,59 @@ def format_core_release_digest(report: "CoreReleaseReport") -> str:
             patch_lines.append(f"**{domain}:**\n{entry_lines}")
         patch_text = "## Patch changes\n\n" + "\n\n".join(patch_lines)
 
-    all_parts = [p for p in [priority_text, bc_text, patch_text] if p]
-    return (_SEP.join(all_parts))[:_DIGEST_CAP]
+    # 3. Feature highlights (≤ 8)
+    hl_text = ""
+    if report.screening_highlights:
+        hl_lines = [
+            f"- **{h.domain}**: {h.feature}" for h in report.screening_highlights[:8]
+        ]
+        hl_text = "## Feature highlights (from screening)\n\n" + "\n".join(hl_lines)
+
+    # 4. Flags — high/medium only, informational
+    flag_text = ""
+    _sig_flags = [f for f in report.screening_flags if f.severity in ("high", "medium")]
+    if _sig_flags:
+        sorted_flags = sorted(_sig_flags, key=lambda f: _SEV_ORDER.get(f.severity, 1))
+        flag_lines = [
+            f"- **{f.domain}** [{f.severity.upper()}]: {f.change} _(informational)_"
+            for f in sorted_flags
+        ]
+        flag_text = (
+            "## Flagged changes (informational only — do not raise impact)\n\n"
+            + "\n".join(flag_lines)
+        )
+
+    # 5. Other integrations already embedded in bc_section above.
+
+    # Assemble with soft-cap enforcement: drop flags, then highlights, then note it.
+    core_parts = [p for p in [bc_section, patch_text] if p]
+    core_text = _SEP.join(core_parts)
+
+    def _join(*parts: str) -> str:
+        return _SEP.join(p for p in parts if p)
+
+    full = _join(core_text, hl_text, flag_text)
+    if len(full) <= _DIGEST_SOFT_CAP:
+        return full
+
+    # Over cap: drop flags first
+    no_flags = _join(core_text, hl_text)
+    if len(no_flags) > _DIGEST_SOFT_CAP:
+        # Drop highlights too
+        no_hl = _join(core_text)
+        omit_note = _join(
+            no_hl,
+            "_(omitted: highlights, flags — over digest size limit)_",
+        )
+        if "digest:flags_omitted" not in report.missing:
+            report.missing.append("digest:flags_omitted")
+        if "digest:highlights_omitted" not in report.missing:
+            report.missing.append("digest:highlights_omitted")
+        return omit_note
+
+    if "digest:flags_omitted" not in report.missing:
+        report.missing.append("digest:flags_omitted")
+    return _join(no_flags, "_(omitted: flags — over digest size limit)_")
 
 
 # Screening batch size budget (chars).  Cut at integration boundaries.

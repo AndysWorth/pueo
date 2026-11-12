@@ -2060,9 +2060,17 @@ class AgentLoop:
                         success=True,
                         output=_cached_text,
                     )
+                    _REPEAT_PREVIEW_CHARS = 500
+                    if len(_cached_text) > _REPEAT_PREVIEW_CHARS:
+                        _repeat_body = (
+                            _cached_text[:_REPEAT_PREVIEW_CHARS]
+                            + "… [truncated — full result already in context above]"
+                        )
+                    else:
+                        _repeat_body = _cached_text
                     result_text = (
                         f"[Repeated call — identical result from step {_prior_step}]"
-                        f" {_cached_text}"
+                        f" {_repeat_body}"
                     )
                     _tc_duration_ms = round((time.time() - ts) * 1000, 1)
                     _cached_rec: ToolCallRecord | None = None

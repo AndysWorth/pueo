@@ -8108,6 +8108,7 @@ class TestSeedRegistry:
             sig_update(hacs_type, "noaa_it_all"),
             sig_update("addon", "mosquitto"),
             sig_update("core", "homeassistant"),
+            sig_update("core_bc", "homeassistant"),
             sig_update("core_screen", "homeassistant"),
             sig_update("os", "home_assistant_operating_system"),
             sig_update("supervisor", "home_assistant_supervisor"),
@@ -8428,7 +8429,7 @@ class TestPromptNoVerdictRules:
         )
 
     def test_finds_task_prompts(self):
-        assert len(self._agent_prompts()) == 12  # agent_core + 11 task_*.md
+        assert len(self._agent_prompts()) == 13  # agent_core + 12 task_*.md
 
     def test_no_per_type_verdicts(self):
         import re
@@ -8499,6 +8500,7 @@ class TestLoadAgentPrompt:
         from utils.core.prompts import _VALID_TASKS, load_agent_prompt
 
         terminal_tools = {
+            "bc_assessment": "finish_bc_assessment",
             "change_screening": "finish_change_screening",
             "chat": "finish_chat",
             "config_repair": "finish_repair",
@@ -8525,6 +8527,7 @@ class TestLoadAgentPrompt:
         from utils.agent.tool_registry import build_ha_tool_registry
 
         from utils.agent.tool_registry import (
+            build_bc_assessment_registry,
             build_change_screening_registry,
             build_chat_tool_registry,
             build_device_availability_tool_registry,
@@ -8542,6 +8545,7 @@ class TestLoadAgentPrompt:
             | set(build_notification_investigation_registry().names())
             | set(build_update_analysis_registry().names())
             | set(build_change_screening_registry().names())
+            | set(build_bc_assessment_registry().names())
             | set(build_device_availability_tool_registry().names())
             | set(build_host_health_tool_registry().names())
             | set(build_lovelace_investigation_registry().names())
@@ -11494,6 +11498,126 @@ class TestRepeatGuard:
         assert result.steps[-1].step_number == 3
 
 
+class TestRepeatGuardTruncation:
+    """Repeat guard truncates cached outputs > 500 chars to avoid flooding context."""
+
+    def _make_loop(self, llm):
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import build_ha_tool_registry
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+
+        ex = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+        )
+        return AgentLoop(
+            llm_client=llm,
+            tool_executor=ex,
+            tool_registry=build_ha_tool_registry(),
+            max_tool_calls=10,
+            trigger="test",
+        )
+
+    def _tc(self, name, arguments=None):
+        return {"function": {"name": name, "arguments": arguments or {}}}
+
+    def test_short_cached_output_not_truncated(self):
+        """Cached output ≤ 500 chars is passed to the LLM verbatim."""
+        import asyncio
+
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        llm = FakeToolCallingLLMClient(
+            [
+                {"tool_calls": [self._tc("read_config")]},
+                {"tool_calls": [self._tc("read_config")]},
+                {
+                    "tool_calls": [
+                        self._tc(
+                            "finish_repair",
+                            {"summary": "done", "action_taken": "no_fix_needed"},
+                        )
+                    ]
+                },
+            ]
+        )
+        loop = self._make_loop(llm)
+        asyncio.run(loop.run("Test short repeat."))
+        # Second call: the repeat message should NOT contain "[truncated"
+        second_call_messages = llm.calls[1]["messages"]
+        tool_messages = [m for m in second_call_messages if m.get("role") == "tool"]
+        repeat_msg = next(
+            (
+                m["content"]
+                for m in tool_messages
+                if "Repeated call" in m.get("content", "")
+            ),
+            None,
+        )
+        assert repeat_msg is not None
+        assert "[truncated" not in repeat_msg
+
+    def test_long_cached_output_truncated_to_500(self):
+        """Cached output > 500 chars is truncated; truncation marker appears."""
+        import asyncio
+
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import build_ha_tool_registry
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        # Make read_config return a large output by pre-loading the fake client
+        large_yaml = "homeassistant:\n  name: Home\n" + "# padding: " + "y" * 600
+        ssh = FakeSSHClient(file_contents={"/config/configuration.yaml": large_yaml})
+
+        ex = ToolExecutor(
+            ha_ssh_client=ssh,
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+        )
+        llm = FakeToolCallingLLMClient(
+            [
+                {"tool_calls": [self._tc("read_config")]},
+                {"tool_calls": [self._tc("read_config")]},
+                {
+                    "tool_calls": [
+                        self._tc(
+                            "finish_repair",
+                            {"summary": "done", "action_taken": "no_fix_needed"},
+                        )
+                    ]
+                },
+            ]
+        )
+        loop = AgentLoop(
+            llm_client=llm,
+            tool_executor=ex,
+            tool_registry=build_ha_tool_registry(),
+            max_tool_calls=10,
+            trigger="test",
+        )
+        asyncio.run(loop.run("Test long repeat."))
+        second_call_messages = llm.calls[1]["messages"]
+        tool_messages = [m for m in second_call_messages if m.get("role") == "tool"]
+        repeat_msg = next(
+            (
+                m["content"]
+                for m in tool_messages
+                if "Repeated call" in m.get("content", "")
+            ),
+            None,
+        )
+        assert repeat_msg is not None
+        assert "[truncated" in repeat_msg
+
+
 class TestToolExecutorWSClientGuard:
     """Every ToolExecutor(...) call passes ha_ws_client= or is followed by set_ws_client
     — except for an explicit allowlist of intentionally WS-less sites (ADR 017).
@@ -12233,9 +12357,12 @@ class TestCoreReleaseReport:
             built_at="2026-11-05T00:00:00+00:00",
         )
         digest = format_core_release_digest(rpt)
-        assert "Affects this instance" in digest
+        # Verdict table format: "[installed]" label, no BC body text
         assert "MQTT" in digest
-        assert "config changed" in digest
+        assert "[installed]" in digest
+        assert "Backward-incompatible" in digest
+        # BC body is not rendered in verdict table (only shown on report page)
+        assert "config changed" not in digest
 
     def test_digest_contains_general_bc(self):
         from utils.knowledge.ha_release_report import (
@@ -12251,8 +12378,9 @@ class TestCoreReleaseReport:
             built_at="2026-11-05T00:00:00+00:00",
         )
         digest = format_core_release_digest(rpt)
-        assert "General (applies to all installs)" in digest
+        # Verdict table format: "[general]" label
         assert "Entity names" in digest
+        assert "[general]" in digest
 
     def test_digest_contains_screening_flags(self):
         from utils.knowledge.ha_release_report import (
@@ -12299,7 +12427,8 @@ class TestCoreReleaseReport:
         assert "zha" in digest
         assert "Matter grouping" in digest
 
-    def test_digest_contains_farewell(self):
+    def test_digest_farewell_not_in_digest(self):
+        """Farewell section is shown on the report page, not in the LLM digest."""
         from utils.knowledge.ha_release_report import (
             CoreReleaseReport,
             format_core_release_digest,
@@ -12312,8 +12441,8 @@ class TestCoreReleaseReport:
             built_at="2026-11-05T00:00:00+00:00",
         )
         digest = format_core_release_digest(rpt)
-        assert "Farewell" in digest
-        assert "Removed the old thing" in digest
+        # Farewell is not rendered in the digest (no BCs, no highlights, no flags)
+        assert digest == ""
 
     def test_digest_empty_report(self):
         from utils.knowledge.ha_release_report import (
@@ -12787,7 +12916,8 @@ class TestCoreReleaseReport:
         result = asyncio.run(executor._get_update_release_notes("2026.11.0"))
         assert result.success
         assert "MQTT" in result.output
-        assert "API changed" in result.output
+        # BC body is not in digest (verdict table format only)
+        assert "[installed]" in result.output
         assert executor._release_notes_completeness == "complete"
         assert executor._installed_bc_found is True
 

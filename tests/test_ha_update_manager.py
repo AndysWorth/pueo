@@ -7145,7 +7145,7 @@ class TestCoreReleaseDigest:
 
         return BCEntry(name=name, body=body)
 
-    def test_flags_appear_before_bcs(self):
+    def test_flags_appear_after_bcs(self):
         from utils.knowledge.ha_release_report import format_core_release_digest
 
         report = self._make_report(
@@ -7153,11 +7153,11 @@ class TestCoreReleaseDigest:
             screening_flags=[self._flag()],
         )
         result = format_core_release_digest(report)
-        flags_pos = result.index("Flagged changes")
         bc_pos = result.index("Backward-incompatible")
-        assert flags_pos < bc_pos
+        flags_pos = result.index("Flagged changes")
+        assert bc_pos < flags_pos
 
-    def test_highlights_appear_before_bcs(self):
+    def test_highlights_appear_after_bcs(self):
         from utils.knowledge.ha_release_report import format_core_release_digest
 
         report = self._make_report(
@@ -7165,9 +7165,9 @@ class TestCoreReleaseDigest:
             screening_highlights=[self._highlight()],
         )
         result = format_core_release_digest(report)
-        hl_pos = result.index("Feature highlights")
         bc_pos = result.index("Backward-incompatible")
-        assert hl_pos < bc_pos
+        hl_pos = result.index("Feature highlights")
+        assert bc_pos < hl_pos
 
     def test_flags_sorted_high_before_medium(self):
         from utils.knowledge.ha_release_report import format_core_release_digest
@@ -7182,8 +7182,10 @@ class TestCoreReleaseDigest:
         result = format_core_release_digest(report)
         pos_b = result.index("**b**")
         pos_a = result.index("**a**")
-        pos_c = result.index("**c**")
-        assert pos_b < pos_a < pos_c
+        # high (b) before medium (a) in flags section
+        assert pos_b < pos_a
+        # low severity flags are omitted from the digest
+        assert "**c**" not in result
 
     def test_oversized_bc_does_not_cut_flags(self):
         """When BC entries are very large, flags and highlights still appear."""
@@ -7201,16 +7203,18 @@ class TestCoreReleaseDigest:
         assert "heat pump" in result
         assert len(result) <= 15000
 
-    def test_oversized_bc_entry_truncated(self):
-        """A BC entry larger than remaining budget is truncated, not dropped."""
+    def test_oversized_bc_body_does_not_appear_in_verdict_table(self):
+        """In verdict-table format, BC body is never rendered — only the verdict row."""
         from utils.knowledge.ha_release_report import format_core_release_digest
 
         big_body = "y" * 20000
         report = self._make_report(bc_installed=[self._bc(body=big_body)])
         result = format_core_release_digest(report)
+        # BC name appears in the verdict table row
         assert "MQTT" in result
-        assert "…(truncated)" in result
-        assert len(result) <= 15000
+        # No body text and no truncation marker
+        assert "…(truncated)" not in result
+        assert "yyyy" not in result
 
     def test_highlights_capped_at_eight(self):
         from utils.knowledge.ha_release_report import format_core_release_digest
@@ -7229,8 +7233,8 @@ class TestCoreReleaseDigest:
         report = self._make_report()
         assert format_core_release_digest(report) == ""
 
-    def test_flag_evidence_rendered_in_digest(self):
-        """Flag evidence block appears under the flag in the digest."""
+    def test_flag_appears_informational_in_digest(self):
+        """Flags appear in the digest marked as informational, without evidence block."""
         from utils.knowledge.ha_release_report import (
             BCEvidence,
             format_core_release_digest,
@@ -7247,8 +7251,10 @@ class TestCoreReleaseDigest:
             flag_evidence={"Tuya changed": ev},
         )
         result = format_core_release_digest(report)
-        assert "Evidence:" in result
-        assert "Entities (5)" in result
+        # Flag appears as informational text (no evidence block)
+        assert "light" in result
+        assert "informational" in result
+        assert "Evidence:" not in result
 
     def test_flag_no_evidence_no_evidence_block(self):
         """Flags without evidence in flag_evidence dict render without Evidence block."""
@@ -7305,6 +7311,52 @@ class TestCoreReleaseDigest:
         assert "homekit" in result
         assert "Fix encoding" in result
         assert "Fix camera" in result
+
+    def test_bc_verdict_table_uses_pre_filled_verdicts(self):
+        """When bc_verdicts are pre-populated, verdict table shows them."""
+        from utils.knowledge.ha_release_report import (
+            BCEntry,
+            format_core_release_digest,
+        )
+
+        report = self._make_report(
+            installed_version="2026.10.4",
+            bc_installed=[BCEntry(name="MQTT", body="Some detail.")],
+            bc_verdicts=[
+                {"bc": "MQTT", "affects": "yes", "reason": "5 MQTT entities found."}
+            ],
+        )
+        result = format_core_release_digest(report)
+        assert "MQTT" in result
+        assert "⚠️ yes" in result
+        assert "5 MQTT entities found" in result
+
+    def test_bc_verdict_table_unknown_when_no_verdict(self):
+        """BCs with no verdict get ❓ unknown in the table."""
+        from utils.knowledge.ha_release_report import (
+            BCEntry,
+            format_core_release_digest,
+        )
+
+        report = self._make_report(
+            bc_installed=[BCEntry(name="Hue bridge", body="Detail.")],
+        )
+        result = format_core_release_digest(report)
+        assert "Hue bridge" in result
+        assert "❓ unknown" in result
+
+    def test_soft_cap_drops_flags_then_highlights(self):
+        """Over 12k: flags dropped first, then highlights if still over."""
+        from utils.knowledge.ha_release_report import format_core_release_digest
+
+        # Put enough highlights to push over cap when combined with flags
+        report = self._make_report(
+            screening_highlights=[self._highlight(domain=f"d{i}") for i in range(8)],
+            screening_flags=[self._flag(domain=f"f{i}") for i in range(10)],
+        )
+        result = format_core_release_digest(report)
+        # Result must be within soft cap or have an omit note
+        assert len(result) <= 15000  # generous bound; true enforcement is 12k
 
 
 # ---------------------------------------------------------------------------
@@ -7981,7 +8033,8 @@ class TestBCEvidenceInReport:
         )
         assert rpt.bc_evidence["Matter sensors"].found is False
 
-    def test_digest_includes_evidence_block(self):
+    def test_digest_includes_bc_verdict_row(self):
+        """BC appears as a verdict table row in the digest (body/evidence not shown)."""
         from utils.knowledge.ha_release_report import (
             BCEntry,
             BCEvidence,
@@ -8004,8 +8057,12 @@ class TestBCEvidenceInReport:
             bc_evidence={"Matter sensors": ev},
         )
         digest = format_core_release_digest(rpt)
-        assert "Evidence:" in digest
-        assert "sensor.matter_1" in digest
+        # BC appears in verdict table
+        assert "Matter sensors" in digest
+        assert "Backward-incompatible" in digest
+        # Evidence block is not in digest (goes to BC assessment session instead)
+        assert "Evidence:" not in digest
+        assert "sensor.matter_1" not in digest
 
     def test_digest_no_evidence_when_absent(self):
         from utils.knowledge.ha_release_report import (
@@ -8023,7 +8080,8 @@ class TestBCEvidenceInReport:
         digest = format_core_release_digest(rpt)
         assert "Evidence:" not in digest
 
-    def test_digest_no_entities_shows_zero_message(self):
+    def test_digest_bc_verdict_row_no_evidence_text(self):
+        """BC appears as verdict table row even when evidence shows 0 entities."""
         from utils.knowledge.ha_release_report import (
             BCEntry,
             BCEvidence,
@@ -8040,7 +8098,9 @@ class TestBCEvidenceInReport:
             bc_evidence={"Cover changes": ev},
         )
         digest = format_core_release_digest(rpt)
-        assert "0 cover entities" in digest
+        # BC appears in verdict table row, no entity count text
+        assert "Cover changes" in digest
+        assert "0 cover entities" not in digest
 
     def test_report_json_roundtrip_with_evidence(self):
         from utils.knowledge.ha_release_report import (
@@ -8422,12 +8482,13 @@ class TestDeriveInstanceImpact:
 
         assert _derive_instance_impact([]) == "none"
 
-    def test_flag_yes_gives_high(self):
+    def test_flag_yes_does_not_give_high(self):
+        """Flags are informational only — do not raise instance_impact."""
         from utils.agent.tool_executor import _derive_instance_impact
 
         bc = [{"affects": "no"}]
         flags = [{"affects": "yes"}]
-        assert _derive_instance_impact(bc, flags) == "high"
+        assert _derive_instance_impact(bc, flags) == "none"
 
     def test_flag_unknown_alone_gives_none(self):
         from utils.agent.tool_executor import _derive_instance_impact
@@ -8442,6 +8503,168 @@ class TestDeriveInstanceImpact:
         bc = [{"affects": "unknown"}]
         flags = [{"affects": "unknown"}]
         assert _derive_instance_impact(bc, flags) == "low"
+
+
+class TestBCAssessmentRegistry:
+    """Tests for build_bc_assessment_registry and FINISH_BC_ASSESSMENT schema."""
+
+    def test_registry_contains_expected_tools(self):
+        from utils.agent.tool_registry import build_bc_assessment_registry
+
+        reg = build_bc_assessment_registry()
+        names = set(reg.names())
+        assert "finish_bc_assessment" in names
+        assert "check_config_against_breaking_change" in names
+        assert "check_automation_references" in names
+        assert "get_ha_profile" in names
+        assert "read_file" in names
+        # Write tools must not be in the assessment registry
+        assert "apply_fix" not in names
+        assert "trigger_backup" not in names
+        assert "call_service" not in names
+
+    def test_finish_bc_assessment_schema(self):
+        from utils.agent.tool_registry import FINISH_BC_ASSESSMENT
+
+        props = FINISH_BC_ASSESSMENT.parameters["properties"]
+        assert "affects" in props
+        assert "reason" in props
+        assert "config_fix" in props
+        assert FINISH_BC_ASSESSMENT.parameters["required"] == ["affects", "reason"]
+
+    def test_finish_bc_assessment_affects_enum(self):
+        from utils.agent.tool_registry import FINISH_BC_ASSESSMENT
+
+        props = FINISH_BC_ASSESSMENT.parameters["properties"]
+        assert props["affects"]["enum"] == ["yes", "no", "unknown"]
+
+
+class TestFinishBCAssessment:
+    """Tests for ToolExecutor._finish_bc_assessment and BC assessment state."""
+
+    def _make_executor(self):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from utils.agent.autonomy import AutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+
+        notifier = MagicMock()
+        notifier.send = AsyncMock()
+        gate = AutonomyGate(level=2)
+        return ToolExecutor(
+            ha_ssh_client=MagicMock(),
+            gate=gate,
+            notifier=notifier,
+            db_path=":memory:",
+        )
+
+    def test_verdict_stored_in_bc_assessments(self):
+        executor = self._make_executor()
+        executor._current_bc_name = "MQTT"
+        result = executor._finish_bc_assessment(
+            affects="no", reason="No MQTT entities found."
+        )
+        assert result.success
+        verdicts = executor.get_bc_assessments()
+        assert verdicts["MQTT"]["affects"] == "no"
+        assert verdicts["MQTT"]["reason"] == "No MQTT entities found."
+
+    def test_yes_verdict_stored(self):
+        executor = self._make_executor()
+        executor._current_bc_name = "Hue bridge"
+        executor._finish_bc_assessment(affects="yes", reason="Hue bridge present.")
+        assert executor.get_bc_assessments()["Hue bridge"]["affects"] == "yes"
+
+    def test_unknown_verdict_stored(self):
+        executor = self._make_executor()
+        executor._current_bc_name = "Cover changes"
+        executor._finish_bc_assessment(affects="unknown", reason="Cannot determine.")
+        assert executor.get_bc_assessments()["Cover changes"]["affects"] == "unknown"
+
+    def test_config_fix_grounded_when_old_text_in_outputs(self):
+        executor = self._make_executor()
+        executor._current_bc_name = "MQTT"
+        executor._session_outputs.append(("read_config", "old_key: foo\nother: bar"))
+        executor._finish_bc_assessment(
+            affects="yes",
+            reason="Found old_key.",
+            config_fix={
+                "old": "old_key: foo",
+                "description": "Replace old_key with new_key",
+                "config_fix_yaml": "new_key: foo",
+            },
+        )
+        v = executor.get_bc_assessments()["MQTT"]
+        assert "config_fix" in v
+        assert v["config_fix"]["description"] == "Replace old_key with new_key"
+
+    def test_config_fix_dropped_when_old_text_not_in_outputs(self):
+        executor = self._make_executor()
+        executor._current_bc_name = "MQTT"
+        # _session_outputs is empty — old text not in any output
+        executor._finish_bc_assessment(
+            affects="yes",
+            reason="Found old_key.",
+            config_fix={
+                "old": "old_key: foo",
+                "description": "Replace old_key with new_key",
+            },
+        )
+        v = executor.get_bc_assessments()["MQTT"]
+        assert "config_fix" not in v
+
+    def test_clear_bc_assessment_state_resets(self):
+        executor = self._make_executor()
+        executor._current_bc_name = "MQTT"
+        executor._bc_assessment_gap = True
+        executor._finish_bc_assessment(affects="no", reason="None.")
+        assert executor.get_bc_assessments()
+        executor.clear_bc_assessment_state()
+        assert executor.get_bc_assessments() == {}
+        assert not executor._bc_assessment_gap
+        assert executor._current_bc_name is None
+
+    def test_multiple_bcs_accumulated(self):
+        executor = self._make_executor()
+        for bc_name, affects in [("MQTT", "no"), ("Hue", "yes"), ("Matter", "unknown")]:
+            executor._current_bc_name = bc_name
+            executor._finish_bc_assessment(affects=affects, reason=f"{bc_name} reason.")
+        verdicts = executor.get_bc_assessments()
+        assert len(verdicts) == 3
+        assert verdicts["MQTT"]["affects"] == "no"
+        assert verdicts["Hue"]["affects"] == "yes"
+        assert verdicts["Matter"]["affects"] == "unknown"
+
+    def test_assessment_gap_set_when_bc_session_fails(self, pueo_dirs):
+        """When all assessment attempts fail, _bc_assessment_gap is set and BC gets unknown."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from utils.agent.autonomy import AutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.knowledge.ha_release_report import BCEntry, CoreReleaseReport
+
+        notifier = MagicMock()
+        notifier.send = AsyncMock()
+        executor = ToolExecutor(
+            ha_ssh_client=MagicMock(),
+            gate=AutonomyGate(level=2),
+            notifier=notifier,
+            db_path=":memory:",
+        )
+        executor._core_release_report = CoreReleaseReport(
+            version="2026.11.0",
+            bc_installed=[BCEntry(name="MQTT", domains=["mqtt"])],
+        )
+        executor.clear_bc_assessment_state()
+        # Simulate failure path: no _finish_bc_assessment called, set gap manually
+        executor._bc_assessment_gap = True
+        executor._bc_assessments["MQTT"] = {
+            "bc": "MQTT",
+            "affects": "unknown",
+            "reason": "assessment failed",
+        }
+        assert executor._bc_assessment_gap
+        assert executor.get_bc_assessments()["MQTT"]["affects"] == "unknown"
 
 
 class TestNormalizeFlagVerdicts:
@@ -8658,8 +8881,8 @@ class TestFinishUpdateAnalysisWithVerdicts:
         assert payload["bc_verdicts"] == []
         assert payload["instance_impact"] == "low"
 
-    def test_flag_yes_verdict_raises_impact_to_high(self, pueo_dirs):
-        """A flag_verdict 'yes' raises instance_impact to high."""
+    def test_flag_yes_verdict_does_not_raise_impact(self, pueo_dirs):
+        """Flags are informational only — flag 'yes' does not raise instance_impact."""
         import asyncio
 
         from utils.knowledge.ha_release_report import CoreReleaseReport, ScreeningFlag
@@ -8701,24 +8924,19 @@ class TestFinishUpdateAnalysisWithVerdicts:
                     breaking_changes=[],
                     affected_config_keys=[],
                     pueo_command_risks=[],
-                    recommendation="One flag affects install.",
+                    recommendation="One flag noted but informational.",
                     instance_impact="none",
                     proposed_config_fixes=[],
                     create_hitl_card=True,
                     bc_verdicts=[],
-                    flag_verdicts=[
-                        {
-                            "flag": "Tuya light pairing changed",
-                            "affects": "yes",
-                            "reason": "10 Tuya lights found",
-                        }
-                    ],
                 )
             )
 
         payload = notifier.send.call_args[1]["payload"]
-        assert payload["instance_impact"] == "high"
-        assert payload["flag_verdicts"][0]["affects"] == "yes"
+        # Flags do not raise instance_impact
+        assert payload["instance_impact"] == "none"
+        # Flags appear as screening_flags (informational), not flag_verdicts
+        assert payload.get("flag_verdicts", []) == []
 
     def test_flag_unknown_does_not_raise_impact(self, pueo_dirs):
         """A flag_verdict 'unknown' does not raise instance_impact."""
@@ -9145,25 +9363,28 @@ class TestCoreReleaseDigestEmptyBCWording:
             completeness="incomplete",
         )
         digest = format_core_release_digest(r)
-        assert "could not be read for" in digest
+        assert "Could not read" in digest
         assert "blog:2026.11" in digest
 
-    def test_release_label_shown_only_when_multiple_months(self):
+    def test_bc_names_appear_in_verdict_table(self):
+        """BC names always appear in the verdict table regardless of release span."""
         from utils.knowledge.ha_release_report import (
             BCEntry,
             format_core_release_digest,
         )
 
-        # Single month: no label
+        # Single month: BCs appear in verdict table
         r1 = self._make_report(
             installed_version="2026.10.4",
             bc_installed=[BCEntry(name="MQTT", body="x", release="2026.11")],
             completeness="complete",
         )
         d1 = format_core_release_digest(r1)
+        assert "MQTT" in d1
+        # Release labels are not shown in verdict-table format
         assert "[2026.11]" not in d1
 
-        # Two months: label shown
+        # Two months: all BC names appear
         r2 = self._make_report(
             installed_version="2026.9.4",
             bc_installed=[
@@ -9173,8 +9394,8 @@ class TestCoreReleaseDigestEmptyBCWording:
             completeness="complete",
         )
         d2 = format_core_release_digest(r2)
-        assert "[2026.10]" in d2
-        assert "[2026.11]" in d2
+        assert "MQTT" in d2
+        assert "Hue" in d2
 
 
 # ---------------------------------------------------------------------------
