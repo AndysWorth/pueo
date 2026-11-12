@@ -21,6 +21,50 @@ _MAX_DASHBOARD_HITS = 20
 _MAX_AUTOMATION_HITS = 20
 _MAX_TOKENS = 20
 
+# Common YAML/state values that appear everywhere and don't distinguish a BC
+_STATE_WORDS = frozenset(
+    {"on", "off", "none", "true", "false", "unknown", "unavailable"}
+)
+
+# HA entity-domain prefixes that could appear in BC bodies (for zero-count filling)
+_ENTITY_DOMAIN_WORDS = frozenset(
+    {
+        "alarm_control_panel",
+        "binary_sensor",
+        "button",
+        "calendar",
+        "camera",
+        "climate",
+        "cover",
+        "device_tracker",
+        "event",
+        "fan",
+        "image",
+        "lawn_mower",
+        "light",
+        "lock",
+        "media_player",
+        "notify",
+        "number",
+        "remote",
+        "scene",
+        "select",
+        "sensor",
+        "siren",
+        "stt",
+        "switch",
+        "text",
+        "todo",
+        "tts",
+        "update",
+        "vacuum",
+        "valve",
+        "wake_word",
+        "water_heater",
+        "weather",
+    }
+)
+
 # YAML config paths to grep for token search (mirrors tool_executor._BC_AUTOMATION_SEARCH_PATHS)
 _AUTOMATION_PATHS = (
     "/config/automations.yaml",
@@ -35,7 +79,6 @@ _EXCLUDE_WORDS = ("secret", "credential", "token", "password", "passwd")
 _SERVICE_CALL_RE = re.compile(r"\b([a-z_]{2,})\.([a-z_]{2,})\b")
 _YAML_KEY_RE = re.compile(r"\b([a-z][a-z]*_[a-z_]+)\b")
 _QUOTED_VALUE_RE = re.compile(r'"([^"]{2,25})"')
-_CARD_TYPE_RE = re.compile(r"\b([a-z]+)\s+card\b", re.IGNORECASE)
 _TEMPLATE_FN_RE = re.compile(r"\b([a-z_]{5,})\s*\(")
 
 # YAML keys too generic to search for usefully
@@ -53,6 +96,13 @@ _SKIP_KEYS = frozenset(
         "state",
         "friendly_name",
     }
+)
+
+# Card-type regex: require capitalized word.  Common English articles/determiners
+# that happen to be capitalized (e.g. "The card") are excluded by _SKIP_CARD_WORDS.
+_CARD_TYPE_RE = re.compile(r"\b([A-Z][a-z]+)\s+card\b")
+_SKIP_CARD_WORDS = frozenset(
+    {"the", "a", "an", "this", "that", "these", "those", "each", "any", "one", "two"}
 )
 
 
@@ -74,22 +124,30 @@ def _extract_tokens(bc_name: str, bc_body: str) -> list[str]:
         if key not in _SKIP_KEYS and len(key) > 4:
             tokens.add(key)
 
-    # Quoted values (not secret-adjacent)
+    # Quoted values — skip bare state/boolean words and plain English (no _ or .)
     for m in _QUOTED_VALUE_RE.finditer(bc_body):
-        val = m.group(1)
-        if val.strip() and not any(w in val.lower() for w in _EXCLUDE_WORDS):
-            tokens.add(f'"{val}"')
+        val = m.group(1).strip()
+        if not val:
+            continue
+        if any(w in val.lower() for w in _EXCLUDE_WORDS):
+            continue
+        if val.lower() in _STATE_WORDS:
+            continue
+        # Skip plain English words (no underscore, dot, digit, colon)
+        if val.replace(" ", "").isalpha() and "_" not in val and "." not in val:
+            continue
+        tokens.add(f'"{val}"')
 
-    # Card types: "Alert card" → "type: alert"
+    # Card types: "Alert card" → "type: alert" (capitalised non-article word only)
     for m in _CARD_TYPE_RE.finditer(bc_body):
         word = m.group(1).lower()
-        if len(word) > 2:
+        if len(word) > 2 and word not in _SKIP_CARD_WORDS:
             tokens.add(f"type: {word}")
 
     # Template-style function names
     for m in _TEMPLATE_FN_RE.finditer(bc_body):
         fn = m.group(1)
-        if fn not in _SKIP_KEYS:
+        if fn not in _SKIP_KEYS and "_" in fn:
             tokens.add(fn)
 
     return sorted(tokens)[:_MAX_TOKENS]
@@ -99,30 +157,47 @@ def _entity_summary(
     bc_domains: list[str],
     entity_registry: list[dict],
     device_registry: list[dict],
-) -> tuple[int, list[str], list[str]]:
-    """Return (count, example_entity_ids, multi_channel_device_names).
+) -> "tuple[int, list[str], list[str], dict[str, int], dict[str, int]]":
+    """Return (count, examples, multi_channel, entities_by_type, platforms).
 
     Match entity domains or integration platforms (e.g. light.* on Tuya).
     Multi-channel: devices with >1 matched entity of the same entity type (the
     entity_id prefix) where one entity_id ends in a digit, a common pattern for
     Tuya/Z-Wave multi-endpoint devices. Grouping is by entity type even for a
     platform match, so a device's mixed sensors and switches are not channels.
+
+    entities_by_type: count per entity-domain prefix ({"light": 14, "sensor": 60}).
+    platforms: count per integration platform ({"mobile_app": 2}).
     """
     if not bc_domains:
-        return 0, [], []
+        return 0, [], [], {}, {}
 
     domain_set = set(bc_domains)
-    matching = [
-        e
-        for e in entity_registry
-        if e.get("entity_id", "").split(".")[0] in domain_set
-        or e.get("platform", "") in domain_set
-    ]
+    seen_ids: set[str] = set()
+    matching: list[dict] = []
+    for e in entity_registry:
+        eid = e.get("entity_id", "")
+        if eid in seen_ids:
+            continue
+        if eid.split(".")[0] in domain_set or e.get("platform", "") in domain_set:
+            seen_ids.add(eid)
+            matching.append(e)
 
     count = len(matching)
     examples = [
         e["entity_id"] for e in matching[:_MAX_ENTITY_EXAMPLES] if "entity_id" in e
     ]
+
+    # Type / platform breakdown
+    entities_by_type: dict[str, int] = {}
+    platforms: dict[str, int] = {}
+    for e in matching:
+        etype = e.get("entity_id", "").split(".")[0]
+        if etype:
+            entities_by_type[etype] = entities_by_type.get(etype, 0) + 1
+        plat = e.get("platform", "")
+        if plat:
+            platforms[plat] = platforms.get(plat, 0) + 1
 
     # Multi-channel detection: group by (device, entity type)
     channel_groups: dict[tuple[str, str], list[str]] = {}
@@ -146,7 +221,7 @@ def _entity_summary(
             if name and name not in multi_channel:
                 multi_channel.append(name)
 
-    return count, examples, multi_channel[:5]
+    return count, examples, multi_channel[:5], entities_by_type, platforms
 
 
 def _token_to_search_terms(token: str) -> list[str]:
@@ -238,6 +313,31 @@ async def _grep_automation_yaml(
     return hits
 
 
+def _all_registry_domains(entity_registry: list[dict]) -> set[str]:
+    """Return every entity-domain prefix and platform seen in the full registry."""
+    domains: set[str] = set()
+    for e in entity_registry:
+        eid = e.get("entity_id", "")
+        if "." in eid:
+            domains.add(eid.split(".")[0])
+        plat = e.get("platform", "")
+        if plat:
+            domains.add(plat)
+    return domains
+
+
+def _zero_fill_entity_types(
+    bc_body: str, entities_by_type: dict[str, int]
+) -> dict[str, int]:
+    """Add zero counts for entity-domain types named in the BC body but not found."""
+    result = dict(entities_by_type)
+    text_lower = bc_body.lower()
+    for domain in _ENTITY_DOMAIN_WORDS:
+        if domain not in result and domain in text_lower:
+            result[domain] = 0
+    return result
+
+
 async def _build_one_evidence(
     name: str,
     body: str,
@@ -246,26 +346,56 @@ async def _build_one_evidence(
     device_registry: list[dict],
     lovelace_configs: list[tuple[str, dict]],
     ssh_client: Optional[Any],
+    all_registry_domains: set[str],
+    config_yaml_top_keys: list[str],
 ) -> "Any":
     """Build BCEvidence for a single entry (BC or flag).  Returns a BCEvidence."""
     from utils.knowledge.ha_release_report import BCEvidence
 
-    entity_count, entity_examples, multi_channel = _entity_summary(
-        domains, entity_registry, device_registry
+    entity_count, entity_examples, multi_channel, entities_by_type, platforms = (
+        _entity_summary(domains, entity_registry, device_registry)
     )
+
+    # Fill zeros for entity types named in the BC body but absent on this instance
+    if domains:
+        entities_by_type = _zero_fill_entity_types(body, entities_by_type)
+
+    # A domain is a "core component" when it never produces entities anywhere in
+    # the registry — it's a built-in HA component (auth, frontend, http, etc.)
+    is_core = (
+        bool(domains)
+        and entity_count == 0
+        and not any(d in all_registry_domains for d in domains)
+    )
+
+    # Top-level config.yaml keys that name one of this BC's domains
+    domain_set = set(domains)
+    config_keys = [k for k in config_yaml_top_keys if k in domain_set]
+
     tokens = _extract_tokens(name, body)
+    tokens_searched = len(tokens)
     dashboard_hits = _search_dashboards(tokens, lovelace_configs)
     automation_hits: list[str] = []
     if ssh_client is not None and tokens:
         automation_hits = await _grep_automation_yaml(tokens, ssh_client)
+
+    tokens_hit = len(
+        set(t for t in tokens if any(t in h for h in automation_hits + dashboard_hits))
+    )
 
     found = entity_count > 0 or bool(automation_hits) or bool(dashboard_hits)
     return BCEvidence(
         domains=domains,
         entity_count=entity_count,
         entity_examples=entity_examples,
+        entities_by_type=entities_by_type,
+        platforms=platforms,
         multi_channel_devices=multi_channel,
+        is_core_component=is_core,
+        config_keys_present=config_keys,
         tokens=tokens,
+        tokens_searched=tokens_searched,
+        tokens_hit=tokens_hit,
         automation_hits=automation_hits,
         dashboard_hits=dashboard_hits,
         found=found,
@@ -277,6 +407,7 @@ async def build_bc_evidence(
     ws_client: Optional[Any] = None,
     rest_client: Optional[Any] = None,  # noqa: ARG001 — reserved for future use
     ssh_client: Optional[Any] = None,
+    config_yaml_top_keys: Optional[list[str]] = None,
 ) -> "tuple[dict[str, Any], dict[str, Any]]":
     """Build per-BC and per-flag evidence for all entries in a CoreReleaseReport.
 
@@ -284,6 +415,7 @@ async def build_bc_evidence(
       bc_evidence  — dict keyed by BCEntry.name
       flag_evidence — dict keyed by ScreeningFlag.change text
     Clients may be None — each data source degrades gracefully.
+    config_yaml_top_keys: top-level keys from configuration.yaml (from HAEnvironmentProfile)
     """
     # ── Gather shared data once ───────────────────────────────────────────
     entity_registry: list[dict] = []
@@ -318,7 +450,17 @@ async def build_bc_evidence(
         except Exception as exc:
             log.warning("bc_evidence_lovelace_failed", error=str(exc))
 
-    _shared = (entity_registry, device_registry, lovelace_configs, ssh_client)
+    all_reg_domains = _all_registry_domains(entity_registry)
+    cfg_keys = config_yaml_top_keys or []
+
+    _shared = (
+        entity_registry,
+        device_registry,
+        lovelace_configs,
+        ssh_client,
+        all_reg_domains,
+        cfg_keys,
+    )
 
     # ── Per-BC evidence ───────────────────────────────────────────────────
     all_bcs = list(report.bc_installed) + list(report.bc_general)

@@ -7434,17 +7434,35 @@ class TestBCEvidenceTokenExtractor:
         tokens = _extract_tokens("Sun trigger", "The offset_type field changed sign.")
         assert "offset_type" in tokens
 
-    def test_quoted_value_extracted(self):
+    def test_quoted_state_word_not_extracted(self):
+        # "None", "off" etc. are state words — filtered out even when quoted
         from utils.ha.update_bc_evidence import _extract_tokens
 
         tokens = _extract_tokens("Hue effect", 'Set effect to "None" to disable.')
-        assert '"None"' in tokens
+        assert '"None"' not in tokens
+        assert '"off"' not in tokens
 
-    def test_card_type_extracted(self):
+    def test_quoted_technical_value_extracted(self):
         from utils.ha.update_bc_evidence import _extract_tokens
 
-        tokens = _extract_tokens("Alert card", "The alert card type changed.")
+        tokens = _extract_tokens(
+            "MQTT entities", 'Add "unique_id" to your MQTT entity YAML.'
+        )
+        assert '"unique_id"' in tokens
+
+    def test_card_type_extracted_capitalised(self):
+        # Card-type regex requires the preceding word to be capitalised (e.g. "Alert card")
+        from utils.ha.update_bc_evidence import _extract_tokens
+
+        tokens = _extract_tokens("Alert card", "The Alert card type changed.")
         assert "type: alert" in tokens
+
+    def test_lowercase_card_word_not_extracted(self):
+        # "the card" must not produce "type: the"
+        from utils.ha.update_bc_evidence import _extract_tokens
+
+        tokens = _extract_tokens("General", "The card type was updated.")
+        assert "type: the" not in tokens
 
     def test_skip_key_not_extracted(self):
         from utils.ha.update_bc_evidence import _extract_tokens
@@ -7474,8 +7492,9 @@ class TestBCEvidenceEntitySummary:
     def test_no_domains_returns_empty(self):
         from utils.ha.update_bc_evidence import _entity_summary
 
-        count, examples, multi = _entity_summary([], [], [])
+        count, examples, multi, by_type, plats = _entity_summary([], [], [])
         assert count == 0 and not examples and not multi
+        assert by_type == {} and plats == {}
 
     def test_matter_no_concentration_sensors_found_false(self):
         from utils.ha.update_bc_evidence import _entity_summary
@@ -7485,16 +7504,22 @@ class TestBCEvidenceEntitySummary:
             self._make_entity("sensor.temp1"),
             self._make_entity("light.bed1"),
         ]
-        count, examples, multi = _entity_summary(["sensor"], entity_registry, [])
+        count, examples, multi, by_type, plats = _entity_summary(
+            ["sensor"], entity_registry, []
+        )
         # sensor.temp1 matches, so count is 1 — this test is about matter domains having 0
         assert count == 1
+        assert by_type == {"sensor": 1}
 
     def test_matter_no_matching_domain_zero(self):
         from utils.ha.update_bc_evidence import _entity_summary
 
         entity_registry = [self._make_entity("light.tuya_1")]
-        count, examples, multi = _entity_summary(["matter"], entity_registry, [])
+        count, examples, multi, by_type, plats = _entity_summary(
+            ["matter"], entity_registry, []
+        )
         assert count == 0 and not examples
+        assert by_type == {} and plats == {}
 
     def test_tuya_multi_channel_detected(self):
         from utils.ha.update_bc_evidence import _entity_summary
@@ -7506,11 +7531,12 @@ class TestBCEvidenceEntitySummary:
             self._make_entity("light.other", "dev2"),
         ]
         device_registry = [self._make_device("dev1", "Tuya Strip")]
-        count, examples, multi = _entity_summary(
+        count, examples, multi, by_type, plats = _entity_summary(
             ["light"], entity_registry, device_registry
         )
         assert count == 3
         assert "Tuya Strip" in multi
+        assert by_type == {"light": 3}
 
     def test_integration_platform_counts_generic_entity_domains(self):
         from utils.ha.update_bc_evidence import _entity_summary
@@ -7522,13 +7548,16 @@ class TestBCEvidenceEntitySummary:
             {"entity_id": "light.other", "platform": "hue"},
             {"entity_id": "sensor.unrelated"},
         ]
-        assert _entity_summary(
+        count, examples, multi, by_type, plats = _entity_summary(
             ["tuya"], entities, [self._make_device("dev1", "Test Strip")]
-        ) == (
+        )
+        assert (count, examples, multi) == (
             3,
             ["light.strip_1", "light.strip_2", "sensor.temperature"],
             ["Test Strip"],
         )
+        assert by_type == {"light": 2, "sensor": 1}
+        assert plats == {"tuya": 3}
 
     def test_platform_and_entity_domain_matches_are_not_double_counted(self):
         from utils.ha.update_bc_evidence import _entity_summary
@@ -7537,9 +7566,12 @@ class TestBCEvidenceEntitySummary:
             {"entity_id": "light.strip_1", "platform": "tuya", "device_id": "dev1"},
             {"entity_id": "light.strip_2", "platform": "tuya", "device_id": "dev1"},
         ]
-        assert _entity_summary(
+        count, examples, multi, by_type, plats = _entity_summary(
             ["tuya", "light"], entities, [self._make_device("dev1", "Test Strip")]
-        ) == (2, ["light.strip_1", "light.strip_2"], ["Test Strip"])
+        )
+        assert (count, examples) == (2, ["light.strip_1", "light.strip_2"])
+        assert by_type == {"light": 2}
+        assert plats == {"tuya": 2}
 
     def test_single_platform_match_does_not_make_a_multi_channel_device(self):
         from utils.ha.update_bc_evidence import _entity_summary
@@ -7548,7 +7580,9 @@ class TestBCEvidenceEntitySummary:
             {"entity_id": "light.channel_1", "platform": "tuya", "device_id": "dev1"},
             {"entity_id": "light.channel_2", "platform": "hue", "device_id": "dev1"},
         ]
-        assert _entity_summary(["tuya"], entities, []) == (1, ["light.channel_1"], [])
+        count, examples, multi, by_type, plats = _entity_summary(["tuya"], entities, [])
+        assert count == 1 and examples == ["light.channel_1"] and not multi
+        assert by_type == {"light": 1} and plats == {"tuya": 1}
 
     def test_mixed_entity_types_on_platform_device_not_multi_channel(self):
         from utils.ha.update_bc_evidence import _entity_summary
@@ -7566,11 +7600,12 @@ class TestBCEvidenceEntitySummary:
                 "device_id": "dev1",
             },
         ]
-        count, _, multi = _entity_summary(
+        count, _, multi, by_type, plats = _entity_summary(
             ["tuya"], entities, [self._make_device("dev1", "Bedroom Plug")]
         )
         assert count == 2
         assert multi == []
+        assert by_type == {"sensor": 1, "switch": 1}
 
     def test_same_entity_type_channels_on_platform_device_are_multi_channel(self):
         from utils.ha.update_bc_evidence import _entity_summary
@@ -7584,7 +7619,7 @@ class TestBCEvidenceEntitySummary:
                 "device_id": "dev1",
             },
         ]
-        _, _, multi = _entity_summary(
+        _, _, multi, *_ = _entity_summary(
             ["tuya"], entities, [self._make_device("dev1", "Power Strip")]
         )
         assert multi == ["Power Strip"]
@@ -7598,7 +7633,7 @@ class TestBCEvidenceEntitySummary:
             {"entity_id": "light.strip_1", "platform": "tuya", "device_id": "dev1"},
             {"entity_id": "light.strip_2", "platform": "tuya", "device_id": "dev1"},
         ]
-        _, _, multi = _entity_summary(
+        _, _, multi, *_ = _entity_summary(
             ["tuya"], entities, [self._make_device("dev1", "Power Strip")]
         )
         assert multi == ["Power Strip"]
@@ -7607,23 +7642,256 @@ class TestBCEvidenceEntitySummary:
         from utils.ha.update_bc_evidence import _entity_summary
 
         entities = [{"entity_id": "light.x", "platform": None, "device_id": "dev1"}]
-        assert _entity_summary(["tuya"], entities, []) == (0, [], [])
+        count, examples, multi, by_type, plats = _entity_summary(["tuya"], entities, [])
+        assert (count, examples, multi, by_type, plats) == (0, [], [], {}, {})
 
     def test_single_channel_not_multi(self):
         from utils.ha.update_bc_evidence import _entity_summary
 
         entity_registry = [self._make_entity("light.tuya_1", "dev1")]
         device_registry = [self._make_device("dev1", "Tuya Single")]
-        _, _, multi = _entity_summary(["light"], entity_registry, device_registry)
+        _, _, multi, *_ = _entity_summary(["light"], entity_registry, device_registry)
         assert not multi
 
     def test_examples_capped(self):
         from utils.ha.update_bc_evidence import _entity_summary, _MAX_ENTITY_EXAMPLES
 
         entities = [{"entity_id": f"light.e{i}"} for i in range(30)]
-        count, examples, _ = _entity_summary(["light"], entities, [])
+        count, examples, _, *_ = _entity_summary(["light"], entities, [])
         assert count == 30
         assert len(examples) <= _MAX_ENTITY_EXAMPLES
+
+
+class TestBCEvidenceV2:
+    """Tests for the S2 evidence improvements."""
+
+    # ── _zero_fill_entity_types ───────────────────────────────────────────
+
+    def test_zero_fill_adds_entity_types_from_bc_body(self):
+        from utils.ha.update_bc_evidence import _zero_fill_entity_types
+
+        result = _zero_fill_entity_types(
+            "Matter climate and cover entities changed.", {"sensor": 10}
+        )
+        assert result["climate"] == 0
+        assert result["cover"] == 0
+        assert result["sensor"] == 10  # existing counts preserved
+
+    def test_zero_fill_does_not_overwrite_existing_count(self):
+        from utils.ha.update_bc_evidence import _zero_fill_entity_types
+
+        result = _zero_fill_entity_types("sensor changed.", {"sensor": 5})
+        assert result["sensor"] == 5
+
+    def test_zero_fill_empty_body(self):
+        from utils.ha.update_bc_evidence import _zero_fill_entity_types
+
+        result = _zero_fill_entity_types("", {"light": 3})
+        assert result == {"light": 3}
+
+    # ── _all_registry_domains ─────────────────────────────────────────────
+
+    def test_all_registry_domains_collects_prefixes_and_platforms(self):
+        from utils.ha.update_bc_evidence import _all_registry_domains
+
+        entities = [
+            {"entity_id": "light.bulb", "platform": "hue"},
+            {"entity_id": "sensor.temp", "platform": "mobile_app"},
+            {"entity_id": "switch.plug"},
+        ]
+        domains = _all_registry_domains(entities)
+        assert "light" in domains
+        assert "sensor" in domains
+        assert "switch" in domains
+        assert "hue" in domains
+        assert "mobile_app" in domains
+
+    def test_all_registry_domains_empty_registry(self):
+        from utils.ha.update_bc_evidence import _all_registry_domains
+
+        assert _all_registry_domains([]) == set()
+
+    # ── is_core_component in _build_one_evidence ──────────────────────────
+
+    def test_core_component_flagged_when_domain_absent_from_registry(self):
+        import asyncio
+        from utils.ha.update_bc_evidence import _build_one_evidence
+
+        # auth never appears in entity registry → is_core_component = True
+        entity_registry = [{"entity_id": "light.bulb", "platform": "hue"}]
+        all_reg_domains = {"light", "hue"}
+        ev = asyncio.run(
+            _build_one_evidence(
+                "Auth change",
+                "The auth component changed its session handling.",
+                ["auth"],
+                entity_registry,
+                [],
+                [],
+                None,
+                all_reg_domains,
+                [],
+            )
+        )
+        assert ev.is_core_component is True
+
+    def test_integration_with_zero_entities_not_core_component(self):
+        import asyncio
+        from utils.ha.update_bc_evidence import _build_one_evidence
+
+        # mqtt appears in registry (another instance has mqtt entities) but 0 here
+        entity_registry = [{"entity_id": "sensor.mqtt_temp", "platform": "mqtt"}]
+        all_reg_domains = {"sensor", "mqtt"}
+        ev = asyncio.run(
+            _build_one_evidence(
+                "MQTT entities",
+                "MQTT entities without unique_id are deprecated.",
+                ["mqtt"],
+                [],  # empty registry for this call — 0 entities found
+                [],
+                [],
+                None,
+                all_reg_domains,
+                [],
+            )
+        )
+        assert ev.is_core_component is False
+
+    # ── config_keys_present ───────────────────────────────────────────────
+
+    def test_config_keys_present_populated(self):
+        import asyncio
+        from utils.ha.update_bc_evidence import _build_one_evidence
+
+        ev = asyncio.run(
+            _build_one_evidence(
+                "MQTT YAML entity",
+                "MQTT YAML entity without unique_id deprecated.",
+                ["mqtt"],
+                [],
+                [],
+                [],
+                None,
+                set(),
+                ["default_config", "mqtt", "frontend"],
+            )
+        )
+        assert ev.config_keys_present == ["mqtt"]
+
+    def test_config_keys_present_empty_when_domain_absent(self):
+        import asyncio
+        from utils.ha.update_bc_evidence import _build_one_evidence
+
+        ev = asyncio.run(
+            _build_one_evidence(
+                "MQTT YAML entity",
+                "MQTT YAML entity without unique_id deprecated.",
+                ["mqtt"],
+                [],
+                [],
+                [],
+                None,
+                set(),
+                ["default_config", "frontend"],
+            )
+        )
+        assert ev.config_keys_present == []
+
+    # ── tokens_searched / tokens_hit ─────────────────────────────────────
+
+    def test_tokens_searched_equals_token_count(self):
+        import asyncio
+        from utils.ha.update_bc_evidence import _build_one_evidence
+
+        ev = asyncio.run(
+            _build_one_evidence(
+                "Matter sensor",
+                "Call matter.sensor to update state.",
+                [],
+                [],
+                [],
+                [],
+                None,
+                set(),
+                [],
+            )
+        )
+        assert ev.tokens_searched == len(ev.tokens)
+
+    def test_tokens_hit_zero_when_no_automation_or_dashboard_hits(self):
+        import asyncio
+        from utils.ha.update_bc_evidence import _build_one_evidence
+
+        ev = asyncio.run(
+            _build_one_evidence(
+                "Matter sensor",
+                "Call matter.sensor to update.",
+                [],
+                [],
+                [],
+                [],
+                None,
+                set(),
+                [],
+            )
+        )
+        assert ev.tokens_hit == 0
+
+    # ── _evidence_lines uses new fields ──────────────────────────────────
+
+    def test_evidence_lines_shows_type_breakdown(self):
+        from utils.knowledge.ha_release_report import BCEvidence, _evidence_lines
+
+        ev = BCEvidence(
+            domains=["matter"],
+            entity_count=10,
+            entity_examples=["sensor.matter_1"],
+            entities_by_type={"sensor": 8, "light": 2},
+            found=True,
+        )
+        lines = _evidence_lines(ev)
+        assert any("sensor 8" in ln and "light 2" in ln for ln in lines)
+
+    def test_evidence_lines_core_component_message(self):
+        from utils.knowledge.ha_release_report import BCEvidence, _evidence_lines
+
+        ev = BCEvidence(
+            domains=["auth"],
+            entity_count=0,
+            is_core_component=True,
+        )
+        lines = _evidence_lines(ev)
+        assert any("core component" in ln for ln in lines)
+        assert not any("No auth" in ln for ln in lines)
+
+    def test_evidence_lines_zero_entities_not_core(self):
+        from utils.knowledge.ha_release_report import BCEvidence, _evidence_lines
+
+        ev = BCEvidence(domains=["mqtt"], entity_count=0, is_core_component=False)
+        lines = _evidence_lines(ev)
+        assert any("0 mqtt" in ln for ln in lines)
+
+    def test_evidence_lines_config_keys_present(self):
+        from utils.knowledge.ha_release_report import BCEvidence, _evidence_lines
+
+        ev = BCEvidence(
+            domains=["mqtt"],
+            entity_count=0,
+            config_keys_present=["mqtt"],
+        )
+        lines = _evidence_lines(ev)
+        assert any("Config keys present" in ln and "mqtt" in ln for ln in lines)
+
+    def test_evidence_lines_tokens_hit_info(self):
+        from utils.knowledge.ha_release_report import BCEvidence, _evidence_lines
+
+        ev = BCEvidence(
+            tokens=["matter.sensor", "unique_id"],
+            tokens_searched=2,
+            tokens_hit=1,
+        )
+        lines = _evidence_lines(ev)
+        assert any("1/2 hit" in ln for ln in lines)
 
 
 class TestBCEvidenceDashboardSearch:
@@ -7772,7 +8040,7 @@ class TestBCEvidenceInReport:
             bc_evidence={"Cover changes": ev},
         )
         digest = format_core_release_digest(rpt)
-        assert "No cover entities" in digest
+        assert "0 cover entities" in digest
 
     def test_report_json_roundtrip_with_evidence(self):
         from utils.knowledge.ha_release_report import (
@@ -7935,7 +8203,7 @@ class TestBuildBCEvidenceAsync:
                 BCEntry(
                     name="Alert card update",
                     domains=[],
-                    body="The alert card type requires new config.",
+                    body="The Alert card type requires new config.",
                 )
             ],
         )

@@ -74,8 +74,18 @@ class BCEvidence(BaseModel):
     domains: list[str] = []
     entity_count: int = 0
     entity_examples: list[str] = []
+    # Count of matching entities per entity-domain prefix (e.g. {"light": 14, "sensor": 60})
+    entities_by_type: dict[str, int] = {}
+    # Count of matching entities per integration platform (e.g. {"mobile_app": 2})
+    platforms: dict[str, int] = {}
     multi_channel_devices: list[str] = []
+    # True when the domains are HA core components that never produce entities (auth, frontend…)
+    is_core_component: bool = False
+    # Top-level config.yaml keys that name one of this BC's domains (settles YAML-only BCs)
+    config_keys_present: list[str] = []
     tokens: list[str] = []
+    tokens_searched: int = 0
+    tokens_hit: int = 0
     automation_hits: list[str] = []
     dashboard_hits: list[str] = []
     found: bool = False
@@ -696,14 +706,31 @@ def _evidence_lines(evidence: "BCEvidence") -> list[str]:
             ex = ", ".join(evidence.entity_examples[:5])
             suffix = "…" if len(evidence.entity_examples) > 5 else ""
             ev_lines.append(f"Entities ({evidence.entity_count}): {ex}{suffix}")
+            if evidence.entities_by_type:
+                breakdown = ", ".join(
+                    f"{t} {n}" for t, n in sorted(evidence.entities_by_type.items())
+                )
+                ev_lines.append(f"By type: {breakdown}")
+            if evidence.platforms:
+                plat = ", ".join(
+                    f"{p} {n}" for p, n in sorted(evidence.platforms.items())
+                )
+                ev_lines.append(f"Platforms: {plat}")
             if evidence.multi_channel_devices:
                 ev_lines.append(
                     f"Multi-channel devices: {', '.join(evidence.multi_channel_devices)}"
                 )
-        elif evidence.domains:
+        elif evidence.is_core_component:
             ev_lines.append(
-                f"No {'/'.join(evidence.domains)} entities on this instance"
+                f"{'/'.join(evidence.domains)}: core component (no entities)"
+                " — judge from text and config"
             )
+        elif evidence.domains:
+            ev_lines.append(f"0 {'/'.join(evidence.domains)} entities on this instance")
+    if evidence.config_keys_present:
+        ev_lines.append(
+            f"Config keys present: {', '.join(evidence.config_keys_present)}"
+        )
     if evidence.automation_hits:
         ev_lines.append(
             f"Config refs ({len(evidence.automation_hits)}): "
@@ -715,7 +742,13 @@ def _evidence_lines(evidence: "BCEvidence") -> list[str]:
             + "; ".join(evidence.dashboard_hits[:2])
         )
     if evidence.tokens:
-        ev_lines.append(f"Tokens checked: {', '.join(evidence.tokens[:8])}")
+        searched = evidence.tokens_searched or len(evidence.tokens)
+        hit_info = (
+            f" ({evidence.tokens_hit}/{searched} hit)"
+            if evidence.tokens_searched
+            else ""
+        )
+        ev_lines.append(f"Tokens checked{hit_info}: {', '.join(evidence.tokens[:8])}")
     return ev_lines
 
 

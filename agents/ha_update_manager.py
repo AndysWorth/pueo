@@ -1564,6 +1564,9 @@ async def _run_update_analysis(
                         ws_client=_ws_client,
                         rest_client=ha_rest_client,
                         ssh_client=_ssh,
+                        config_yaml_top_keys=(
+                            _profile.config_yaml_top_keys if _profile else []
+                        ),
                     )
                     if _bc_ev or _flag_ev:
                         _rpt.bc_evidence = _bc_ev
