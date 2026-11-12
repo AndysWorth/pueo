@@ -1,12 +1,55 @@
 """LLM-guided investigation for host-health findings (swap, eMMC wear, reboot, resolution)."""
 
 import asyncio
+import time
 from typing import Any, Optional
 
 from utils.core.logging import get_logger
 from utils.disk.host_health import HostHealthFinding
 
 log = get_logger("host_health_investigation")
+
+
+def load_recurrence_history(db_path: str, subject_key: str) -> dict:
+    """Return recurrence history for the initial_context history block.
+
+    Queries session_outcomes for the last completed host_health session with the
+    given subject_key (= finding.key) and counts sessions in the last 7 days.
+    """
+    import sqlite3
+
+    cutoff_iso = time.strftime(
+        "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 7 * 86400)
+    )
+    result: dict = {}
+    try:
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT conclusion_json, created_at FROM session_outcomes"
+                " WHERE session_type = 'host_health' AND subject_key = ?"
+                " ORDER BY rowid DESC LIMIT 1",
+                (subject_key,),
+            ).fetchone()
+            if row:
+                import json as _json
+
+                try:
+                    conc = _json.loads(row[0] or "{}")
+                    result["last_root_cause"] = conc.get("root_cause", "")
+                    result["last_summary"] = conc.get("summary", "")
+                    result["last_created_at"] = row[1] or ""
+                except Exception:  # nosec B110
+                    pass
+            count_row = conn.execute(
+                "SELECT COUNT(*) FROM session_outcomes"
+                " WHERE session_type = 'host_health' AND subject_key = ?"
+                "   AND created_at >= ?",
+                (subject_key, cutoff_iso),
+            ).fetchone()
+            result["times_in_7d"] = count_row[0] if count_row else 0
+    except Exception:  # nosec B110
+        pass
+    return result
 
 
 def host_health_knowledge_query(finding: HostHealthFinding) -> str:
@@ -24,6 +67,7 @@ async def run_host_health_investigation(
     ha_rest_client: Optional[Any] = None,
     ssh_client: Optional[Any] = None,  # SSHClientProtocol
     ha_ws_client: Optional[Any] = None,  # HAWebSocketClientProtocol
+    recurrence_history: Optional[dict] = None,
 ) -> None:
     """Run an AgentLoop to investigate a host-health finding and create a HITL card.
 
@@ -79,6 +123,18 @@ async def run_host_health_investigation(
         f"Severity: {finding.severity}\n"
         f"Evidence:\n{evidence_lines}"
     )
+    if recurrence_history and recurrence_history.get("times_in_7d", 0) > 0:
+        _hist = recurrence_history
+        _hist_lines = [
+            f"History (last 7 days): seen {_hist['times_in_7d']}× as an investigation.",
+        ]
+        if _hist.get("last_created_at"):
+            _hist_lines.append(f"Last investigated: {_hist['last_created_at']} UTC.")
+        if _hist.get("last_root_cause"):
+            _hist_lines.append(f"Previous root cause: {_hist['last_root_cause']}")
+        if _hist.get("last_summary"):
+            _hist_lines.append(f"Previous conclusion: {_hist['last_summary']}")
+        initial_context = "\n".join(_hist_lines) + "\n\n" + initial_context
 
     from utils.agent.supervisor import (
         decrement_active_agent,

@@ -74,6 +74,12 @@
       {% if r.payload.get("disk_critical") %}<em>(CRITICAL — below threshold)</em>{% elif r.payload.get("disk_warn") %}<em>(Warning — low)</em>{% endif %}
     </p>
     {% endif %}
+    {% if ct == "host_health" and r.payload.get("recurrence_count") %}
+    <p class="meta" style="color:#888;">
+      Seen {{ r.payload.recurrence_count + 1 }}× in 7 days
+      {% if r.payload.get("last_suppressed_at") %}&nbsp;·&nbsp; last recurrence {{ r.payload.last_suppressed_at | epoch_to_iso }}{% endif %}
+    </p>
+    {% endif %}
     {% if r.payload.get("bc_verdicts") or r.payload.get("breaking_changes") %}
     <details open>
       <summary><span class="section-label label-diagnosis">Breaking Changes</span>Advisory — review before updating</summary>

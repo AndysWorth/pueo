@@ -984,6 +984,7 @@ agent:
   # host_swap_warn_pct: 80.0           # DEPRECATED: no longer used
   # host_mem_psi_warn_pct: 10.0        # PSI some avg300 threshold for memory_pressure WARN
   # host_health_confirm_polls: 3       # Consecutive polls before a memory finding fires/clears
+  # host_health_reinvestigate_hours: 24  # Min hours between investigations for the same recurring finding
   # host_disk_life_warn_pct: 80.0
   # host_health_investigation_enabled: true
   # pueo_action_reboot_window_minutes: 20

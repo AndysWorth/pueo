@@ -16,6 +16,33 @@ from utils.core.logging import get_logger
 
 log = get_logger("resource")
 
+# Host-health kinds that can recur without being a fresh incident; card stays
+# open until the finding has been absent for the full reinvestigate window.
+_RECURRING_HOST_KINDS = frozenset({"memory_pressure", "memory_low"})
+# supervisor_* kinds are also recurring (prefix-matched in _is_recurring_host_kind).
+_SEVERITY_ORDER: dict[str, int] = {"INFO": 0, "WARN": 1, "HIGH": 2, "CRITICAL": 3}
+
+
+def _is_recurring_host_kind(kind: str) -> bool:
+    return kind in _RECURRING_HOST_KINDS or kind.startswith("supervisor_")
+
+
+def _update_card_recurrence(
+    watch_dir: str, nid: str, count: int, last_at: float
+) -> None:
+    """Update recurrence_count and last_suppressed_at in an existing card JSON file."""
+    import json
+    from pathlib import Path as _Path
+
+    card_path = _Path(watch_dir) / f"{nid}.json"
+    try:
+        data = json.loads(card_path.read_text())
+        data["payload"]["recurrence_count"] = count
+        data["payload"]["last_suppressed_at"] = last_at
+        card_path.write_text(json.dumps(data, indent=2))
+    except Exception:  # nosec B110
+        pass
+
 
 class DiskCriticalError(Exception):
     """Raised when HA disk free space is below the critical threshold, blocking backup creation."""
@@ -170,6 +197,9 @@ class ResourcePoller:
         self._host_absent_counts: dict[str, int] = {}
         self._host_key_kinds: dict[str, str] = {}  # key → kind (tracked while present)
         self._host_key_severity: dict[str, str] = {}  # key → severity at alert time
+        self._host_clear_since: dict[str, float] = (
+            {}
+        )  # key → time first seen clear (recurring kinds; delays resolution until full window)
         self._last_recovery_at: float = 0.0
 
     async def run(self) -> None:
@@ -919,6 +949,66 @@ class ResourcePoller:
         except Exception as _e:  # nosec B110
             log.warning("host_health_oom_total_write_failed", error=str(_e))
 
+    def _read_last_investigated(self, db_path: str, key: str) -> Optional[float]:
+        import sqlite3 as _sqlite3
+
+        try:
+            with _sqlite3.connect(db_path) as _conn:
+                row = _conn.execute(
+                    "SELECT value FROM user_prefs" " WHERE key = ?",
+                    (f"host_health:last_investigated:{key}",),
+                ).fetchone()
+                return float(row[0]) if row else None
+        except Exception:  # nosec B110
+            return None
+
+    def _write_last_investigated(self, db_path: str, key: str, ts: float) -> None:
+        import sqlite3 as _sqlite3
+
+        try:
+            with _sqlite3.connect(db_path) as _conn:
+                _conn.execute(
+                    "INSERT INTO user_prefs (key, value) VALUES (?, ?)"
+                    " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (f"host_health:last_investigated:{key}", str(ts)),
+                )
+                _conn.commit()
+        except Exception as _e:  # nosec B110
+            log.warning("host_health_last_investigated_write_failed", error=str(_e))
+
+    def _read_recurrences(self, db_path: str, key: str) -> "list[float]":
+        import json
+        import sqlite3 as _sqlite3
+
+        try:
+            with _sqlite3.connect(db_path) as _conn:
+                row = _conn.execute(
+                    "SELECT value FROM user_prefs WHERE key = ?",
+                    (f"host_health:recurrences:{key}",),
+                ).fetchone()
+                if row:
+                    return [float(x) for x in json.loads(row[0])]
+        except Exception:  # nosec B110
+            pass
+        return []
+
+    def _write_recurrences(
+        self, db_path: str, key: str, timestamps: "list[float]"
+    ) -> None:
+        import json
+        import sqlite3 as _sqlite3
+
+        try:
+            with _sqlite3.connect(db_path) as _conn:
+                _conn.execute(
+                    "INSERT INTO user_prefs (key, value) VALUES (?, ?)"
+                    " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (f"host_health:recurrences:{key}", json.dumps(timestamps)),
+                )
+                _conn.commit()
+        except Exception as _e:  # nosec B110
+            log.warning("host_health_recurrences_write_failed", error=str(_e))
+
     def _check_pueo_reboot_recent(
         self, db_path: str, window_seconds: float = 1200.0
     ) -> "tuple[bool, str]":
@@ -1078,6 +1168,11 @@ class ResourcePoller:
 
         active_keys = {f.key for f in findings}
 
+        # Reset clear-since timer for recurring kinds that have come back as active.
+        for _rk in list(self._host_clear_since):
+            if _rk in active_keys:
+                self._host_clear_since.pop(_rk, None)
+
         for finding in findings:
             self._host_key_kinds[finding.key] = finding.kind
             self._host_confirm_counts[finding.key] = (
@@ -1104,10 +1199,58 @@ class ResourcePoller:
 
         ready_active_keys = {f.key for f in ready_findings}
 
-        # Fire for each new ready finding
+        # Fire for each new ready finding; recurring kinds may re-investigate after
+        # HOST_HEALTH_REINVESTIGATE_HOURS even when already in _alerted_host.
         for finding in ready_findings:
-            if finding.key in self._alerted_host:
-                continue
+            already_alerted = finding.key in self._alerted_host
+            if already_alerted:
+                if not _is_recurring_host_kind(finding.kind):
+                    continue
+                # Recurring kind: check if re-investigation window has elapsed.
+                last_inv = await asyncio.to_thread(
+                    self._read_last_investigated, _db, finding.key
+                )
+                window_s = float(_cfg.HOST_HEALTH_REINVESTIGATE_HOURS) * 3600.0
+                severity_rose = _SEVERITY_ORDER.get(
+                    finding.severity, 1
+                ) > _SEVERITY_ORDER.get(
+                    self._host_key_severity.get(finding.key, "WARN"), 1
+                )
+                new_oom = bool(finding.evidence.get("oom_kill_delta"))
+                if (
+                    last_inv is not None
+                    and (time.time() - last_inv) < window_s
+                    and not severity_rose
+                    and not new_oom
+                ):
+                    # Suppress: bump recurrence count, update living card in place.
+                    _now_sup = time.time()
+                    recs_sup = await asyncio.to_thread(
+                        self._read_recurrences, _db, finding.key
+                    )
+                    recs_sup = [t for t in recs_sup if _now_sup - t < 7 * 86400]
+                    recs_sup.append(_now_sup)
+                    await asyncio.to_thread(
+                        self._write_recurrences, _db, finding.key, recs_sup
+                    )
+                    from utils.hitl.hitl_tracker import stable_nid as _snid_sup
+
+                    await asyncio.to_thread(
+                        _update_card_recurrence,
+                        _cfg.NOTIFY_WATCH_DIR,
+                        _snid_sup(f"host_health:{finding.key}"),
+                        len(recs_sup),
+                        _now_sup,
+                    )
+                    log.info(
+                        "host_health_recurrence_suppressed",
+                        finding_key=finding.key,
+                        recurrence_count=len(recs_sup),
+                        window_hours=_cfg.HOST_HEALTH_REINVESTIGATE_HOURS,
+                    )
+                    continue
+                # Window elapsed or severity rose or new OOM: fall through to re-investigate.
+
             import sqlite3 as _sqlite3
 
             from utils.disk.host_health import compute_finding_fingerprint
@@ -1131,7 +1274,13 @@ class ResourcePoller:
                         self._alerted_host.discard(finding.key)
 
             with _sqlite3.connect(_db) as _ssc_conn:
-                allowed = _ssc(_ssc_conn, f"host_health:{finding.key}")
+                # For recurring re-investigation after window, bypass the pending-card
+                # check (the card is intentionally still open).
+                allowed = _ssc(
+                    _ssc_conn,
+                    f"host_health:{finding.key}",
+                    skip_pending_check=already_alerted,
+                )
                 in_backoff = not _ssc(_ssc_conn, f"host_health_backoff:{finding.key}")
             if not allowed:
                 self._alerted_host.add(finding.key)
@@ -1143,6 +1292,21 @@ class ResourcePoller:
                 await self._submit_host_health_investigation(finding, _db, _cfg)
             else:
                 await self._send_host_health_notification_fallback(finding, _db)
+
+            # Record investigation timestamp and append to recurrences for the history
+            # block injected into the next session.
+            _fire_ts = time.time()
+            await asyncio.to_thread(
+                self._write_last_investigated, _db, finding.key, _fire_ts
+            )
+            recs_fire = await asyncio.to_thread(
+                self._read_recurrences, _db, finding.key
+            )
+            recs_fire = [t for t in recs_fire if _fire_ts - t < 7 * 86400]
+            recs_fire.append(_fire_ts)
+            await asyncio.to_thread(
+                self._write_recurrences, _db, finding.key, recs_fire
+            )
 
             self._host_key_severity[finding.key] = finding.severity
             self._alerted_host.add(finding.key)
@@ -1162,7 +1326,22 @@ class ResourcePoller:
                 continue  # not yet absent long enough
             cleared_keys.add(key)
 
+        _reinvestigate_window_s = float(_cfg.HOST_HEALTH_REINVESTIGATE_HOURS) * 3600.0
+
+        # Track "fully cleared" keys — those resolved now (after any recurrence delay).
+        fully_cleared_keys: set[str] = set()
         for key in cleared_keys:
+            kind = self._host_key_kinds.get(key, "")
+            severity = self._host_key_severity.get(key, "WARN")
+            if _is_recurring_host_kind(kind) and severity not in ("HIGH", "CRITICAL"):
+                # Card stays open until the finding has been absent for the full window.
+                if key not in self._host_clear_since:
+                    self._host_clear_since[key] = time.time()
+                if time.time() - self._host_clear_since[key] < _reinvestigate_window_s:
+                    continue  # still within window — do not resolve yet
+            fully_cleared_keys.add(key)
+
+        for key in fully_cleared_keys:
             import sqlite3 as _sqlite3
 
             from utils.hitl.hitl_tracker import mark_card_resolved as _mcr
@@ -1181,6 +1360,7 @@ class ResourcePoller:
             except Exception:  # nosec B110
                 pass
             self._alerted_host.discard(key)
+            self._host_clear_since.pop(key, None)
 
         # A cleared condition verifies a session only through its prediction or
         # a Pueo action (ADR 050); an aged-out finding proves nothing.
@@ -1188,7 +1368,7 @@ class ResourcePoller:
             await verify_host_health_sessions(
                 _db,
                 time.time(),
-                cleared=cleared_keys,
+                cleared=fully_cleared_keys,
                 active=ready_active_keys & self._alerted_host,
                 knowledge_store=self._knowledge_store,
                 llm_client=self._llm_client,
@@ -1208,11 +1388,17 @@ class ResourcePoller:
             WorkItem,
             get_work_queue_or_none,
         )
-        from utils.disk.host_health_investigation import run_host_health_investigation
+        from utils.disk.host_health_investigation import (
+            load_recurrence_history,
+            run_host_health_investigation,
+        )
 
         _self = self
         _finding = finding
         _db = db_path
+        _rec_history = await asyncio.to_thread(
+            load_recurrence_history, db_path, finding.key
+        )
 
         async def _coro() -> None:
             await run_host_health_investigation(
@@ -1223,6 +1409,7 @@ class ResourcePoller:
                 knowledge_store=_self._knowledge_store,
                 ha_rest_client=_self._rest_client,
                 ssh_client=None,
+                recurrence_history=_rec_history,
             )
 
         _wq = get_work_queue_or_none()

@@ -1285,7 +1285,11 @@ class TestResourcePollerCheckHostHealth:
         assert len(notifier.sent) == 0
 
     def test_clear_requires_n_absent_polls_for_memory_kind(self, tmp_path, monkeypatch):
-        """memory_low stays in _alerted_host until HOST_HEALTH_CONFIRM_POLLS absent polls."""
+        """memory_low stays in _alerted_host until HOST_HEALTH_CONFIRM_POLLS absent polls.
+
+        Set HOST_HEALTH_REINVESTIGATE_HOURS=0 so the recurrence clear-delay window is
+        instantly elapsed and the absent-poll counter governs resolution as before S3.
+        """
         import asyncio
 
         import config as cfg_mod
@@ -1296,6 +1300,7 @@ class TestResourcePollerCheckHostHealth:
         monkeypatch.setattr(cfg_mod, "HOST_MEM_PSI_WARN_PCT", 10.0)
         monkeypatch.setattr(cfg_mod, "HOST_DISK_LIFE_WARN_PCT", 80.0)
         monkeypatch.setattr(cfg_mod, "HOST_HEALTH_CONFIRM_POLLS", 2)
+        monkeypatch.setattr(cfg_mod, "HOST_HEALTH_REINVESTIGATE_HOURS", 0)
 
         notifier = FakeNotifier()
         poller, _ = self._make_poller(tmp_path, notifier=notifier)
@@ -1310,11 +1315,11 @@ class TestResourcePollerCheckHostHealth:
         asyncio.run(poller._check_host_health(status_warn))
         assert "memory_low" in poller._alerted_host
 
-        # 1 absent poll — not yet cleared
+        # 1 absent poll — not yet cleared (confirm counter, not window)
         asyncio.run(poller._check_host_health(status_ok))
         assert "memory_low" in poller._alerted_host
 
-        # 2nd absent poll — now clears
+        # 2nd absent poll — now clears (window=0 so clear-delay passes immediately)
         asyncio.run(poller._check_host_health(status_ok))
         assert "memory_low" not in poller._alerted_host
 
@@ -2440,3 +2445,490 @@ class TestCheckHostHealthFingerprintReopen:
             ).fetchone()
         assert row is not None
         assert row[0] == 1
+
+
+# ---------------------------------------------------------------------------
+# S3: recurrence cooldown, living card, history block
+# ---------------------------------------------------------------------------
+
+
+class TestRecurrenceHelpers:
+    """Unit tests for _read/write_last_investigated and _read/write_recurrences."""
+
+    def _make_db(self, tmp_path):
+        import sqlite3
+
+        db = str(tmp_path / "state.db")
+        with sqlite3.connect(db) as conn:
+            conn.execute("CREATE TABLE user_prefs (key TEXT PRIMARY KEY, value TEXT)")
+        return db
+
+    def _make_poller(self, tmp_path):
+        from utils.disk.resource import ResourcePoller
+        from utils.hitl.notify import FakeNotifier
+
+        db = self._make_db(tmp_path)
+        return (
+            ResourcePoller(
+                ssh_client=object(),
+                notifier=FakeNotifier(),
+                interval_seconds=300,
+                disk_warn_gb=5.0,
+                disk_critical_gb=3.0,
+                mem_warn_mb=256.0,
+                db_path=db,
+            ),
+            db,
+        )
+
+    def test_last_investigated_round_trip(self, tmp_path):
+        poller, db = self._make_poller(tmp_path)
+        ts = 1_700_000_000.0
+        poller._write_last_investigated(db, "memory_low:host", ts)
+        result = poller._read_last_investigated(db, "memory_low:host")
+        assert result == pytest.approx(ts)
+
+    def test_last_investigated_missing_returns_none(self, tmp_path):
+        poller, db = self._make_poller(tmp_path)
+        result = poller._read_last_investigated(db, "memory_low:host")
+        assert result is None
+
+    def test_last_investigated_overwrite(self, tmp_path):
+        poller, db = self._make_poller(tmp_path)
+        poller._write_last_investigated(db, "memory_low:host", 1_000.0)
+        poller._write_last_investigated(db, "memory_low:host", 2_000.0)
+        result = poller._read_last_investigated(db, "memory_low:host")
+        assert result == pytest.approx(2_000.0)
+
+    def test_recurrences_round_trip(self, tmp_path):
+        poller, db = self._make_poller(tmp_path)
+        timestamps = [1_700_000_000.0, 1_700_001_000.0]
+        poller._write_recurrences(db, "memory_pressure:host", timestamps)
+        result = poller._read_recurrences(db, "memory_pressure:host")
+        assert result == pytest.approx(timestamps)
+
+    def test_recurrences_missing_returns_empty(self, tmp_path):
+        poller, db = self._make_poller(tmp_path)
+        result = poller._read_recurrences(db, "memory_pressure:host")
+        assert result == []
+
+    def test_recurrences_overwrite(self, tmp_path):
+        poller, db = self._make_poller(tmp_path)
+        poller._write_recurrences(db, "memory_pressure:host", [1.0, 2.0])
+        poller._write_recurrences(db, "memory_pressure:host", [3.0])
+        result = poller._read_recurrences(db, "memory_pressure:host")
+        assert result == pytest.approx([3.0])
+
+
+class TestCheckHostHealthRecurrence:
+    """Tests for the recurrence cooldown in _check_host_health."""
+
+    def _make_db(self, tmp_path):
+        import sqlite3
+
+        db = str(tmp_path / "state.db")
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS user_prefs (key TEXT PRIMARY KEY, value TEXT)"
+            )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS timeline_events"
+                " (id INTEGER PRIMARY KEY, timestamp REAL, event_type TEXT,"
+                " event_category TEXT, message TEXT, data TEXT)"
+            )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS ha_repair_history"
+                " (issue_key TEXT PRIMARY KEY, first_seen_at REAL,"
+                " hitl_sent_at REAL, resolved_at REAL)"
+            )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS hitl_suppression"
+                " (card_key TEXT PRIMARY KEY, card_type TEXT NOT NULL DEFAULT '',"
+                " description TEXT NOT NULL DEFAULT '',"
+                " first_sent_at REAL NOT NULL DEFAULT 0,"
+                " last_sent_at REAL NOT NULL DEFAULT 0,"
+                " send_count INTEGER NOT NULL DEFAULT 1,"
+                " last_action TEXT, last_action_at REAL,"
+                " rejection_count INTEGER NOT NULL DEFAULT 0,"
+                " next_allowed_at REAL, known_issue INTEGER NOT NULL DEFAULT 0,"
+                " known_issue_note TEXT, resolved_at REAL)"
+            )
+        return db
+
+    def _make_poller(self, tmp_path, notifier=None):
+        from utils.disk.resource import ResourcePoller
+        from utils.hitl.notify import FakeNotifier
+
+        db = self._make_db(tmp_path)
+        return (
+            ResourcePoller(
+                ssh_client=object(),
+                notifier=notifier or FakeNotifier(),
+                interval_seconds=300,
+                disk_warn_gb=5.0,
+                disk_critical_gb=3.0,
+                mem_warn_mb=256.0,
+                db_path=db,
+            ),
+            db,
+        )
+
+    def test_recurrence_suppressed_within_window(self, tmp_path, monkeypatch):
+        """Second fire of a recurring kind within the window is suppressed."""
+        import sqlite3
+
+        import config as cfg_mod
+        import utils.disk.host_health as hh_mod
+        from utils.hitl.notify import FakeNotifier
+
+        monkeypatch.setattr(cfg_mod, "HOST_HEALTH_INVESTIGATION_ENABLED", False)
+        monkeypatch.setattr(cfg_mod, "HOST_MEM_PSI_WARN_PCT", 10.0)
+        monkeypatch.setattr(cfg_mod, "HOST_DISK_LIFE_WARN_PCT", 80.0)
+        monkeypatch.setattr(cfg_mod, "HOST_HEALTH_CONFIRM_POLLS", 1)
+        monkeypatch.setattr(cfg_mod, "HOST_HEALTH_REINVESTIGATE_HOURS", 24)
+
+        notifier = FakeNotifier()
+        poller, db = self._make_poller(tmp_path, notifier=notifier)
+
+        health = _make_health()
+        status_warn = _make_status(mem_available_mb=100.0, mem_warn=True)
+        monkeypatch.setattr(hh_mod, "_last_host_health", health)
+
+        # First fire: should send notification
+        asyncio.run(poller._check_host_health(status_warn))
+        assert len(notifier.sent) == 1
+        assert "memory_low" in poller._alerted_host
+
+        # Seed last_investigated to "just now" so the window hasn't elapsed
+        poller._write_last_investigated(db, "memory_low", time.time())
+
+        # Second fire within window: should be suppressed
+        asyncio.run(poller._check_host_health(status_warn))
+        assert len(notifier.sent) == 1  # still 1
+
+        # Recurrence count should be bumped in user_prefs
+        recs = poller._read_recurrences(db, "memory_low")
+        assert len(recs) >= 1
+
+    def test_recurrence_allowed_after_window(self, tmp_path, monkeypatch):
+        """Re-investigation fires after the window elapses."""
+        import config as cfg_mod
+        import utils.disk.host_health as hh_mod
+        from utils.hitl.notify import FakeNotifier
+
+        monkeypatch.setattr(cfg_mod, "HOST_HEALTH_INVESTIGATION_ENABLED", False)
+        monkeypatch.setattr(cfg_mod, "HOST_MEM_PSI_WARN_PCT", 10.0)
+        monkeypatch.setattr(cfg_mod, "HOST_DISK_LIFE_WARN_PCT", 80.0)
+        monkeypatch.setattr(cfg_mod, "HOST_HEALTH_CONFIRM_POLLS", 1)
+        monkeypatch.setattr(cfg_mod, "HOST_HEALTH_REINVESTIGATE_HOURS", 24)
+
+        notifier = FakeNotifier()
+        poller, db = self._make_poller(tmp_path, notifier=notifier)
+
+        health = _make_health()
+        status_warn = _make_status(mem_available_mb=100.0, mem_warn=True)
+        monkeypatch.setattr(hh_mod, "_last_host_health", health)
+
+        # First fire
+        asyncio.run(poller._check_host_health(status_warn))
+        assert len(notifier.sent) == 1
+
+        # Seed last_investigated to > 24h ago so window has elapsed
+        past_ts = time.time() - (25 * 3600)
+        poller._write_last_investigated(db, "memory_low", past_ts)
+
+        # Second fire: window elapsed → re-investigate
+        asyncio.run(poller._check_host_health(status_warn))
+        assert len(notifier.sent) == 2
+
+    def test_recurrence_bypass_on_severity_rise(self, tmp_path, monkeypatch):
+        """Suppression is skipped when severity rises from WARN to HIGH."""
+        import sqlite3
+
+        import config as cfg_mod
+        import utils.disk.host_health as hh_mod
+        from utils.hitl.notify import FakeNotifier
+
+        monkeypatch.setattr(cfg_mod, "HOST_HEALTH_INVESTIGATION_ENABLED", False)
+        monkeypatch.setattr(cfg_mod, "HOST_MEM_PSI_WARN_PCT", 10.0)
+        monkeypatch.setattr(cfg_mod, "HOST_DISK_LIFE_WARN_PCT", 80.0)
+        monkeypatch.setattr(cfg_mod, "HOST_HEALTH_CONFIRM_POLLS", 1)
+        monkeypatch.setattr(cfg_mod, "HOST_HEALTH_REINVESTIGATE_HOURS", 24)
+
+        notifier = FakeNotifier()
+        poller, db = self._make_poller(tmp_path, notifier=notifier)
+
+        # Seed a previous OOM total so delta is 0 (no OOM)
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO user_prefs (key, value) VALUES ('host_health:oom_kill_total', '1')"
+            )
+
+        # Use mem_warn=False so only PSI triggers memory_pressure (not memory_low)
+        status_psi = _make_status(mem_available_mb=600.0, mem_warn=False)
+
+        health_warn = _make_health(psi_some_avg300=15.0, oom_kill_total=1)
+        monkeypatch.setattr(hh_mod, "_last_host_health", health_warn)
+
+        # First fire at WARN severity (PSI only, no OOM delta since stored=1 and total=1)
+        asyncio.run(poller._check_host_health(status_psi))
+        assert len(notifier.sent) == 1
+        assert "memory_pressure" in poller._alerted_host
+
+        # Seed last_investigated to "just now" so normally suppressed
+        poller._write_last_investigated(db, "memory_pressure", time.time())
+        poller._host_key_severity["memory_pressure"] = "WARN"
+
+        # Now fire with OOM kill delta (oom_kill_total=3 → delta=2 → new OOM)
+        health_high = _make_health(psi_some_avg300=15.0, oom_kill_total=3)
+        monkeypatch.setattr(hh_mod, "_last_host_health", health_high)
+
+        asyncio.run(poller._check_host_health(status_psi))
+        # Should re-fire because new_oom is True (bypass suppression)
+        assert len(notifier.sent) == 2
+
+    def test_clear_delayed_for_recurring_kind(self, tmp_path, monkeypatch):
+        """Recurring kind card is NOT resolved immediately when finding clears."""
+        import config as cfg_mod
+        import utils.disk.host_health as hh_mod
+        from utils.hitl.notify import FakeNotifier
+
+        monkeypatch.setattr(cfg_mod, "HOST_HEALTH_INVESTIGATION_ENABLED", False)
+        monkeypatch.setattr(cfg_mod, "HOST_MEM_PSI_WARN_PCT", 10.0)
+        monkeypatch.setattr(cfg_mod, "HOST_DISK_LIFE_WARN_PCT", 80.0)
+        monkeypatch.setattr(cfg_mod, "HOST_HEALTH_CONFIRM_POLLS", 1)
+        monkeypatch.setattr(cfg_mod, "HOST_HEALTH_REINVESTIGATE_HOURS", 24)
+
+        notifier = FakeNotifier()
+        poller, db = self._make_poller(tmp_path, notifier=notifier)
+
+        health = _make_health()
+        status_warn = _make_status(mem_available_mb=100.0, mem_warn=True)
+        status_ok = _make_status(mem_available_mb=800.0, mem_warn=False)
+        monkeypatch.setattr(hh_mod, "_last_host_health", health)
+
+        # Fire first
+        asyncio.run(poller._check_host_health(status_warn))
+        assert "memory_low" in poller._alerted_host
+
+        # Clear poll — within window, should NOT resolve
+        asyncio.run(poller._check_host_health(status_ok))
+        assert "memory_low" in poller._alerted_host  # still alerted
+        assert "memory_low" in poller._host_clear_since
+
+    def test_clear_resolves_after_full_window(self, tmp_path, monkeypatch):
+        """Recurring kind card resolves after the full window has elapsed since clearing."""
+        import config as cfg_mod
+        import utils.disk.host_health as hh_mod
+        from utils.hitl.notify import FakeNotifier
+
+        monkeypatch.setattr(cfg_mod, "HOST_HEALTH_INVESTIGATION_ENABLED", False)
+        monkeypatch.setattr(cfg_mod, "HOST_MEM_PSI_WARN_PCT", 10.0)
+        monkeypatch.setattr(cfg_mod, "HOST_DISK_LIFE_WARN_PCT", 80.0)
+        monkeypatch.setattr(cfg_mod, "HOST_HEALTH_CONFIRM_POLLS", 1)
+        monkeypatch.setattr(cfg_mod, "HOST_HEALTH_REINVESTIGATE_HOURS", 24)
+
+        notifier = FakeNotifier()
+        poller, db = self._make_poller(tmp_path, notifier=notifier)
+
+        health = _make_health()
+        status_warn = _make_status(mem_available_mb=100.0, mem_warn=True)
+        status_ok = _make_status(mem_available_mb=800.0, mem_warn=False)
+        monkeypatch.setattr(hh_mod, "_last_host_health", health)
+
+        # Fire first
+        asyncio.run(poller._check_host_health(status_warn))
+        assert "memory_low" in poller._alerted_host
+
+        # Seed clear_since to > 24h ago so window has elapsed
+        poller._host_clear_since["memory_low"] = time.time() - (25 * 3600)
+        poller._host_key_kinds["memory_low"] = "memory_low"
+        poller._host_key_severity["memory_low"] = "WARN"
+
+        # Clear poll — window elapsed → should resolve
+        asyncio.run(poller._check_host_health(status_ok))
+        assert "memory_low" not in poller._alerted_host
+        assert "memory_low" not in poller._host_clear_since
+
+
+class TestLoadRecurrenceHistory:
+    """Tests for load_recurrence_history."""
+
+    def _make_db(self, tmp_path):
+        import sqlite3
+
+        db = str(tmp_path / "state.db")
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "CREATE TABLE session_outcomes ("
+                "  episode_id TEXT PRIMARY KEY,"
+                "  signature TEXT,"
+                "  session_type TEXT,"
+                "  subject_key TEXT,"
+                "  conclusion_json TEXT,"
+                "  distill_payload_json TEXT,"
+                "  created_at TEXT,"
+                "  verification TEXT,"
+                "  verified_at TEXT,"
+                "  verified_by TEXT,"
+                "  correction TEXT"
+                ")"
+            )
+        return db
+
+    def test_empty_db_returns_zero_times(self, tmp_path):
+        from utils.disk.host_health_investigation import load_recurrence_history
+
+        db = self._make_db(tmp_path)
+        result = load_recurrence_history(db, "memory_low")
+        assert result.get("times_in_7d", 0) == 0
+
+    def test_returns_last_root_cause_and_summary(self, tmp_path):
+        import json
+        import sqlite3
+
+        from utils.disk.host_health_investigation import load_recurrence_history
+
+        db = self._make_db(tmp_path)
+        conclusion = {
+            "root_cause": "High memory usage by Docker",
+            "summary": "Docker using 80% RAM",
+        }
+        # Insert a session within 7 days
+        recent_iso = time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 3600)
+        )
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO session_outcomes"
+                " (episode_id, session_type, subject_key, conclusion_json, created_at)"
+                " VALUES (?, 'host_health', ?, ?, ?)",
+                ("ep1", "memory_low", json.dumps(conclusion), recent_iso),
+            )
+
+        result = load_recurrence_history(db, "memory_low")
+        assert result["last_root_cause"] == "High memory usage by Docker"
+        assert result["last_summary"] == "Docker using 80% RAM"
+        assert result["times_in_7d"] == 1
+
+    def test_counts_only_within_7_days(self, tmp_path):
+        import json
+        import sqlite3
+
+        from utils.disk.host_health_investigation import load_recurrence_history
+
+        db = self._make_db(tmp_path)
+        recent_iso = time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 3600)
+        )
+        old_iso = time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 8 * 86400)
+        )
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO session_outcomes"
+                " (episode_id, session_type, subject_key, conclusion_json, created_at)"
+                " VALUES (?, 'host_health', ?, ?, ?)",
+                ("ep1", "memory_low", json.dumps({}), recent_iso),
+            )
+            conn.execute(
+                "INSERT INTO session_outcomes"
+                " (episode_id, session_type, subject_key, conclusion_json, created_at)"
+                " VALUES (?, 'host_health', ?, ?, ?)",
+                ("ep2", "memory_low", json.dumps({}), old_iso),
+            )
+
+        result = load_recurrence_history(db, "memory_low")
+        assert result["times_in_7d"] == 1  # only the recent one
+
+    def test_different_subject_key_not_counted(self, tmp_path):
+        import json
+        import sqlite3
+
+        from utils.disk.host_health_investigation import load_recurrence_history
+
+        db = self._make_db(tmp_path)
+        recent_iso = time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 3600)
+        )
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO session_outcomes"
+                " (episode_id, session_type, subject_key, conclusion_json, created_at)"
+                " VALUES (?, 'host_health', ?, ?, ?)",
+                ("ep1", "memory_pressure", json.dumps({}), recent_iso),
+            )
+
+        result = load_recurrence_history(db, "memory_low")
+        assert result.get("times_in_7d", 0) == 0
+
+    def test_history_block_prepended_to_initial_context(self, tmp_path, monkeypatch):
+        """run_host_health_investigation prepends History block when times_in_7d > 0."""
+        import json
+        import sqlite3
+
+        import utils.agent.agent_loop as _al_mod
+        import utils.ha.ha_environment as _env_mod
+        import utils.agent.supervisor as _sup_mod
+        from utils.agent.tool_registry import AgentLoopResult
+        from utils.disk.host_health import HostHealthFinding
+        from utils.disk.host_health_investigation import run_host_health_investigation
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+
+        monkeypatch.setattr(_sup_mod, "increment_active_agent", lambda: None)
+        monkeypatch.setattr(_sup_mod, "decrement_active_agent", lambda: None)
+        monkeypatch.setattr(_sup_mod, "publish_activity_done", lambda *a, **kw: None)
+        monkeypatch.setattr(
+            _sup_mod, "make_activity_timeline_callback", lambda *a, **kw: None
+        )
+        monkeypatch.setattr(_env_mod, "load_environment_profile", lambda db: None)
+
+        db = _make_hitl_db(tmp_path)
+        # Add session_outcomes table
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS session_outcomes ("
+                "  episode_id TEXT PRIMARY KEY, signature TEXT, session_type TEXT,"
+                "  subject_key TEXT, conclusion_json TEXT, distill_payload_json TEXT,"
+                "  created_at TEXT, verification TEXT, verified_at TEXT,"
+                "  verified_by TEXT, correction TEXT)"
+            )
+
+        captured_prompts: list = []
+
+        original_run = _al_mod.AgentLoop.run
+
+        async def _capturing_run(self, initial_context=None, **kwargs):
+            if initial_context:
+                captured_prompts.append(initial_context)
+            return AgentLoopResult(outcome="failed", summary="x", tool_calls=[])
+
+        monkeypatch.setattr(_al_mod.AgentLoop, "run", _capturing_run)
+
+        finding = HostHealthFinding(
+            key="memory_low", kind="memory_low", severity="WARN"
+        )
+        recurrence_history = {
+            "times_in_7d": 3,
+            "last_created_at": "2026-11-10T10:00:00Z",
+            "last_root_cause": "Docker memory leak",
+            "last_summary": "Recommend restarting Docker",
+        }
+
+        asyncio.run(
+            run_host_health_investigation(
+                finding=finding,
+                notifier=FakeNotifier(),
+                db_path=db,
+                llm_client=None,
+                ssh_client=FakeSSHClient(),
+                recurrence_history=recurrence_history,
+            )
+        )
+
+        assert len(captured_prompts) >= 1
+        ctx = captured_prompts[0]
+        assert "History" in ctx
+        assert "3" in ctx
+        assert "Docker memory leak" in ctx
