@@ -1054,7 +1054,9 @@ class ResourcePoller:
         if _boot_changed:
             from utils.ha.device_availability import record_ha_start
 
-            assert health.boot_ts is not None  # nosec B101 — guaranteed by _boot_changed
+            assert (
+                health.boot_ts is not None
+            )  # nosec B101 — guaranteed by _boot_changed
             await asyncio.to_thread(record_ha_start, _db, health.boot_ts)
 
         # Persist current boot_ts so future polls can detect changes
