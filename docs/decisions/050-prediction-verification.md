@@ -26,7 +26,7 @@ ADR 046 made verification explicit: only "Pueo was right"/"Pueo got this wrong" 
 {"kind": "recovers_without_action" | "recovers_after_reload" | "stays_offline", "within_minutes": N}
 ```
 
-`AgentLoop` validates it (`normalize_prediction`, capped at 7 days) and stores it in the episode stub, so it lands in `session_outcomes.conclusion_json`. No migration is needed. The card shows "Pueo predicts this will … and will check that itself."
+`normalize_prediction` validates it (capped at 7 days). If `prediction` is supplied but invalid, `_finish_host_health` / `_finish_device_availability` return a tool error with the required shape so the LLM can correct its call — the card is not sent. A valid prediction is stored in the episode stub and lands in `session_outcomes.conclusion_json`. The card shows "Pueo predicts this will … and will check that itself."
 
 The poll that watches the condition judges it with `judge_prediction()` (`utils/knowledge/session_verification.py`):
 
@@ -38,7 +38,7 @@ The poll that watches the condition judges it with `judge_prediction()` (`utils/
 
 A verdict marks the session `success`/`failure` with `verified_by='system'`. A failure gets an automatic correction ("Predicted it would recover on its own within 30 min; it was still not recovered after 75 min."). Then `enqueue_distillation_after_verification` runs.
 
-- **Devices:** `poll_device_availability` calls `check_device_predictions` after each evaluation that wasn't skipped (states inside the settle window prove nothing). A card counts as recovered only when none of its devices is still alerted. Sessions are matched by `card_id`. "Actioned" means the card was actioned or the session made a successful `reload_integration`/`call_service`/`run_ha_command` call.
+- **Devices:** `poll_device_availability` calls `check_device_predictions` after each evaluation that wasn't skipped (states inside the settle window prove nothing). A card counts as recovered only when none of its devices is still alerted. Sessions are matched by `card_id`. "Actioned" means the card was actioned or the session made a successful `reload_integration` or `call_service` call, **or** a `run_ha_command` call whose command has a non-None risk tier (i.e. it went through the autonomy gate). Read-only `run_ha_command` calls such as `ha core stats` or `ha host info` do not count as actions. `session_actions()` in `utils/knowledge/session_verification.py` enforces this: it calls `_ha_command_risk(cmd)` and sets `actioned=True` only when the result is not `None`.
 - **Host health:** `ResourcePoller._check_host_health` calls `verify_host_health_sessions` with the cleared and still-active finding keys.
 
 This doesn't contradict ADR 046's "recovery is not verification". An unpredicted recovery still verifies nothing. A prediction is a falsifiable claim made before the outcome was known, and the system checks it against the outcome.
