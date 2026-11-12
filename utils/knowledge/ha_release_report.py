@@ -25,6 +25,15 @@ _ATTR_REF_RE = re.compile(r"\s*\([^)]*@[^)]*#\d+[^)]*\)\s*$")
 _PATCH_HA_DOMAIN_RE = re.compile(
     r"https?://www\.home-assistant\.io/integrations/([^/)#\s\"'>]+)"
 )
+# Reference-link definition at the bottom of GitHub patch bodies:
+#   [mqtt docs]: https://www.home-assistant.io/integrations/mqtt
+_PATCH_REF_DEF_RE = re.compile(
+    r"^\[([^\]]+)\]:\s+https?://www\.home-assistant\.io/integrations/([^/\s)#\"'>]+)"
+)
+# Reference-link usage in a fix line: ([mqtt docs]) — no inline URL
+_PATCH_REF_USE_RE = re.compile(
+    r"\(\[([^\]]+)\]\)(?!\()"
+)  # ([label]) not ([label](url))
 # Trailing sections to strip from patch note text: ([@user] - [#n]), ([docs](url)), (label)
 _PATCH_TRAIL_RE = re.compile(
     r"(?:"
@@ -361,19 +370,47 @@ def parse_patch_notes(
 ) -> dict[str, list[ChangeEntry]]:
     """Parse a GitHub patch release body into per-domain change lists.
 
-    Line format: - text ([@author] - [#n]) ([domain docs](url)) (dependency)
-    Extracts the domain slug from the HA integration URL, keeps only lines for
-    installed integrations, drops mechanical-noise lines.
+    Handles two link forms used in GitHub patch bodies:
+    - Inline URL:    - Fix foo ([@u] - [#1]) ([MQTT docs](https://…/mqtt))
+    - Reference:     - Fix foo ([@u] - [#1]) ([mqtt docs])
+                     …
+                     [mqtt docs]: https://www.home-assistant.io/integrations/mqtt
+
+    Reference definition lines at the bottom are collected in the first pass and
+    used to resolve domain slugs in fix lines.  Definition lines are never emitted
+    as changes.
     """
+    # First pass: collect reference definitions
+    ref_to_domain: dict[str, str] = {}
+    for raw_line in body.splitlines():
+        def_m = _PATCH_REF_DEF_RE.match(raw_line.strip())
+        if def_m:
+            label = def_m.group(1).lower()
+            slug = def_m.group(2).rstrip("/")
+            ref_to_domain[label] = slug
+
     result: dict[str, list[ChangeEntry]] = {}
     for raw_line in body.splitlines():
+        # Skip reference definition lines
+        if _PATCH_REF_DEF_RE.match(raw_line.strip()):
+            continue
         line = raw_line.strip().lstrip("*-• ").strip()
         if not line:
             continue
+        # Try inline URL first (e.g. ([Domain docs](https://…/mqtt)))
         domain_m = _PATCH_HA_DOMAIN_RE.search(line)
-        if domain_m is None:
-            continue
-        domain = domain_m.group(1).rstrip("/")
+        if domain_m is not None:
+            domain = domain_m.group(1).rstrip("/")
+        else:
+            # Try reference label (e.g. ([mqtt docs]))
+            ref_m = _PATCH_REF_USE_RE.search(line)
+            if ref_m is None:
+                continue
+            label = ref_m.group(1).lower()
+            if label not in ref_to_domain:
+                continue
+            domain = ref_to_domain[label]
+
         if domain not in installed_set:
             norm = domain.replace("-", "_")
             if norm in installed_set:
@@ -570,23 +607,34 @@ async def build_core_release_report(
     if months or not installed_version:
         try:
             yymm = version.rsplit(".", 1)[0]
-            cache_path = Path(cache_dir) / f"changelog_core-{yymm}.txt"
+            # Key by full version so a new patch always refetches once.
+            # Fall back to the old month-keyed file only when the new one is
+            # absent and the fetch itself fails.
+            new_cache_path = Path(cache_dir) / f"changelog_core-{version}.txt"
+            old_cache_path = Path(cache_dir) / f"changelog_core-{yymm}.txt"
 
-            if cache_path.exists():
-                changelog_text = cache_path.read_text(encoding="utf-8")
+            if new_cache_path.exists():
+                changelog_text = new_cache_path.read_text(encoding="utf-8")
             else:
-                if _changelog_fetcher is not None:
-                    raw = _changelog_fetcher(report.changelog_url)
-                else:  # pragma: no cover
-                    raw = await _fetch_text_url(report.changelog_url)
+                try:
+                    if _changelog_fetcher is not None:
+                        raw = _changelog_fetcher(report.changelog_url)
+                    else:  # pragma: no cover
+                        raw = await _fetch_text_url(report.changelog_url)
 
-                if "<" in raw and ">" in raw:
-                    changelog_text = html_to_text(raw)
-                else:
-                    changelog_text = raw
+                    if "<" in raw and ">" in raw:
+                        changelog_text = html_to_text(raw)
+                    else:
+                        changelog_text = raw
 
-                cache_path.parent.mkdir(parents=True, exist_ok=True)
-                cache_path.write_text(changelog_text, encoding="utf-8")
+                    new_cache_path.parent.mkdir(parents=True, exist_ok=True)
+                    new_cache_path.write_text(changelog_text, encoding="utf-8")
+                except Exception:
+                    # Fallback to old month-named cache when fetch fails
+                    if old_cache_path.exists():
+                        changelog_text = old_cache_path.read_text(encoding="utf-8")
+                    else:
+                        raise
 
             bc_prs = _extract_bc_prs(report.bc_installed + report.bc_general)
             changes, noise_dropped = parse_changelog_sections(
@@ -838,9 +886,18 @@ def format_core_release_digest(report: "CoreReleaseReport") -> str:
         bc_parts.append(bc_section)
 
     bc_text = _SEP.join(bc_parts)
-    if priority_text and bc_text:
-        return (priority_text + _SEP + bc_text)[:_DIGEST_CAP]
-    return (priority_text or bc_text)[:_DIGEST_CAP]
+
+    # Patch changes (installed domains only — parse_patch_notes already filtered)
+    patch_text = ""
+    if report.patch_changes_by_domain:
+        patch_lines: list[str] = []
+        for domain, entries in report.patch_changes_by_domain.items():
+            entry_lines = "\n".join(f"- {e.text}" for e in entries)
+            patch_lines.append(f"**{domain}:**\n{entry_lines}")
+        patch_text = "## Patch changes\n\n" + "\n\n".join(patch_lines)
+
+    all_parts = [p for p in [priority_text, bc_text, patch_text] if p]
+    return (_SEP.join(all_parts))[:_DIGEST_CAP]
 
 
 # Screening batch size budget (chars).  Cut at integration boundaries.
@@ -865,10 +922,8 @@ def make_screening_batches(report: "CoreReleaseReport") -> list[str]:
         text = f"### Changes: {domain}\n\n" + "\n".join(f"- {e.text}" for e in entries)
         sections.append(text)
 
-    # Patch note sections (merged with changelog sections if same domain)
+    # Patch note sections — always included, even when the domain is also in the changelog
     for domain, entries in report.patch_changes_by_domain.items():
-        if domain in report.changes_by_domain:
-            continue  # already covered by changelog section
         text = f"### Patch changes: {domain}\n\n" + "\n".join(
             f"- {e.text}" for e in entries
         )

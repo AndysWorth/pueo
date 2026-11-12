@@ -7261,6 +7261,51 @@ class TestCoreReleaseDigest:
         assert "Flagged changes" in result
         assert "Evidence:" not in result
 
+    def test_patch_changes_section_appears_after_bcs(self):
+        """Patch changes section appears after BCs in the digest."""
+        from utils.knowledge.ha_release_report import (
+            ChangeEntry,
+            format_core_release_digest,
+        )
+
+        report = self._make_report(
+            bc_installed=[self._bc(name="Hue", body="Some BC detail.")],
+            patch_changes_by_domain={"mqtt": [ChangeEntry(text="Fix MQTT encoding")]},
+        )
+        result = format_core_release_digest(report)
+        assert "## Patch changes" in result
+        assert "Fix MQTT encoding" in result
+        bc_pos = result.index("Backward-incompatible")
+        patch_pos = result.index("## Patch changes")
+        assert bc_pos < patch_pos
+
+    def test_patch_changes_absent_when_empty(self):
+        """No Patch changes section when patch_changes_by_domain is empty."""
+        from utils.knowledge.ha_release_report import format_core_release_digest
+
+        report = self._make_report(bc_installed=[self._bc()])
+        result = format_core_release_digest(report)
+        assert "## Patch changes" not in result
+
+    def test_patch_changes_multiple_domains(self):
+        """Patch changes section renders each domain."""
+        from utils.knowledge.ha_release_report import (
+            ChangeEntry,
+            format_core_release_digest,
+        )
+
+        report = self._make_report(
+            patch_changes_by_domain={
+                "mqtt": [ChangeEntry(text="Fix encoding")],
+                "homekit": [ChangeEntry(text="Fix camera")],
+            },
+        )
+        result = format_core_release_digest(report)
+        assert "mqtt" in result
+        assert "homekit" in result
+        assert "Fix encoding" in result
+        assert "Fix camera" in result
+
 
 # ---------------------------------------------------------------------------
 # finish_update_analysis dispatch: highlights pass-through
@@ -8661,6 +8706,79 @@ class TestParsePatchNotes:
         )
         result = self._parse(body, ["device_tracker"])
         assert "9999" in result["device_tracker"][0].prs
+
+    # -- reference-link form (real 2026.11.1 GitHub body shape) --
+
+    def test_reference_link_fix_line_resolved(self):
+        """Fix line with ([mqtt docs]) reference is resolved via definition block."""
+        body = (
+            "- Validate the MQTT payload encoding ([@user] - [#12345]) ([mqtt docs])\n"
+            "\n"
+            "[mqtt docs]: https://www.home-assistant.io/integrations/mqtt\n"
+        )
+        result = self._parse(body, ["mqtt"])
+        assert "mqtt" in result
+        assert result["mqtt"][0].text == "Validate the MQTT payload encoding"
+
+    def test_reference_link_definition_not_emitted_as_change(self):
+        """Reference definition lines must never appear as change entries."""
+        body = (
+            "- Fix camera motion events ([@u] - [#1]) ([homekit docs])\n"
+            "\n"
+            "[homekit docs]: https://www.home-assistant.io/integrations/homekit\n"
+        )
+        result = self._parse(body, ["homekit"])
+        assert "homekit" in result
+        assert len(result["homekit"]) == 1
+        assert "homekit docs" not in result["homekit"][0].text
+
+    def test_reference_link_uninstalled_domain_dropped(self):
+        """Reference-resolved domain not in installed_set is dropped."""
+        body = (
+            "- Fix foo ([@u] - [#1]) ([vesync docs])\n"
+            "\n"
+            "[vesync docs]: https://www.home-assistant.io/integrations/vesync\n"
+        )
+        result = self._parse(body, ["hue"])
+        assert result == {}
+
+    def test_reference_link_hyphen_normalised(self):
+        """Reference slug with hyphen in URL is normalised to underscore in domain."""
+        body = (
+            "- Fix bar ([@u] - [#2]) ([androidtv_remote docs])\n"
+            "\n"
+            "[androidtv_remote docs]: "
+            "https://www.home-assistant.io/integrations/androidtv_remote\n"
+        )
+        result = self._parse(body, ["androidtv_remote"])
+        assert "androidtv_remote" in result
+
+    def test_reference_link_multiple_domains(self):
+        """Multiple reference-link domains in one body, only installed ones kept."""
+        body = (
+            "- Fix A ([@u] - [#1]) ([mqtt docs])\n"
+            "- Fix B ([@u] - [#2]) ([homekit docs])\n"
+            "- Fix C ([@u] - [#3]) ([vesync docs])\n"
+            "\n"
+            "[mqtt docs]: https://www.home-assistant.io/integrations/mqtt\n"
+            "[homekit docs]: https://www.home-assistant.io/integrations/homekit\n"
+            "[vesync docs]: https://www.home-assistant.io/integrations/vesync\n"
+        )
+        result = self._parse(body, ["mqtt", "homekit"])
+        assert set(result.keys()) == {"mqtt", "homekit"}
+        assert "vesync" not in result
+
+    def test_inline_url_still_works_with_definitions_present(self):
+        """Inline URL form is unaffected when definition block is also present."""
+        body = (
+            "- Fix cam ([@u] - [#1]) "
+            "([HomeKit docs](https://www.home-assistant.io/integrations/homekit))\n"
+            "\n"
+            "[homekit docs]: https://www.home-assistant.io/integrations/homekit\n"
+        )
+        result = self._parse(body, ["homekit"])
+        assert "homekit" in result
+        assert len(result["homekit"]) == 1  # not doubled
 
 
 # ---------------------------------------------------------------------------
