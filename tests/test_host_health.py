@@ -1423,6 +1423,7 @@ class TestBuildHostHealthToolRegistry:
             "call_service",
             "request_escalation",
             "discard_result",
+            "read_source",
             "finish_host_health",
         }
         assert names == expected
@@ -2932,3 +2933,424 @@ class TestLoadRecurrenceHistory:
         assert "History" in ctx
         assert "3" in ctx
         assert "Docker memory leak" in ctx
+        assert "Docker memory leak" in ctx
+
+
+# ---------------------------------------------------------------------------
+# S4: summarize_resource_trend
+# ---------------------------------------------------------------------------
+
+
+class TestSummarizeResourceTrend:
+    """Pure-function tests for summarize_resource_trend."""
+
+    def _make_rows(self, now: float, count: int, base_mb: float = 500.0) -> list:
+        """Generate evenly-spaced synthetic rows over ``count`` hours."""
+        rows = []
+        for i in range(count):
+            ts = now - (count - 1 - i) * 3600.0
+            rows.append(
+                {
+                    "ts": ts,
+                    "mem_available_mb": base_mb,
+                    "mem_total_mb": 1900.0,
+                    "swap_used_mb": 900.0,
+                    "swap_total_mb": 1024.0,
+                    "psi_some_avg300": 0.0,
+                    "oom_kill_total": 0,
+                    "disk_free_gb": 3.5,
+                }
+            )
+        return rows
+
+    def test_empty_rows_returns_empty_windows(self):
+        from utils.disk.host_health import summarize_resource_trend
+
+        result = summarize_resource_trend([], 1_000_000.0)
+        assert result["windows"] == {}
+        assert "slope_mb_per_day" not in result
+
+    def test_single_row_no_slope(self):
+        from utils.disk.host_health import summarize_resource_trend
+
+        now = 1_000_000.0
+        rows = [
+            {
+                "ts": now - 100,
+                "mem_available_mb": 480.0,
+                "mem_total_mb": 1900.0,
+                "swap_used_mb": None,
+                "swap_total_mb": None,
+                "psi_some_avg300": None,
+                "oom_kill_total": None,
+                "disk_free_gb": 3.5,
+            }
+        ]
+        result = summarize_resource_trend(rows, now)
+        assert "24h" in result["windows"]
+        assert result["windows"]["24h"]["mem_available_mb"]["min_mb"] == 480.0
+        assert "slope_mb_per_day" not in result
+
+    def test_stable_trend_slope_near_zero(self):
+        from utils.disk.host_health import summarize_resource_trend
+
+        now = 2_000_000.0
+        rows = self._make_rows(now, 72, base_mb=500.0)  # 3 days, constant 500 MB
+        result = summarize_resource_trend(rows, now)
+        assert "slope_mb_per_day" in result
+        assert abs(result["slope_mb_per_day"]) < 0.1
+
+    def test_declining_trend_negative_slope(self):
+        from utils.disk.host_health import summarize_resource_trend
+
+        now = 2_000_000.0
+        rows = []
+        for i in range(48):
+            ts = now - (47 - i) * 3600.0
+            rows.append(
+                {
+                    "ts": ts,
+                    "mem_available_mb": 600.0 - i * 2.0,  # ~48 MB/day decline
+                    "mem_total_mb": 1900.0,
+                    "swap_used_mb": None,
+                    "swap_total_mb": None,
+                    "psi_some_avg300": None,
+                    "oom_kill_total": None,
+                    "disk_free_gb": 3.5,
+                }
+            )
+        result = summarize_resource_trend(rows, now)
+        assert result["slope_mb_per_day"] < -10.0
+
+    def test_psi_max_included_when_nonzero(self):
+        from utils.disk.host_health import summarize_resource_trend
+
+        now = 2_000_000.0
+        rows = self._make_rows(now, 5, base_mb=500.0)
+        rows[2]["psi_some_avg300"] = 15.5
+        result = summarize_resource_trend(rows, now)
+        assert result["windows"]["24h"]["psi_some_max"] == 15.5
+
+    def test_oom_range_computed_across_window(self):
+        from utils.disk.host_health import summarize_resource_trend
+
+        now = 2_000_000.0
+        rows = self._make_rows(now, 5, base_mb=500.0)
+        # Set all rows to monotonically increasing OOM totals (3→7, range=4)
+        for i, row in enumerate(rows):
+            row["oom_kill_total"] = 3 + i
+        result = summarize_resource_trend(rows, now)
+        assert result["windows"]["24h"]["oom_kill_range"] == 4
+
+    def test_windowing_excludes_old_rows(self):
+        from utils.disk.host_health import summarize_resource_trend
+
+        now = 2_000_000.0
+        # One row exactly 25 h old → outside the 24h window, inside the 7d window
+        rows = [
+            {
+                "ts": now - 25 * 3600,
+                "mem_available_mb": 400.0,
+                "mem_total_mb": 1900.0,
+                "swap_used_mb": None,
+                "swap_total_mb": None,
+                "psi_some_avg300": None,
+                "oom_kill_total": None,
+                "disk_free_gb": 3.5,
+            }
+        ]
+        result = summarize_resource_trend(rows, now)
+        assert "24h" not in result["windows"]
+        assert "7d" in result["windows"]
+
+    def test_none_fields_in_rows_do_not_crash(self):
+        from utils.disk.host_health import summarize_resource_trend
+
+        now = 2_000_000.0
+        rows = [
+            {
+                "ts": now - 100,
+                "mem_available_mb": None,  # missing
+                "mem_total_mb": None,
+                "swap_used_mb": None,
+                "swap_total_mb": None,
+                "psi_some_avg300": None,
+                "oom_kill_total": None,
+                "disk_free_gb": None,
+            }
+        ]
+        result = summarize_resource_trend(rows, now)
+        # No mem_available → 24h window is absent (no stats to report)
+        assert "24h" not in result["windows"]
+
+
+# ---------------------------------------------------------------------------
+# S4: resource_samples migration (V45)
+# ---------------------------------------------------------------------------
+
+
+class TestMigrationV45ResourceSamples:
+    @pytest.fixture()
+    def db_path(self, tmp_path, pueo_dirs):
+        import config as _cfg
+
+        return _cfg.DB_PATH
+
+    def test_v45_creates_resource_samples_table(self, db_path):
+        import sqlite3
+
+        from agents import ha_agent_advanced
+
+        ha_agent_advanced.init_local_database()
+        with sqlite3.connect(db_path) as conn:
+            tables = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+        assert "resource_samples" in tables
+
+    def test_resource_samples_columns(self, db_path):
+        import sqlite3
+
+        from agents import ha_agent_advanced
+
+        ha_agent_advanced.init_local_database()
+        with sqlite3.connect(db_path) as conn:
+            cols = {
+                row[1]
+                for row in conn.execute(
+                    "PRAGMA table_info(resource_samples)"
+                ).fetchall()
+            }
+        assert cols == {
+            "ts",
+            "mem_available_mb",
+            "mem_total_mb",
+            "swap_used_mb",
+            "swap_total_mb",
+            "psi_some_avg300",
+            "oom_kill_total",
+            "disk_free_gb",
+        }
+
+
+# ---------------------------------------------------------------------------
+# S4: load_resource_samples + insert/prune helpers
+# ---------------------------------------------------------------------------
+
+
+class TestLoadResourceSamples:
+    def _make_db(self, tmp_path) -> str:
+        import sqlite3
+
+        db = str(tmp_path / "state.db")
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "CREATE TABLE resource_samples ("
+                "ts REAL PRIMARY KEY, mem_available_mb REAL, mem_total_mb REAL,"
+                "swap_used_mb REAL, swap_total_mb REAL, psi_some_avg300 REAL,"
+                "oom_kill_total INTEGER, disk_free_gb REAL)"
+            )
+        return db
+
+    def test_empty_table_returns_empty_list(self, tmp_path):
+        from utils.disk.resource import load_resource_samples
+
+        db = self._make_db(tmp_path)
+        assert load_resource_samples(db, days=30.0) == []
+
+    def test_rows_outside_window_excluded(self, tmp_path):
+        import sqlite3
+
+        from utils.disk.resource import load_resource_samples
+
+        db = self._make_db(tmp_path)
+        now = 2_000_000.0
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO resource_samples VALUES (?,?,?,?,?,?,?,?)",
+                (now - 31 * 86400, 500, 1900, 900, 1024, 0.0, 0, 3.5),
+            )
+            conn.execute(
+                "INSERT INTO resource_samples VALUES (?,?,?,?,?,?,?,?)",
+                (now - 1 * 86400, 480, 1900, 920, 1024, 0.0, 0, 3.5),
+            )
+        import unittest.mock as _mock
+
+        with _mock.patch("time.time", return_value=now):
+            rows = load_resource_samples(db, days=30.0)
+        assert len(rows) == 1
+        assert rows[0]["mem_available_mb"] == 480.0
+
+    def test_insert_resource_sample_writes_row(self, tmp_path):
+        import sqlite3
+
+        from utils.disk.resource import ResourcePoller
+
+        db = self._make_db(tmp_path)
+        now = 1_234_567.0
+        ResourcePoller._insert_resource_sample(
+            db, now, 480.0, 1900.0, 920.0, 1024.0, 0.5, 3, 3.4
+        )
+        with sqlite3.connect(db) as conn:
+            row = conn.execute(
+                "SELECT mem_available_mb, psi_some_avg300, oom_kill_total"
+                " FROM resource_samples WHERE ts = ?",
+                (now,),
+            ).fetchone()
+        assert row == (480.0, 0.5, 3)
+
+    def test_prune_removes_old_rows(self, tmp_path):
+        import sqlite3
+
+        from utils.disk.resource import ResourcePoller
+
+        db = self._make_db(tmp_path)
+        now = 2_000_000.0
+        for delta in (31 * 86400, 29 * 86400, 1 * 86400):
+            with sqlite3.connect(db) as conn:
+                conn.execute(
+                    "INSERT INTO resource_samples VALUES (?,?,?,?,?,?,?,?)",
+                    (now - delta, 500, 1900, 900, 1024, 0.0, 0, 3.5),
+                )
+        ResourcePoller._prune_resource_samples(db, now)
+        with sqlite3.connect(db) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM resource_samples").fetchone()[0]
+        assert count == 2  # only the two within 30 d survive
+
+
+# ---------------------------------------------------------------------------
+# S4: trend context injected into memory-kind investigations
+# ---------------------------------------------------------------------------
+
+
+class TestTrendContextInjected:
+    """run_host_health_investigation injects trend data for memory kinds."""
+
+    def _make_db(self, tmp_path) -> str:
+        import sqlite3
+
+        db = str(tmp_path / "state.db")
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "CREATE TABLE hitl_suppression"
+                " (card_key TEXT PRIMARY KEY, card_type TEXT NOT NULL DEFAULT '',"
+                " description TEXT NOT NULL DEFAULT '',"
+                " first_sent_at REAL NOT NULL DEFAULT 0,"
+                " last_sent_at REAL NOT NULL DEFAULT 0,"
+                " send_count INTEGER NOT NULL DEFAULT 1,"
+                " last_action TEXT, last_action_at REAL,"
+                " rejection_count INTEGER NOT NULL DEFAULT 0,"
+                " next_allowed_at REAL, known_issue INTEGER NOT NULL DEFAULT 0,"
+                " known_issue_note TEXT, resolved_at REAL)"
+            )
+            conn.execute(
+                "CREATE TABLE resource_samples ("
+                "ts REAL PRIMARY KEY, mem_available_mb REAL, mem_total_mb REAL,"
+                "swap_used_mb REAL, swap_total_mb REAL, psi_some_avg300 REAL,"
+                "oom_kill_total INTEGER, disk_free_gb REAL)"
+            )
+            # Insert a few rows so trend can be computed
+            now = __import__("time").time()
+            for i in range(5):
+                ts = now - (4 - i) * 3600.0
+                conn.execute(
+                    "INSERT INTO resource_samples VALUES (?,?,?,?,?,?,?,?)",
+                    (ts, 490.0, 1900.0, 920.0, 1024.0, 0.0, 0, 3.5),
+                )
+        return db
+
+    def _patch_supervisor(self, monkeypatch):
+        import utils.agent.supervisor as _sup_mod
+
+        monkeypatch.setattr(_sup_mod, "increment_active_agent", lambda: None)
+        monkeypatch.setattr(_sup_mod, "decrement_active_agent", lambda: None)
+        monkeypatch.setattr(_sup_mod, "publish_activity_done", lambda *a, **kw: None)
+        monkeypatch.setattr(
+            _sup_mod, "make_activity_timeline_callback", lambda *a, **kw: None
+        )
+
+    def test_memory_pressure_includes_trend(self, tmp_path, monkeypatch):
+        """initial_context for memory_pressure finding contains trend data."""
+        import asyncio
+
+        import utils.agent.agent_loop as _al_mod
+        import utils.ha.ha_environment as _env_mod
+        from utils.agent.tool_registry import AgentLoopResult
+        from utils.disk.host_health import HostHealthFinding
+        from utils.disk.host_health_investigation import run_host_health_investigation
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+
+        self._patch_supervisor(monkeypatch)
+        monkeypatch.setattr(_env_mod, "load_environment_profile", lambda db: None)
+
+        db = self._make_db(tmp_path)
+        captured: list = []
+
+        async def _capturing_run(self, initial_context=None, **kwargs):
+            if initial_context:
+                captured.append(initial_context)
+            return AgentLoopResult(outcome="failed", summary="x", tool_calls=[])
+
+        monkeypatch.setattr(_al_mod.AgentLoop, "run", _capturing_run)
+
+        finding = HostHealthFinding(
+            key="memory_pressure", kind="memory_pressure", severity="WARN"
+        )
+        asyncio.run(
+            run_host_health_investigation(
+                finding=finding,
+                notifier=FakeNotifier(),
+                db_path=db,
+                llm_client=None,
+                ssh_client=FakeSSHClient(),
+            )
+        )
+
+        assert len(captured) >= 1
+        ctx = captured[0]
+        assert "Trend" in ctx
+        assert "mem_available" in ctx
+
+    def test_non_memory_kind_no_trend(self, tmp_path, monkeypatch):
+        """initial_context for disk_wear finding does NOT include trend data."""
+        import asyncio
+
+        import utils.agent.agent_loop as _al_mod
+        import utils.ha.ha_environment as _env_mod
+        from utils.agent.tool_registry import AgentLoopResult
+        from utils.disk.host_health import HostHealthFinding
+        from utils.disk.host_health_investigation import run_host_health_investigation
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+
+        self._patch_supervisor(monkeypatch)
+        monkeypatch.setattr(_env_mod, "load_environment_profile", lambda db: None)
+
+        db = self._make_db(tmp_path)
+        captured: list = []
+
+        async def _capturing_run(self, initial_context=None, **kwargs):
+            if initial_context:
+                captured.append(initial_context)
+            return AgentLoopResult(outcome="failed", summary="x", tool_calls=[])
+
+        monkeypatch.setattr(_al_mod.AgentLoop, "run", _capturing_run)
+
+        finding = HostHealthFinding(key="disk_wear", kind="disk_wear", severity="WARN")
+        asyncio.run(
+            run_host_health_investigation(
+                finding=finding,
+                notifier=FakeNotifier(),
+                db_path=db,
+                llm_client=None,
+                ssh_client=FakeSSHClient(),
+            )
+        )
+
+        assert len(captured) >= 1
+        ctx = captured[0]
+        assert "Trend" not in ctx

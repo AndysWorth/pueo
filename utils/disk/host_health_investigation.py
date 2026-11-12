@@ -4,6 +4,8 @@ import asyncio
 import time
 from typing import Any, Optional
 
+_MEMORY_KINDS = frozenset({"memory_pressure", "memory_low"})
+
 from utils.core.logging import get_logger
 from utils.disk.host_health import HostHealthFinding
 
@@ -135,6 +137,59 @@ async def run_host_health_investigation(
         if _hist.get("last_summary"):
             _hist_lines.append(f"Previous conclusion: {_hist['last_summary']}")
         initial_context = "\n".join(_hist_lines) + "\n\n" + initial_context
+
+    # For memory kinds: append trend summary and cached memory breakdown.
+    if finding.kind in _MEMORY_KINDS:
+        try:
+            from utils.core.context import truncate_to_budget
+            from utils.disk.host_health import summarize_resource_trend
+            from utils.disk.memory_usage import get_memory_breakdown
+            from utils.disk.resource import load_resource_samples
+
+            _samples = await asyncio.to_thread(load_resource_samples, db_path, 30.0)
+            if _samples:
+                _trend = summarize_resource_trend(_samples, time.time())
+                _trend_lines = ["Trend (resource_samples, up to 30 d):"]
+                for _w, _wdata in _trend.get("windows", {}).items():
+                    _mem = _wdata.get("mem_available_mb", {})
+                    _line = (
+                        f"  {_w}: mem_available "
+                        f"min={_mem.get('min_mb'):.0f} "
+                        f"median={_mem.get('median_mb'):.0f} "
+                        f"max={_mem.get('max_mb'):.0f} MB"
+                        f" ({_mem.get('samples', 0)} samples)"
+                    )
+                    if "psi_some_max" in _wdata:
+                        _line += f", PSI-some max={_wdata['psi_some_max']}"
+                    if "oom_kill_range" in _wdata:
+                        _line += f", OOM delta={_wdata['oom_kill_range']}"
+                    _trend_lines.append(_line)
+                if "slope_mb_per_day" in _trend:
+                    _s = _trend["slope_mb_per_day"]
+                    _dir = (
+                        " (declining)"
+                        if _s < -5
+                        else (" (improving)" if _s > 5 else " (stable)")
+                    )
+                    _trend_lines.append(f"  Slope: {_s:+.1f} MB/day{_dir}")
+                initial_context += "\n\n" + "\n".join(_trend_lines)
+
+            _bd = get_memory_breakdown()
+            if _bd is not None:
+                _bd_lines = ["Memory breakdown (cached from last poll):"]
+                _bd_lines.append(
+                    f"  Total: {_bd.total_mb:.0f} MB, "
+                    f"Available: {_bd.available_mb:.0f} MB"
+                )
+                for _c in _bd.consumers[:8]:
+                    _bd_lines.append(f"  {_c.name}: {_c.used_mb:.0f} MB")
+                if _bd.other_mb > 0:
+                    _bd_lines.append(f"  other: {_bd.other_mb:.0f} MB")
+                initial_context = truncate_to_budget(
+                    initial_context + "\n\n" + "\n".join(_bd_lines), 6000
+                )
+        except Exception:  # nosec B110
+            pass
 
     from utils.agent.supervisor import (
         decrement_active_agent,

@@ -8113,6 +8113,7 @@ class TestSeedRegistry:
             sig_update("supervisor", "home_assistant_supervisor"),
             sig_host_health("resolution_issue", "rpi_firmware_update_blocked"),
             sig_host_health("resolution_issue", "no_current_backup"),
+            sig_host_health("memory_pressure", ""),
             sig_lovelace("sensor", "unregistered"),
             sig_device_availability("econet"),
             sig_device_post_restart(),

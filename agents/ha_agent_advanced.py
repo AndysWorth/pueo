@@ -586,6 +586,23 @@ def _migrate_v44(cursor: sqlite3.Cursor) -> None:
         cursor.execute("ALTER TABLE runbook_entries ADD COLUMN promoted_to TEXT")
 
 
+def _migrate_v45(cursor: sqlite3.Cursor) -> None:
+    # Trend evidence (ADR 057 S4): one row per resource_poll cycle; pruned after 30 d.
+    # Additive — rollback = revert commit; drop or leave the table (V44 code ignores it).
+    cursor.execute(
+        "CREATE TABLE IF NOT EXISTS resource_samples ("
+        "ts REAL PRIMARY KEY, "
+        "mem_available_mb REAL, "
+        "mem_total_mb REAL, "
+        "swap_used_mb REAL, "
+        "swap_total_mb REAL, "
+        "psi_some_avg300 REAL, "
+        "oom_kill_total INTEGER, "
+        "disk_free_gb REAL"
+        ")"
+    )
+
+
 _MIGRATIONS: list[tuple[int, object]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
@@ -631,6 +648,7 @@ _MIGRATIONS: list[tuple[int, object]] = [
     (42, _migrate_v42),
     (43, _migrate_v43),
     (44, _migrate_v44),
+    (45, _migrate_v45),
 ]
 
 

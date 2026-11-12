@@ -44,6 +44,37 @@ def _update_card_recurrence(
         pass
 
 
+def load_resource_samples(db_path: str, days: float = 30.0) -> "list[dict]":
+    """Return resource_samples rows newer than ``days`` days, ordered by ts ascending."""
+    import sqlite3
+
+    cutoff = time.time() - days * 86400
+    rows: list[dict] = []
+    try:
+        with sqlite3.connect(db_path) as conn:
+            for row in conn.execute(
+                "SELECT ts, mem_available_mb, mem_total_mb, swap_used_mb, swap_total_mb,"
+                "       psi_some_avg300, oom_kill_total, disk_free_gb"
+                " FROM resource_samples WHERE ts >= ? ORDER BY ts",
+                (cutoff,),
+            ):
+                rows.append(
+                    {
+                        "ts": row[0],
+                        "mem_available_mb": row[1],
+                        "mem_total_mb": row[2],
+                        "swap_used_mb": row[3],
+                        "swap_total_mb": row[4],
+                        "psi_some_avg300": row[5],
+                        "oom_kill_total": row[6],
+                        "disk_free_gb": row[7],
+                    }
+                )
+    except Exception:  # nosec B110 — table may not exist yet
+        pass
+    return rows
+
+
 class DiskCriticalError(Exception):
     """Raised when HA disk free space is below the critical threshold, blocking backup creation."""
 
@@ -201,6 +232,7 @@ class ResourcePoller:
             {}
         )  # key → time first seen clear (recurring kinds; delays resolution until full window)
         self._last_recovery_at: float = 0.0
+        self._last_prune_day: int = 0
 
     async def run(self) -> None:
         """Poll indefinitely — start via asyncio.create_task()."""
@@ -278,6 +310,33 @@ class ResourcePoller:
                     update_host_health(_host_health)
                 except Exception as _he:  # nosec B110 — never block disk alerts
                     log.warning("host_health_poll_failed", error=str(_he))
+                try:
+                    import config as _cfg_rs
+                    from utils.disk.host_health import get_host_health as _ghh_rs
+
+                    _hh_rs = _ghh_rs()
+                    _db_rs = self._db_path or _cfg_rs.DB_PATH
+                    _now_rs = time.time()
+                    await asyncio.to_thread(
+                        self._insert_resource_sample,
+                        _db_rs,
+                        _now_rs,
+                        status.mem_available_mb,
+                        status.mem_total_mb,
+                        _hh_rs.swap_used_mb if _hh_rs else None,
+                        _hh_rs.swap_total_mb if _hh_rs else None,
+                        _hh_rs.psi_some_avg300 if _hh_rs else None,
+                        _hh_rs.oom_kill_total if _hh_rs else None,
+                        status.disk_free_gb,
+                    )
+                    _today_rs = int(_now_rs) // 86400
+                    if _today_rs > self._last_prune_day:
+                        await asyncio.to_thread(
+                            self._prune_resource_samples, _db_rs, _now_rs
+                        )
+                        self._last_prune_day = _today_rs
+                except Exception:  # nosec B110 — never block disk alerts
+                    pass
                 log.info(
                     "resource_poll",
                     disk_free_gb=status.disk_free_gb,
@@ -1056,6 +1115,54 @@ class ResourcePoller:
         except Exception:  # nosec B110 — table may not exist yet
             pass
         return uuids
+
+    @staticmethod
+    def _insert_resource_sample(
+        db_path: str,
+        ts: float,
+        mem_available_mb: float,
+        mem_total_mb: float,
+        swap_used_mb: Optional[float],
+        swap_total_mb: Optional[float],
+        psi_some_avg300: Optional[float],
+        oom_kill_total: Optional[int],
+        disk_free_gb: float,
+    ) -> None:
+        import sqlite3 as _sqlite3
+
+        try:
+            with _sqlite3.connect(db_path) as _conn:
+                _conn.execute(
+                    "INSERT OR REPLACE INTO resource_samples"
+                    " (ts, mem_available_mb, mem_total_mb, swap_used_mb, swap_total_mb,"
+                    "  psi_some_avg300, oom_kill_total, disk_free_gb)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        ts,
+                        mem_available_mb,
+                        mem_total_mb,
+                        swap_used_mb,
+                        swap_total_mb,
+                        psi_some_avg300,
+                        oom_kill_total,
+                        disk_free_gb,
+                    ),
+                )
+                _conn.commit()
+        except Exception as _e:  # nosec B110
+            log.warning("resource_sample_insert_failed", error=str(_e))
+
+    @staticmethod
+    def _prune_resource_samples(db_path: str, now: float) -> None:
+        import sqlite3 as _sqlite3
+
+        cutoff = now - 30 * 86400
+        try:
+            with _sqlite3.connect(db_path) as _conn:
+                _conn.execute("DELETE FROM resource_samples WHERE ts < ?", (cutoff,))
+                _conn.commit()
+        except Exception as _e:  # nosec B110
+            log.warning("resource_sample_prune_failed", error=str(_e))
 
     async def _check_host_health(self, status: ResourceStatus) -> None:
         """Evaluate host-health findings and dispatch investigations for new ones."""

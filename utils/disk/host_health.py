@@ -252,6 +252,87 @@ def get_host_health() -> Optional[HostHealth]:
 
 
 # ---------------------------------------------------------------------------
+# Trend summary (pure function; used by run_host_health_investigation for context)
+# ---------------------------------------------------------------------------
+
+
+def summarize_resource_trend(rows: "list[dict]", now: float) -> dict:
+    """Compute memory trend statistics from resource_samples rows.
+
+    Pure function: accepts the row dicts returned by load_resource_samples().
+    Returns a dict with:
+      - ``windows``: 24h/7d/30d stats (mem_available min/median/max, psi_max, oom_range)
+      - ``slope_mb_per_day``: linear slope of mem_available_mb over all rows (MB/day)
+    """
+
+    def _window(secs: float) -> "list[dict]":
+        cutoff = now - secs
+        return [r for r in rows if (r.get("ts") or 0.0) >= cutoff]
+
+    def _mem_stats(subset: "list[dict]") -> "Optional[dict]":
+        vals = [
+            r["mem_available_mb"]
+            for r in subset
+            if r.get("mem_available_mb") is not None
+        ]
+        if not vals:
+            return None
+        vals_sorted = sorted(vals)
+        n = len(vals_sorted)
+        if n % 2:
+            median = vals_sorted[n // 2]
+        else:
+            median = (vals_sorted[n // 2 - 1] + vals_sorted[n // 2]) / 2.0
+        return {
+            "min_mb": round(min(vals), 0),
+            "median_mb": round(median, 0),
+            "max_mb": round(max(vals), 0),
+            "samples": n,
+        }
+
+    windows: dict = {}
+    for label, secs in (("24h", 86400.0), ("7d", 7 * 86400.0), ("30d", 30 * 86400.0)):
+        subset = _window(secs)
+        mem = _mem_stats(subset)
+        if mem is None:
+            continue
+        entry: dict = {"mem_available_mb": mem}
+        psi_vals = [
+            r["psi_some_avg300"] for r in subset if r.get("psi_some_avg300") is not None
+        ]
+        if psi_vals:
+            entry["psi_some_max"] = round(max(psi_vals), 2)
+        oom_vals = [
+            r["oom_kill_total"] for r in subset if r.get("oom_kill_total") is not None
+        ]
+        if len(oom_vals) >= 2:
+            entry["oom_kill_range"] = max(oom_vals) - min(oom_vals)
+        windows[label] = entry
+
+    # Linear slope of mem_available_mb over all rows (MB/day)
+    slope_mb_per_day: Optional[float] = None
+    mem_rows = [
+        (r["ts"], r["mem_available_mb"])
+        for r in rows
+        if r.get("ts") is not None and r.get("mem_available_mb") is not None
+    ]
+    if len(mem_rows) >= 2:
+        xs = [p[0] for p in mem_rows]
+        ys = [p[1] for p in mem_rows]
+        mean_x = sum(xs) / len(xs)
+        mean_y = sum(ys) / len(ys)
+        num = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys))
+        den = sum((x - mean_x) ** 2 for x in xs)
+        if den > 0:
+            slope_mb_per_day = round(num / den * 86400.0, 1)
+
+    result: dict = {"windows": windows}
+    if slope_mb_per_day is not None:
+        result["slope_mb_per_day"] = slope_mb_per_day
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Host-health finding detection
 # ---------------------------------------------------------------------------
 
