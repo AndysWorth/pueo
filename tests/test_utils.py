@@ -11969,7 +11969,7 @@ class TestCoreReleaseReport:
         assert loaded["version"] == "2026.11.0"
 
     def test_build_core_release_report_changelog_cached(self, tmp_path, pueo_dirs):
-        """build_core_release_report uses existing changelog cache when present."""
+        """build_core_release_report uses existing version-keyed changelog cache."""
         import asyncio
         from utils.ha.ha_ws_client import FakeHAWebSocketClient
         from utils.knowledge.ha_release_report import build_core_release_report
@@ -11977,7 +11977,8 @@ class TestCoreReleaseReport:
         cache_dir = tmp_path / "cache"
         cache_dir.mkdir(exist_ok=True)
         cached_text = "##### MQTT\n- Cached change\n"
-        (cache_dir / "changelog_core-2026.11.txt").write_text(cached_text)
+        # Cache is now keyed by full version, not just yymm
+        (cache_dir / "changelog_core-2026.11.0.txt").write_text(cached_text)
 
         stub = "[release notes](https://www.home-assistant.io/blog/2026/11/05/x/)."
         blog_html = self._make_blog_html([])
@@ -12070,6 +12071,76 @@ class TestCoreReleaseReport:
 
         assert not any(cache_dir.iterdir()), "no cache file on failure"
         assert report.completeness == "incomplete"
+
+    def test_changelog_cache_keyed_by_version_not_month(self, tmp_path, pueo_dirs):
+        """Cache is written as changelog_core-<version>.txt (not <yymm>.txt)."""
+        import asyncio
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+        from utils.knowledge.ha_release_report import build_core_release_report
+
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir(exist_ok=True)
+        changelog_html = self._make_changelog_html([("MQTT", ["Fix A"])])
+        ws = FakeHAWebSocketClient(manifests=[{"domain": "mqtt", "name": "MQTT"}])
+        stub = "[release notes](https://www.home-assistant.io/blog/2026/11/05/x/)."
+        blog_html = self._make_blog_html([])
+
+        asyncio.run(
+            build_core_release_report(
+                version="2026.11.1",
+                installed_integrations=["mqtt"],
+                ws_client=ws,
+                cache_dir=str(cache_dir),
+                state_dir=tmp_path / "state",
+                _github_fetcher=lambda v: stub,
+                _blog_fetcher=lambda url: blog_html.encode(),
+                _changelog_fetcher=lambda url: changelog_html,
+            )
+        )
+
+        version_file = cache_dir / "changelog_core-2026.11.1.txt"
+        month_file = cache_dir / "changelog_core-2026.11.txt"
+        assert version_file.exists(), "version-keyed file must be written"
+        assert not month_file.exists(), "old month-keyed file must not be written"
+
+    def test_changelog_fallback_to_old_cache_on_fetch_failure(
+        self, tmp_path, pueo_dirs
+    ):
+        """Falls back to month-keyed cache file when fetch fails and new file absent."""
+        import asyncio
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+        from utils.knowledge.ha_release_report import build_core_release_report
+
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir(exist_ok=True)
+        old_text = "##### MQTT\n- Old cached entry\n"
+        (cache_dir / "changelog_core-2026.11.txt").write_text(old_text)
+
+        fetch_calls: list[str] = []
+
+        def _raise_changelog(url: str) -> str:
+            fetch_calls.append(url)
+            raise RuntimeError("network error")
+
+        ws = FakeHAWebSocketClient(manifests=[{"domain": "mqtt", "name": "MQTT"}])
+        stub = "[release notes](https://www.home-assistant.io/blog/2026/11/05/x/)."
+        blog_html = self._make_blog_html([])
+
+        report = asyncio.run(
+            build_core_release_report(
+                version="2026.11.1",
+                installed_integrations=["mqtt"],
+                ws_client=ws,
+                cache_dir=str(cache_dir),
+                state_dir=tmp_path / "state",
+                _github_fetcher=lambda v: stub,
+                _blog_fetcher=lambda url: blog_html.encode(),
+                _changelog_fetcher=_raise_changelog,
+            )
+        )
+
+        assert len(fetch_calls) == 1, "should have attempted fetch once"
+        assert "mqtt" in report.changes_by_domain, "should have read old cache"
 
     # ── FakeHAWebSocketClient.list_manifests ────────────────────────────────
 
@@ -12346,6 +12417,49 @@ class TestCoreReleaseReport:
         batches = make_screening_batches(rpt)
         # Empty report should produce at most one (empty) batch, which the caller skips
         assert all(isinstance(b, str) for b in batches)
+
+    def test_batches_include_patch_section_for_changelog_domain(self):
+        """Patch sections for a domain already in the changelog must still appear."""
+        from utils.knowledge.ha_release_report import (
+            ChangeEntry,
+            CoreReleaseReport,
+            make_screening_batches,
+        )
+
+        rpt = CoreReleaseReport(
+            version="2026.11.1",
+            changes_by_domain={"mqtt": [ChangeEntry(text="Changelog entry")]},
+            patch_changes_by_domain={"mqtt": [ChangeEntry(text="Patch fix")]},
+            completeness="complete",
+            built_at="2026-11-05T00:00:00+00:00",
+        )
+        batches = make_screening_batches(rpt)
+        combined = "\n".join(batches)
+        assert "Changelog entry" in combined
+        assert "Patch fix" in combined
+        # Both sections present
+        assert "### Changes: mqtt" in combined
+        assert "### Patch changes: mqtt" in combined
+
+    def test_batches_patch_only_domain_included(self):
+        """Patch domain absent from changelog appears as a Patch changes section."""
+        from utils.knowledge.ha_release_report import (
+            ChangeEntry,
+            CoreReleaseReport,
+            make_screening_batches,
+        )
+
+        rpt = CoreReleaseReport(
+            version="2026.11.1",
+            changes_by_domain={},
+            patch_changes_by_domain={"homekit": [ChangeEntry(text="Fix camera")]},
+            completeness="complete",
+            built_at="2026-11-05T00:00:00+00:00",
+        )
+        batches = make_screening_batches(rpt)
+        combined = "\n".join(batches)
+        assert "### Patch changes: homekit" in combined
+        assert "Fix camera" in combined
 
     # ── ChangeEntry Pydantic model ─────────────────────────────────────────
 
