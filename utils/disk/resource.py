@@ -165,6 +165,11 @@ class ResourcePoller:
         self._alerted_host: set[str] = (
             set()
         )  # bare finding keys from _check_host_health
+        # Confirm/clear hysteresis counters for host-health findings (in memory; restart re-confirms)
+        self._host_confirm_counts: dict[str, int] = {}
+        self._host_absent_counts: dict[str, int] = {}
+        self._host_key_kinds: dict[str, str] = {}  # key → kind (tracked while present)
+        self._host_key_severity: dict[str, str] = {}  # key → severity at alert time
         self._last_recovery_at: float = 0.0
 
     async def run(self) -> None:
@@ -881,6 +886,39 @@ class ResourcePoller:
         except Exception as _e:  # nosec B110
             log.warning("host_health_boot_ts_write_failed", error=str(_e))
 
+    def _read_oom_kill_total(self, db_path: str) -> Optional[int]:
+        """Read the last stored OOM kill total from user_prefs, or None if absent."""
+        import sqlite3 as _sqlite3
+
+        try:
+            with _sqlite3.connect(db_path) as _conn:
+                row = _conn.execute(
+                    "SELECT value FROM user_prefs WHERE key = 'host_health:oom_kill_total'"
+                ).fetchone()
+                return int(row[0]) if row else None
+        except Exception:  # nosec B110
+            return None
+
+    def _write_oom_kill_total(self, db_path: str, total: Optional[int]) -> None:
+        """Persist (or delete) the OOM kill total in user_prefs."""
+        import sqlite3 as _sqlite3
+
+        try:
+            with _sqlite3.connect(db_path) as _conn:
+                if total is None:
+                    _conn.execute(
+                        "DELETE FROM user_prefs WHERE key = 'host_health:oom_kill_total'"
+                    )
+                else:
+                    _conn.execute(
+                        "INSERT INTO user_prefs (key, value) VALUES ('host_health:oom_kill_total', ?)"
+                        " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                        (str(total),),
+                    )
+                _conn.commit()
+        except Exception as _e:  # nosec B110
+            log.warning("host_health_oom_total_write_failed", error=str(_e))
+
     def _check_pueo_reboot_recent(
         self, db_path: str, window_seconds: float = 1200.0
     ) -> "tuple[bool, str]":
@@ -945,7 +983,31 @@ class ResourcePoller:
 
         _db = self._db_path or _cfg.DB_PATH
 
+        # One-time deprecation log for the removed host_swap_warn_pct config key
+        if _cfg._HOST_SWAP_WARN_PCT_EXPLICIT and not getattr(
+            self, "_deprecated_swap_logged", False
+        ):
+            log.warning(
+                "config_key_deprecated",
+                key="host_swap_warn_pct",
+                replacement="host_mem_psi_warn_pct",
+            )
+            self._deprecated_swap_logged = True  # type: ignore[attr-defined]
+
         last_boot_ts = await asyncio.to_thread(self._read_last_boot_ts, _db)
+
+        # When boot_ts changes, reset the OOM kill baseline so the new kernel's
+        # counter is not compared against the previous boot's counter.
+        _boot_changed = (
+            health.boot_ts is not None
+            and last_boot_ts is not None
+            and abs(health.boot_ts - last_boot_ts) > 30.0
+        )
+        if _boot_changed:
+            await asyncio.to_thread(self._write_oom_kill_total, _db, None)
+
+        oom_kill_prev = await asyncio.to_thread(self._read_oom_kill_total, _db)
+
         _window_s = float(_cfg.PUEO_ACTION_REBOOT_WINDOW_MINUTES) * 60.0
         pueo_reboot_recent, _pueo_action_detail = await asyncio.to_thread(
             self._check_pueo_reboot_recent, _db, _window_s
@@ -958,9 +1020,10 @@ class ResourcePoller:
             last_boot_ts=last_boot_ts,
             pueo_reboot_recent=pueo_reboot_recent,
             known_repair_uuids=known_repair_uuids,
-            swap_warn_pct=_cfg.HOST_SWAP_WARN_PCT,
             disk_life_warn_pct=_cfg.HOST_DISK_LIFE_WARN_PCT,
             mem_warn_mb=self._mem_warn_mb,
+            mem_psi_warn_pct=_cfg.HOST_MEM_PSI_WARN_PCT,
+            oom_kill_prev=oom_kill_prev,
         )
 
         # When boot_ts changed and a Pueo action caused it, write an expected-reboot
@@ -988,23 +1051,59 @@ class ResourcePoller:
 
         # A host reboot restarts HA too; the device availability poll holds
         # transitions for a settle window after it.
-        if (
-            health.boot_ts is not None
-            and last_boot_ts is not None
-            and abs(health.boot_ts - last_boot_ts) > 30.0
-        ):
+        if _boot_changed:
             from utils.ha.device_availability import record_ha_start
 
+            assert health.boot_ts is not None  # guaranteed by _boot_changed condition
             await asyncio.to_thread(record_ha_start, _db, health.boot_ts)
 
         # Persist current boot_ts so future polls can detect changes
         if health.boot_ts is not None:
             await asyncio.to_thread(self._write_last_boot_ts, _db, health.boot_ts)
 
+        # Persist the current OOM kill total so the next poll can compute a delta
+        if health.oom_kill_total is not None:
+            await asyncio.to_thread(
+                self._write_oom_kill_total, _db, health.oom_kill_total
+            )
+
+        # --- Confirm/clear hysteresis counters ---
+        # memory_low and memory_pressure WARN require HOST_HEALTH_CONFIRM_POLLS consecutive
+        # polls before firing and the same number of absent polls before clearing.
+        # HIGH/CRITICAL findings and all other kinds fire and clear immediately.
+        _CONFIRM_KINDS = frozenset({"memory_low", "memory_pressure"})
+        confirm_polls = _cfg.HOST_HEALTH_CONFIRM_POLLS
+
         active_keys = {f.key for f in findings}
 
-        # Fire for each new finding
         for finding in findings:
+            self._host_key_kinds[finding.key] = finding.kind
+            self._host_confirm_counts[finding.key] = (
+                self._host_confirm_counts.get(finding.key, 0) + 1
+            )
+            self._host_absent_counts[finding.key] = 0
+
+        for key in list(set(self._host_confirm_counts) | set(self._host_absent_counts)):
+            if key not in active_keys:
+                self._host_absent_counts[key] = self._host_absent_counts.get(key, 0) + 1
+                self._host_confirm_counts[key] = 0
+
+        # Findings ready to fire: confirm kinds need N polls; HIGH bypasses the wait
+        ready_findings = []
+        for finding in findings:
+            if finding.kind in _CONFIRM_KINDS and finding.severity not in (
+                "HIGH",
+                "CRITICAL",
+            ):
+                if self._host_confirm_counts.get(finding.key, 0) >= confirm_polls:
+                    ready_findings.append(finding)
+            else:
+                ready_findings.append(finding)
+
+        ready_active_keys = {f.key for f in ready_findings}
+
+        # Fire for each new ready finding
+        for finding in ready_findings:
             if finding.key in self._alerted_host:
                 continue
             import sqlite3 as _sqlite3
@@ -1043,30 +1142,43 @@ class ResourcePoller:
             else:
                 await self._send_host_health_notification_fallback(finding, _db)
 
+            self._host_key_severity[finding.key] = finding.severity
             self._alerted_host.add(finding.key)
 
-        # Resolve cleared findings
-        cleared_keys = {k for k in self._alerted_host if k not in active_keys}
+        # Resolve cleared findings — confirm kinds need N absent polls; others clear immediately
+        cleared_keys: set[str] = set()
         for key in list(self._alerted_host):
-            if key not in active_keys:
-                import sqlite3 as _sqlite3
+            if key in active_keys:
+                continue
+            kind = self._host_key_kinds.get(key, "")
+            severity = self._host_key_severity.get(key, "WARN")
+            if (
+                kind in _CONFIRM_KINDS
+                and severity not in ("HIGH", "CRITICAL")
+                and self._host_absent_counts.get(key, 0) < confirm_polls
+            ):
+                continue  # not yet absent long enough
+            cleared_keys.add(key)
 
-                from utils.hitl.hitl_tracker import mark_card_resolved as _mcr
+        for key in cleared_keys:
+            import sqlite3 as _sqlite3
 
-                with _sqlite3.connect(_db) as _mc_conn:
-                    _mcr(_mc_conn, f"host_health:{key}")
-                try:
-                    from utils.core.timeline import write_timeline_event
+            from utils.hitl.hitl_tracker import mark_card_resolved as _mcr
 
-                    write_timeline_event(
-                        "INFO",
-                        "resource",
-                        f"Host health alert cleared: {key}",
-                        {"key": key, "resolution": "cleared"},
-                    )
-                except Exception:  # nosec B110
-                    pass
-                self._alerted_host.discard(key)
+            with _sqlite3.connect(_db) as _mc_conn:
+                _mcr(_mc_conn, f"host_health:{key}")
+            try:
+                from utils.core.timeline import write_timeline_event
+
+                write_timeline_event(
+                    "INFO",
+                    "resource",
+                    f"Host health alert cleared: {key}",
+                    {"key": key, "resolution": "cleared"},
+                )
+            except Exception:  # nosec B110
+                pass
+            self._alerted_host.discard(key)
 
         # A cleared condition verifies a session only through its prediction or
         # a Pueo action (ADR 050); an aged-out finding proves nothing.
@@ -1075,7 +1187,7 @@ class ResourcePoller:
                 _db,
                 time.time(),
                 cleared=cleared_keys,
-                active=active_keys & self._alerted_host,
+                active=ready_active_keys & self._alerted_host,
                 knowledge_store=self._knowledge_store,
                 llm_client=self._llm_client,
             )
