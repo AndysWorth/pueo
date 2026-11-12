@@ -1,7 +1,8 @@
-"""Host-level health indicators fetched via SSH: swap, eMMC wear, uptime, Supervisor resolution."""
+"""Host-level health indicators fetched via SSH: memory pressure, eMMC wear, uptime, Supervisor resolution."""
 
 import hashlib
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Optional
@@ -36,6 +37,11 @@ class HostHealth:
     rpi_firmware: Optional[dict] = (
         None  # parsed from ha os boards rpi firmware --raw-json
     )
+    # PSI memory pressure fields (None when /proc/pressure/memory is absent)
+    psi_some_avg300: Optional[float] = None
+    psi_full_avg300: Optional[float] = None
+    # Cumulative OOM kill count from /proc/vmstat (None when unavailable)
+    oom_kill_total: Optional[int] = None
 
 
 def _parse_swap(meminfo: str) -> tuple[float, float]:
@@ -122,6 +128,38 @@ def _parse_rpi_firmware_json(raw: str) -> Optional[dict]:
         return None
 
 
+def _parse_psi(raw: str) -> tuple[Optional[float], Optional[float]]:
+    """Return (some_avg300, full_avg300) from /proc/pressure/memory, or (None, None)."""
+    some_avg300: Optional[float] = None
+    full_avg300: Optional[float] = None
+    for line in raw.splitlines():
+        m = re.match(r"^(some|full)\s+.*avg300=([0-9]+(?:\.[0-9]+)?)", line)
+        if not m:
+            continue
+        try:
+            val = float(m.group(2))
+        except ValueError:
+            continue
+        if m.group(1) == "some":
+            some_avg300 = val
+        else:
+            full_avg300 = val
+    return some_avg300, full_avg300
+
+
+def _parse_vmstat_oom(raw: str) -> Optional[int]:
+    """Return the cumulative oom_kill count from /proc/vmstat, or None."""
+    for line in raw.splitlines():
+        if line.startswith("oom_kill "):
+            parts = line.split()
+            if len(parts) >= 2:
+                try:
+                    return int(parts[1])
+                except ValueError:
+                    pass
+    return None
+
+
 async def fetch_host_health(ssh: SSHClientProtocol) -> HostHealth:
     """Fetch host health indicators in one batched SSH call."""
     from utils.disk.memory_usage import split_marker_sections
@@ -131,6 +169,8 @@ async def fetch_host_health(ssh: SSHClientProtocol) -> HostHealth:
         "echo; echo '@@res'; ha resolution info --raw-json 2>/dev/null",
         "echo; echo '@@mem'; cat /proc/meminfo",
         "echo; echo '@@fw'; ha os boards rpi firmware --raw-json 2>/dev/null",
+        "echo; echo '@@psi'; cat /proc/pressure/memory 2>/dev/null",
+        "echo; echo '@@vm'; grep -E '^(oom_kill|pswpin|pswpout) ' /proc/vmstat 2>/dev/null",
     ]
     _, batch_out, _ = await ssh.run("; ".join(parts), check=False)
 
@@ -174,6 +214,12 @@ async def fetch_host_health(ssh: SSHClientProtocol) -> HostHealth:
     fw_raw = sections.get("fw", "")
     rpi_firmware = _parse_rpi_firmware_json(fw_raw) if fw_raw else None
 
+    # Parse PSI memory pressure (non-fatal; absent on kernels that lack it)
+    psi_some_avg300, psi_full_avg300 = _parse_psi(sections.get("psi", ""))
+
+    # Parse vmstat OOM kill counter (non-fatal)
+    oom_kill_total = _parse_vmstat_oom(sections.get("vm", ""))
+
     return HostHealth(
         swap_total_mb=round(swap_total_mb, 1),
         swap_used_mb=round(swap_used_mb, 1),
@@ -184,6 +230,9 @@ async def fetch_host_health(ssh: SSHClientProtocol) -> HostHealth:
         fetched_at=time.time(),
         errors=errors,
         rpi_firmware=rpi_firmware,
+        psi_some_avg300=psi_some_avg300,
+        psi_full_avg300=psi_full_avg300,
+        oom_kill_total=oom_kill_total,
     )
 
 
@@ -226,9 +275,10 @@ def evaluate_host_health(
     last_boot_ts: Optional[float],
     pueo_reboot_recent: bool,
     known_repair_uuids: "set[str]",
-    swap_warn_pct: float,
     disk_life_warn_pct: float,
     mem_warn_mb: float,
+    mem_psi_warn_pct: float = 10.0,
+    oom_kill_prev: Optional[int] = None,
 ) -> "list[HostHealthFinding]":
     """Pure function: derive the list of current host-health findings.
 
@@ -253,24 +303,40 @@ def evaluate_host_health(
             )
         )
 
-    # swap_pressure — high swap AND low available memory (both conditions required)
-    if health.swap_total_mb > 0:
-        swap_pct = 100.0 * health.swap_used_mb / health.swap_total_mb
-        if swap_pct >= swap_warn_pct and status.mem_available_mb < 2.0 * mem_warn_mb:
-            findings.append(
-                HostHealthFinding(
-                    key="swap_pressure",
-                    kind="swap_pressure",
-                    severity="WARN",
-                    evidence={
-                        "swap_used_mb": round(health.swap_used_mb, 1),
-                        "swap_total_mb": round(health.swap_total_mb, 1),
-                        "swap_pct": round(swap_pct, 1),
-                        "mem_available_mb": round(status.mem_available_mb),
-                        "threshold_swap_pct": swap_warn_pct,
-                    },
-                )
+    # memory_pressure — PSI avg300 or new OOM kill events; swap figures included as evidence
+    _psi_trigger = (
+        health.psi_some_avg300 is not None
+        and health.psi_some_avg300 >= mem_psi_warn_pct
+    )
+    _oom_trigger = (
+        health.oom_kill_total is not None
+        and oom_kill_prev is not None
+        and health.oom_kill_total > oom_kill_prev
+    )
+    if _psi_trigger or _oom_trigger:
+        severity = "HIGH" if _oom_trigger else "WARN"
+        _ev: dict = {
+            "mem_available_mb": round(status.mem_available_mb),
+            "swap_used_mb": round(health.swap_used_mb, 1),
+            "swap_total_mb": round(health.swap_total_mb, 1),
+        }
+        if _psi_trigger:
+            _ev["psi_some_avg300"] = health.psi_some_avg300
+            _ev["threshold_psi"] = mem_psi_warn_pct
+        if _oom_trigger:
+            assert (
+                health.oom_kill_total is not None and oom_kill_prev is not None
+            )  # nosec B101
+            _ev["oom_kill_delta"] = health.oom_kill_total - oom_kill_prev
+            _ev["oom_kill_total"] = health.oom_kill_total
+        findings.append(
+            HostHealthFinding(
+                key="memory_pressure",
+                kind="memory_pressure",
+                severity=severity,
+                evidence=_ev,
             )
+        )
 
     # disk_wear — eMMC life approaching end of life
     if (

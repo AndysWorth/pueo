@@ -86,7 +86,13 @@ BACKUP_RETAIN_LOCAL_DAYS: int = int(_agent.get("backup_retain_local_days", 30))
 BACKUP_MAX_PER_HOUR: int = int(_agent.get("backup_max_per_hour", 6))
 
 # Host-health detection and LLM investigation
+# DEPRECATED: host_swap_warn_pct is no longer used; memory_pressure fires on PSI/OOM signals instead.
 HOST_SWAP_WARN_PCT: float = float(_agent.get("host_swap_warn_pct", 80.0))
+_HOST_SWAP_WARN_PCT_EXPLICIT: bool = "host_swap_warn_pct" in _agent
+# PSI some avg300 threshold (%) for memory_pressure WARN; 0.0 disables PSI trigger.
+HOST_MEM_PSI_WARN_PCT: float = float(_agent.get("host_mem_psi_warn_pct", 10.0))
+# Consecutive polls a finding must be present before firing, and absent before clearing.
+HOST_HEALTH_CONFIRM_POLLS: int = int(_agent.get("host_health_confirm_polls", 3))
 # Reboots/restarts within this many minutes of a Pueo-initiated action are expected
 # and suppress unexpected_reboot host-health investigations.
 PUEO_ACTION_REBOOT_WINDOW_MINUTES: int = int(

@@ -37,6 +37,9 @@ def _make_health(
     boot_ts: float = 1_700_000_000.0,
     uptime_seconds: float = 3600.0,
     resolution=None,
+    psi_some_avg300=None,
+    psi_full_avg300=None,
+    oom_kill_total=None,
 ):
     from utils.disk.host_health import HostHealth
 
@@ -48,6 +51,9 @@ def _make_health(
         uptime_seconds=uptime_seconds,
         resolution=resolution,
         fetched_at=time.time(),
+        psi_some_avg300=psi_some_avg300,
+        psi_full_avg300=psi_full_avg300,
+        oom_kill_total=oom_kill_total,
     )
 
 
@@ -118,6 +124,8 @@ def _batch_ssh(
     res_raw: str = "",
     mem_raw: str = "",
     fw_raw: str = "",
+    psi_raw: str = "",
+    vm_raw: str = "",
     glued: bool = False,
 ):
     from utils.ha.ssh_client import FakeSSHClient
@@ -127,6 +135,8 @@ def _batch_ssh(
         "echo; echo '@@res'; ha resolution info --raw-json 2>/dev/null",
         "echo; echo '@@mem'; cat /proc/meminfo",
         "echo; echo '@@fw'; ha os boards rpi firmware --raw-json 2>/dev/null",
+        "echo; echo '@@psi'; cat /proc/pressure/memory 2>/dev/null",
+        "echo; echo '@@vm'; grep -E '^(oom_kill|pswpin|pswpout) ' /proc/vmstat 2>/dev/null",
     ]
     batch_cmd = "; ".join(parts)
     if glued:
@@ -149,6 +159,10 @@ def _batch_ssh(
         output += f"@@mem\n{mem_raw}\n"
     if fw_raw:
         output += f"@@fw\n{fw_raw}\n"
+    if psi_raw:
+        output += f"@@psi\n{psi_raw}\n"
+    if vm_raw:
+        output += f"@@vm\n{vm_raw}\n"
     return FakeSSHClient(command_results={batch_cmd: (0, output, "")})
 
 
@@ -226,6 +240,63 @@ class TestParseSwap:
         used, total = _parse_swap("MemTotal: 1000000 kB\n")
         assert total == 0.0
         assert used == 0.0
+
+
+class TestParsePsi:
+    def test_both_lines_parsed(self):
+        from utils.disk.host_health import _parse_psi
+
+        raw = (
+            "some avg10=1.23 avg60=4.56 avg300=12.50 total=999\n"
+            "full avg10=0.00 avg60=0.00 avg300=0.75 total=0\n"
+        )
+        some, full = _parse_psi(raw)
+        assert some == pytest.approx(12.50)
+        assert full == pytest.approx(0.75)
+
+    def test_absent_file_returns_none_pair(self):
+        from utils.disk.host_health import _parse_psi
+
+        some, full = _parse_psi("")
+        assert some is None
+        assert full is None
+
+    def test_garbled_line_skipped(self):
+        from utils.disk.host_health import _parse_psi
+
+        raw = "some avg10=GARBAGE avg60=1.0 avg300=bad total=0\n"
+        some, full = _parse_psi(raw)
+        assert some is None
+
+    def test_exact_zero_avg300(self):
+        from utils.disk.host_health import _parse_psi
+
+        raw = "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
+        some, full = _parse_psi(raw)
+        assert some == pytest.approx(0.0)
+
+
+class TestParseVmstatOom:
+    def test_normal(self):
+        from utils.disk.host_health import _parse_vmstat_oom
+
+        raw = "pswpin 123\noom_kill 5\npswpout 456\n"
+        assert _parse_vmstat_oom(raw) == 5
+
+    def test_zero_oom_kill(self):
+        from utils.disk.host_health import _parse_vmstat_oom
+
+        assert _parse_vmstat_oom("oom_kill 0\n") == 0
+
+    def test_absent_key_returns_none(self):
+        from utils.disk.host_health import _parse_vmstat_oom
+
+        assert _parse_vmstat_oom("pswpin 10\npswpout 20\n") is None
+
+    def test_empty_returns_none(self):
+        from utils.disk.host_health import _parse_vmstat_oom
+
+        assert _parse_vmstat_oom("") is None
 
 
 class TestParseHostInfoJson:
@@ -396,6 +467,8 @@ class TestFetchHostHealth:
             "echo; echo '@@res'; ha resolution info --raw-json 2>/dev/null",
             "echo; echo '@@mem'; cat /proc/meminfo",
             "echo; echo '@@fw'; ha os boards rpi firmware --raw-json 2>/dev/null",
+            "echo; echo '@@psi'; cat /proc/pressure/memory 2>/dev/null",
+            "echo; echo '@@vm'; grep -E '^(oom_kill|pswpin|pswpout) ' /proc/vmstat 2>/dev/null",
         ]
         batch_cmd = "; ".join(parts)
         output = (
@@ -410,6 +483,41 @@ class TestFetchHostHealth:
         assert hh.resolution is not None
         assert "mem" not in hh.errors
         assert "res" not in hh.errors
+
+
+class TestFetchHostHealthPsiVm:
+    def test_psi_and_vmstat_parsed(self):
+        import asyncio
+
+        from utils.disk.host_health import fetch_host_health
+
+        psi_raw = "some avg10=0.50 avg60=1.00 avg300=12.75 total=5000\nfull avg10=0.00 avg60=0.00 avg300=0.25 total=10\n"
+        vm_raw = "pswpin 100\noom_kill 3\npswpout 200\n"
+        ssh = _batch_ssh(
+            host_raw=_host_info_json(),
+            res_raw=_resolution_json(),
+            mem_raw=_meminfo(),
+            psi_raw=psi_raw,
+            vm_raw=vm_raw,
+        )
+        hh = asyncio.run(fetch_host_health(ssh))
+        assert hh.psi_some_avg300 == pytest.approx(12.75)
+        assert hh.psi_full_avg300 == pytest.approx(0.25)
+        assert hh.oom_kill_total == 3
+
+    def test_absent_psi_and_vmstat_gives_none_fields(self):
+        import asyncio
+
+        from utils.disk.host_health import fetch_host_health
+
+        ssh = _batch_ssh(
+            host_raw=_host_info_json(),
+            res_raw=_resolution_json(),
+            mem_raw=_meminfo(),
+        )
+        hh = asyncio.run(fetch_host_health(ssh))
+        assert hh.psi_some_avg300 is None
+        assert hh.oom_kill_total is None
 
 
 class TestHostHealthCache:
@@ -444,10 +552,10 @@ class TestHostHealthFinding:
         from utils.disk.host_health import HostHealthFinding
 
         f = HostHealthFinding(
-            key="swap_pressure", kind="swap_pressure", severity="WARN"
+            key="memory_pressure", kind="memory_pressure", severity="WARN"
         )
-        assert f.key == "swap_pressure"
-        assert f.kind == "swap_pressure"
+        assert f.key == "memory_pressure"
+        assert f.kind == "memory_pressure"
         assert f.severity == "WARN"
         assert f.evidence == {}
 
@@ -476,9 +584,10 @@ class TestEvaluateHostHealth:
         last_boot_ts=1_700_000_000.0,
         pueo_reboot_recent=False,
         known_repair_uuids=None,
-        swap_warn_pct=80.0,
         disk_life_warn_pct=80.0,
         mem_warn_mb=256.0,
+        mem_psi_warn_pct=10.0,
+        oom_kill_prev=None,
     ):
         from utils.disk.host_health import evaluate_host_health
 
@@ -488,9 +597,10 @@ class TestEvaluateHostHealth:
             last_boot_ts=last_boot_ts,
             pueo_reboot_recent=pueo_reboot_recent,
             known_repair_uuids=known_repair_uuids or set(),
-            swap_warn_pct=swap_warn_pct,
             disk_life_warn_pct=disk_life_warn_pct,
             mem_warn_mb=mem_warn_mb,
+            mem_psi_warn_pct=mem_psi_warn_pct,
+            oom_kill_prev=oom_kill_prev,
         )
 
     def test_no_findings_all_clear(self):
@@ -507,30 +617,63 @@ class TestEvaluateHostHealth:
         assert mf.severity == "WARN"
         assert mf.evidence["mem_available_mb"] == 100
 
-    def test_swap_pressure_both_conditions(self):
-        # swap > 80% AND mem_available < 2 * mem_warn_mb(256) = 512
-        h = _make_health(swap_total_mb=1024.0, swap_used_mb=820.0)
-        s = _make_status(mem_available_mb=400.0, mem_warn=False)
-        findings = self._eval(health=h, status=s)
-        keys = [f.key for f in findings]
-        assert "swap_pressure" in keys
-        sp = next(f for f in findings if f.key == "swap_pressure")
-        assert sp.evidence["swap_pct"] == pytest.approx(80.078, abs=0.1)
+    def test_memory_pressure_psi_warn(self):
+        # PSI some avg300 at threshold → memory_pressure WARN
+        h = _make_health(psi_some_avg300=12.5)
+        findings = self._eval(health=h, mem_psi_warn_pct=10.0)
+        assert any(f.key == "memory_pressure" for f in findings)
+        mp = next(f for f in findings if f.key == "memory_pressure")
+        assert mp.severity == "WARN"
+        assert mp.evidence["psi_some_avg300"] == 12.5
+        assert mp.evidence["threshold_psi"] == 10.0
+        assert "swap_used_mb" in mp.evidence
 
-    def test_swap_pressure_only_swap_high(self):
-        # swap > 80% but mem_available is fine — no finding
-        h = _make_health(swap_total_mb=1024.0, swap_used_mb=820.0)
-        s = _make_status(mem_available_mb=1000.0)
-        findings = self._eval(health=h, status=s)
-        assert not any(f.kind == "swap_pressure" for f in findings)
+    def test_memory_pressure_psi_below_threshold(self):
+        h = _make_health(psi_some_avg300=5.0)
+        findings = self._eval(health=h, mem_psi_warn_pct=10.0)
+        assert not any(f.kind == "memory_pressure" for f in findings)
 
-    def test_swap_pressure_only_mem_low(self):
-        # mem low but swap not high — no swap_pressure finding (still fires memory_low if mem_warn)
-        h = _make_health(swap_total_mb=1024.0, swap_used_mb=200.0)
-        s = _make_status(mem_available_mb=400.0, mem_warn=True)
-        findings = self._eval(health=h, status=s)
-        assert not any(f.kind == "swap_pressure" for f in findings)
-        assert any(f.kind == "memory_low" for f in findings)
+    def test_memory_pressure_psi_absent(self):
+        # No PSI file — no memory_pressure from PSI
+        h = _make_health(psi_some_avg300=None)
+        findings = self._eval(health=h, mem_psi_warn_pct=10.0)
+        assert not any(f.kind == "memory_pressure" for f in findings)
+
+    def test_memory_pressure_oom_kill_delta_high(self):
+        # OOM kill counter increased → HIGH
+        h = _make_health(oom_kill_total=3)
+        findings = self._eval(health=h, oom_kill_prev=1)
+        assert any(f.key == "memory_pressure" for f in findings)
+        mp = next(f for f in findings if f.key == "memory_pressure")
+        assert mp.severity == "HIGH"
+        assert mp.evidence["oom_kill_delta"] == 2
+        assert mp.evidence["oom_kill_total"] == 3
+
+    def test_memory_pressure_oom_no_delta(self):
+        # Same total — no trigger
+        h = _make_health(oom_kill_total=3)
+        findings = self._eval(health=h, oom_kill_prev=3)
+        assert not any(f.kind == "memory_pressure" for f in findings)
+
+    def test_memory_pressure_oom_prev_none_no_trigger(self):
+        # First poll after boot: prev is None → no OOM trigger even if total > 0
+        h = _make_health(oom_kill_total=5)
+        findings = self._eval(health=h, oom_kill_prev=None)
+        assert not any(f.kind == "memory_pressure" for f in findings)
+
+    def test_memory_pressure_psi_and_oom_severity_high(self):
+        # Both PSI and OOM → HIGH wins
+        h = _make_health(psi_some_avg300=15.0, oom_kill_total=2)
+        findings = self._eval(health=h, mem_psi_warn_pct=10.0, oom_kill_prev=1)
+        mp = next(f for f in findings if f.key == "memory_pressure")
+        assert mp.severity == "HIGH"
+
+    def test_swap_figures_in_memory_pressure_evidence(self):
+        h = _make_health(swap_total_mb=1024.0, swap_used_mb=943.0, psi_some_avg300=12.0)
+        findings = self._eval(health=h, mem_psi_warn_pct=10.0)
+        mp = next(f for f in findings if f.key == "memory_pressure")
+        assert mp.evidence["swap_used_mb"] == 943.0
+        assert mp.evidence["swap_total_mb"] == 1024.0
 
     def test_disk_wear_warn(self):
         h = _make_health(disk_life_used_pct=85.0)
@@ -646,13 +789,14 @@ class TestEvaluateHostHealth:
             disk_life_used_pct=85.0,
             swap_total_mb=1024.0,
             swap_used_mb=850.0,
+            psi_some_avg300=12.0,
             resolution=ResolutionInfo(unhealthy=["something_bad"]),
         )
         s = _make_status(mem_available_mb=400.0, mem_warn=True)
-        findings = self._eval(health=h, status=s)
+        findings = self._eval(health=h, status=s, mem_psi_warn_pct=10.0)
         kinds = [f.kind for f in findings]
         assert "memory_low" in kinds
-        assert "swap_pressure" in kinds
+        assert "memory_pressure" in kinds
         assert "disk_wear" in kinds
         assert "supervisor_unhealthy" in kinds
 
@@ -860,7 +1004,7 @@ class TestResourcePollerCheckHostHealth:
         from utils.hitl.notify import FakeNotifier
 
         monkeypatch.setattr(cfg_mod, "HOST_HEALTH_INVESTIGATION_ENABLED", False)
-        monkeypatch.setattr(cfg_mod, "HOST_SWAP_WARN_PCT", 80.0)
+        monkeypatch.setattr(cfg_mod, "HOST_MEM_PSI_WARN_PCT", 10.0)
         monkeypatch.setattr(cfg_mod, "HOST_DISK_LIFE_WARN_PCT", 80.0)
         monkeypatch.setattr(
             hh_mod, "_last_host_health", _make_health(disk_life_used_pct=85.0)
@@ -905,7 +1049,7 @@ class TestResourcePollerCheckHostHealth:
         from utils.hitl.notify import FakeNotifier
 
         monkeypatch.setattr(cfg_mod, "HOST_HEALTH_INVESTIGATION_ENABLED", False)
-        monkeypatch.setattr(cfg_mod, "HOST_SWAP_WARN_PCT", 80.0)
+        monkeypatch.setattr(cfg_mod, "HOST_MEM_PSI_WARN_PCT", 10.0)
         monkeypatch.setattr(cfg_mod, "HOST_DISK_LIFE_WARN_PCT", 80.0)
         monkeypatch.setattr(
             hh_mod, "_last_host_health", _make_health(disk_life_used_pct=85.0)
@@ -926,7 +1070,7 @@ class TestResourcePollerCheckHostHealth:
         from utils.hitl.notify import FakeNotifier
 
         monkeypatch.setattr(cfg_mod, "HOST_HEALTH_INVESTIGATION_ENABLED", False)
-        monkeypatch.setattr(cfg_mod, "HOST_SWAP_WARN_PCT", 80.0)
+        monkeypatch.setattr(cfg_mod, "HOST_MEM_PSI_WARN_PCT", 10.0)
         monkeypatch.setattr(cfg_mod, "HOST_DISK_LIFE_WARN_PCT", 80.0)
 
         notifier = FakeNotifier()
@@ -955,7 +1099,7 @@ class TestResourcePollerCheckHostHealth:
         from unittest import mock
 
         monkeypatch.setattr(cfg_mod, "HOST_HEALTH_INVESTIGATION_ENABLED", False)
-        monkeypatch.setattr(cfg_mod, "HOST_SWAP_WARN_PCT", 80.0)
+        monkeypatch.setattr(cfg_mod, "HOST_MEM_PSI_WARN_PCT", 10.0)
         monkeypatch.setattr(cfg_mod, "HOST_DISK_LIFE_WARN_PCT", 80.0)
         verify = mock.AsyncMock(side_effect=[0, RuntimeError("boom")])
         monkeypatch.setattr(res_mod, "verify_host_health_sessions", verify)
@@ -986,7 +1130,7 @@ class TestResourcePollerCheckHostHealth:
         from utils.hitl.notify import FakeNotifier
 
         monkeypatch.setattr(cfg_mod, "HOST_HEALTH_INVESTIGATION_ENABLED", False)
-        monkeypatch.setattr(cfg_mod, "HOST_SWAP_WARN_PCT", 80.0)
+        monkeypatch.setattr(cfg_mod, "HOST_MEM_PSI_WARN_PCT", 10.0)
         monkeypatch.setattr(cfg_mod, "HOST_DISK_LIFE_WARN_PCT", 80.0)
         monkeypatch.setattr(
             hh_mod, "_last_host_health", _make_health(disk_life_used_pct=85.0)
@@ -1015,7 +1159,7 @@ class TestResourcePollerCheckHostHealth:
         from utils.hitl.notify import FakeNotifier
 
         monkeypatch.setattr(cfg_mod, "HOST_HEALTH_INVESTIGATION_ENABLED", False)
-        monkeypatch.setattr(cfg_mod, "HOST_SWAP_WARN_PCT", 80.0)
+        monkeypatch.setattr(cfg_mod, "HOST_MEM_PSI_WARN_PCT", 10.0)
         monkeypatch.setattr(cfg_mod, "HOST_DISK_LIFE_WARN_PCT", 80.0)
         monkeypatch.setattr(
             hh_mod, "_last_host_health", _make_health(disk_life_used_pct=85.0)
@@ -1078,6 +1222,176 @@ class TestResourcePollerCheckHostHealth:
             len(reboot_calls) == 1
         ), f"Expected 1 'Expected reboot' call, got: {timeline_calls}"
         assert "core_restart" in reboot_calls[0][2]
+
+    def test_confirm_counter_requires_n_polls_to_fire(self, tmp_path, monkeypatch):
+        """memory_low WARN needs HOST_HEALTH_CONFIRM_POLLS consecutive polls before firing."""
+        import asyncio
+
+        import config as cfg_mod
+        import utils.disk.host_health as hh_mod
+        from utils.hitl.notify import FakeNotifier
+
+        monkeypatch.setattr(cfg_mod, "HOST_HEALTH_INVESTIGATION_ENABLED", False)
+        monkeypatch.setattr(cfg_mod, "HOST_MEM_PSI_WARN_PCT", 10.0)
+        monkeypatch.setattr(cfg_mod, "HOST_DISK_LIFE_WARN_PCT", 80.0)
+        monkeypatch.setattr(cfg_mod, "HOST_HEALTH_CONFIRM_POLLS", 3)
+
+        notifier = FakeNotifier()
+        poller, _ = self._make_poller(tmp_path, notifier=notifier)
+
+        health = _make_health()
+        status_warn = _make_status(mem_available_mb=100.0, mem_warn=True)
+
+        monkeypatch.setattr(hh_mod, "_last_host_health", health)
+        # Polls 1 and 2: not yet at threshold
+        asyncio.run(poller._check_host_health(status_warn))
+        asyncio.run(poller._check_host_health(status_warn))
+        assert len(notifier.sent) == 0
+        assert "memory_low" not in poller._alerted_host
+
+        # Poll 3: reaches confirm threshold → fires
+        asyncio.run(poller._check_host_health(status_warn))
+        assert len(notifier.sent) == 1
+        assert "memory_low" in poller._alerted_host
+
+    def test_confirm_counter_resets_on_absent_poll(self, tmp_path, monkeypatch):
+        """An absent poll resets the confirm counter; the finding must re-confirm from 0."""
+        import asyncio
+
+        import config as cfg_mod
+        import utils.disk.host_health as hh_mod
+        from utils.hitl.notify import FakeNotifier
+
+        monkeypatch.setattr(cfg_mod, "HOST_HEALTH_INVESTIGATION_ENABLED", False)
+        monkeypatch.setattr(cfg_mod, "HOST_MEM_PSI_WARN_PCT", 10.0)
+        monkeypatch.setattr(cfg_mod, "HOST_DISK_LIFE_WARN_PCT", 80.0)
+        monkeypatch.setattr(cfg_mod, "HOST_HEALTH_CONFIRM_POLLS", 3)
+
+        notifier = FakeNotifier()
+        poller, _ = self._make_poller(tmp_path, notifier=notifier)
+
+        health = _make_health()
+        status_warn = _make_status(mem_available_mb=100.0, mem_warn=True)
+        status_ok = _make_status(mem_available_mb=800.0, mem_warn=False)
+
+        monkeypatch.setattr(hh_mod, "_last_host_health", health)
+        asyncio.run(poller._check_host_health(status_warn))
+        asyncio.run(poller._check_host_health(status_warn))
+        # Clear — counter resets
+        asyncio.run(poller._check_host_health(status_ok))
+        # Two more warn polls — not yet at 3 again
+        asyncio.run(poller._check_host_health(status_warn))
+        asyncio.run(poller._check_host_health(status_warn))
+        assert len(notifier.sent) == 0
+
+    def test_clear_requires_n_absent_polls_for_memory_kind(self, tmp_path, monkeypatch):
+        """memory_low stays in _alerted_host until HOST_HEALTH_CONFIRM_POLLS absent polls."""
+        import asyncio
+
+        import config as cfg_mod
+        import utils.disk.host_health as hh_mod
+        from utils.hitl.notify import FakeNotifier
+
+        monkeypatch.setattr(cfg_mod, "HOST_HEALTH_INVESTIGATION_ENABLED", False)
+        monkeypatch.setattr(cfg_mod, "HOST_MEM_PSI_WARN_PCT", 10.0)
+        monkeypatch.setattr(cfg_mod, "HOST_DISK_LIFE_WARN_PCT", 80.0)
+        monkeypatch.setattr(cfg_mod, "HOST_HEALTH_CONFIRM_POLLS", 2)
+
+        notifier = FakeNotifier()
+        poller, _ = self._make_poller(tmp_path, notifier=notifier)
+
+        health = _make_health()
+        status_warn = _make_status(mem_available_mb=100.0, mem_warn=True)
+        status_ok = _make_status(mem_available_mb=800.0, mem_warn=False)
+
+        monkeypatch.setattr(hh_mod, "_last_host_health", health)
+        # Fire (2 polls to confirm)
+        asyncio.run(poller._check_host_health(status_warn))
+        asyncio.run(poller._check_host_health(status_warn))
+        assert "memory_low" in poller._alerted_host
+
+        # 1 absent poll — not yet cleared
+        asyncio.run(poller._check_host_health(status_ok))
+        assert "memory_low" in poller._alerted_host
+
+        # 2nd absent poll — now clears
+        asyncio.run(poller._check_host_health(status_ok))
+        assert "memory_low" not in poller._alerted_host
+
+    def test_oom_kill_delta_fires_immediately_bypassing_confirm(
+        self, tmp_path, monkeypatch
+    ):
+        """HIGH memory_pressure (OOM kill) fires on the first poll without waiting."""
+        import asyncio
+        import sqlite3
+
+        import config as cfg_mod
+        import utils.disk.host_health as hh_mod
+        from utils.hitl.notify import FakeNotifier
+
+        monkeypatch.setattr(cfg_mod, "HOST_HEALTH_INVESTIGATION_ENABLED", False)
+        monkeypatch.setattr(cfg_mod, "HOST_MEM_PSI_WARN_PCT", 10.0)
+        monkeypatch.setattr(cfg_mod, "HOST_DISK_LIFE_WARN_PCT", 80.0)
+        monkeypatch.setattr(cfg_mod, "HOST_HEALTH_CONFIRM_POLLS", 3)
+
+        notifier = FakeNotifier()
+        poller, db = self._make_poller(tmp_path, notifier=notifier)
+
+        # Seed a previous OOM total so the delta is detected
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO user_prefs (key, value) VALUES ('host_health:oom_kill_total', '1')"
+            )
+
+        health = _make_health(oom_kill_total=3)
+        monkeypatch.setattr(hh_mod, "_last_host_health", health)
+
+        asyncio.run(poller._check_host_health(_make_status()))
+
+        assert len(notifier.sent) == 1
+        assert "memory_pressure" in poller._alerted_host
+        payload = notifier.sent[0]["payload"]
+        assert payload.get("severity") == "HIGH"
+
+    def test_oom_kill_total_reset_on_boot_change(self, tmp_path, monkeypatch):
+        """When boot_ts changes the stored OOM total is cleared (no false OOM delta)."""
+        import asyncio
+        import sqlite3
+
+        import config as cfg_mod
+        import utils.disk.host_health as hh_mod
+
+        monkeypatch.setattr(cfg_mod, "HOST_HEALTH_INVESTIGATION_ENABLED", False)
+        monkeypatch.setattr(cfg_mod, "HOST_MEM_PSI_WARN_PCT", 10.0)
+        monkeypatch.setattr(cfg_mod, "HOST_DISK_LIFE_WARN_PCT", 80.0)
+        monkeypatch.setattr(cfg_mod, "HOST_HEALTH_CONFIRM_POLLS", 1)
+
+        poller, db = self._make_poller(tmp_path)
+
+        # Initial state: boot_ts stored and OOM total = 2
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO user_prefs (key, value) VALUES ('host_health:last_boot_ts', '1700000000.0')"
+            )
+            conn.execute(
+                "INSERT INTO user_prefs (key, value) VALUES ('host_health:oom_kill_total', '2')"
+            )
+
+        # Health with changed boot_ts and oom_kill_total=5 (would trigger if prev=2)
+        health = _make_health(boot_ts=1_700_100_000.0, oom_kill_total=5)
+        monkeypatch.setattr(hh_mod, "_last_host_health", health)
+
+        asyncio.run(poller._check_host_health(_make_status()))
+
+        # OOM total should be reset to 5 (not trigger a delta with the old 2)
+        with sqlite3.connect(db) as conn:
+            row = conn.execute(
+                "SELECT value FROM user_prefs WHERE key='host_health:oom_kill_total'"
+            ).fetchone()
+        assert row is not None
+        assert int(row[0]) == 5
+        # No memory_pressure in alerted (OOM delta was suppressed by boot change)
+        assert "memory_pressure" not in poller._alerted_host
 
 
 # ---------------------------------------------------------------------------
@@ -1757,7 +2071,6 @@ class TestEvaluateHostHealthFirmwareEnrichment:
             last_boot_ts=None,
             pueo_reboot_recent=False,
             known_repair_uuids=set(),
-            swap_warn_pct=80.0,
             disk_life_warn_pct=70.0,
             mem_warn_mb=256.0,
         )
@@ -1849,10 +2162,10 @@ class TestComputeFindingFingerprint:
         )
 
         f = HostHealthFinding(
-            key="swap_pressure",
-            kind="swap_pressure",
+            key="memory_pressure",
+            kind="memory_pressure",
             severity="WARN",
-            evidence={"swap_pct": 85.0},
+            evidence={"psi_some_avg300": 12.5},
             informational=False,
         )
         assert compute_finding_fingerprint(f) is None
@@ -2019,7 +2332,7 @@ class TestCheckHostHealthFingerprintReopen:
 
         db = self._make_db(tmp_path)
         monkeypatch.setattr(_cfg, "HOST_HEALTH_INVESTIGATION_ENABLED", False)
-        monkeypatch.setattr(_cfg, "HOST_SWAP_WARN_PCT", 80.0)
+        monkeypatch.setattr(_cfg, "HOST_MEM_PSI_WARN_PCT", 10.0)
         monkeypatch.setattr(_cfg, "HOST_DISK_LIFE_WARN_PCT", 70.0)
 
         finding = HostHealthFinding(
@@ -2063,7 +2376,7 @@ class TestCheckHostHealthFingerprintReopen:
 
         db = self._make_db(tmp_path)
         monkeypatch.setattr(_cfg, "HOST_HEALTH_INVESTIGATION_ENABLED", False)
-        monkeypatch.setattr(_cfg, "HOST_SWAP_WARN_PCT", 80.0)
+        monkeypatch.setattr(_cfg, "HOST_MEM_PSI_WARN_PCT", 10.0)
         monkeypatch.setattr(_cfg, "HOST_DISK_LIFE_WARN_PCT", 70.0)
         monkeypatch.setattr(_cfg, "DB_PATH", db)
 

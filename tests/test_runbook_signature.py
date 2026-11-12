@@ -212,8 +212,8 @@ class TestSigHostHealth:
     def test_memory_low(self):
         assert sig_host_health("memory_low", "") == "host:memory_low:unknown"
 
-    def test_swap_pressure_with_type(self):
-        assert sig_host_health("swap_pressure", "oom") == "host:swap_pressure:oom"
+    def test_memory_pressure(self):
+        assert sig_host_health("memory_pressure", "") == "host:memory_pressure:unknown"
 
     def test_empty_kind(self):
         assert sig_host_health("", "some_type") == "host:unknown:some_type"
