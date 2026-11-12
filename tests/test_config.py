@@ -1854,6 +1854,21 @@ class TestFederatedCasesRepoConfig:
         assert config.HOST_DISK_LIFE_WARN_PCT == 75.0
         assert config.HOST_HEALTH_INVESTIGATION_ENABLED is False
 
+    def test_host_health_reinvestigate_hours_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.HOST_HEALTH_REINVESTIGATE_HOURS == 24
+
+    def test_host_health_reinvestigate_hours_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump({"agent": {"host_health_reinvestigate_hours": 12}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.HOST_HEALTH_REINVESTIGATE_HOURS == 12
+
     def test_pueo_action_reboot_window_minutes_default(self, isolated_config):
         importlib.reload(sys.modules["config"])
         import config

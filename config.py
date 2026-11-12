@@ -102,6 +102,11 @@ HOST_DISK_LIFE_WARN_PCT: float = float(_agent.get("host_disk_life_warn_pct", 80.
 HOST_HEALTH_INVESTIGATION_ENABLED: bool = bool(
     _agent.get("host_health_investigation_enabled", True)
 )
+# Min hours between investigations for the same recurring finding; re-fires sooner
+# when severity rises or a new OOM kill is detected.
+HOST_HEALTH_REINVESTIGATE_HOURS: int = int(
+    _agent.get("host_health_reinvestigate_hours", 24)
+)
 
 # Disk recovery — safe auto-steps on disk critical
 DISK_RECOVERY_AUTO_ENABLED: bool = bool(_agent.get("disk_recovery_auto_enabled", True))

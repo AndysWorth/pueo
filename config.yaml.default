@@ -115,6 +115,7 @@ agent:
   # host_swap_warn_pct: 80.0         # DEPRECATED: no longer used; memory_pressure fires on PSI/OOM signals instead
   host_mem_psi_warn_pct: 10.0        # Fire memory_pressure WARN when PSI some avg300 ≥ this % (0.0 disables PSI trigger)
   host_health_confirm_polls: 3       # Polls a memory finding must persist before firing, and be absent before clearing
+  host_health_reinvestigate_hours: 24  # Min hours between investigations for the same recurring finding; re-fires sooner on higher severity or new OOM kill
   # pueo_action_reboot_window_minutes: 20  # Reboots within this window after a Pueo action are expected; suppress unexpected_reboot
   host_disk_life_warn_pct: 80.0      # Fire host-health investigation when eMMC life used exceeds this %
   host_health_investigation_enabled: true  # Start an LLM investigation on host-health findings; false = notification only
