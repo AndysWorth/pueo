@@ -135,7 +135,7 @@ The Stop hook (`/.claude/hooks/stop.sh`) will remind you at session end if Pytho
 
 ## CI
 
-`.github/workflows/test.yml` runs on Python 3.12, 3.13, 3.14 against `main`. Gates: `black`, `flake8` (errors only), `mypy`, `bandit`, `pytest --cov --cov-fail-under=90 --ignore=tests/integration`.
+`.github/workflows/test.yml` runs on Python 3.14 against `main`. Gates: `black`, `flake8` (errors only), `mypy`, `bandit`, `pytest --cov --cov-fail-under=90 --ignore=tests/integration`.
 
 `tests/integration/` is never run on GitHub — it contains seam tests (cross-module state flows) and eval tests (real Ollama inference) that require local services.
 
