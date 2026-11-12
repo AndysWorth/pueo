@@ -30,3 +30,9 @@ supervisor_unhealthy, supervisor_unsupported, resolution_issue.
     hung and was reset. It does not tell you which.
   Then `read_logs(log_source="ha_host")` for the current boot's errors.
 - For supervisor_unhealthy/unsupported: `ha os info`, `ha resolution info --raw-json`.
+
+## Notes
+- `disk_life_time` from `ha host info --raw-json` is the percentage of eMMC write-endurance
+  life consumed (0–100 %), not a number of days.
+- `get_entity_history` and `get_integration_diagnostics` are not registered in this
+  registry — do not call them.

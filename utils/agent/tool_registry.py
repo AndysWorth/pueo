@@ -2968,6 +2968,7 @@ def build_host_health_tool_registry() -> ToolRegistry:
         CALL_SERVICE,
         REQUEST_ESCALATION,
         DISCARD_RESULT,
+        READ_SOURCE,
         FINISH_HOST_HEALTH,
     ):
         reg.register(tool)

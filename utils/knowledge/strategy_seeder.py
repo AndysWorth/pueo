@@ -195,6 +195,11 @@ _SEED_PROMPTS: list[tuple[str, str, str]] = [
         "swap pressure, memory low, eMMC disk wear, unexpected reboot, supervisor unhealthy, supervisor unsupported, resolution issue",
     ),
     (
+        "seed_host_memory.md",
+        "Memory-pressure investigation — verdict rules",
+        "memory_pressure, memory_low, PSI pressure, OOM kill, swap occupancy, mem_available declining, top memory consumer, memory trend",
+    ),
+    (
         "seed_device_offline.md",
         "Device offline investigation",
         "device offline, device unavailable, econet unavailable, ecobee offline, MQTT disconnect, cloud push thread death, integration unavailable, TV offline, LIFX offline, Cast unavailable, media player unavailable",
