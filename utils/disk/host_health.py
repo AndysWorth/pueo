@@ -324,7 +324,7 @@ def evaluate_host_health(
             _ev["psi_some_avg300"] = health.psi_some_avg300
             _ev["threshold_psi"] = mem_psi_warn_pct
         if _oom_trigger:
-            assert health.oom_kill_total is not None and oom_kill_prev is not None
+            assert health.oom_kill_total is not None and oom_kill_prev is not None  # nosec B101
             _ev["oom_kill_delta"] = health.oom_kill_total - oom_kill_prev
             _ev["oom_kill_total"] = health.oom_kill_total
         findings.append(
