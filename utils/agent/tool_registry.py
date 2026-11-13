@@ -2686,6 +2686,11 @@ FINISH_BC_ASSESSMENT = ToolDefinition(
     parameters={
         "type": "object",
         "properties": {
+            "reason": {
+                "type": "string",
+                "description": "Write this first. One sentence naming the evidence line that decides "
+                "the verdict; the verdict must follow from it.",
+            },
             "verdict": {
                 "type": "string",
                 "enum": ["action_needed", "no_action", "user_check"],
@@ -2696,10 +2701,6 @@ FINISH_BC_ASSESSMENT = ToolDefinition(
                     "'user_check' when only the user can verify (browser, remote access, "
                     "device firmware, cloud account) — set 'user_question'."
                 ),
-            },
-            "reason": {
-                "type": "string",
-                "description": "One sentence explaining the verdict.",
             },
             "action": {
                 "type": "string",
@@ -2742,7 +2743,7 @@ FINISH_BC_ASSESSMENT = ToolDefinition(
                 "required": ["description", "config_fix_yaml", "old"],
             },
         },
-        "required": ["verdict", "reason"],
+        "required": ["reason", "verdict"],
     },
 )
 

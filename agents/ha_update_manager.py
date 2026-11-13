@@ -1208,6 +1208,27 @@ async def _resolve_addon_slug(
     return None
 
 
+# Per-BC sessions share the update entity as subject_key, so earlier analyses of
+# the same pending update would be injected as "Previous investigations" and
+# anchor the verdict to a stale conclusion (#1209).
+_BC_EXCLUDED_PRIOR_SESSION_TYPES = ("update_analysis", "bc_assessment")
+
+
+def _bc_session_outcome(
+    loop_outcome: str, bc_name: str, assessments: dict[str, dict]
+) -> str:
+    """Return the outcome of one BC assessment session.
+
+    AgentLoop reports "success" whenever the terminal tool was called, even when
+    finish_bc_assessment rejected the call (missing/invalid verdict).  A session
+    that stored no verdict is "no_verdict", so the caller retries and then
+    records the BC as not_assessed instead of treating it as judged.
+    """
+    if loop_outcome == "success" and bc_name not in assessments:
+        return "no_verdict"
+    return loop_outcome
+
+
 async def _run_update_analysis(
     update: UpdateStatus,
     ssh_client: Optional[SSHClientProtocol] = None,
@@ -1654,6 +1675,9 @@ async def _run_update_analysis(
                                 think=False,
                                 limit_review=False,
                                 num_predict=500,
+                                exclude_prior_session_types=list(
+                                    _BC_EXCLUDED_PRIOR_SESSION_TYPES
+                                ),
                             )
                             _assess_result = await _assess_loop.run(
                                 _bc_context,
@@ -1668,7 +1692,11 @@ async def _run_update_analysis(
                                 subject_key=update.entity_id,
                             )
                             _assess_elapsed = round(time.monotonic() - _assess_t0, 1)
-                            _assess_outcome = _assess_result.outcome
+                            _assess_outcome = _bc_session_outcome(
+                                _assess_result.outcome,
+                                _bc_entry.name,
+                                executor._bc_assessments,  # type: ignore[attr-defined]
+                            )
                             log.info(
                                 "bc_assessment_done",
                                 bc=_bc_entry.name,

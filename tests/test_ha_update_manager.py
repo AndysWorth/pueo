@@ -7954,6 +7954,32 @@ class TestBCEvidenceV2:
         lines = _evidence_lines(ev)
         assert any("sensor 8" in ln and "light 2" in ln for ln in lines)
 
+    def test_evidence_lines_names_zero_count_types(self):
+        from utils.knowledge.ha_release_report import BCEvidence, _evidence_lines
+
+        ev = BCEvidence(
+            domains=["hue"],
+            entity_count=17,
+            entity_examples=["sensor.dining_temperature"],
+            entities_by_type={"sensor": 9, "light": 0, "update": 0},
+            found=True,
+        )
+        lines = _evidence_lines(ev)
+        assert "No entities of type: light, update" in lines
+
+    def test_evidence_lines_no_zero_type_line_when_all_present(self):
+        from utils.knowledge.ha_release_report import BCEvidence, _evidence_lines
+
+        ev = BCEvidence(
+            domains=["tuya"],
+            entity_count=3,
+            entity_examples=["light.strip"],
+            entities_by_type={"light": 3},
+            found=True,
+        )
+        lines = _evidence_lines(ev)
+        assert not any(ln.startswith("No entities of type") for ln in lines)
+
     def test_evidence_lines_core_component_message(self):
         from utils.knowledge.ha_release_report import BCEvidence, _evidence_lines
 
@@ -8765,7 +8791,10 @@ class TestBCAssessmentRegistry:
         assert "when" in props
         assert "user_question" in props
         assert "config_fix" in props
-        assert FINISH_BC_ASSESSMENT.parameters["required"] == ["verdict", "reason"]
+        # reason comes before verdict: with think=False the model commits to the
+        # first field, so it must state the deciding evidence first (#1209).
+        assert list(props)[:2] == ["reason", "verdict"]
+        assert FINISH_BC_ASSESSMENT.parameters["required"] == ["reason", "verdict"]
 
     def test_finish_bc_assessment_verdict_enum(self):
         from utils.agent.tool_registry import FINISH_BC_ASSESSMENT
@@ -8993,6 +9022,131 @@ class TestFinishBCAssessment:
         assert verdicts["MQTT"]["verdict"] == "no_action"
         assert verdicts["Hue"]["verdict"] == "action_needed"
         assert verdicts["Matter"]["verdict"] == "user_check"
+
+    # ── Dispatch through execute(): the path the model actually takes (#1209) ──
+
+    def _dispatch(self, executor, args: dict):
+        import asyncio
+
+        from utils.agent.tool_registry import ToolCall
+
+        return asyncio.run(
+            executor.execute(ToolCall(name="finish_bc_assessment", arguments=args))
+        )
+
+    def test_dispatch_passes_no_action_verdict(self, caplog):
+        executor = self._make_executor()
+        executor._current_bc_name = "Tuya"
+        result = self._dispatch(
+            executor, {"verdict": "no_action", "reason": "No multi-channel devices."}
+        )
+        assert result.success
+        v = executor.get_bc_assessments()["Tuya"]
+        assert v == {
+            "bc": "Tuya",
+            "verdict": "no_action",
+            "reason": "No multi-channel devices.",
+        }
+
+    def test_dispatch_keeps_action_needed_with_action_and_when(self):
+        """An action_needed verdict must never be stored as no_action."""
+        executor = self._make_executor()
+        executor._current_bc_name = "Philips Hue"
+        result = self._dispatch(
+            executor,
+            {
+                "verdict": "action_needed",
+                "reason": "Automation sets effect None.",
+                "action": "Change effect None to off.",
+                "when": "after_update",
+            },
+        )
+        assert result.success
+        v = executor.get_bc_assessments()["Philips Hue"]
+        assert v["verdict"] == "action_needed"
+        assert v["action"] == "Change effect None to off."
+        assert v["when"] == "after_update"
+
+    def test_dispatch_keeps_user_check_with_question(self):
+        executor = self._make_executor()
+        executor._current_bc_name = "Auth"
+        result = self._dispatch(
+            executor,
+            {
+                "verdict": "user_check",
+                "reason": "Depends on how HA is reached remotely.",
+                "user_question": "Do you open Home Assistant via a public IP?",
+            },
+        )
+        assert result.success
+        v = executor.get_bc_assessments()["Auth"]
+        assert v["verdict"] == "user_check"
+        assert v["user_question"] == "Do you open Home Assistant via a public IP?"
+
+    def test_dispatch_missing_verdict_fails_and_stores_nothing(self):
+        executor = self._make_executor()
+        executor._current_bc_name = "MQTT"
+        result = self._dispatch(executor, {"reason": "No verdict given."})
+        assert not result.success
+        assert "verdict is required" in (result.error or "")
+        assert executor.get_bc_assessments() == {}
+
+    def test_dispatch_unrecognised_verdict_fails_and_stores_nothing(self):
+        executor = self._make_executor()
+        executor._current_bc_name = "MQTT"
+        result = self._dispatch(executor, {"verdict": "maybe", "reason": "Unsure."})
+        assert not result.success
+        assert executor.get_bc_assessments() == {}
+
+    def test_dispatch_old_style_affects_still_maps(self):
+        executor = self._make_executor()
+        executor._current_bc_name = "MQTT"
+        result = self._dispatch(executor, {"affects": "yes", "reason": "Old style."})
+        assert result.success
+        assert executor.get_bc_assessments()["MQTT"]["verdict"] == "action_needed"
+
+    def test_bc_session_outcome_no_verdict_when_nothing_stored(self):
+        from agents.ha_update_manager import _bc_session_outcome
+
+        assert _bc_session_outcome("success", "MQTT", {}) == "no_verdict"
+
+    def test_bc_session_outcome_success_when_verdict_stored(self):
+        from agents.ha_update_manager import _bc_session_outcome
+
+        stored = {"MQTT": {"bc": "MQTT", "verdict": "no_action", "reason": "r"}}
+        assert _bc_session_outcome("success", "MQTT", stored) == "success"
+
+    def test_bc_session_outcome_passes_through_non_success(self):
+        from agents.ha_update_manager import _bc_session_outcome
+
+        assert _bc_session_outcome("stuck", "MQTT", {}) == "stuck"
+
+    def test_bc_sessions_exclude_prior_update_sessions(self):
+        """BC sessions must not see earlier analyses of the same pending update."""
+        import inspect
+
+        import agents.ha_update_manager as um
+
+        assert set(um._BC_EXCLUDED_PRIOR_SESSION_TYPES) == {
+            "update_analysis",
+            "bc_assessment",
+        }
+        src = inspect.getsource(um._run_update_analysis)
+        assert "_BC_EXCLUDED_PRIOR_SESSION_TYPES" in src
+
+    def test_task_prompt_defers_verdict_rules_to_seed(self):
+        """Verdict rules live in seed_update_bc.md, not the task prompt (#1209)."""
+        from pathlib import Path
+
+        prompts = Path(__file__).parent.parent / "prompts"
+        task = (prompts / "task_bc_assessment.md").read_text("utf-8")
+        seed = (prompts / "seed_update_bc.md").read_text("utf-8")
+        assert "beats" not in task
+        assert "use `no_action` instead" not in task
+        assert "pre-injected runbook" in task
+        # The seed owns the rule that absence of evidence does not settle
+        # browser / remote-access BCs.
+        assert "do **not** settle" in seed
 
     def test_assessment_gap_set_when_bc_session_fails(self, pueo_dirs):
         """When all assessment attempts fail, _bc_assessment_gap is set and BC gets not_assessed."""
