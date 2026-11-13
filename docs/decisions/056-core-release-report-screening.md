@@ -152,6 +152,27 @@ Three additions across S1–S4 of the Core update analysis v3 plan:
   config_entries` / broad single-word greps, and limits `check_config_against_breaking_change`
   to cases where the Evidence block is insufficient.
 
+## Amendment (#1199) — action-based BC verdicts
+
+**Context:** `affects: yes/no/unknown` could not distinguish "this requires a config change before
+updating" from "names changed cosmetically, nothing to do." This caused false `holds` (Tuya
+false positive in the 2026.10.4→2026.11.1 test run) because the LLM had no way to signal
+urgency or timing.
+
+**Changes (`finish_bc_assessment` schema + downstream):**
+- `affects` replaced by `verdict: action_needed | no_action | user_check`. `not_assessed` is
+  code-only (filled by `_normalize_bc_verdicts` for missing BCs; never from the LLM).
+- New optional fields: `action` (what to do), `when: before_update | after_update`,
+  `user_question` (what the user should check manually).
+- Impact derivation: `action_needed + before_update` (or no `when`) → `high`; `action_needed +
+  after_update` only → `low`; any `user_check/not_assessed` → `low`; all `no_action` → `none`.
+- `_derive_recommendation` produces human-readable text from the verdict set.
+- Dashboard and report templates show five groups: **Do before updating** / **Do after updating** /
+  **Check yourself** / **Could not assess** (collapsed) / **Not affected** (collapsed).
+- Backward compat: old reports with `affects: yes/no/unknown` are normalised to
+  `action_needed/no_action/user_check` by `_normalize_bc_verdicts` and `_verdict_symbol`.
+- `seed_update_bc.md` rewritten as release-independent rules; no 2026.11-specific examples.
+
 ## Amendment (#1173) — version-range-aware report
 
 **Context:** When upgrading across a patch/month boundary (e.g. 2026.10.4 → 2026.11.1),
