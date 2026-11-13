@@ -80,6 +80,8 @@ _SERVICE_CALL_RE = re.compile(r"\b([a-z_]{2,})\.([a-z_]{2,})\b")
 _YAML_KEY_RE = re.compile(r"\b([a-z][a-z]*_[a-z_]+)\b")
 _QUOTED_VALUE_RE = re.compile(r'"([^"]{2,25})"')
 _TEMPLATE_FN_RE = re.compile(r"\b([a-z_]{5,})\s*\(")
+# Backtick-quoted identifiers (Markdown inline code): captures attribute names like `friendly_name`
+_BACKTICK_IDENT_RE = re.compile(r"`([a-z][a-z0-9_]{2,30})`")
 
 # YAML keys too generic to search for usefully
 _SKIP_KEYS = frozenset(
@@ -149,6 +151,14 @@ def _extract_tokens(bc_name: str, bc_body: str) -> list[str]:
         fn = m.group(1)
         if fn not in _SKIP_KEYS and "_" in fn:
             tokens.add(fn)
+
+    # Backtick-quoted attribute names from Markdown inline code (e.g. `friendly_name`).
+    # These bypass _SKIP_KEYS: a BC that tells users to rename `friendly_name` needs
+    # it searched even though generic YAML key extraction skips it.
+    for m in _BACKTICK_IDENT_RE.finditer(bc_body):
+        ident = m.group(1)
+        if "_" in ident and ident not in _STATE_WORDS:
+            tokens.add(ident)
 
     return sorted(tokens)[:_MAX_TOKENS]
 

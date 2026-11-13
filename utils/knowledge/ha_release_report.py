@@ -699,7 +699,13 @@ _SEP = "\n\n---\n\n"
 
 
 def _evidence_lines(evidence: "BCEvidence") -> list[str]:
-    """Return bullet lines summarising a BCEvidence object."""
+    """Return bullet lines summarising a BCEvidence object.
+
+    States negatives explicitly so the LLM can conclude 'no' without tools:
+    - "Multi-channel devices: none" when entities found but none are multi-channel
+    - "Top-level `<domain>:` YAML key: absent" when domain present but not in config.yaml
+    - "Searched … — 0 hits" when tokens were searched but nothing matched
+    """
     ev_lines: list[str] = []
     if evidence.domains or evidence.entity_count > 0:
         if evidence.entity_count > 0:
@@ -720,6 +726,8 @@ def _evidence_lines(evidence: "BCEvidence") -> list[str]:
                 ev_lines.append(
                     f"Multi-channel devices: {', '.join(evidence.multi_channel_devices)}"
                 )
+            else:
+                ev_lines.append("Multi-channel devices: none")
         elif evidence.is_core_component:
             ev_lines.append(
                 f"{'/'.join(evidence.domains)}: core component (no entities)"
@@ -731,6 +739,17 @@ def _evidence_lines(evidence: "BCEvidence") -> list[str]:
         ev_lines.append(
             f"Config keys present: {', '.join(evidence.config_keys_present)}"
         )
+    # Absent YAML keys: when no entities found, state which domains had no YAML key.
+    # Only meaningful for YAML-configured integrations (entity_count==0 avoids noise for
+    # UI-configured integrations like tuya/hue/matter that never have a top-level YAML key).
+    if (
+        evidence.domains
+        and not evidence.is_core_component
+        and evidence.entity_count == 0
+    ):
+        absent = [d for d in evidence.domains if d not in evidence.config_keys_present]
+        for d in absent[:3]:
+            ev_lines.append(f"Top-level `{d}:` YAML key: absent")
     if evidence.automation_hits:
         ev_lines.append(
             f"Config refs ({len(evidence.automation_hits)}): "
@@ -743,12 +762,16 @@ def _evidence_lines(evidence: "BCEvidence") -> list[str]:
         )
     if evidence.tokens:
         searched = evidence.tokens_searched or len(evidence.tokens)
-        hit_info = (
-            f" ({evidence.tokens_hit}/{searched} hit)"
-            if evidence.tokens_searched
-            else ""
-        )
-        ev_lines.append(f"Tokens checked{hit_info}: {', '.join(evidence.tokens[:8])}")
+        if evidence.tokens_hit and evidence.tokens_hit > 0:
+            ev_lines.append(
+                f"Tokens checked ({evidence.tokens_hit}/{searched} hit):"
+                f" {', '.join(evidence.tokens[:8])}"
+            )
+        else:
+            ev_lines.append(
+                f"Searched automations/dashboards for"
+                f" {searched} token(s): {', '.join(evidence.tokens[:8])} — 0 hits"
+            )
     return ev_lines
 
 
