@@ -19338,6 +19338,70 @@ class TestAgentLoopStuckOutcome:
         ), f"expected non-stuck outcome, got {result.outcome}"
         assert result.stuck_reason == ""
 
+    @staticmethod
+    def _malformed_llm(failures: int, exc: Exception):
+        """LLM whose first *failures* calls raise *exc*, then returns plain text."""
+
+        class _LLM:
+            def __init__(self):
+                self.calls = 0
+
+            async def chat_with_tools(self, *a, **k):
+                self.calls += 1
+                if self.calls <= failures:
+                    raise exc
+                return {"role": "assistant", "content": "", "tool_calls": []}
+
+            async def chat(self, *a, **k):
+                return {"message": {"content": "{}"}}
+
+        return _LLM()
+
+    _GLM_ERROR = (
+        "incomplete GLM tool call: XML syntax error on line 1: element"
+        " <arg_value> closed by </tool_call> (status code: 500)"
+    )
+
+    def test_malformed_tool_call_error_detection(self):
+        from utils.agent.agent_loop import _is_malformed_tool_call_error
+
+        assert _is_malformed_tool_call_error(RuntimeError(self._GLM_ERROR))
+        assert not _is_malformed_tool_call_error(RuntimeError("connection refused"))
+        assert not _is_malformed_tool_call_error(
+            RuntimeError("model does not support tool calls")
+        )
+
+    def test_malformed_tool_call_is_retried(self):
+        """A server-side tool-call parse failure retries the call (#1213)."""
+        llm = self._malformed_llm(2, RuntimeError(self._GLM_ERROR))
+        loop = self._make_loop(llm)
+
+        result = asyncio.run(loop.run("diagnose the system"))
+
+        # Both failures were retried and the session went on to real responses.
+        assert llm.calls >= 3
+        assert result.outcome != "failed"
+
+    def test_malformed_tool_call_gives_up_after_retries(self):
+        from utils.agent.agent_loop import _MAX_MALFORMED_TOOL_CALL_RETRIES
+
+        llm = self._malformed_llm(99, RuntimeError(self._GLM_ERROR))
+        loop = self._make_loop(llm)
+
+        result = asyncio.run(loop.run("diagnose the system"))
+
+        assert result.outcome == "failed"
+        assert llm.calls == _MAX_MALFORMED_TOOL_CALL_RETRIES + 1
+
+    def test_other_llm_errors_are_not_retried(self):
+        llm = self._malformed_llm(99, RuntimeError("connection refused"))
+        loop = self._make_loop(llm)
+
+        result = asyncio.run(loop.run("diagnose the system"))
+
+        assert result.outcome == "failed"
+        assert llm.calls == 1
+
     def test_sleep_stuck_sets_stuck_reason_on_double_timeout(self):
         """Two successive timeouts both showing host sleep → stuck_reason='host_sleep'."""
         from unittest.mock import patch

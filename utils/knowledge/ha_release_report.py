@@ -88,6 +88,10 @@ class BCEvidence(BaseModel):
     tokens_hit: int = 0
     automation_hits: list[str] = []
     dashboard_hits: list[str] = []
+    # What the BC text depends on that no evidence here can show (browsers that
+    # open the UI, how HA is reached from outside the home).  Stated so "no
+    # evidence" is not read as "not affected" (#1213).
+    outside_evidence: list[str] = []
     found: bool = False
 
 
@@ -742,6 +746,11 @@ def _evidence_lines(evidence: "BCEvidence") -> list[str]:
             )
         elif evidence.domains:
             ev_lines.append(f"0 {'/'.join(evidence.domains)} entities on this instance")
+    if evidence.outside_evidence:
+        ev_lines.append(
+            "Outside the evidence (only the user knows): "
+            + "; ".join(evidence.outside_evidence)
+        )
     if evidence.config_keys_present:
         ev_lines.append(
             f"Config keys present: {', '.join(evidence.config_keys_present)}"
