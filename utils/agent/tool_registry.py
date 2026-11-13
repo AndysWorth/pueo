@@ -3042,18 +3042,12 @@ def build_change_screening_registry() -> ToolRegistry:
 def build_bc_assessment_registry() -> ToolRegistry:
     """Registry for a per-BC breaking-change assessment session.
 
-    Small session: judge one BC from its evidence block plus targeted config
-    and automation lookups.  No knowledge retrieval and no escalation path.
+    Evidence-only: the evidence block pre-assembled by _evidence_lines contains
+    everything needed to judge the BC.  No tool calls are needed or allowed
+    before the terminal tool.
     """
     reg = ToolRegistry()
-    for tool in (
-        CHECK_CONFIG_AGAINST_BREAKING_CHANGE,
-        CHECK_AUTOMATION_REFERENCES,
-        READ_FILE,
-        GET_HA_PROFILE,
-        FINISH_BC_ASSESSMENT,
-    ):
-        reg.register(tool)
+    reg.register(FINISH_BC_ASSESSMENT)
     return reg
 
 

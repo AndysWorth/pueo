@@ -1615,10 +1615,17 @@ async def _run_update_analysis(
                             _ev_block = "\n\nEvidence:\n" + "\n".join(
                                 f"- {l}" for l in _ev_lines
                             )
+                    _is_installed_bc = _bc_entry in _rpt.bc_installed
+                    _install_note = ""
+                    if not _is_installed_bc and _profile and _profile.os_version:
+                        _install_note = (
+                            "\n\nInstall type: HAOS (Home Assistant Operating System)"
+                        )
                     _bc_context = (
                         f"HA Core {update.latest_version} breaking change assessment:\n\n"
                         f"**{_bc_entry.name}**"
-                        f"{' (installed integration)' if _bc_entry in _rpt.bc_installed else ' (general)'}"
+                        f"{' (installed integration)' if _is_installed_bc else ' (general)'}"
+                        f"{_install_note}"
                         f"\n\n{_bc_entry.body or '(no body)'}"
                         f"{_ev_block}"
                     )
@@ -1641,7 +1648,7 @@ async def _run_update_analysis(
                                 db_path=DB_PATH,
                                 knowledge_store=knowledge_store,
                                 capture_llm=True,
-                                max_tool_calls=6,
+                                max_tool_calls=1,
                                 distill=False,
                                 think=False,
                                 limit_review=False,

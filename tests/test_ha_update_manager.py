@@ -7531,6 +7531,31 @@ class TestBCEvidenceTokenExtractor:
         tokens = _extract_tokens("Lots of keys", body)
         assert len(tokens) <= _MAX_TOKENS
 
+    def test_backtick_attribute_name_extracted(self):
+        """Backtick-quoted attribute names like `friendly_name` bypass _SKIP_KEYS."""
+        from utils.ha.update_bc_evidence import _extract_tokens
+
+        tokens = _extract_tokens(
+            "Entity names",
+            "Rename `friendly_name` in your config to use the new attribute.",
+        )
+        assert "friendly_name" in tokens
+
+    def test_backtick_attribute_without_underscore_not_extracted(self):
+        """Plain words in backticks (no underscore) are not extracted."""
+        from utils.ha.update_bc_evidence import _extract_tokens
+
+        tokens = _extract_tokens("General", "Use `reload` to apply changes.")
+        assert "reload" not in tokens
+
+    def test_backtick_state_word_not_extracted(self):
+        """State words in backticks are not extracted."""
+        from utils.ha.update_bc_evidence import _extract_tokens
+
+        tokens = _extract_tokens("General", "Set value to `unknown` when unavailable.")
+        # "unknown" has no underscore so it won't match anyway — just sanity-check
+        assert "unknown" not in tokens
+
 
 class TestBCEvidenceEntitySummary:
     """Unit tests for _entity_summary."""
@@ -7944,6 +7969,80 @@ class TestBCEvidenceV2:
         )
         lines = _evidence_lines(ev)
         assert any("1/2 hit" in ln for ln in lines)
+
+    def test_evidence_lines_multi_channel_none_when_entities_present(self):
+        """When entities are found but none are multi-channel, evidence says 'none'."""
+        from utils.knowledge.ha_release_report import BCEvidence, _evidence_lines
+
+        ev = BCEvidence(
+            domains=["tuya"],
+            entity_count=3,
+            entity_examples=["light.tuya_1", "light.tuya_2", "light.tuya_3"],
+            multi_channel_devices=[],
+        )
+        lines = _evidence_lines(ev)
+        assert any("Multi-channel devices: none" in ln for ln in lines)
+        # UI-configured integrations with entities: absent YAML key not meaningful
+        assert not any("YAML key: absent" in ln for ln in lines)
+
+    def test_evidence_lines_multi_channel_not_shown_when_no_entities(self):
+        """Multi-channel: none is not emitted when entity_count is zero."""
+        from utils.knowledge.ha_release_report import BCEvidence, _evidence_lines
+
+        ev = BCEvidence(domains=["tuya"], entity_count=0, multi_channel_devices=[])
+        lines = _evidence_lines(ev)
+        assert not any("Multi-channel" in ln for ln in lines)
+
+    def test_evidence_lines_absent_yaml_key(self):
+        """Non-core domains not in config.yaml are listed as absent."""
+        from utils.knowledge.ha_release_report import BCEvidence, _evidence_lines
+
+        ev = BCEvidence(
+            domains=["mqtt"],
+            entity_count=0,
+            is_core_component=False,
+            config_keys_present=[],
+        )
+        lines = _evidence_lines(ev)
+        assert any("`mqtt:` YAML key: absent" in ln for ln in lines)
+
+    def test_evidence_lines_absent_key_not_shown_when_present(self):
+        """When a YAML key is in config.yaml, no 'absent' line is emitted."""
+        from utils.knowledge.ha_release_report import BCEvidence, _evidence_lines
+
+        ev = BCEvidence(
+            domains=["mqtt"],
+            entity_count=0,
+            config_keys_present=["mqtt"],
+        )
+        lines = _evidence_lines(ev)
+        assert not any("absent" in ln for ln in lines)
+
+    def test_evidence_lines_absent_key_not_shown_for_core(self):
+        """Core components (auth, frontend) do not get an 'absent' line."""
+        from utils.knowledge.ha_release_report import BCEvidence, _evidence_lines
+
+        ev = BCEvidence(
+            domains=["auth"],
+            entity_count=0,
+            is_core_component=True,
+            config_keys_present=[],
+        )
+        lines = _evidence_lines(ev)
+        assert not any("absent" in ln for ln in lines)
+
+    def test_evidence_lines_tokens_zero_hits(self):
+        """When tokens searched but nothing found, '0 hits' is stated explicitly."""
+        from utils.knowledge.ha_release_report import BCEvidence, _evidence_lines
+
+        ev = BCEvidence(
+            tokens=["friendly_name", "type: alert"],
+            tokens_searched=2,
+            tokens_hit=0,
+        )
+        lines = _evidence_lines(ev)
+        assert any("0 hits" in ln for ln in lines)
+        assert not any("hit)" in ln for ln in lines)
 
 
 class TestBCEvidenceDashboardSearch:
@@ -8513,11 +8612,14 @@ class TestBCAssessmentRegistry:
 
         reg = build_bc_assessment_registry()
         names = set(reg.names())
+        # Evidence-only: only the terminal tool is registered
         assert "finish_bc_assessment" in names
-        assert "check_config_against_breaking_change" in names
-        assert "check_automation_references" in names
-        assert "get_ha_profile" in names
-        assert "read_file" in names
+        assert len(names) == 1, f"Expected only finish_bc_assessment, got: {names}"
+        # No investigation tools — evidence block is complete before the session starts
+        assert "check_config_against_breaking_change" not in names
+        assert "check_automation_references" not in names
+        assert "get_ha_profile" not in names
+        assert "read_file" not in names
         # Write tools must not be in the assessment registry
         assert "apply_fix" not in names
         assert "trigger_backup" not in names
