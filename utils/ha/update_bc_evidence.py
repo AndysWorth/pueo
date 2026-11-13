@@ -84,6 +84,28 @@ _TEMPLATE_FN_RE = re.compile(r"\b([a-z_]{5,})\s*\(")
 # bare value is a state word and far too common to search for; the pair is not.
 _KEY_VALUE_RE = re.compile(r'\b([a-z][a-z_]{2,})\s+to\s+"([^"]{2,25})"')
 _KEY_VALUE_TOKEN_RE = re.compile(r"^([a-z][a-z_]*): (.+)$")
+# BC text about things Pueo cannot observe from HA's registries or config files.
+# Each match becomes an "Outside the evidence" line; the verdict stays with the
+# seed (#1213).
+_OUTSIDE_EVIDENCE_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
+    (
+        "which browsers, tablets and phones open the Home Assistant UI",
+        re.compile(
+            r"\b(?:Safari|Chrome|Firefox|WebView|iPadOS|kiosk browsers?"
+            r"|older browsers?|browser versions?)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "how Home Assistant is reached from outside the home"
+        " (public address, VPN, reverse proxy)",
+        re.compile(
+            r"reverse proxy|trusted prox|public (?:IP )?address|global IPv6"
+            r"|\bTailscale\b|\bVPN\b|not on a local network",
+            re.IGNORECASE,
+        ),
+    ),
+)
 # Backtick-quoted identifiers (Markdown inline code): captures attribute names like `friendly_name`
 _BACKTICK_IDENT_RE = re.compile(r"`([a-z][a-z0-9_]{2,30})`")
 
@@ -176,6 +198,15 @@ def _extract_tokens(bc_name: str, bc_body: str) -> list[str]:
             tokens.add(ident)
 
     return sorted(tokens)[:_MAX_TOKENS]
+
+
+def _outside_evidence(bc_body: str) -> list[str]:
+    """Return what the BC text depends on that the evidence can never show."""
+    return [
+        label
+        for label, pattern in _OUTSIDE_EVIDENCE_PATTERNS
+        if pattern.search(bc_body)
+    ]
 
 
 def _entity_summary(
@@ -437,6 +468,7 @@ async def _build_one_evidence(
         tokens_hit=tokens_hit,
         automation_hits=automation_hits,
         dashboard_hits=dashboard_hits,
+        outside_evidence=_outside_evidence(body),
         found=found,
     )
 

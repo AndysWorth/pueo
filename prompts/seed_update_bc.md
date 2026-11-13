@@ -26,7 +26,8 @@ Call `finish_bc_assessment` with one of:
 1. **Does the BC depend on something the evidence cannot see?**  That is: which
    browsers or tablets open the UI, how Home Assistant is reached from outside
    the home (public IP, VPN, reverse proxy), device firmware versions,
-   cloud-service accounts, BLE/Zigbee radio capabilities.  If yes → `user_check`
+   cloud-service accounts, BLE/Zigbee radio capabilities.  An "Outside the
+   evidence (only the user knows)" line means yes.  If yes → `user_check`
    with a question about exactly that thing, and stop: steps 2–4 do not apply.
    Zero entities, "core component (no entities)", a "Config keys present" line
    and 0 search hits do **not** settle these: the evidence never contains

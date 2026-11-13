@@ -8228,6 +8228,85 @@ class TestBCEvidencePydantic:
         assert reloaded.domains == ["matter"]
         assert reloaded.found is False
 
+    def test_outside_evidence_default_and_roundtrip(self):
+        from utils.knowledge.ha_release_report import BCEvidence
+
+        assert BCEvidence().outside_evidence == []
+        # Reports written before #1213 have no such key.
+        assert BCEvidence.model_validate({"domains": ["auth"]}).outside_evidence == []
+        ev = BCEvidence(outside_evidence=["how HA is reached"])
+        reloaded = BCEvidence.model_validate_json(ev.model_dump_json())
+        assert reloaded.outside_evidence == ["how HA is reached"]
+
+
+class TestBCOutsideEvidence:
+    """What a BC depends on that the evidence can never show (#1213)."""
+
+    _AUTH = (
+        "When you reach Home Assistant at an IP address that is not on a local"
+        " network, such as a public address, a global IPv6 address, or a Tailscale"
+        " address, the address in your browser now has to match."
+    )
+
+    def test_remote_access_and_browser_detected(self):
+        from utils.ha.update_bc_evidence import _outside_evidence
+
+        # "the address in your browser" is not a browser-version question.
+        found = _outside_evidence(self._AUTH)
+        assert len(found) == 1 and "reached from outside" in found[0]
+        both = _outside_evidence(self._AUTH + " Older browsers show an error.")
+        assert len(both) == 2
+
+    def test_browser_only(self):
+        from utils.ha.update_bc_evidence import _outside_evidence
+
+        found = _outside_evidence("The frontend now requires Chrome 67 or newer.")
+        assert len(found) == 1 and "browsers" in found[0]
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            'The "None" light effect has been removed.',
+            "The alert_color option of the Alert card was renamed.",
+            "Climate entities no longer expose the old preset actions.",
+        ],
+    )
+    def test_ordinary_bc_has_none(self, body):
+        from utils.ha.update_bc_evidence import _outside_evidence
+
+        assert _outside_evidence(body) == []
+
+    def test_evidence_line_rendered(self):
+        from utils.knowledge.ha_release_report import BCEvidence, _evidence_lines
+
+        lines = _evidence_lines(
+            BCEvidence(
+                domains=["auth"],
+                is_core_component=True,
+                outside_evidence=["how Home Assistant is reached"],
+            )
+        )
+        assert (
+            "Outside the evidence (only the user knows): how Home Assistant is reached"
+            in lines
+        )
+
+    def test_no_line_when_empty(self):
+        from utils.knowledge.ha_release_report import BCEvidence, _evidence_lines
+
+        lines = _evidence_lines(BCEvidence(domains=["auth"], is_core_component=True))
+        assert not any(line.startswith("Outside the evidence") for line in lines)
+
+    def test_seed_names_the_evidence_line(self):
+        from pathlib import Path
+
+        seed = (
+            Path(__file__).parent.parent / "prompts" / "seed_update_bc.md"
+        ).read_text("utf-8")
+        assert (
+            'An "Outside the\n   evidence (only the user knows)" line means yes' in seed
+        )
+
 
 class TestBCEvidenceInReport:
     """Tests for BCEvidence integration with CoreReleaseReport and digest."""
