@@ -1467,6 +1467,8 @@ async def _run_update_analysis(
                                 max_tool_calls=3,
                                 distill=False,
                                 think=False,
+                                limit_review=False,
+                                num_predict=500,
                             )
                             _screen_result = await _screen_loop.run(
                                 (
@@ -1642,6 +1644,8 @@ async def _run_update_analysis(
                                 max_tool_calls=6,
                                 distill=False,
                                 think=False,
+                                limit_review=False,
+                                num_predict=500,
                             )
                             _assess_result = await _assess_loop.run(
                                 _bc_context,

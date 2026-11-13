@@ -11,10 +11,12 @@ class TestOllamaClientChatLogging:
     """OllamaClient.chat() emits llm_request/llm_response DEBUG events."""
 
     def _make_client(self, monkeypatch):
-        """Return an OllamaClient with the underlying ollama.Client stubbed out."""
+        """Return an OllamaClient with the underlying ollama.AsyncClient stubbed out."""
         import ollama
 
-        monkeypatch.setattr(ollama, "Client", lambda host: unittest.mock.MagicMock())
+        monkeypatch.setattr(
+            ollama, "AsyncClient", lambda host: unittest.mock.MagicMock()
+        )
         # Re-import after patching so __init__ picks up the mock
         import importlib
         import utils.llm.ollama_client as mod
@@ -23,7 +25,7 @@ class TestOllamaClientChatLogging:
         client = mod.OllamaClient()
         fake_resp = unittest.mock.MagicMock()
         fake_resp.message.content = '{"field": "val"}'
-        client._client.chat.return_value = fake_resp
+        client._client.chat = unittest.mock.AsyncMock(return_value=fake_resp)
         return client
 
     def test_chat_emits_llm_request_and_response(self, monkeypatch, caplog):
@@ -163,7 +165,9 @@ class TestOllamaClientChatWithToolsLogging:
     def _make_client(self, monkeypatch):
         import ollama
 
-        monkeypatch.setattr(ollama, "Client", lambda host: unittest.mock.MagicMock())
+        monkeypatch.setattr(
+            ollama, "AsyncClient", lambda host: unittest.mock.MagicMock()
+        )
         import importlib
         import utils.llm.ollama_client as mod
 
@@ -177,7 +181,7 @@ class TestOllamaClientChatWithToolsLogging:
         fake_resp.message.tool_calls = [fake_tc]
         fake_resp.eval_duration = None
         fake_resp.load_duration = None
-        client._client.chat.return_value = fake_resp
+        client._client.chat = unittest.mock.AsyncMock(return_value=fake_resp)
         return client
 
     def test_chat_with_tools_emits_request_full(self, monkeypatch, caplog):
@@ -237,7 +241,9 @@ class TestOllamaClientChatThink:
     def _make_client(self, monkeypatch):
         import ollama
 
-        monkeypatch.setattr(ollama, "Client", lambda host: unittest.mock.MagicMock())
+        monkeypatch.setattr(
+            ollama, "AsyncClient", lambda host: unittest.mock.MagicMock()
+        )
         import importlib
         import utils.llm.ollama_client as mod
 
@@ -246,7 +252,7 @@ class TestOllamaClientChatThink:
         fake_resp = unittest.mock.MagicMock()
         fake_resp.message.content = '{"ok": true}'
         fake_resp.done_reason = "stop"
-        client._client.chat.return_value = fake_resp
+        client._client.chat = unittest.mock.AsyncMock(return_value=fake_resp)
         return client
 
     def test_think_false_passed_to_ollama(self, monkeypatch):
@@ -283,7 +289,9 @@ class TestOllamaClientChatThink:
         """chat() logs one_shot_truncated at WARNING when done_reason='length'."""
         import ollama
 
-        monkeypatch.setattr(ollama, "Client", lambda host: unittest.mock.MagicMock())
+        monkeypatch.setattr(
+            ollama, "AsyncClient", lambda host: unittest.mock.MagicMock()
+        )
         import importlib
         import utils.llm.ollama_client as mod
 
@@ -294,7 +302,7 @@ class TestOllamaClientChatThink:
         fake_resp.message.thinking = "lots of thinking..."
         fake_resp.done_reason = "length"
         fake_resp.eval_count = 1024
-        client._client.chat.return_value = fake_resp
+        client._client.chat = unittest.mock.AsyncMock(return_value=fake_resp)
 
         monkeypatch.setattr(logging.getLogger("pueo"), "propagate", True)
         with caplog.at_level(logging.WARNING, logger="pueo.llm.ollama"):
@@ -357,7 +365,9 @@ class TestOllamaClientTokenCounts:
     def _make_client_with_token_counts(self, monkeypatch, input_tokens, output_tokens):
         import ollama
 
-        monkeypatch.setattr(ollama, "Client", lambda host: unittest.mock.MagicMock())
+        monkeypatch.setattr(
+            ollama, "AsyncClient", lambda host: unittest.mock.MagicMock()
+        )
         import importlib
         import utils.llm.ollama_client as mod
 
@@ -370,7 +380,7 @@ class TestOllamaClientTokenCounts:
         fake_resp.load_duration = None
         fake_resp.prompt_eval_count = input_tokens
         fake_resp.eval_count = output_tokens
-        client._client.chat.return_value = fake_resp
+        client._client.chat = unittest.mock.AsyncMock(return_value=fake_resp)
         return client
 
     def test_token_counts_present_in_ollama_timing(self, monkeypatch):
@@ -391,7 +401,9 @@ class TestOllamaClientTokenCounts:
         """When Ollama does not return token counts, _ollama_timing values are None."""
         import ollama
 
-        monkeypatch.setattr(ollama, "Client", lambda host: unittest.mock.MagicMock())
+        monkeypatch.setattr(
+            ollama, "AsyncClient", lambda host: unittest.mock.MagicMock()
+        )
         import importlib
         import utils.llm.ollama_client as mod
 
@@ -401,7 +413,7 @@ class TestOllamaClientTokenCounts:
         fake_resp.message = unittest.mock.MagicMock()
         fake_resp.message.content = "answer"
         fake_resp.message.tool_calls = []
-        client._client.chat.return_value = fake_resp
+        client._client.chat = unittest.mock.AsyncMock(return_value=fake_resp)
         result = asyncio.run(
             client.chat_with_tools(
                 model="m",

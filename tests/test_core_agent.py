@@ -13973,7 +13973,7 @@ class TestAgentLoop:
                 self._review_json = review_json
                 self.review_calls = 0
 
-            async def chat(self, model, messages, options, format):
+            async def chat(self, model, messages, options, format, think=None):
                 self.review_calls += 1
                 return {"message": {"content": self._review_json}}
 
@@ -14066,6 +14066,52 @@ class TestAgentLoop:
         assert client.review_calls >= 1
         assert result.episode_stub is not None
         assert result.episode_stub.get("summary") == "no fix found"
+
+    def test_limit_review_skipped_when_disabled(self):
+        """AgentLoop(limit_review=False) returns exhausted without calling the LLM review."""
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import ToolDefinition, ToolRegistry
+
+        read_call = {
+            "tool_calls": [{"function": {"name": "read_config", "arguments": {}}}]
+        }
+        loop, client = self._make_review_loop(
+            call_sequence=[read_call, read_call],
+            review_response_json="{}",
+            budget=1,
+        )
+        # Rebuild loop with limit_review=False
+        from utils.agent.agent_loop import AgentLoop
+
+        reg = ToolRegistry()
+        for name in ("read_config", "finish_repair"):
+            reg.register(
+                ToolDefinition(
+                    name=name,
+                    description=f"{name}",
+                    parameters={"type": "object", "properties": {}, "required": []},
+                )
+            )
+        loop2 = AgentLoop(
+            llm_client=client,
+            tool_executor=ToolExecutor(
+                ha_ssh_client=FakeSSHClient(),
+                gate=FakeAutonomyGate(auto_execute_result=True, approval_result=True),
+                notifier=FakeNotifier(approve=True),
+            ),
+            tool_registry=reg,
+            max_tool_calls=1,
+            limit_review=False,
+        )
+        result = asyncio.run(loop2.run("Check config"))
+        assert result.outcome == "exhausted"
+        # Review must not have been called (index was reset to 0 by _make_review_loop
+        # and read_call consumed 1 slot; review never fires because limit_review=False)
+        assert client.review_calls == 0
 
     def test_absolute_max_prevents_runaway_extension(self):
         """AGENT_MAX_TOTAL_CALLS caps the total even when LLM keeps requesting more."""
