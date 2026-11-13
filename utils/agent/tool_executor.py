@@ -6603,6 +6603,31 @@ class ToolExecutor:
                 error=str(exc),
             )
 
+    def adopt_core_release_report(self, rpt: Any) -> None:
+        """Record a CoreReleaseReport whose digest the model has been given.
+
+        Called when ``get_update_release_notes`` returns the digest and when the
+        update manager pre-injects it on the slim path, where the model may
+        finish without calling that tool (#1211).  Notes completeness comes from
+        the deterministic report only; a partial screening pass is tracked
+        separately (#1148).
+        """
+        if rpt.completeness == "complete":
+            self._release_notes_completeness = "complete"
+            if not rpt.screening_complete:
+                self._screening_gap = (
+                    rpt.screening_batches_done,
+                    rpt.screening_batches_total,
+                )
+        else:
+            self._release_notes_completeness = "incomplete"
+        self._report_highlights = [
+            f"{h.domain}: {h.feature}" for h in rpt.screening_highlights[:5]
+        ]
+        self._installed_bc_found = bool(rpt.bc_installed)
+        self._core_report_blog_url = rpt.blog_url
+        self._core_release_report = rpt
+
     async def _get_update_release_notes(self, target_version: str) -> ToolResult:
         """Fetch release notes for a specific HA version or HACS/App update."""
         if not target_version:
@@ -6697,24 +6722,7 @@ class ToolExecutor:
                                 f"current installed {_pending_iv!r}"
                             )
                         digest = format_core_release_digest(_rpt)
-                        # Notes completeness comes from the deterministic report only;
-                        # a partial screening pass is tracked separately (#1148).
-                        if _rpt.completeness == "complete":
-                            self._release_notes_completeness = "complete"
-                            if not _rpt.screening_complete:
-                                self._screening_gap = (
-                                    _rpt.screening_batches_done,
-                                    _rpt.screening_batches_total,
-                                )
-                        else:
-                            self._release_notes_completeness = "incomplete"
-                        self._report_highlights = [
-                            f"{h.domain}: {h.feature}"
-                            for h in _rpt.screening_highlights[:5]
-                        ]
-                        self._installed_bc_found = bool(_rpt.bc_installed)
-                        self._core_report_blog_url = _rpt.blog_url
-                        self._core_release_report = _rpt
+                        self.adopt_core_release_report(_rpt)
                         if not digest.strip():
                             digest = "Release report built but no relevant changes found for installed integrations."
                         return ToolResult(

@@ -1210,8 +1210,13 @@ async def _resolve_addon_slug(
 
 # Per-BC sessions share the update entity as subject_key, so earlier analyses of
 # the same pending update would be injected as "Previous investigations" and
-# anchor the verdict to a stale conclusion (#1209).
-_BC_EXCLUDED_PRIOR_SESSION_TYPES = ("update_analysis", "bc_assessment")
+# anchor the verdict to a stale conclusion (#1209).  Screening batches write
+# rows under the same key with no conclusion, which is noise (#1211).
+_BC_EXCLUDED_PRIOR_SESSION_TYPES = (
+    "update_analysis",
+    "bc_assessment",
+    "change_screening",
+)
 
 
 def _bc_session_outcome(
@@ -1774,6 +1779,9 @@ async def _run_update_analysis(
                     + "\n\n## Pre-computed BC assessment results\n\n"
                     + _digest
                 )
+                # The model now has the notes and may finish without calling
+                # get_update_release_notes, so record them as obtained (#1211).
+                executor.adopt_core_release_report(_rpt)
 
         _analyse_wq = get_work_queue_or_none()
         if _analyse_wq is not None:
