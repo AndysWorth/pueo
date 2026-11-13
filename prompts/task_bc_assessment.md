@@ -4,17 +4,22 @@ Your terminal tool is {terminal_tool}. Call it once after reviewing the evidence
 
 Steps:
 1. Read the BC name, body, and Evidence block provided in the initial context.
-2. Judge from the Evidence block: **yes**, **no**, or **unknown**.
-   - `yes`: entity of the right type confirmed, config key present, or automation/dashboard hit confirmed.
-   - `no`: entity count is zero, config key is absent, tokens searched returned 0 hits, or the Evidence block explicitly states absence (e.g. "Multi-channel devices: none", "YAML key: absent").
-   - `unknown`: evidence is insufficient (general BC with no installation-specific evidence, cloud/device-only change, or install type cannot rule it out).
+2. Judge from the Evidence block and call `{terminal_tool}` with one of:
+   - **`no_action`**: confirmed not affected — entity count is zero **and** the config
+     key named in the BC is absent **and** token searches returned 0 hits.  Also
+     `no_action` for HAOS installs when the BC concerns Python environment or pip
+     dependencies.
+   - **`action_needed`**: a concrete change is confirmed necessary.  Set `action`
+     (what to do) and `when` (`before_update` or `after_update`).
+   - **`user_check`**: only the user can verify (browser behaviour, remote access,
+     device firmware, cloud account, Zigbee/BLE radio) **and** absence cannot be
+     confirmed from the evidence.  Set `user_question` — a concrete yes/no question.
 3. The Evidence block is complete. Do not reason about what might still need checking — judge only from what is stated.
-4. Call `{terminal_tool}` with your verdict.
-
-## Verdict rules (seeds own these — do not add verdict rules to task prompts)
+4. `no_action` beats `user_check` when all evidence is absent (zero count, absent
+   key, zero token hits) — even for browser or device-dependent BCs.
 
 ## Forbidden
 
 - Do not call any tools before `{terminal_tool}`.
-- Do not judge `yes` from entity count alone; entity *type* must match the BC.
-- Device-dependent or browser-only BCs are always `unknown`.
+- Do not judge `action_needed` from entity count alone; entity *type* must match the BC.
+- `not_assessed` is set by code, never by you.
