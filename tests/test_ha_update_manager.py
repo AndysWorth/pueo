@@ -7519,6 +7519,30 @@ class TestBCEvidenceTokenExtractor:
         assert '"None"' not in tokens
         assert '"off"' not in tokens
 
+    def test_key_value_pair_extracted_for_state_word(self):
+        """'set the effect to "None"' is searched as the pair, not the bare word (#1211)."""
+        from utils.ha.update_bc_evidence import _extract_tokens
+
+        tokens = _extract_tokens(
+            "Philips Hue",
+            'Update automations and scripts that set the effect to "None" so'
+            ' that they use "off" instead.',
+        )
+        assert "effect: None" in tokens
+        assert '"None"' not in tokens
+        # The replacement value is not something to search for.
+        assert "effect: off" not in tokens
+
+    def test_key_value_pair_skips_generic_and_secret_keys(self):
+        from utils.ha.update_bc_evidence import _extract_tokens
+
+        tokens = _extract_tokens(
+            "General",
+            'Set the state to "idle" and the password to "hunter2".',
+        )
+        assert "state: idle" not in tokens
+        assert not any(t.startswith("password:") for t in tokens)
+
     def test_quoted_technical_value_extracted(self):
         from utils.ha.update_bc_evidence import _extract_tokens
 
@@ -8105,6 +8129,53 @@ class TestBCEvidenceDashboardSearch:
         config = {"views": [{"cards": [{"type": "alert", "entity": "sensor.x"}]}]}
         hits = _search_dashboards(["type: alert", "other_key"], [("lovelace", config)])
         assert any("type: alert" in h for h in hits)
+
+    def test_key_value_token_hit_in_dashboard_json(self):
+        from utils.ha.update_bc_evidence import _search_dashboards
+
+        config = {"views": [{"cards": [{"data": {"effect": "None"}}]}]}
+        hits = _search_dashboards(["effect: None"], [("lovelace", config)])
+        assert hits == ["dashboard:lovelace:effect: None"]
+
+    def test_key_value_search_terms_cover_yaml_quoting(self):
+        from utils.ha.update_bc_evidence import _token_to_search_terms
+
+        assert _token_to_search_terms("effect: None") == [
+            '"effect": "None"',
+            "effect: None",
+            'effect: "None"',
+            "effect: 'None'",
+        ]
+        assert _token_to_search_terms('"unique_id"') == ["unique_id"]
+        assert _token_to_search_terms("offset_type") == ["offset_type"]
+
+    @pytest.mark.parametrize(
+        "line, expect_hit",
+        [
+            ("      effect: None\n", True),
+            ('      effect: "None"\n', True),
+            ("      effect: 'None'\n", True),
+            ("      effect: colorloop\n", False),
+        ],
+    )
+    def test_key_value_token_grep_real_shell(
+        self, tmp_path, monkeypatch, line, expect_hit
+    ):
+        """The automation grep finds every YAML spelling of the value (#1211)."""
+        import asyncio
+
+        import utils.ha.update_bc_evidence as ev
+
+        (tmp_path / "automations.yaml").write_text("- action: light.turn_on\n" + line)
+        monkeypatch.setattr(
+            ev,
+            "_AUTOMATION_PATHS",
+            (str(tmp_path / "automations.yaml"), str(tmp_path / "missing")),
+        )
+        hits = asyncio.run(ev._grep_automation_yaml(["effect: None"], _LocalShellSSH()))
+        assert bool(hits) is expect_hit
+        if expect_hit:
+            assert hits[0].endswith("[effect: None]")
 
     def test_no_match_returns_empty(self):
         from utils.ha.update_bc_evidence import _search_dashboards
@@ -8863,6 +8934,68 @@ class TestUpdateAnalysisSlimPath:
         assert "## Pre-computed BC assessment results" in ctx_with_digest
         assert "MQTT" in ctx_with_digest
 
+    def _report(self, **kw):
+        from utils.knowledge.ha_release_report import (
+            BCEntry,
+            CoreReleaseReport,
+            ScreeningHighlight,
+        )
+
+        fields = dict(
+            version="2026.11.1",
+            installed_version="2026.10.4",
+            blog_url="https://www.home-assistant.io/blog/2026/11/04/release-202611/",
+            bc_installed=[BCEntry(name="MQTT", body="b", domains=["mqtt"])],
+            screening_highlights=[ScreeningHighlight(domain="mqtt", feature="New")],
+            screening_complete=True,
+            completeness="complete",
+        )
+        fields.update(kw)
+        return CoreReleaseReport(**fields)
+
+    def test_adopt_complete_report_marks_notes_obtained(self):
+        """Pre-injecting the digest counts as release notes obtained (#1211)."""
+        executor = _bc_executor(None)
+        assert executor._release_notes_completeness != "complete"
+        rpt = self._report()
+
+        executor.adopt_core_release_report(rpt)
+
+        assert executor._release_notes_completeness == "complete"
+        assert executor._screening_gap is None
+        assert executor._installed_bc_found is True
+        assert executor._report_highlights == ["mqtt: New"]
+        assert executor._core_report_blog_url == rpt.blog_url
+        assert executor._core_release_report is rpt
+
+    def test_adopt_complete_report_with_partial_screening_sets_gap(self):
+        executor = _bc_executor(None)
+        executor.adopt_core_release_report(
+            self._report(
+                screening_complete=False,
+                screening_batches_done=2,
+                screening_batches_total=5,
+            )
+        )
+        assert executor._release_notes_completeness == "complete"
+        assert executor._screening_gap == (2, 5)
+
+    def test_adopt_incomplete_report_keeps_notes_incomplete(self):
+        executor = _bc_executor(None)
+        executor.adopt_core_release_report(
+            self._report(completeness="incomplete", screening_complete=False)
+        )
+        assert executor._release_notes_completeness == "incomplete"
+        assert executor._screening_gap is None
+
+    def test_slim_path_adopts_report_when_digest_injected(self):
+        import inspect
+
+        import agents.ha_update_manager as um
+
+        src = inspect.getsource(um._run_update_analysis)
+        assert "executor.adopt_core_release_report(_rpt)" in src
+
     def test_full_registry_still_has_bc_verdicts(self):
         """build_update_analysis_registry (non-slim) still has bc_verdicts for
         the fallback path when BC assessments have not been run."""
@@ -9130,6 +9263,7 @@ class TestFinishBCAssessment:
         assert set(um._BC_EXCLUDED_PRIOR_SESSION_TYPES) == {
             "update_analysis",
             "bc_assessment",
+            "change_screening",
         }
         src = inspect.getsource(um._run_update_analysis)
         assert "_BC_EXCLUDED_PRIOR_SESSION_TYPES" in src
@@ -9147,6 +9281,11 @@ class TestFinishBCAssessment:
         # The seed owns the rule that absence of evidence does not settle
         # browser / remote-access BCs.
         assert "do **not** settle" in seed
+        # A core component's own config key is not proof, and a user-only
+        # question ends the decision (#1211).
+        assert "steps 2–4 do not apply" in seed
+        assert "only names\n   the component itself" in seed
+        assert "not a question for the user" in seed
 
     def test_assessment_gap_set_when_bc_session_fails(self, pueo_dirs):
         """When all assessment attempts fail, _bc_assessment_gap is set and BC gets not_assessed."""

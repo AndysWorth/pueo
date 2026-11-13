@@ -80,6 +80,10 @@ _SERVICE_CALL_RE = re.compile(r"\b([a-z_]{2,})\.([a-z_]{2,})\b")
 _YAML_KEY_RE = re.compile(r"\b([a-z][a-z]*_[a-z_]+)\b")
 _QUOTED_VALUE_RE = re.compile(r'"([^"]{2,25})"')
 _TEMPLATE_FN_RE = re.compile(r"\b([a-z_]{5,})\s*\(")
+# "set the effect to "None"" → key/value pair the BC tells users to change.  The
+# bare value is a state word and far too common to search for; the pair is not.
+_KEY_VALUE_RE = re.compile(r'\b([a-z][a-z_]{2,})\s+to\s+"([^"]{2,25})"')
+_KEY_VALUE_TOKEN_RE = re.compile(r"^([a-z][a-z_]*): (.+)$")
 # Backtick-quoted identifiers (Markdown inline code): captures attribute names like `friendly_name`
 _BACKTICK_IDENT_RE = re.compile(r"`([a-z][a-z0-9_]{2,30})`")
 
@@ -139,6 +143,17 @@ def _extract_tokens(bc_name: str, bc_body: str) -> list[str]:
         if val.replace(" ", "").isalpha() and "_" not in val and "." not in val:
             continue
         tokens.add(f'"{val}"')
+
+    # Key/value pairs: 'set the effect to "None"' → "effect: None".  A quoted
+    # state word is skipped below as too common, but paired with its key it is
+    # exactly what the BC tells users to look for (#1211).
+    for m in _KEY_VALUE_RE.finditer(bc_body):
+        key, val = m.group(1), m.group(2).strip()
+        if not val or key in _SKIP_KEYS:
+            continue
+        if any(w in (key + val).lower() for w in _EXCLUDE_WORDS):
+            continue
+        tokens.add(f"{key}: {val}")
 
     # Card types: "Alert card" → "type: alert" (capitalised non-article word only)
     for m in _CARD_TYPE_RE.finditer(bc_body):
@@ -241,10 +256,17 @@ def _token_to_search_terms(token: str) -> list[str]:
     ``type: alert`` form so YAML-mode and storage-mode dashboards are both covered.
     Quoted-value tokens like ``"None"`` are searched as ``None`` (the raw value).
     """
-    # Card type token: "type: alert" → also try JSON form
-    if token.startswith("type: "):
-        word = token[len("type: ") :]
-        return [f'"type": "{word}"', token]
+    # Key/value token ("type: alert", "effect: None") → JSON form for
+    # storage-mode dashboards, then the bare and quoted YAML forms.
+    kv = _KEY_VALUE_TOKEN_RE.match(token)
+    if kv:
+        key, val = kv.group(1), kv.group(2)
+        return [
+            f'"{key}": "{val}"',
+            token,
+            f'{key}: "{val}"',
+            f"{key}: '{val}'",
+        ]
     # Quoted value: strip the quotes for the actual string search
     if token.startswith('"') and token.endswith('"'):
         return [token[1:-1]]
@@ -297,6 +319,13 @@ async def _grep_automation_yaml(
         search = token.strip('"')
         if not search or len(search) < 3:
             continue
+        # A key/value token is searched in every YAML spelling of the value.
+        terms = (
+            _token_to_search_terms(token)
+            if _KEY_VALUE_TOKEN_RE.match(token)
+            else [search]
+        )
+        patterns = " ".join(f"-e {shlex.quote(t)}" for t in terms)
         script = (
             "set -f\nIFS='\n'\nset --\n"
             f"for p in {path_args}; do "
@@ -304,7 +333,7 @@ async def _grep_automation_yaml(
             "[ $# -eq 0 ] && exit 1\n"
             f"files=$(find \"$@\" -type f -name '*.yaml' {excludes})\n"
             '[ -z "$files" ] && exit 1\n'
-            f"grep -nH -F -e {shlex.quote(search)} -- $files 2>/dev/null\n"
+            f"grep -nH -F {patterns} -- $files 2>/dev/null\n"
         )
         try:
             rc, stdout, _stderr = await ssh_client.run(

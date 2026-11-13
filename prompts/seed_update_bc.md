@@ -27,16 +27,19 @@ Call `finish_bc_assessment` with one of:
    browsers or tablets open the UI, how Home Assistant is reached from outside
    the home (public IP, VPN, reverse proxy), device firmware versions,
    cloud-service accounts, BLE/Zigbee radio capabilities.  If yes → `user_check`
-   with a question about exactly that thing.  Zero entities, "core component (no
-   entities)" and 0 search hits do **not** settle these: the evidence never
-   contains browser or network-access facts, so their absence proves nothing.
+   with a question about exactly that thing, and stop: steps 2–4 do not apply.
+   Zero entities, "core component (no entities)", a "Config keys present" line
+   and 0 search hits do **not** settle these: the evidence never contains
+   browser or network-access facts, so nothing in it proves or disproves them.
 2. **Python environment or pip-dependency BCs** on an HAOS install → `no_action`.
    HAOS manages Python.
 3. **Is there an evidence line proving this install uses the thing that
    changes?**  Proof is one of: a "Config refs" / "Dashboard refs" line, a
    "Tokens checked (N/M hit)" line with N > 0, or a "Config keys present" line
    naming the YAML key the BC changes.  Only then → `action_needed`, and the
-   `reason` must quote that line.
+   `reason` must quote that line.  A "Config keys present" line that only names
+   the component itself (`frontend`, `http`, `auth`) is not proof: it shows the
+   component is configured, not that the configuration uses what changes.
 4. **Otherwise → `no_action`.**  This covers:
    - the entity type the BC names shows 0 under "By type" / "No entities of
      type", however many other entities the integration has;
@@ -54,6 +57,9 @@ Call `finish_bc_assessment` with one of:
   affected.  The verdict is `no_action`.
 - A BC about dashboard card options or YAML syntax is settled by the token
   search; it is not a browser question.
+- A BC that tells users to change a value in automations or scripts is also
+  settled by the token search.  "Searched … — 0 hits" means no automation,
+  script or dashboard uses it → `no_action`, not a question for the user.
 - Never write a reason that contradicts the verdict.  If the reason says the
   affected type is absent, the verdict is `no_action`.
 
