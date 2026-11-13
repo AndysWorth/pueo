@@ -361,6 +361,13 @@ def _screening_gap_prefix(gap: tuple[int | None, int | None] | None) -> str:
     )
 
 
+_AFFECTS_TO_VERDICT = {
+    "yes": "action_needed",
+    "no": "no_action",
+    "unknown": "user_check",
+}
+
+
 def _normalize_bc_verdicts(
     bc_verdicts_raw: Optional[list],
     all_bc_names: list[str],
@@ -368,8 +375,11 @@ def _normalize_bc_verdicts(
     """Normalise LLM bc_verdicts against canonical BC names from the report.
 
     Fuzzy-matches each raw verdict to a canonical name, fills missing BCs as
-    unknown, and drops verdicts for BCs not in the report.
+    not_assessed, and drops verdicts for BCs not in the report.
     Returns entries in report order.
+
+    Accepts both new-style dicts with 'verdict' and old-style with 'affects'
+    (backward compat for reports persisted before S3).
     """
     if not all_bc_names:
         return []
@@ -392,17 +402,33 @@ def _normalize_bc_verdicts(
                         best_len = match_len
                         canonical = cname
         if canonical and canonical not in matched:
-            matched[canonical] = {
-                "bc": canonical,
-                "affects": str(v.get("affects", "unknown")),
-                "reason": str(v.get("reason", "")),
-            }
+            # Accept new-style 'verdict' or old-style 'affects' (backward compat).
+            if "verdict" in v:
+                entry: dict = {
+                    "bc": canonical,
+                    "verdict": str(v["verdict"]),
+                    "reason": str(v.get("reason", "")),
+                }
+                for opt in ("action", "when", "user_question", "config_fix"):
+                    if v.get(opt):
+                        entry[opt] = v[opt]
+            else:
+                entry = {
+                    "bc": canonical,
+                    "verdict": _AFFECTS_TO_VERDICT.get(
+                        str(v.get("affects", "unknown")), "user_check"
+                    ),
+                    "reason": str(v.get("reason", "")),
+                }
+            matched[canonical] = entry
     result = []
     for name in all_bc_names:
         if name in matched:
             result.append(matched[name])
         else:
-            result.append({"bc": name, "affects": "unknown", "reason": "not assessed"})
+            result.append(
+                {"bc": name, "verdict": "not_assessed", "reason": "not assessed"}
+            )
     return result
 
 
@@ -460,14 +486,58 @@ def _derive_instance_impact(
     """Derive instance_impact from normalised bc_verdicts.
 
     Flags are informational only and never raise impact (ADR 056 S3).
-    any BC 'yes' → 'high'; BC 'unknown' → 'low'; else 'none'.
+
+    New verdict semantics (S3):
+    - action_needed + before_update (or no when) → high
+    - action_needed + after_update only → low
+    - user_check or not_assessed only → low
+    - all no_action → none
+
+    Old verdict semantics (backward compat via affects field):
+    - yes → high, unknown → low, no → none
     """
-    bc_affects = {v.get("affects") for v in bc_verdicts}
-    if "yes" in bc_affects:
+    has_before = False
+    has_after_only = False
+    has_user_check = False
+    for v in bc_verdicts:
+        verdict = v.get("verdict")
+        if verdict == "action_needed":
+            when = v.get("when")
+            if when == "after_update":
+                has_after_only = True
+            else:
+                has_before = True  # before_update or unspecified — conservative
+        elif verdict in ("user_check", "not_assessed"):
+            has_user_check = True
+    if has_before:
         return "high"
-    if "unknown" in bc_affects:
+    if has_after_only:
+        return "low"
+    if has_user_check:
         return "low"
     return "none"
+
+
+def _derive_recommendation(bc_verdicts: list[dict]) -> str:
+    """Derive a human-readable recommendation from normalised bc_verdicts."""
+    has_before = any(
+        v.get("verdict") == "action_needed" and v.get("when") != "after_update"
+        for v in bc_verdicts
+    )
+    has_after = any(
+        v.get("verdict") == "action_needed" and v.get("when") == "after_update"
+        for v in bc_verdicts
+    )
+    has_user_check = any(
+        v.get("verdict") in ("user_check", "not_assessed") for v in bc_verdicts
+    )
+    if has_before:
+        return "Fix before updating — see breaking changes below."
+    if has_after:
+        return "Update, then follow up on action items."
+    if has_user_check:
+        return "Check the items below before deciding to update."
+    return "Safe to update."
 
 
 def _update_card_is_pending(suppression_key: str, db_path: str) -> bool:
@@ -6312,19 +6382,30 @@ class ToolExecutor:
 
     def _finish_bc_assessment(
         self,
-        affects: str,
-        reason: str,
-        evidence_cited: Optional[list] = None,
+        verdict: Optional[str] = None,
+        reason: str = "",
+        action: Optional[str] = None,
+        when: Optional[str] = None,
+        user_question: Optional[str] = None,
         config_fix: Optional[dict] = None,
+        # Backward compat: old 'affects' field from pre-S3 prompts
+        affects: Optional[str] = None,
         **_extra: Any,
     ) -> ToolResult:
         """Store a per-BC verdict from one assessment session.
 
+        Accepts new-style 'verdict' (action_needed/no_action/user_check) or
+        old-style 'affects' (yes/no/unknown) for backward compat.
+
         config_fix is kept only when its ``old`` text is found verbatim in a
-        successful tool output of this session (grounding check).  An ungrounded
-        fix is logged and dropped.
+        successful tool output of this session (grounding check).
         """
         bc_name = self._current_bc_name or "unknown"
+        # Translate old-style affects to new-style verdict if verdict not given.
+        if not verdict and affects:
+            verdict = _AFFECTS_TO_VERDICT.get(str(affects), "user_check")
+        if not verdict:
+            verdict = "user_check"
         grounded_fix: Optional[dict] = None
         if config_fix and isinstance(config_fix, dict):
             old_text = str(config_fix.get("old", ""))
@@ -6342,16 +6423,24 @@ class ToolExecutor:
                     bc=bc_name,
                     old_text=old_text[:80] if old_text else "",
                 )
-        self._bc_assessments[bc_name] = {
+        entry: dict = {
             "bc": bc_name,
-            "affects": str(affects),
+            "verdict": str(verdict),
             "reason": str(reason),
-            **({"config_fix": grounded_fix} if grounded_fix else {}),
         }
+        if action:
+            entry["action"] = str(action)
+        if when:
+            entry["when"] = str(when)
+        if user_question:
+            entry["user_question"] = str(user_question)
+        if grounded_fix:
+            entry["config_fix"] = grounded_fix
+        self._bc_assessments[bc_name] = entry
         return ToolResult(
             tool_name="finish_bc_assessment",
             success=True,
-            output=f"BC '{bc_name}' assessed: {affects}.",
+            output=f"BC '{bc_name}' assessed: {verdict}.",
         )
 
     def clear_screening_state(self) -> None:
@@ -6900,12 +6989,13 @@ class ToolExecutor:
         if _normalized_verdicts:
             instance_impact = _derive_instance_impact(_normalized_verdicts)
             safe_to_update = instance_impact != "high"
-            # When verdicts exist, breaking_changes comes only from BC verdicts —
-            # never from model free text, so flags cannot be relabelled as BCs.
+            recommendation = _derive_recommendation(_normalized_verdicts)
+            # When verdicts exist, breaking_changes lists BCs that need attention —
+            # action_needed, user_check, or not_assessed (never model free text).
             breaking_changes = [
                 v["bc"]
                 for v in _normalized_verdicts
-                if v["affects"] in ("yes", "unknown")
+                if v.get("verdict") in ("action_needed", "user_check", "not_assessed")
             ]
             # Collect grounded config fixes from per-BC assessments.
             if self._bc_assessments:
@@ -7206,19 +7296,28 @@ class ToolExecutor:
         if update.release_summary:
             body_parts.append(f"Summary: {update.release_summary}")
         if _normalized_verdicts:
-            _yes_bcs = [v["bc"] for v in _normalized_verdicts if v["affects"] == "yes"]
-            _unk_bcs = [
-                v["bc"] for v in _normalized_verdicts if v["affects"] == "unknown"
+            _before_bcs = [
+                v["bc"]
+                for v in _normalized_verdicts
+                if v.get("verdict") == "action_needed"
+                and v.get("when") != "after_update"
             ]
-            if _yes_bcs:
-                body_parts.append(f"⚠️ Affects this install: {', '.join(_yes_bcs)}")
-                if not safe_to_update and proposed_config_fixes:
-                    body_parts.append(
-                        "🚫 Config fixes required before updating — see details below."
-                    )
-                elif not safe_to_update:
-                    body_parts.append("Review the items below before updating.")
-            elif _unk_bcs:
+            _after_bcs = [
+                v["bc"]
+                for v in _normalized_verdicts
+                if v.get("verdict") == "action_needed"
+                and v.get("when") == "after_update"
+            ]
+            _check_bcs = [
+                v["bc"]
+                for v in _normalized_verdicts
+                if v.get("verdict") in ("user_check", "not_assessed")
+            ]
+            if _before_bcs:
+                body_parts.append(f"🚫 Fix before updating: {', '.join(_before_bcs)}")
+                if proposed_config_fixes:
+                    body_parts.append("Config fixes available — see details below.")
+            elif _after_bcs or _check_bcs:
                 body_parts.append(f"Advisory: {advisory} — {recommendation}")
             else:
                 body_parts.append("✅ No breaking changes affect this install.")

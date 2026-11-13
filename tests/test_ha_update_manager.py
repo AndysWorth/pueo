@@ -7323,16 +7323,41 @@ class TestCoreReleaseDigest:
             installed_version="2026.10.4",
             bc_installed=[BCEntry(name="MQTT", body="Some detail.")],
             bc_verdicts=[
+                {
+                    "bc": "MQTT",
+                    "verdict": "action_needed",
+                    "reason": "5 MQTT entities found.",
+                    "when": "before_update",
+                }
+            ],
+        )
+        result = format_core_release_digest(report)
+        assert "MQTT" in result
+        assert "🚫 fix before update" in result
+        assert "5 MQTT entities found" in result
+
+    def test_bc_verdict_table_old_affects_backward_compat(self):
+        """Old-format bc_verdicts with 'affects' field render correctly."""
+        from utils.knowledge.ha_release_report import (
+            BCEntry,
+            format_core_release_digest,
+        )
+
+        report = self._make_report(
+            installed_version="2026.10.4",
+            bc_installed=[BCEntry(name="MQTT", body="Some detail.")],
+            bc_verdicts=[
                 {"bc": "MQTT", "affects": "yes", "reason": "5 MQTT entities found."}
             ],
         )
         result = format_core_release_digest(report)
         assert "MQTT" in result
-        assert "⚠️ yes" in result
         assert "5 MQTT entities found" in result
+        # Old affects='yes' shows ⚠️ yes symbol (backward compat path)
+        assert "⚠️ yes" in result
 
-    def test_bc_verdict_table_unknown_when_no_verdict(self):
-        """BCs with no verdict get ❓ unknown in the table."""
+    def test_bc_verdict_table_not_assessed_when_no_verdict(self):
+        """BCs with no verdict get ⬜ not assessed in the table."""
         from utils.knowledge.ha_release_report import (
             BCEntry,
             format_core_release_digest,
@@ -7343,7 +7368,7 @@ class TestCoreReleaseDigest:
         )
         result = format_core_release_digest(report)
         assert "Hue bridge" in result
-        assert "❓ unknown" in result
+        assert "⬜ not assessed" in result
 
     def test_soft_cap_drops_flags_then_highlights(self):
         """Over 12k: flags dropped first, then highlights if still over."""
@@ -8465,20 +8490,38 @@ class TestBuildBCEvidenceAsync:
 class TestNormalizeBcVerdicts:
     """Unit tests for the bc_verdicts normalization helpers."""
 
-    def test_exact_match_preserved(self):
+    def test_new_verdict_field_preserved(self):
+        from utils.agent.tool_executor import _normalize_bc_verdicts
+
+        result = _normalize_bc_verdicts(
+            [
+                {
+                    "bc": "Tuya entities",
+                    "verdict": "action_needed",
+                    "reason": "3 lights found",
+                    "action": "Remove friendly_name",
+                    "when": "before_update",
+                }
+            ],
+            ["Tuya entities", "Matter sensors"],
+        )
+        assert result[0]["verdict"] == "action_needed"
+        assert result[0]["action"] == "Remove friendly_name"
+        assert result[0]["when"] == "before_update"
+        assert result[0]["bc"] == "Tuya entities"
+
+    def test_old_affects_yes_maps_to_action_needed(self):
+        """Backward compat: old affects='yes' maps to verdict='action_needed'."""
         from utils.agent.tool_executor import _normalize_bc_verdicts
 
         result = _normalize_bc_verdicts(
             [{"bc": "Tuya entities", "affects": "yes", "reason": "3 lights found"}],
-            ["Tuya entities", "Matter sensors"],
+            ["Tuya entities"],
         )
-        assert result[0] == {
-            "bc": "Tuya entities",
-            "affects": "yes",
-            "reason": "3 lights found",
-        }
+        assert result[0]["verdict"] == "action_needed"
+        assert result[0]["reason"] == "3 lights found"
 
-    def test_case_insensitive_match(self):
+    def test_old_affects_no_maps_to_no_action(self):
         from utils.agent.tool_executor import _normalize_bc_verdicts
 
         result = _normalize_bc_verdicts(
@@ -8486,19 +8529,34 @@ class TestNormalizeBcVerdicts:
             ["Tuya entities"],
         )
         assert result[0]["bc"] == "Tuya entities"
-        assert result[0]["affects"] == "no"
+        assert result[0]["verdict"] == "no_action"
+
+    def test_old_affects_unknown_maps_to_user_check(self):
+        from utils.agent.tool_executor import _normalize_bc_verdicts
+
+        result = _normalize_bc_verdicts(
+            [{"bc": "Tuya entities", "affects": "unknown", "reason": "?"}],
+            ["Tuya entities"],
+        )
+        assert result[0]["verdict"] == "user_check"
 
     def test_fuzzy_substring_match(self):
         from utils.agent.tool_executor import _normalize_bc_verdicts
 
         result = _normalize_bc_verdicts(
-            [{"bc": "Matter concentration", "affects": "no", "reason": "no sensors"}],
+            [
+                {
+                    "bc": "Matter concentration",
+                    "verdict": "no_action",
+                    "reason": "no sensors",
+                }
+            ],
             ["Matter concentration sensors"],
         )
         assert result[0]["bc"] == "Matter concentration sensors"
-        assert result[0]["affects"] == "no"
+        assert result[0]["verdict"] == "no_action"
 
-    def test_missing_bc_filled_as_unknown(self):
+    def test_missing_bc_filled_as_not_assessed(self):
         from utils.agent.tool_executor import _normalize_bc_verdicts
 
         result = _normalize_bc_verdicts(
@@ -8508,12 +8566,12 @@ class TestNormalizeBcVerdicts:
         assert len(result) == 2
         assert result[0] == {
             "bc": "Tuya entities",
-            "affects": "unknown",
+            "verdict": "not_assessed",
             "reason": "not assessed",
         }
         assert result[1] == {
             "bc": "Matter sensors",
-            "affects": "unknown",
+            "verdict": "not_assessed",
             "reason": "not assessed",
         }
 
@@ -8521,19 +8579,19 @@ class TestNormalizeBcVerdicts:
         from utils.agent.tool_executor import _normalize_bc_verdicts
 
         result = _normalize_bc_verdicts(
-            [{"bc": "Completely unknown BC", "affects": "no", "reason": ""}],
+            [{"bc": "Completely unknown BC", "verdict": "no_action", "reason": ""}],
             ["Tuya entities"],
         )
-        # Unmatched verdict dropped; Tuya filled as unknown
+        # Unmatched verdict dropped; Tuya filled as not_assessed
         assert len(result) == 1
         assert result[0]["bc"] == "Tuya entities"
-        assert result[0]["affects"] == "unknown"
+        assert result[0]["verdict"] == "not_assessed"
 
     def test_empty_bc_names_returns_empty(self):
         from utils.agent.tool_executor import _normalize_bc_verdicts
 
         result = _normalize_bc_verdicts(
-            [{"bc": "Something", "affects": "yes", "reason": "x"}],
+            [{"bc": "Something", "verdict": "action_needed", "reason": "x"}],
             [],
         )
         assert result == []
@@ -8543,37 +8601,66 @@ class TestNormalizeBcVerdicts:
 
         names = ["Alpha BC", "Beta BC", "Gamma BC"]
         raw = [
-            {"bc": "Beta BC", "affects": "yes", "reason": "y"},
-            {"bc": "Alpha BC", "affects": "no", "reason": "n"},
+            {"bc": "Beta BC", "verdict": "action_needed", "reason": "y"},
+            {"bc": "Alpha BC", "verdict": "no_action", "reason": "n"},
         ]
         result = _normalize_bc_verdicts(raw, names)
         assert [r["bc"] for r in result] == names
-        assert result[2]["affects"] == "unknown"  # Gamma filled
+        assert result[2]["verdict"] == "not_assessed"  # Gamma filled
 
 
 class TestDeriveInstanceImpact:
     """Unit tests for _derive_instance_impact."""
 
-    def test_any_yes_gives_high(self):
+    def test_action_needed_before_update_gives_high(self):
         from utils.agent.tool_executor import _derive_instance_impact
 
         verdicts = [
-            {"affects": "yes"},
-            {"affects": "no"},
-            {"affects": "unknown"},
+            {"verdict": "action_needed", "when": "before_update"},
+            {"verdict": "no_action"},
         ]
         assert _derive_instance_impact(verdicts) == "high"
 
-    def test_only_unknown_gives_low(self):
+    def test_action_needed_no_when_gives_high(self):
+        """action_needed without when is treated conservatively as before_update."""
         from utils.agent.tool_executor import _derive_instance_impact
 
-        verdicts = [{"affects": "unknown"}, {"affects": "no"}]
+        assert _derive_instance_impact([{"verdict": "action_needed"}]) == "high"
+
+    def test_action_needed_after_update_only_gives_low(self):
+        from utils.agent.tool_executor import _derive_instance_impact
+
+        verdicts = [
+            {"verdict": "action_needed", "when": "after_update"},
+            {"verdict": "no_action"},
+        ]
         assert _derive_instance_impact(verdicts) == "low"
 
-    def test_all_no_gives_none(self):
+    def test_mixed_before_and_after_gives_high(self):
         from utils.agent.tool_executor import _derive_instance_impact
 
-        verdicts = [{"affects": "no"}, {"affects": "no"}]
+        verdicts = [
+            {"verdict": "action_needed", "when": "before_update"},
+            {"verdict": "action_needed", "when": "after_update"},
+        ]
+        assert _derive_instance_impact(verdicts) == "high"
+
+    def test_user_check_only_gives_low(self):
+        from utils.agent.tool_executor import _derive_instance_impact
+
+        verdicts = [{"verdict": "user_check"}, {"verdict": "no_action"}]
+        assert _derive_instance_impact(verdicts) == "low"
+
+    def test_not_assessed_only_gives_low(self):
+        from utils.agent.tool_executor import _derive_instance_impact
+
+        verdicts = [{"verdict": "not_assessed"}]
+        assert _derive_instance_impact(verdicts) == "low"
+
+    def test_all_no_action_gives_none(self):
+        from utils.agent.tool_executor import _derive_instance_impact
+
+        verdicts = [{"verdict": "no_action"}, {"verdict": "no_action"}]
         assert _derive_instance_impact(verdicts) == "none"
 
     def test_empty_gives_none(self):
@@ -8585,23 +8672,66 @@ class TestDeriveInstanceImpact:
         """Flags are informational only — do not raise instance_impact."""
         from utils.agent.tool_executor import _derive_instance_impact
 
-        bc = [{"affects": "no"}]
+        bc = [{"verdict": "no_action"}]
         flags = [{"affects": "yes"}]
         assert _derive_instance_impact(bc, flags) == "none"
 
     def test_flag_unknown_alone_gives_none(self):
         from utils.agent.tool_executor import _derive_instance_impact
 
-        bc = [{"affects": "no"}]
+        bc = [{"verdict": "no_action"}]
         flags = [{"affects": "unknown"}]
         assert _derive_instance_impact(bc, flags) == "none"
 
     def test_bc_unknown_plus_flag_unknown_gives_low(self):
         from utils.agent.tool_executor import _derive_instance_impact
 
-        bc = [{"affects": "unknown"}]
+        bc = [{"verdict": "user_check"}]
         flags = [{"affects": "unknown"}]
         assert _derive_instance_impact(bc, flags) == "low"
+
+
+class TestDeriveRecommendation:
+    """Unit tests for _derive_recommendation."""
+
+    def test_before_update_gives_fix_first(self):
+        from utils.agent.tool_executor import _derive_recommendation
+
+        verdicts = [{"verdict": "action_needed", "when": "before_update"}]
+        assert "Fix before updating" in _derive_recommendation(verdicts)
+
+    def test_no_when_gives_fix_first(self):
+        from utils.agent.tool_executor import _derive_recommendation
+
+        verdicts = [{"verdict": "action_needed"}]
+        assert "Fix before updating" in _derive_recommendation(verdicts)
+
+    def test_after_update_only_gives_follow_up(self):
+        from utils.agent.tool_executor import _derive_recommendation
+
+        verdicts = [{"verdict": "action_needed", "when": "after_update"}]
+        assert "follow up" in _derive_recommendation(verdicts)
+
+    def test_user_check_gives_check_first(self):
+        from utils.agent.tool_executor import _derive_recommendation
+
+        verdicts = [{"verdict": "user_check"}, {"verdict": "no_action"}]
+        assert "Check" in _derive_recommendation(verdicts)
+
+    def test_all_no_action_gives_safe(self):
+        from utils.agent.tool_executor import _derive_recommendation
+
+        verdicts = [{"verdict": "no_action"}, {"verdict": "no_action"}]
+        assert "Safe to update" in _derive_recommendation(verdicts)
+
+    def test_before_wins_over_after(self):
+        from utils.agent.tool_executor import _derive_recommendation
+
+        verdicts = [
+            {"verdict": "action_needed", "when": "after_update"},
+            {"verdict": "action_needed", "when": "before_update"},
+        ]
+        assert "Fix before updating" in _derive_recommendation(verdicts)
 
 
 class TestBCAssessmentRegistry:
@@ -8629,16 +8759,20 @@ class TestBCAssessmentRegistry:
         from utils.agent.tool_registry import FINISH_BC_ASSESSMENT
 
         props = FINISH_BC_ASSESSMENT.parameters["properties"]
-        assert "affects" in props
+        assert "verdict" in props
         assert "reason" in props
+        assert "action" in props
+        assert "when" in props
+        assert "user_question" in props
         assert "config_fix" in props
-        assert FINISH_BC_ASSESSMENT.parameters["required"] == ["affects", "reason"]
+        assert FINISH_BC_ASSESSMENT.parameters["required"] == ["verdict", "reason"]
 
-    def test_finish_bc_assessment_affects_enum(self):
+    def test_finish_bc_assessment_verdict_enum(self):
         from utils.agent.tool_registry import FINISH_BC_ASSESSMENT
 
         props = FINISH_BC_ASSESSMENT.parameters["properties"]
-        assert props["affects"]["enum"] == ["yes", "no", "unknown"]
+        assert props["verdict"]["enum"] == ["action_needed", "no_action", "user_check"]
+        assert props["when"]["enum"] == ["before_update", "after_update"]
 
 
 class TestFinishBCAssessment:
@@ -8664,31 +8798,64 @@ class TestFinishBCAssessment:
         executor = self._make_executor()
         executor._current_bc_name = "MQTT"
         result = executor._finish_bc_assessment(
-            affects="no", reason="No MQTT entities found."
+            verdict="no_action", reason="No MQTT entities found."
         )
         assert result.success
         verdicts = executor.get_bc_assessments()
-        assert verdicts["MQTT"]["affects"] == "no"
+        assert verdicts["MQTT"]["verdict"] == "no_action"
         assert verdicts["MQTT"]["reason"] == "No MQTT entities found."
 
-    def test_yes_verdict_stored(self):
+    def test_action_needed_stores_action_and_when(self):
         executor = self._make_executor()
         executor._current_bc_name = "Hue bridge"
-        executor._finish_bc_assessment(affects="yes", reason="Hue bridge present.")
-        assert executor.get_bc_assessments()["Hue bridge"]["affects"] == "yes"
+        executor._finish_bc_assessment(
+            verdict="action_needed",
+            reason="Effect key present.",
+            action="Remove effect: null from Hue automations.",
+            when="before_update",
+        )
+        v = executor.get_bc_assessments()["Hue bridge"]
+        assert v["verdict"] == "action_needed"
+        assert v["action"] == "Remove effect: null from Hue automations."
+        assert v["when"] == "before_update"
 
-    def test_unknown_verdict_stored(self):
+    def test_user_check_stores_question(self):
+        executor = self._make_executor()
+        executor._current_bc_name = "Frontend"
+        executor._finish_bc_assessment(
+            verdict="user_check",
+            reason="Browser behaviour; cannot verify.",
+            user_question="Are all your browsers up to date?",
+        )
+        v = executor.get_bc_assessments()["Frontend"]
+        assert v["verdict"] == "user_check"
+        assert v["user_question"] == "Are all your browsers up to date?"
+
+    def test_old_affects_yes_backward_compat(self):
+        """Old-style affects='yes' accepted and mapped to action_needed."""
+        executor = self._make_executor()
+        executor._current_bc_name = "MQTT"
+        executor._finish_bc_assessment(affects="yes", reason="YAML key present.")
+        assert executor.get_bc_assessments()["MQTT"]["verdict"] == "action_needed"
+
+    def test_old_affects_no_backward_compat(self):
+        executor = self._make_executor()
+        executor._current_bc_name = "Cover changes"
+        executor._finish_bc_assessment(affects="no", reason="None found.")
+        assert executor.get_bc_assessments()["Cover changes"]["verdict"] == "no_action"
+
+    def test_old_affects_unknown_backward_compat(self):
         executor = self._make_executor()
         executor._current_bc_name = "Cover changes"
         executor._finish_bc_assessment(affects="unknown", reason="Cannot determine.")
-        assert executor.get_bc_assessments()["Cover changes"]["affects"] == "unknown"
+        assert executor.get_bc_assessments()["Cover changes"]["verdict"] == "user_check"
 
     def test_config_fix_grounded_when_old_text_in_outputs(self):
         executor = self._make_executor()
         executor._current_bc_name = "MQTT"
         executor._session_outputs.append(("read_config", "old_key: foo\nother: bar"))
         executor._finish_bc_assessment(
-            affects="yes",
+            verdict="action_needed",
             reason="Found old_key.",
             config_fix={
                 "old": "old_key: foo",
@@ -8705,7 +8872,7 @@ class TestFinishBCAssessment:
         executor._current_bc_name = "MQTT"
         # _session_outputs is empty — old text not in any output
         executor._finish_bc_assessment(
-            affects="yes",
+            verdict="action_needed",
             reason="Found old_key.",
             config_fix={
                 "old": "old_key: foo",
@@ -8719,7 +8886,7 @@ class TestFinishBCAssessment:
         executor = self._make_executor()
         executor._current_bc_name = "MQTT"
         executor._bc_assessment_gap = True
-        executor._finish_bc_assessment(affects="no", reason="None.")
+        executor._finish_bc_assessment(verdict="no_action", reason="None.")
         assert executor.get_bc_assessments()
         executor.clear_bc_assessment_state()
         assert executor.get_bc_assessments() == {}
@@ -8728,18 +8895,22 @@ class TestFinishBCAssessment:
 
     def test_multiple_bcs_accumulated(self):
         executor = self._make_executor()
-        for bc_name, affects in [("MQTT", "no"), ("Hue", "yes"), ("Matter", "unknown")]:
+        for bc_name, verdict in [
+            ("MQTT", "no_action"),
+            ("Hue", "action_needed"),
+            ("Matter", "user_check"),
+        ]:
             executor._current_bc_name = bc_name
-            executor._finish_bc_assessment(affects=affects, reason=f"{bc_name} reason.")
+            executor._finish_bc_assessment(verdict=verdict, reason=f"{bc_name} reason.")
         verdicts = executor.get_bc_assessments()
         assert len(verdicts) == 3
-        assert verdicts["MQTT"]["affects"] == "no"
-        assert verdicts["Hue"]["affects"] == "yes"
-        assert verdicts["Matter"]["affects"] == "unknown"
+        assert verdicts["MQTT"]["verdict"] == "no_action"
+        assert verdicts["Hue"]["verdict"] == "action_needed"
+        assert verdicts["Matter"]["verdict"] == "user_check"
 
     def test_assessment_gap_set_when_bc_session_fails(self, pueo_dirs):
-        """When all assessment attempts fail, _bc_assessment_gap is set and BC gets unknown."""
-        from unittest.mock import AsyncMock, MagicMock, patch
+        """When all assessment attempts fail, _bc_assessment_gap is set and BC gets not_assessed."""
+        from unittest.mock import AsyncMock, MagicMock
 
         from utils.agent.autonomy import AutonomyGate
         from utils.agent.tool_executor import ToolExecutor
@@ -8762,11 +8933,11 @@ class TestFinishBCAssessment:
         executor._bc_assessment_gap = True
         executor._bc_assessments["MQTT"] = {
             "bc": "MQTT",
-            "affects": "unknown",
+            "verdict": "not_assessed",
             "reason": "assessment failed",
         }
         assert executor._bc_assessment_gap
-        assert executor.get_bc_assessments()["MQTT"]["affects"] == "unknown"
+        assert executor.get_bc_assessments()["MQTT"]["verdict"] == "not_assessed"
 
 
 class TestNormalizeFlagVerdicts:
@@ -8876,18 +9047,59 @@ class TestFinishUpdateAnalysisWithVerdicts:
                     proposed_config_fixes=[],
                     create_hitl_card=True,
                     bc_verdicts=[
-                        {"bc": "Tuya entities", "affects": "no", "reason": "no lights"}
+                        {
+                            "bc": "Tuya entities",
+                            "verdict": "no_action",
+                            "reason": "no lights",
+                        }
                     ],
                 )
             )
 
         payload = notifier.send.call_args[1]["payload"]
-        assert payload["bc_verdicts"] == [
-            {"bc": "Tuya entities", "affects": "no", "reason": "no lights"}
-        ]
+        verdicts = {v["bc"]: v for v in payload["bc_verdicts"]}
+        assert verdicts["Tuya entities"]["verdict"] == "no_action"
         assert payload["instance_impact"] == "none"
 
-    def test_yes_verdict_overrides_impact(self, pueo_dirs):
+    def test_action_needed_before_overrides_impact_to_high(self, pueo_dirs):
+        import asyncio
+
+        from utils.knowledge.ha_release_report import BCEntry
+
+        bc = BCEntry(name="Tuya entities", domains=["tuya"])
+        executor, notifier = self._make_executor_with_report(bc_installed=[bc])
+        executor.set_update_status(self._make_update())
+
+        with __import__("unittest.mock", fromlist=["patch"]).patch(
+            "agents.ha_log_monitor._update_mark_card_sent"
+        ):
+            asyncio.run(
+                executor._finish_update_analysis(
+                    safe_to_update=True,
+                    breaking_changes=[],
+                    affected_config_keys=[],
+                    pueo_command_risks=[],
+                    recommendation="Needs review.",
+                    instance_impact="none",
+                    proposed_config_fixes=[],
+                    create_hitl_card=True,
+                    bc_verdicts=[
+                        {
+                            "bc": "Tuya entities",
+                            "verdict": "action_needed",
+                            "reason": "3 lights",
+                            "when": "before_update",
+                        }
+                    ],
+                )
+            )
+
+        payload = notifier.send.call_args[1]["payload"]
+        assert payload["instance_impact"] == "high"
+        assert payload["bc_verdicts"][0]["verdict"] == "action_needed"
+
+    def test_old_affects_yes_still_overrides_impact(self, pueo_dirs):
+        """Backward compat: old bc_verdicts with affects='yes' still raise impact."""
         import asyncio
 
         from utils.knowledge.ha_release_report import BCEntry
@@ -8917,9 +9129,9 @@ class TestFinishUpdateAnalysisWithVerdicts:
 
         payload = notifier.send.call_args[1]["payload"]
         assert payload["instance_impact"] == "high"
-        assert payload["bc_verdicts"][0]["affects"] == "yes"
+        assert payload["bc_verdicts"][0]["verdict"] == "action_needed"
 
-    def test_missing_bc_filled_as_unknown(self, pueo_dirs):
+    def test_missing_bc_filled_as_not_assessed(self, pueo_dirs):
         import asyncio
 
         from utils.knowledge.ha_release_report import BCEntry
@@ -8943,7 +9155,11 @@ class TestFinishUpdateAnalysisWithVerdicts:
                     proposed_config_fixes=[],
                     create_hitl_card=True,
                     bc_verdicts=[
-                        {"bc": "Tuya entities", "affects": "no", "reason": "none"}
+                        {
+                            "bc": "Tuya entities",
+                            "verdict": "no_action",
+                            "reason": "none",
+                        }
                         # Matter sensors intentionally omitted
                     ],
                 )
@@ -8951,8 +9167,8 @@ class TestFinishUpdateAnalysisWithVerdicts:
 
         payload = notifier.send.call_args[1]["payload"]
         verdicts = {v["bc"]: v for v in payload["bc_verdicts"]}
-        assert verdicts["Tuya entities"]["affects"] == "no"
-        assert verdicts["Matter sensors"]["affects"] == "unknown"
+        assert verdicts["Tuya entities"]["verdict"] == "no_action"
+        assert verdicts["Matter sensors"]["verdict"] == "not_assessed"
         assert payload["instance_impact"] == "low"
 
     def test_no_verdicts_uses_original_impact(self, pueo_dirs):
@@ -9130,10 +9346,12 @@ class TestFinishUpdateAnalysisWithVerdicts:
                 )
             )
 
-        # Notifier body should NOT contain "Config fixes required"
+        # Notifier body should NOT contain "Config fixes required" or "Config fixes available"
         body = notifier.send.call_args[1]["body"]
         assert "Config fixes required" not in body
-        assert "Review the items below before updating" in body
+        assert "Config fixes available" not in body
+        # With action_needed verdict, body uses the new 🚫 prefix
+        assert "Fix before updating" in body
 
     def test_bc_verdicts_only_from_report_when_flags_in_breaking_changes(
         self, pueo_dirs

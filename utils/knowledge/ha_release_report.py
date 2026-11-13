@@ -799,7 +799,24 @@ def _format_flag_entry(
     return text
 
 
-def _verdict_symbol(affects: str) -> str:
+def _verdict_symbol(v: dict) -> str:
+    """Return a short label for a BC verdict dict (new or old format)."""
+    verdict = v.get("verdict")
+    if verdict == "action_needed":
+        when = v.get("when")
+        if when == "after_update":
+            return "⚡ action after update"
+        return "🚫 fix before update"
+    if verdict == "no_action":
+        return "✅ no action"
+    if verdict == "user_check":
+        return "❓ check yourself"
+    if verdict == "not_assessed":
+        return "⬜ not assessed"
+    # Backward compat: old affects field
+    affects = v.get("affects", "")
+    if not affects:
+        return "⬜ not assessed"
     return {"yes": "⚠️ yes", "no": "✅ no"}.get(affects, "❓ unknown")
 
 
@@ -829,13 +846,20 @@ def format_core_release_digest(report: "CoreReleaseReport") -> str:
     _bc_rows: list[str] = []
     for e in all_bc:
         v = _verdict_map.get(e.name, {})
-        affects = v.get("affects", "unknown")
         reason = v.get("reason", "not yet assessed")
         fix = v.get("config_fix")
         fix_note = f" | fix: {fix.get('description', '')}." if fix else ""
+        action_note = ""
+        if v.get("verdict") == "action_needed":
+            if v.get("action"):
+                action_note = f" | action: {v['action']}"
+            if v.get("when"):
+                action_note += f" ({v['when'].replace('_', ' ')})"
+        elif v.get("verdict") == "user_check" and v.get("user_question"):
+            action_note = f" | check: {v['user_question']}"
         label = "installed" if e in report.bc_installed else "general"
         _bc_rows.append(
-            f"- **{e.name}** [{label}]: {_verdict_symbol(affects)} — {reason}{fix_note}"
+            f"- **{e.name}** [{label}]: {_verdict_symbol(v)} — {reason}{action_note}{fix_note}"
         )
     # Empty-BC explanation
     if not all_bc:

@@ -12051,8 +12051,8 @@ class TestUpdateReportRoute:
         assert "HA release notes" in html
         assert "MQTT 5.0 support" in html
 
-    def test_update_card_shows_bc_verdicts_three_groups(self, tmp_path, monkeypatch):
-        """Index card renders Affects this install / Check manually / Not affected groups."""
+    def test_update_card_shows_bc_verdicts_five_groups(self, tmp_path, monkeypatch):
+        """Index card renders five verdict groups: before/after/check/not-assessed/not-affected."""
         import json as _json
         import time as _time
         from fastapi.testclient import TestClient
@@ -12074,17 +12074,20 @@ class TestUpdateReportRoute:
                         "bc_verdicts": [
                             {
                                 "bc": "Tuya entities",
-                                "affects": "yes",
+                                "verdict": "action_needed",
+                                "when": "before_update",
                                 "reason": "3 Tuya lights found",
+                                "action": "Rename your Tuya entities",
                             },
                             {
                                 "bc": "Entity names",
-                                "affects": "unknown",
+                                "verdict": "user_check",
                                 "reason": "dashboard cards not checked",
+                                "user_question": "Do you have entity_id references in dashboards?",
                             },
                             {
                                 "bc": "Matter sensors",
-                                "affects": "no",
+                                "verdict": "no_action",
                                 "reason": "no concentration sensors",
                             },
                         ],
@@ -12096,23 +12099,21 @@ class TestUpdateReportRoute:
         )
         client = TestClient(dashboard.app, raise_server_exceptions=True)
         html = client.get("/queue").text
-        assert "Affects this install" in html
+        assert "Do before updating" in html
         assert "Tuya entities" in html
-        assert "3 Tuya lights found" in html
-        assert "Check manually" in html
+        assert "Rename your Tuya entities" in html
+        assert "Check yourself" in html
         assert "Entity names" in html
         assert "Not affected" in html
         assert "Matter sensors" in html
 
-    def test_update_report_shows_bc_verdicts_three_groups(self, pueo_dirs, monkeypatch):
-        """Report page renders verdicts when bc_verdicts is populated."""
+    def test_update_report_shows_bc_verdicts_five_groups(self, pueo_dirs, monkeypatch):
+        """Report page renders five verdict groups when bc_verdicts is populated."""
         from fastapi.testclient import TestClient
         import web.dashboard as dashboard
         from utils.knowledge.ha_release_report import (
             BCEntry,
             CoreReleaseReport,
-            ScreeningFlag,
-            ScreeningHighlight,
         )
 
         version = "2026.11.0"
@@ -12126,8 +12127,19 @@ class TestUpdateReportRoute:
             ],
             bc_general=[BCEntry(name="Entity names", body="Rename check.")],
             bc_verdicts=[
-                {"bc": "Tuya entities", "affects": "yes", "reason": "3 lights found"},
-                {"bc": "Entity names", "affects": "unknown", "reason": "not checked"},
+                {
+                    "bc": "Tuya entities",
+                    "verdict": "action_needed",
+                    "when": "before_update",
+                    "reason": "3 lights found",
+                    "action": "Rename your Tuya entities",
+                },
+                {
+                    "bc": "Entity names",
+                    "verdict": "user_check",
+                    "reason": "not checked",
+                    "user_question": "Do you use entity_id refs in dashboards?",
+                },
             ],
             completeness="complete",
             screening_complete=True,
@@ -12137,8 +12149,8 @@ class TestUpdateReportRoute:
 
         client = TestClient(dashboard.app, raise_server_exceptions=True)
         html = client.get(f"/updates/report/core_{version}").text
-        assert "Affects This Install" in html
+        assert "Do Before Updating" in html
         assert "Tuya entities" in html
-        assert "3 lights found" in html
-        assert "Check Manually" in html
+        assert "Rename your Tuya entities" in html
+        assert "Check Yourself" in html
         assert "Entity names" in html

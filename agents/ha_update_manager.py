@@ -1697,7 +1697,7 @@ async def _run_update_analysis(
                         # Store unknown fallback so BC appears in the verdict table
                         executor._bc_assessments[_bc_entry.name] = {  # type: ignore[attr-defined]
                             "bc": _bc_entry.name,
-                            "affects": "unknown",
+                            "verdict": "not_assessed",
                             "reason": "assessment did not complete",
                         }
                         log.warning(
