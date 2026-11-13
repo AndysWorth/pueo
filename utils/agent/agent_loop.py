@@ -684,6 +684,18 @@ def _derive_loop_call_options(model_name: str) -> ModelCallOptions:
     )
 
 
+# A model can emit a tool call the server's parser rejects (seen with Ollama's
+# GLM template: HTTP 500 "incomplete GLM tool call: XML syntax error …").  The
+# request itself is valid, so the call is retried this many times per session.
+_MAX_MALFORMED_TOOL_CALL_RETRIES = 2
+
+
+def _is_malformed_tool_call_error(exc: BaseException) -> bool:
+    """True when the LLM server failed to parse the model's generated tool call."""
+    text = str(exc).lower()
+    return "tool call" in text and ("incomplete" in text or "syntax error" in text)
+
+
 class AgentLoop:
     """Iterative tool-calling loop with budget and wall-clock timeout.
 
@@ -1748,6 +1760,7 @@ class AgentLoop:
         _call_seq = 0
         _cache_only_streak = 0  # consecutive LLM iterations where every call was cached
         _sleep_retry_done = False  # allow at most one sleep-retry per session
+        _malformed_retries = 0  # server rejected the model's own tool call
 
         known_tool_names = {t["function"]["name"] for t in tools}
         guardrail = ToolResultGuardrail(
@@ -1830,6 +1843,23 @@ class AgentLoop:
                     timeout_seconds=round(per_call_secs, 1),
                 )
                 raise  # propagates to run() as outcome="stuck"
+            except Exception as _call_exc:
+                # The server could not parse the tool call the model generated.
+                # Nothing was executed and the same request usually succeeds, so
+                # retry it rather than ending the session (#1213).
+                if (
+                    _is_malformed_tool_call_error(_call_exc)
+                    and _malformed_retries < _MAX_MALFORMED_TOOL_CALL_RETRIES
+                ):
+                    _malformed_retries += 1
+                    log.warning(
+                        "llm_call_malformed_tool_call_retry",
+                        model=self._model,
+                        attempt=_malformed_retries,
+                        error=str(_call_exc)[:200],
+                    )
+                    continue
+                raise
             _latency_ms = (time.monotonic() - _t0) * 1000.0
             if self._on_llm_call_done is not None:
                 try:
