@@ -11201,6 +11201,63 @@ class TestFetchPriorSessions:
         assert _fetch_prior_sessions("", ["k"]) == ""
         assert _fetch_prior_sessions(str(tmp_path / "missing.db"), ["k"]) == ""
 
+    def test_exclude_session_types_filters_rows(self, tmp_path, monkeypatch):
+        """exclude_session_types removes matching session_type rows from the block."""
+        import json
+        import sqlite3
+
+        import agents.ha_agent_advanced as haa
+
+        from utils.agent.agent_loop import _fetch_prior_sessions
+
+        db = str(tmp_path / "excl.db")
+        monkeypatch.setattr(haa, "DB_PATH", db)
+        haa.init_local_database()
+        with sqlite3.connect(db) as conn:
+            conn.executemany(
+                "INSERT INTO session_outcomes"
+                " (episode_id, subject_key, session_type, created_at,"
+                "  conclusion_json, verification, correction)"
+                " VALUES (?,?,?,?,?,?,?)",
+                [
+                    (
+                        "u1",
+                        "k",
+                        "update_analysis",
+                        self._iso(1),
+                        json.dumps({"summary": "old update verdict"}),
+                        "unverified",
+                        None,
+                    ),
+                    (
+                        "r1",
+                        "k",
+                        "repair",
+                        self._iso(2),
+                        json.dumps({"summary": "repair conclusion"}),
+                        "success",
+                        None,
+                    ),
+                ],
+            )
+        # Without exclusion: both rows appear
+        block_all = _fetch_prior_sessions(db, ["k"], now=self._NOW)
+        assert "old update verdict" in block_all
+        assert "repair conclusion" in block_all
+
+        # With exclusion: update_analysis row is filtered out
+        block_excl = _fetch_prior_sessions(
+            db, ["k"], now=self._NOW, exclude_session_types=["update_analysis"]
+        )
+        assert "old update verdict" not in block_excl
+        assert "repair conclusion" in block_excl
+
+        # Empty exclusion list: same as no exclusion
+        block_empty = _fetch_prior_sessions(
+            db, ["k"], now=self._NOW, exclude_session_types=[]
+        )
+        assert "old update verdict" in block_empty
+
     def test_run_injects_block_and_stub_keeps_root_cause(self, tmp_path, monkeypatch):
         import asyncio
         import json

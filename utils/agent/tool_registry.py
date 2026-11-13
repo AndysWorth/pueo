@@ -2657,6 +2657,26 @@ FINISH_UPDATE_ANALYSIS = ToolDefinition(
 )
 
 
+FINISH_UPDATE_ANALYSIS_SLIM = ToolDefinition(
+    name="finish_update_analysis",
+    description=(
+        "Call when the update analysis is complete. BC verdicts have been pre-computed "
+        "and are injected in the initial context — do not re-derive them. Provide "
+        "summary and highlights; other impact fields are overridden from the pre-run "
+        "BC assessments. Setting create_hitl_card=true sends an approval card to the user."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            k: v
+            for k, v in FINISH_UPDATE_ANALYSIS.parameters["properties"].items()
+            if k != "bc_verdicts"
+        },
+        "required": FINISH_UPDATE_ANALYSIS.parameters["required"],
+    },
+)
+
+
 FINISH_BC_ASSESSMENT = ToolDefinition(
     name="finish_bc_assessment",
     description=(
@@ -3038,6 +3058,33 @@ def build_update_analysis_registry() -> ToolRegistry:
         GET_SPOOK_ISSUES,
         GET_SENTINEL_ISSUES,
         FINISH_UPDATE_ANALYSIS,
+    ):
+        reg.register(tool)
+    return reg
+
+
+def build_update_analysis_slim_registry() -> ToolRegistry:
+    """Registry for the main update-analysis loop when BC assessments have been run.
+
+    Identical to build_update_analysis_registry except that FINISH_UPDATE_ANALYSIS_SLIM
+    replaces FINISH_UPDATE_ANALYSIS: bc_verdicts is removed from the tool schema so the
+    model does not re-derive verdicts that the assessment pass already computed.
+    """
+    reg = ToolRegistry()
+    for tool in (
+        GET_UPDATE_RELEASE_NOTES,
+        GET_PUEO_COMMAND_CATALOG,
+        CHECK_CONFIG_AGAINST_BREAKING_CHANGE,
+        CHECK_AUTOMATION_REFERENCES,
+        READ_FILE,
+        RUN_HA_COMMAND,
+        FETCH_HA_DOCS,
+        FETCH_URL,
+        QUERY_KNOWLEDGE,
+        REQUEST_ESCALATION,
+        GET_SPOOK_ISSUES,
+        GET_SENTINEL_ISSUES,
+        FINISH_UPDATE_ANALYSIS_SLIM,
     ):
         reg.register(tool)
     return reg
