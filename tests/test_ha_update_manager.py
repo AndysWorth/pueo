@@ -8917,9 +8917,20 @@ class TestFinishBCAssessment:
         assert executor.get_bc_assessments()["Cover changes"]["verdict"] == "no_action"
 
     def test_old_affects_unknown_backward_compat(self):
+        # affects="unknown" → user_check; no user_question → coerced to no_action
         executor = self._make_executor()
         executor._current_bc_name = "Cover changes"
         executor._finish_bc_assessment(affects="unknown", reason="Cannot determine.")
+        assert executor.get_bc_assessments()["Cover changes"]["verdict"] == "no_action"
+
+    def test_old_affects_unknown_with_question_stays_user_check(self):
+        executor = self._make_executor()
+        executor._current_bc_name = "Cover changes"
+        executor._finish_bc_assessment(
+            affects="unknown",
+            reason="Cannot determine.",
+            user_question="Is this cover entity used in automations?",
+        )
         assert executor.get_bc_assessments()["Cover changes"]["verdict"] == "user_check"
 
     def test_config_fix_grounded_when_old_text_in_outputs(self):
@@ -8967,13 +8978,16 @@ class TestFinishBCAssessment:
 
     def test_multiple_bcs_accumulated(self):
         executor = self._make_executor()
-        for bc_name, verdict in [
-            ("MQTT", "no_action"),
-            ("Hue", "action_needed"),
-            ("Matter", "user_check"),
+        for bc_name, verdict, question in [
+            ("MQTT", "no_action", None),
+            ("Hue", "action_needed", None),
+            # user_check requires a user_question; provide one for Matter
+            ("Matter", "user_check", "Is this device a Matter bridge?"),
         ]:
             executor._current_bc_name = bc_name
-            executor._finish_bc_assessment(verdict=verdict, reason=f"{bc_name} reason.")
+            executor._finish_bc_assessment(
+                verdict=verdict, reason=f"{bc_name} reason.", user_question=question
+            )
         verdicts = executor.get_bc_assessments()
         assert len(verdicts) == 3
         assert verdicts["MQTT"]["verdict"] == "no_action"

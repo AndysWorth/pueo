@@ -21996,6 +21996,73 @@ class TestFinishChangeScreeningStringCoercion:
         assert hls == []
 
 
+class TestBcVerdictCoercion:
+    """_finish_bc_assessment downgrades user_check without user_question to no_action."""
+
+    def _make_executor(self):
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.autonomy import FakeAutonomyGate
+
+        ex = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=None,
+        )
+        return ex
+
+    def _set_bc(self, ex, name: str = "Test BC"):
+        ex._current_bc_name = name
+
+    def test_user_check_without_question_becomes_no_action(self):
+        ex = self._make_executor()
+        self._set_bc(ex)
+        ex._finish_bc_assessment(verdict="user_check", reason="zero evidence found")
+        entry = ex._bc_assessments["Test BC"]
+        assert entry["verdict"] == "no_action"
+        assert "user_question" not in entry
+
+    def test_user_check_with_question_kept(self):
+        ex = self._make_executor()
+        self._set_bc(ex)
+        ex._finish_bc_assessment(
+            verdict="user_check",
+            reason="browser-only",
+            user_question="Is your browser Chrome 67 or newer?",
+        )
+        entry = ex._bc_assessments["Test BC"]
+        assert entry["verdict"] == "user_check"
+        assert entry["user_question"] == "Is your browser Chrome 67 or newer?"
+
+    def test_no_action_unchanged(self):
+        ex = self._make_executor()
+        self._set_bc(ex)
+        ex._finish_bc_assessment(verdict="no_action", reason="entity count is zero")
+        entry = ex._bc_assessments["Test BC"]
+        assert entry["verdict"] == "no_action"
+
+    def test_action_needed_unchanged(self):
+        ex = self._make_executor()
+        self._set_bc(ex)
+        ex._finish_bc_assessment(
+            verdict="action_needed",
+            reason="config key must change",
+            action="Update config",
+            when="before_update",
+        )
+        entry = ex._bc_assessments["Test BC"]
+        assert entry["verdict"] == "action_needed"
+
+    def test_whitespace_only_question_treated_as_empty(self):
+        ex = self._make_executor()
+        self._set_bc(ex)
+        ex._finish_bc_assessment(
+            verdict="user_check", reason="reason text", user_question="   "
+        )
+        entry = ex._bc_assessments["Test BC"]
+        assert entry["verdict"] == "no_action"
+
+
 class TestScreeningBatchRetry:
     """Failed screening batches are retried once before counting as a gap."""
 

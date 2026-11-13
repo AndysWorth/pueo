@@ -13,7 +13,9 @@ Steps:
      (what to do) and `when` (`before_update` or `after_update`).
    - **`user_check`**: only the user can verify (browser behaviour, remote access,
      device firmware, cloud account, Zigbee/BLE radio) **and** absence cannot be
-     confirmed from the evidence.  Set `user_question` — a concrete yes/no question.
+     confirmed from the evidence.  You **must** set `user_question` to a concrete
+     yes/no question only the user can answer.  If you cannot write that question,
+     use `no_action` instead — not `user_check`.
 3. The Evidence block is complete. Do not reason about what might still need checking — judge only from what is stated.
 4. `no_action` beats `user_check` when all evidence is absent (zero count, absent
    key, zero token hits) — even for browser or device-dependent BCs.
@@ -23,3 +25,5 @@ Steps:
 - Do not call any tools before `{terminal_tool}`.
 - Do not judge `action_needed` from entity count alone; entity *type* must match the BC.
 - `not_assessed` is set by code, never by you.
+- Do not call `{terminal_tool}` with `verdict="user_check"` and an empty `user_question`.
+  That is `no_action`, not `user_check`.

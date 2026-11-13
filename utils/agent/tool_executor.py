@@ -6422,6 +6422,18 @@ class ToolExecutor:
             verdict = _AFFECTS_TO_VERDICT.get(str(affects), "user_check")
         if not verdict:
             verdict = "user_check"
+        # user_check requires a concrete user_question.  When the model omits it,
+        # downgrade to no_action — the evidence showed no impact that needs
+        # user confirmation.
+        if str(verdict) == "user_check" and not (user_question or "").strip():
+            log.info(
+                "bc_verdict_coerced",
+                bc=bc_name,
+                from_verdict="user_check",
+                to_verdict="no_action",
+                reason="user_check requires user_question; none provided",
+            )
+            verdict = "no_action"
         grounded_fix: Optional[dict] = None
         if config_fix and isinstance(config_fix, dict):
             old_text = str(config_fix.get("old", ""))
