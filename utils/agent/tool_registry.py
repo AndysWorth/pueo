@@ -2666,31 +2666,48 @@ FINISH_BC_ASSESSMENT = ToolDefinition(
     parameters={
         "type": "object",
         "properties": {
-            "affects": {
+            "verdict": {
                 "type": "string",
-                "enum": ["yes", "no", "unknown"],
+                "enum": ["action_needed", "no_action", "user_check"],
                 "description": (
-                    "'yes' if this BC affects this installation (entity, config key, or "
-                    "automation hit confirmed), 'no' if confirmed not affected, "
-                    "'unknown' if the evidence is insufficient to decide."
+                    "'action_needed' when a concrete change is required (config edit, "
+                    "preparation step, or post-update task) — set 'when' and 'action'. "
+                    "'no_action' when confirmed not affected and nothing needs doing. "
+                    "'user_check' when only the user can verify (browser, remote access, "
+                    "device firmware, cloud account) — set 'user_question'."
                 ),
             },
             "reason": {
                 "type": "string",
                 "description": "One sentence explaining the verdict.",
             },
-            "evidence_cited": {
-                "type": "array",
-                "items": {"type": "string"},
+            "action": {
+                "type": "string",
                 "description": (
-                    "Tool names called this session whose output supports the verdict "
-                    "(e.g. ['check_config_against_breaking_change'])."
+                    "Required when verdict='action_needed'. "
+                    "One sentence describing exactly what must be done."
+                ),
+            },
+            "when": {
+                "type": "string",
+                "enum": ["before_update", "after_update"],
+                "description": (
+                    "Required when verdict='action_needed'. "
+                    "'before_update' if the action must happen before applying the update; "
+                    "'after_update' if it can be done after."
+                ),
+            },
+            "user_question": {
+                "type": "string",
+                "description": (
+                    "Required when verdict='user_check'. "
+                    "One concrete yes/no question the user can answer (≤120 chars)."
                 ),
             },
             "config_fix": {
                 "type": "object",
                 "description": (
-                    "Only when affects='yes' and a concrete YAML fix is needed. "
+                    "Only when verdict='action_needed' and a concrete YAML fix is needed. "
                     "The old value must be text found verbatim in a tool output this session."
                 ),
                 "properties": {
@@ -2705,7 +2722,7 @@ FINISH_BC_ASSESSMENT = ToolDefinition(
                 "required": ["description", "config_fix_yaml", "old"],
             },
         },
-        "required": ["affects", "reason"],
+        "required": ["verdict", "reason"],
     },
 )
 

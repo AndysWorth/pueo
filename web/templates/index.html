@@ -84,22 +84,34 @@
     <details open>
       <summary><span class="section-label label-diagnosis">Breaking Changes</span>Advisory — review before updating</summary>
       {% if r.payload.get("bc_verdicts") %}
-      {# Three-group verdict display #}
-      {% set _yes_vds = r.payload.bc_verdicts | selectattr("affects", "eq", "yes") | list %}
-      {% set _unk_vds = r.payload.bc_verdicts | selectattr("affects", "eq", "unknown") | list %}
-      {% set _no_vds  = r.payload.bc_verdicts | selectattr("affects", "eq", "no") | list %}
-      {% if _yes_vds %}
-      <p style="font-weight:600;color:var(--red,#b91c1c);margin:0.4rem 0 0.3rem;">⚠️ Affects this install</p>
-      <ul style="margin:0 0 0.5rem 1.25rem;">{% for v in _yes_vds %}<li style="margin-bottom:0.2rem;"><strong>{{ v.bc }}</strong>{% if v.reason %} — {{ v.reason }}{% endif %}</li>{% endfor %}</ul>
-      {% if not r.payload.get("effective_safe_to_update") and r.payload.get("proposed_config_fixes") %}
-      <p style="color:var(--red);font-weight:600;">🚫 Config fixes required before updating safely.</p>
+      {# Five-group verdict display (S3): before / after / check / not_affected / not_assessed #}
+      {% set _before_vds = r.payload.bc_verdicts | selectattr("verdict", "eq", "action_needed") | rejectattr("when", "eq", "after_update") | list %}
+      {% set _after_vds  = r.payload.bc_verdicts | selectattr("verdict", "eq", "action_needed") | selectattr("when", "eq", "after_update") | list %}
+      {% set _check_vds  = r.payload.bc_verdicts | selectattr("verdict", "eq", "user_check") | list %}
+      {% set _na_vds     = r.payload.bc_verdicts | selectattr("verdict", "eq", "not_assessed") | list %}
+      {% set _no_vds     = r.payload.bc_verdicts | selectattr("verdict", "eq", "no_action") | list %}
+      {% if _before_vds %}
+      <p style="font-weight:600;color:var(--red,#b91c1c);margin:0.4rem 0 0.3rem;">🚫 Do before updating</p>
+      <ul style="margin:0 0 0.5rem 1.25rem;">{% for v in _before_vds %}<li style="margin-bottom:0.2rem;"><strong>{{ v.bc }}</strong>{% if v.action %} — {{ v.action }}{% elif v.reason %} — {{ v.reason }}{% endif %}</li>{% endfor %}</ul>
+      {% if r.payload.get("proposed_config_fixes") %}
+      <p style="color:var(--red);font-weight:600;">Config fixes available — see below.</p>
       {% endif %}
-      {% elif not _unk_vds %}
+      {% elif not _after_vds and not _check_vds and not _na_vds %}
       <p style="color:var(--green,#2a9d4e);font-weight:600;">✅ No breaking changes affect this install.</p>
       {% endif %}
-      {% if _unk_vds %}
-      <p style="font-weight:600;color:var(--orange,#b45309);margin:0.4rem 0 0.3rem;">Check manually</p>
-      <ul style="margin:0 0 0.5rem 1.25rem;">{% for v in _unk_vds %}<li style="margin-bottom:0.2rem;"><strong>{{ v.bc }}</strong>{% if v.reason %} — {{ v.reason }}{% endif %}</li>{% endfor %}</ul>
+      {% if _after_vds %}
+      <p style="font-weight:600;color:var(--orange,#b45309);margin:0.4rem 0 0.3rem;">⚡ Do after updating</p>
+      <ul style="margin:0 0 0.5rem 1.25rem;">{% for v in _after_vds %}<li style="margin-bottom:0.2rem;"><strong>{{ v.bc }}</strong>{% if v.action %} — {{ v.action }}{% elif v.reason %} — {{ v.reason }}{% endif %}</li>{% endfor %}</ul>
+      {% endif %}
+      {% if _check_vds %}
+      <p style="font-weight:600;color:var(--orange,#b45309);margin:0.4rem 0 0.3rem;">❓ Check yourself</p>
+      <ul style="margin:0 0 0.5rem 1.25rem;">{% for v in _check_vds %}<li style="margin-bottom:0.2rem;"><strong>{{ v.bc }}</strong>{% if v.user_question %} — {{ v.user_question }}{% elif v.reason %} — {{ v.reason }}{% endif %}</li>{% endfor %}</ul>
+      {% endif %}
+      {% if _na_vds %}
+      <details style="margin-top:0.3rem;">
+        <summary style="font-size:0.82rem;color:#888;cursor:pointer;">Could not assess ({{ _na_vds | length }})</summary>
+        <ul style="margin:0.3rem 0 0 1.25rem;">{% for v in _na_vds %}<li style="font-size:0.82rem;color:#888;margin-bottom:0.1rem;">{{ v.bc }}{% if v.reason %} — {{ v.reason }}{% endif %}</li>{% endfor %}</ul>
+      </details>
       {% endif %}
       {% if _no_vds %}
       <details style="margin-top:0.3rem;">

@@ -44,8 +44,11 @@ releases (2026.9.x → 2026.10.x) may carry breaking changes.
    - `bc_verdicts`: taken directly from the verdict table in the digest.
      Server-side code will use the pre-run per-BC assessments and ignore this field,
      but fill it accurately in case the assessment pass did not run.
+     New verdict values: `action_needed` / `no_action` / `user_check` / `not_assessed`.
+     Old values `yes` / `no` / `unknown` are still accepted (backward compat).
    - `highlights`: 2–5 one-sentence items from `Feature highlights`.
    - `instance_impact`: derived from BC verdicts only (flags never raise impact).
+     Server overrides this from the verdict table, so pass your best read from the digest.
 
 ## Output guidance
 
