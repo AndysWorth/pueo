@@ -373,6 +373,41 @@ class TestRegistryMembership:
             "Either the registry grew unexpectedly or the ceiling needs bumping."
         )
 
+    def test_slim_update_registry_has_no_bc_verdicts(self):
+        """build_update_analysis_slim_registry omits bc_verdicts from finish_update_analysis."""
+        from utils.agent.tool_registry import build_update_analysis_slim_registry
+
+        reg = build_update_analysis_slim_registry()
+        tools = reg.get_ollama_tools()
+        finish_tool = next(
+            t for t in tools if t["function"]["name"] == "finish_update_analysis"
+        )
+        props = finish_tool["function"]["parameters"]["properties"]
+        assert "bc_verdicts" not in props, (
+            "bc_verdicts must be absent from slim registry so the model does not "
+            "re-derive verdicts that the assessment pass already computed"
+        )
+        # required fields must still be present
+        assert "summary" in props
+        assert "highlights" in props
+        assert "safe_to_update" in props
+
+    def test_slim_update_registry_token_budget(self):
+        """Slim update-analysis registry schema must fit within budget."""
+        import json
+
+        from utils.agent.tool_registry import build_update_analysis_slim_registry
+        from utils.core.context import estimate_tokens
+
+        slim_tokens = estimate_tokens(
+            json.dumps(build_update_analysis_slim_registry().get_ollama_tools())
+        )
+        SLIM_CEILING = 4_500
+        assert slim_tokens <= SLIM_CEILING, (
+            f"Slim update analysis registry schema is {slim_tokens} tokens "
+            f"(ceiling {SLIM_CEILING})."
+        )
+
     def test_finish_log_investigation_registered_in_ha_not_mcp(self):
         from utils.agent.tool_registry import (
             FINISH_LOG_INVESTIGATION,

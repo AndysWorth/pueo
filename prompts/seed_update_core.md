@@ -23,15 +23,17 @@ releases (2026.9.x → 2026.10.x) may carry breaking changes.
 
 ## Investigation steps
 
-1. `get_update_release_notes(entity_id=<entity>)` — returns a **pre-built digest** for this
-   release.  The digest contains:
-   - `Backward-incompatible changes` — a verdict table (name | verdict | reason | fix) with
-     per-BC assessments already filled in.
+1. If the initial context already contains a `## Pre-computed BC assessment results`
+   section, **skip this step** — the full digest is already in the context.
+   Otherwise call `get_update_release_notes(entity_id=<entity>)` to get the pre-built
+   digest, which contains:
+   - `Backward-incompatible changes` — a verdict table (name | verdict | reason | fix)
+     with per-BC assessments already filled in.
    - `Patch changes` — real fix lines from the patch body (installed domains only).
    - `Feature highlights (from screening)` — noteworthy new capabilities.
    - `Flagged changes (informational only)` — do not raise `instance_impact` from flags.
-   Do NOT call `fetch_url`, `read_source`, `get_ha_profile`, or `check_config_against_breaking_change` —
-   the per-BC assessments have already been run before this loop.
+   Do NOT call `fetch_url`, `read_source`, `get_ha_profile`, or
+   `check_config_against_breaking_change` — the per-BC assessments have already been run.
 
 2. For any minor or major release: **always** call `get_pueo_command_catalog`.
    Compare every removed, renamed, or replaced integration, API command, or service
@@ -41,14 +43,14 @@ releases (2026.9.x → 2026.10.x) may carry breaking changes.
    `marketplace/*` on 2026.11+) is **not** a risk — do not list it.
 
 3. Call `finish_update_analysis` with:
-   - `bc_verdicts`: taken directly from the verdict table in the digest.
-     Server-side code will use the pre-run per-BC assessments and ignore this field,
-     but fill it accurately in case the assessment pass did not run.
-     New verdict values: `action_needed` / `no_action` / `user_check` / `not_assessed`.
-     Old values `yes` / `no` / `unknown` are still accepted (backward compat).
    - `highlights`: 2–5 one-sentence items from `Feature highlights`.
    - `instance_impact`: derived from BC verdicts only (flags never raise impact).
      Server overrides this from the verdict table, so pass your best read from the digest.
+   - When the digest was pre-injected, **do not supply `bc_verdicts`** — that field is
+     not part of the tool and the server uses the pre-run assessments.
+   - When the digest was fetched (assessment pass did not run), supply `bc_verdicts`
+     taken directly from the verdict table.  Values: `action_needed` / `no_action` /
+     `user_check` / `not_assessed`.  Old values `yes` / `no` / `unknown` also accepted.
 
 ## Output guidance
 

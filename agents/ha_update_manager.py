@@ -1374,6 +1374,7 @@ async def _run_update_analysis(
         # WorkItem so the no-concurrent-LLM rule is satisfied.  The main loop
         # (step 3) then calls get_update_release_notes which returns a compact
         # digest from the report instead of re-fetching the blog.
+        _rpt = None  # set by the Core path; used for slim-path digest injection below
         _is_core_update = _update_type_early == "core"
         if _is_core_update and _profile is not None and HA_API_TOKEN:
             from utils.knowledge.ha_release_report import (
@@ -1728,6 +1729,24 @@ async def _run_update_analysis(
                             error=str(_persist_exc),
                         )
 
+        # ── Slim path: when BC assessments ran, pre-inject the digest and use the
+        # slim registry (no bc_verdicts in the tool schema) so the model writes only
+        # summary/highlights.  Also exclude prior update_analysis sessions from
+        # the Previous Investigations block to avoid anchoring to stale conclusions.
+        _has_assessments = bool(getattr(executor, "_bc_assessments", None))
+        from utils.agent.tool_registry import build_update_analysis_slim_registry
+
+        if _has_assessments and _rpt is not None:
+            from utils.knowledge.ha_release_report import format_core_release_digest
+
+            _digest = format_core_release_digest(_rpt)
+            if _digest:
+                initial_context = (
+                    initial_context
+                    + "\n\n## Pre-computed BC assessment results\n\n"
+                    + _digest
+                )
+
         _analyse_wq = get_work_queue_or_none()
         if _analyse_wq is not None:
             _analyse_wq.set_running_detail("analysing")
@@ -1735,7 +1754,11 @@ async def _run_update_analysis(
         loop = AgentLoop(
             llm_client=llm_client,
             tool_executor=executor,
-            tool_registry=build_update_analysis_registry(),
+            tool_registry=(
+                build_update_analysis_slim_registry()
+                if _has_assessments
+                else build_update_analysis_registry()
+            ),
             system_prompt=system_prompt,
             terminal_tool_name=terminal_tool,
             trigger="update_poll",
@@ -1747,6 +1770,11 @@ async def _run_update_analysis(
                 trigger=f"Update: {update.component} → {update.latest_version}",
             ),
             capture_llm=True,
+            think=False,
+            num_predict=500,
+            exclude_prior_session_types=(
+                ["update_analysis"] if _has_assessments else []
+            ),
         )
         _knowledge_query = (
             f"{update.component} "

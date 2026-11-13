@@ -8775,6 +8775,78 @@ class TestBCAssessmentRegistry:
         assert props["when"]["enum"] == ["before_update", "after_update"]
 
 
+class TestUpdateAnalysisSlimPath:
+    """S4: slim main loop — digest pre-injection, slim registry, think=False."""
+
+    def test_slim_registry_no_bc_verdicts(self):
+        """build_update_analysis_slim_registry omits bc_verdicts from finish_update_analysis."""
+        from utils.agent.tool_registry import build_update_analysis_slim_registry
+
+        reg = build_update_analysis_slim_registry()
+        tools = reg.get_ollama_tools()
+        finish = next(
+            t for t in tools if t["function"]["name"] == "finish_update_analysis"
+        )
+        assert "bc_verdicts" not in finish["function"]["parameters"]["properties"]
+        # Other key fields must still be present
+        assert "summary" in finish["function"]["parameters"]["properties"]
+        assert "highlights" in finish["function"]["parameters"]["properties"]
+
+    def test_slim_registry_has_same_investigation_tools(self):
+        """Slim registry still has all investigation tools (get_update_release_notes, etc.)."""
+        from utils.agent.tool_registry import (
+            build_update_analysis_registry,
+            build_update_analysis_slim_registry,
+        )
+
+        full_names = set(build_update_analysis_registry().names())
+        slim_names = set(build_update_analysis_slim_registry().names())
+        # Same set — both register finish_update_analysis (same name, different schema)
+        assert full_names == slim_names
+
+    def test_digest_appended_to_context_text(self):
+        """format_core_release_digest output includes BC verdict rows that would be
+        injected into initial_context under the '## Pre-computed BC assessment results'
+        header when _has_assessments is True."""
+        from utils.knowledge.ha_release_report import (
+            BCEntry,
+            CoreReleaseReport,
+            format_core_release_digest,
+        )
+
+        rpt = CoreReleaseReport(
+            version="2026.11.1",
+            installed_version="2026.10.4",
+            bc_installed=[
+                BCEntry(name="MQTT", body="MQTT requires YAML key", domains=["mqtt"])
+            ],
+            bc_general=[],
+            bc_verdicts=[
+                {"bc": "MQTT", "verdict": "no_action", "reason": "No mqtt: key found."}
+            ],
+        )
+
+        digest = format_core_release_digest(rpt)
+        assert "MQTT" in digest
+        # Verify the header that the update manager injects
+        ctx = "Available update: homeassistant 2026.10.4 → 2026.11.1"
+        ctx_with_digest = ctx + "\n\n## Pre-computed BC assessment results\n\n" + digest
+        assert "## Pre-computed BC assessment results" in ctx_with_digest
+        assert "MQTT" in ctx_with_digest
+
+    def test_full_registry_still_has_bc_verdicts(self):
+        """build_update_analysis_registry (non-slim) still has bc_verdicts for
+        the fallback path when BC assessments have not been run."""
+        from utils.agent.tool_registry import build_update_analysis_registry
+
+        reg = build_update_analysis_registry()
+        tools = reg.get_ollama_tools()
+        finish = next(
+            t for t in tools if t["function"]["name"] == "finish_update_analysis"
+        )
+        assert "bc_verdicts" in finish["function"]["parameters"]["properties"]
+
+
 class TestFinishBCAssessment:
     """Tests for ToolExecutor._finish_bc_assessment and BC assessment state."""
 

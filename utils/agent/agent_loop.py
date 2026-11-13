@@ -449,13 +449,20 @@ _PRIOR_SESSION_TEXT_CHARS = 300
 
 
 def _fetch_prior_sessions(
-    db_path: str, subject_keys: list[str], now: Optional[float] = None
+    db_path: str,
+    subject_keys: list[str],
+    now: Optional[float] = None,
+    exclude_session_types: Optional[list[str]] = None,
 ) -> str:
     """Return a [PREVIOUS INVESTIGATION] block for recent sessions on the same subject.
 
     Lists up to _PRIOR_SESSION_LIMIT session_outcomes rows from the last
     _PRIOR_SESSION_WINDOW_DAYS, newest first, with what each concluded and
     whether anyone confirmed it.  Returns "" when there are none.
+
+    exclude_session_types: when provided, rows whose session_type is in this list
+    are excluded.  Used by the update-analysis loop to suppress earlier analyses of
+    the same update that would otherwise anchor the model to stale conclusions.
     """
     import json
     import sqlite3
@@ -467,6 +474,12 @@ def _fetch_prior_sessions(
         "%Y-%m-%dT%H:%M:%SZ",
         time.gmtime((now or time.time()) - _PRIOR_SESSION_WINDOW_DAYS * 86400),
     )
+    _excluded = [t for t in (exclude_session_types or []) if t]
+    _exclude_clause = (
+        f" AND session_type NOT IN ({','.join('?' * len(_excluded))})"  # nosec B608
+        if _excluded
+        else ""
+    )
     try:
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute(
@@ -474,8 +487,9 @@ def _fetch_prior_sessions(
                 " FROM session_outcomes"
                 f" WHERE subject_key IN ({','.join('?' * len(keys))})"  # nosec B608
                 "   AND created_at >= ?"
+                f"{_exclude_clause}"
                 " ORDER BY created_at DESC LIMIT ?",
-                (*keys, cutoff, _PRIOR_SESSION_LIMIT),
+                (*keys, cutoff, *_excluded, _PRIOR_SESSION_LIMIT),
             ).fetchall()
     except Exception:  # nosec B110
         return ""
@@ -718,6 +732,7 @@ class AgentLoop:
         think: "ThinkValue | object" = _THINK_UNSET,
         limit_review: bool = True,
         num_predict: Optional[int] = None,
+        exclude_prior_session_types: Optional[list[str]] = None,
     ) -> None:
         if model is _UNSET:
             from utils.llm.llm_factory import _default_model_for_provider
@@ -748,6 +763,9 @@ class AgentLoop:
         self._think_override: object = think
         self._limit_review_enabled = limit_review
         self._num_predict = num_predict
+        self._exclude_prior_session_types: list[str] = list(
+            exclude_prior_session_types or []
+        )
         self._llm_captures: list = []
         self._tool_call_records: list[ToolCallRecord] = []
         self._seen_calls: dict[tuple[str, str], tuple[int, str]] = {}
@@ -1228,6 +1246,8 @@ class AgentLoop:
                     if prior_subject_keys is not None
                     else [subject_key]
                 ),
+                None,
+                self._exclude_prior_session_types or None,
             )
 
         _profile_block = self._pre_inject_ha_profile()
