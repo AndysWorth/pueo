@@ -25,53 +25,38 @@ releases (2026.9.x → 2026.10.x) may carry breaking changes.
 
 1. `get_update_release_notes(entity_id=<entity>)` — returns a **pre-built digest** for this
    release.  The digest contains:
-   - `Backward-incompatible changes` with installed-integration BCs at the top, each with
-     an `Evidence:` block showing entity counts, token matches, and automation/dashboard hits.
-   - `Flagged changes (from screening)` — changes flagged by the pre-screening pass
-   - `Feature highlights (from screening)` — noteworthy new capabilities
-   - `Farewell` / removed section
-   Do NOT call `fetch_url`, `read_source`, or `get_ha_profile config_entries` — the digest
-   already contains the relevant content.
+   - `Backward-incompatible changes` — a verdict table (name | verdict | reason | fix) with
+     per-BC assessments already filled in.
+   - `Patch changes` — real fix lines from the patch body (installed domains only).
+   - `Feature highlights (from screening)` — noteworthy new capabilities.
+   - `Flagged changes (informational only)` — do not raise `instance_impact` from flags.
+   Do NOT call `fetch_url`, `read_source`, `get_ha_profile`, or `check_config_against_breaking_change` —
+   the per-BC assessments have already been run before this loop.
 
-2. For every BC in the digest (bc_installed and bc_general), read its `Evidence:` block
-   and judge: `yes` (this install is affected), `no` (confirmed not affected), or `unknown`.
-   - `yes`: evidence shows matching entities, automation/dashboard hits, or config tokens.
-   - `no`: evidence shows zero entities, no automation hits, and no dashboard hits for the
-     domains or tokens in question.
-   - `unknown`: evidence is insufficient (no token matches recorded, general BC with no
-     entity scope, or BC concerns a device/cloud service that can't be verified offline).
-   Call `check_config_against_breaking_change` or `check_automation_references` **only**
-   when the Evidence block says `tokens_checked` missed something specific that you need
-   to verify (e.g. a YAML key the evidence didn't search for). Do not call these tools
-   speculatively or to confirm what the evidence already shows.
-
-3. `query_knowledge(query_type="procedural")` — cross-check renamed/removed config keys
-   against the `ha_best_practices` deprecated-API table.
-
-4. For any minor or major release: **always** call `get_pueo_command_catalog`.
+2. For any minor or major release: **always** call `get_pueo_command_catalog`.
    Compare every removed, renamed, or replaced integration, API command, or service
    mentioned in the digest against the catalog entries.  For each match, add an entry to
    `pueo_command_risks`.
    A catalog entry whose note says it falls back for the target version (e.g. `hacs/*` →
    `marketplace/*` on 2026.11+) is **not** a risk — do not list it.
 
-5. Pass `highlights`: 2–5 one-sentence items from the digest's `Feature highlights`
-   section that matter to this install (`"<domain>: <feature>"`).
+3. Call `finish_update_analysis` with:
+   - `bc_verdicts`: taken directly from the verdict table in the digest.
+     Server-side code will use the pre-run per-BC assessments and ignore this field,
+     but fill it accurately in case the assessment pass did not run.
+   - `highlights`: 2–5 one-sentence items from `Feature highlights`.
+   - `instance_impact`: derived from BC verdicts only (flags never raise impact).
 
 ## Output guidance
 
-- `bc_verdicts`: **required**. One entry per BC (bc_installed + bc_general). Every BC must
-  have an entry — missing ones are filled as `unknown` automatically.
-- `flag_verdicts`: one entry per flagged change from `Flagged changes (from screening)`.
-  Use the flag's `Evidence:` block (entity counts, config refs, dashboard hits) to judge
-  `yes`/`no`/`unknown`. A `yes` verdict raises `instance_impact` to `high`; `unknown`
-  does not change impact. Flags are distinct from BCs — do not list them in `bc_verdicts`.
+- `bc_verdicts`: one entry per BC — read them from the verdict table in the digest.
+  Flags are **not** BCs; do not list them here.
 - `affected_config_keys`: only keys confirmed present in this install's config.
-- `proposed_config_fixes`: concrete YAML diff the user must apply before updating.
-  Omit if no fixes are needed — an empty list suppresses the "Config fixes required" notice.
-- `prerequisites`: any manual steps before applying (e.g. "Update Supervisor first",
-  "Create a manual backup").
-- `confidence`: 0.9+ only when the digest was `complete` and you assessed every BC.
+- `proposed_config_fixes`: only fixes grounded in tool output from this session.
+  The per-BC assessment pass already contributed its grounded fixes; omit this field
+  unless you found an additional confirmed fix in this session.
+- `prerequisites`: any manual steps before applying (e.g. "Update Supervisor first").
+- `confidence`: 0.9+ only when the digest was `complete` and all BCs were assessed.
   Lower confidence if the digest was incomplete or notes unavailable.
 
 ## Forbidden tools in this session

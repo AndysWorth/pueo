@@ -150,6 +150,11 @@ _SEED_PROMPTS: list[tuple[str, str, str]] = [
         "Core update, Home Assistant update, HA core breaking change, core release notes, minor release update",
     ),
     (
+        "seed_update_bc.md",
+        "HA Core per-BC breaking-change assessment",
+        "BC assessment, breaking change verdict, affects this install, config key check, MQTT YAML entities, Hue effect, Matter entity type",
+    ),
+    (
         "seed_update_screening.md",
         "Core release change screening",
         "release change screening, changelog batch, BC entry review, flagged change, feature highlight, change_screening session",

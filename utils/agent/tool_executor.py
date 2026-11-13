@@ -457,14 +457,13 @@ def _derive_instance_impact(
     bc_verdicts: list[dict],
     flag_verdicts: Optional[list[dict]] = None,
 ) -> str:
-    """Derive instance_impact from normalised bc_verdicts and flag_verdicts.
+    """Derive instance_impact from normalised bc_verdicts.
 
-    any BC or flag 'yes' → 'high'; BC 'unknown' (not flag) → 'low'; else 'none'.
-    Flag 'unknown' verdicts never raise impact on their own.
+    Flags are informational only and never raise impact (ADR 056 S3).
+    any BC 'yes' → 'high'; BC 'unknown' → 'low'; else 'none'.
     """
     bc_affects = {v.get("affects") for v in bc_verdicts}
-    flag_affects = {v.get("affects") for v in (flag_verdicts or [])}
-    if "yes" in bc_affects or "yes" in flag_affects:
+    if "yes" in bc_affects:
         return "high"
     if "unknown" in bc_affects:
         return "low"
@@ -594,6 +593,14 @@ class ToolExecutor:
         # Full CoreReleaseReport (populated when report is loaded); used by
         # _finish_update_analysis to normalise bc_verdicts.
         self._core_release_report: Optional[Any] = None
+        # Per-BC assessment verdicts accumulated across the BC assessment pass.
+        # Keyed by canonical BC name; each value: {bc, affects, reason, config_fix?}.
+        # Persists across inner loops (like screening state) — not reset per loop.
+        self._bc_assessments: dict[str, dict] = {}
+        # Set when any BC assessment session fails twice; triggers card prefix.
+        self._bc_assessment_gap: bool = False
+        # Name of the BC currently being assessed (set before each assessment loop).
+        self._current_bc_name: Optional[str] = None
         self._lovelace_suspicious: list[str] = []
         self._event_subscriber: Optional[Any] = None
         # Per-session KB tracking (reset in reset())
@@ -1045,6 +1052,13 @@ class ToolExecutor:
                     flagged=args.get("flagged") or [],
                     highlights=args.get("highlights") or [],
                     batch_complete=bool(args.get("batch_complete", True)),
+                )
+            if name == "finish_bc_assessment":
+                return self._finish_bc_assessment(
+                    affects=args.get("affects", "unknown"),
+                    reason=args.get("reason", ""),
+                    evidence_cited=args.get("evidence_cited"),
+                    config_fix=args.get("config_fix"),
                 )
             if name == "get_device_info":
                 return await self._get_device_info(args.get("ip", ""))
@@ -6296,6 +6310,50 @@ class ToolExecutor:
             output=f"Batch screened: {len(flagged)} flag(s), {len(highlights)} highlight(s).",
         )
 
+    def _finish_bc_assessment(
+        self,
+        affects: str,
+        reason: str,
+        evidence_cited: Optional[list] = None,
+        config_fix: Optional[dict] = None,
+        **_extra: Any,
+    ) -> ToolResult:
+        """Store a per-BC verdict from one assessment session.
+
+        config_fix is kept only when its ``old`` text is found verbatim in a
+        successful tool output of this session (grounding check).  An ungrounded
+        fix is logged and dropped.
+        """
+        bc_name = self._current_bc_name or "unknown"
+        grounded_fix: Optional[dict] = None
+        if config_fix and isinstance(config_fix, dict):
+            old_text = str(config_fix.get("old", ""))
+            if old_text and any(
+                old_text in output for _, output in self._session_outputs
+            ):
+                grounded_fix = {
+                    k: v
+                    for k, v in config_fix.items()
+                    if k in ("description", "fix_description", "config_fix_yaml")
+                }
+            else:
+                log.warning(
+                    "bc_fix_ungrounded",
+                    bc=bc_name,
+                    old_text=old_text[:80] if old_text else "",
+                )
+        self._bc_assessments[bc_name] = {
+            "bc": bc_name,
+            "affects": str(affects),
+            "reason": str(reason),
+            **({"config_fix": grounded_fix} if grounded_fix else {}),
+        }
+        return ToolResult(
+            tool_name="finish_bc_assessment",
+            success=True,
+            output=f"BC '{bc_name}' assessed: {affects}.",
+        )
+
     def clear_screening_state(self) -> None:
         """Reset accumulated screening results before a new set of batches."""
         self._screening_flags = []
@@ -6310,6 +6368,16 @@ class ToolExecutor:
             self._screening_highlights,
             self._screening_complete,
         )
+
+    def clear_bc_assessment_state(self) -> None:
+        """Reset accumulated BC assessment verdicts before a new assessment pass."""
+        self._bc_assessments = {}
+        self._bc_assessment_gap = False
+        self._current_bc_name = None
+
+    def get_bc_assessments(self) -> dict[str, dict]:
+        """Return per-BC assessment verdicts accumulated from the assessment pass."""
+        return dict(self._bc_assessments)
 
     async def _get_device_info(self, ip: str) -> ToolResult:
         """Enrich a source IP with ARP, DNS, NetAlertX, and HA device registry context."""
@@ -6811,35 +6879,40 @@ class ToolExecutor:
         verification_question: Optional[str] = None,
         highlights: Optional[list] = None,
         bc_verdicts: Optional[list] = None,
-        flag_verdicts: Optional[list] = None,
         **_extra: Any,
     ) -> ToolResult:
         """Create a HITL approval card for the pending HA update."""
-        # Normalise bc_verdicts and flag_verdicts against report names.
+        # Use per-BC assessment verdicts when available (the new path);
+        # fall back to model-supplied bc_verdicts for backward compatibility.
         _rpt = self._core_release_report
         _all_bc_names: list[str] = []
-        _all_flag_changes: list[str] = []
         if _rpt is not None:
             _all_bc_names = [
                 e.name for e in list(_rpt.bc_installed) + list(_rpt.bc_general)
             ]
-            _all_flag_changes = [f.change for f in list(_rpt.screening_flags)]
-        _normalized_verdicts = _normalize_bc_verdicts(bc_verdicts, _all_bc_names)
-        _normalized_flag_verdicts = _normalize_flag_verdicts(
-            flag_verdicts, _all_flag_changes
-        )
-        if _normalized_verdicts or _normalized_flag_verdicts:
-            instance_impact = _derive_instance_impact(
-                _normalized_verdicts, _normalized_flag_verdicts
+        if self._bc_assessments:
+            _normalized_verdicts = _normalize_bc_verdicts(
+                list(self._bc_assessments.values()), _all_bc_names
             )
+        else:
+            _normalized_verdicts = _normalize_bc_verdicts(bc_verdicts, _all_bc_names)
+        _normalized_flag_verdicts: list[dict] = []
+        if _normalized_verdicts:
+            instance_impact = _derive_instance_impact(_normalized_verdicts)
             safe_to_update = instance_impact != "high"
             # When verdicts exist, breaking_changes comes only from BC verdicts —
             # never from model free text, so flags cannot be relabelled as BCs.
-            if _normalized_verdicts:
-                breaking_changes = [
-                    v["bc"]
-                    for v in _normalized_verdicts
-                    if v["affects"] in ("yes", "unknown")
+            breaking_changes = [
+                v["bc"]
+                for v in _normalized_verdicts
+                if v["affects"] in ("yes", "unknown")
+            ]
+            # Collect grounded config fixes from per-BC assessments.
+            if self._bc_assessments:
+                proposed_config_fixes = [
+                    v["config_fix"]
+                    for v in self._bc_assessments.values()
+                    if v.get("config_fix")
                 ]
 
         # Server-side enforcement: core/OS/Supervisor always require a card at levels 0–3.
@@ -6866,24 +6939,37 @@ class ToolExecutor:
 
         # Unverified-analysis override: force a card and cap confidence when
         # (a) no real release notes were obtained, or
-        # (b) installed-integration breaking changes were found but check_config was not called.
+        # (b) installed BCs exist but no assessment pass ran (and no per-session check).
         # The model must never auto-apply based on an unverified "no breaking changes" claim.
         _notes_incomplete = self._release_notes_completeness != "complete"
         _bc_unchecked = (
             self._installed_bc_found
             and self._release_notes_completeness == "complete"
+            and not self._bc_assessments  # assessment pass covers all BCs
             and not any(
                 n == "check_config_against_breaking_change"
                 for n, _ in self._session_outputs
             )
         )
         _screening_partial = not _notes_incomplete and self._screening_gap is not None
-        _unverified = _notes_incomplete or _bc_unchecked or _screening_partial
+        _unverified = (
+            _notes_incomplete
+            or _bc_unchecked
+            or _screening_partial
+            or self._bc_assessment_gap
+        )
         if self._pending_update_status is not None and _unverified:
             create_hitl_card = True
             if confidence is not None and confidence > 0.5:
                 confidence = 0.5
-            if _screening_partial and not _bc_unchecked:
+            if self._bc_assessment_gap and not _bc_unchecked:
+                _unverified_prefix = "Some BC assessments could not complete — results may be incomplete. "
+                log.warning(
+                    "update_analysis_bc_assessment_gap",
+                    component=self._pending_update_status.component,
+                    version=self._pending_update_status.latest_version,
+                )
+            elif _screening_partial and not _bc_unchecked:
                 _unverified_prefix = _screening_gap_prefix(self._screening_gap)
                 log.warning(
                     "update_analysis_screening_partial",
@@ -7150,17 +7236,6 @@ class ToolExecutor:
                 body_parts.append(
                     "✅ None of the breaking changes affect your install. Safe to proceed."
                 )
-        # Summarise flag verdicts that affect this install in the notification body.
-        if _normalized_flag_verdicts:
-            _yes_flags = [
-                v["flag"] for v in _normalized_flag_verdicts if v["affects"] == "yes"
-            ]
-            if _yes_flags:
-                body_parts.append(
-                    f"⚑ Flagged changes affect this install: "
-                    + ", ".join(_yes_flags[:3])
-                )
-
         _rs = get_resource_status()
         disk_headroom_warning: Optional[str] = None
         if update.component in ("core", "os") and _rs is not None:
@@ -7216,7 +7291,13 @@ class ToolExecutor:
                 else ""
             ),
             "bc_verdicts": _normalized_verdicts,
-            "flag_verdicts": _normalized_flag_verdicts,
+            "flag_verdicts": [],
+            # High/medium screening flags for informational collapsed display on the card.
+            "screening_flags": [
+                {"domain": f.domain, "severity": f.severity, "change": f.change}
+                for f in (_rpt.screening_flags if _rpt else [])
+                if f.severity in ("high", "medium")
+            ],
         }
         # Verification comes from the post-update result card (run_pueo_self_check /
         # add-on version poll), not from a pre-analysis digest question.  Accept an
@@ -7232,8 +7313,10 @@ class ToolExecutor:
         )
         await self._notifier.send(subject=subject, body=body, payload=payload)
         # Persist verdicts to the CoreReleaseReport JSON for the report page.
+        # (BC assessment pass already persisted verdicts earlier; this is a no-op
+        # for the new path but keeps backward compat for the LLM-only fallback.)
         if (
-            (_normalized_verdicts or _normalized_flag_verdicts)
+            _normalized_verdicts
             and _rpt is not None
             and update.component.lower()
             in (
@@ -7249,7 +7332,6 @@ class ToolExecutor:
             if _rpt_path.exists():
                 try:
                     _rpt.bc_verdicts = _normalized_verdicts
-                    _rpt.flag_verdicts = _normalized_flag_verdicts
                     _rpt_path.write_text(
                         _rpt.model_dump_json(indent=2), encoding="utf-8"
                     )
