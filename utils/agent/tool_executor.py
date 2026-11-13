@@ -367,6 +367,9 @@ _AFFECTS_TO_VERDICT = {
     "unknown": "user_check",
 }
 
+# Verdicts the model may return from finish_bc_assessment (not_assessed is code-only).
+_BC_VERDICTS = frozenset({"action_needed", "no_action", "user_check"})
+
 
 def _normalize_bc_verdicts(
     bc_verdicts_raw: Optional[list],
@@ -1125,10 +1128,13 @@ class ToolExecutor:
                 )
             if name == "finish_bc_assessment":
                 return self._finish_bc_assessment(
-                    affects=args.get("affects", "unknown"),
+                    verdict=args.get("verdict"),
                     reason=args.get("reason", ""),
-                    evidence_cited=args.get("evidence_cited"),
+                    action=args.get("action"),
+                    when=args.get("when"),
+                    user_question=args.get("user_question"),
                     config_fix=args.get("config_fix"),
+                    affects=args.get("affects"),
                 )
             if name == "get_device_info":
                 return await self._get_device_info(args.get("ip", ""))
@@ -6420,8 +6426,21 @@ class ToolExecutor:
         # Translate old-style affects to new-style verdict if verdict not given.
         if not verdict and affects:
             verdict = _AFFECTS_TO_VERDICT.get(str(affects), "user_check")
-        if not verdict:
-            verdict = "user_check"
+        if str(verdict or "") not in _BC_VERDICTS:
+            # A missing or unrecognised verdict is never stored: defaulting it
+            # would report a breaking change as handled when nobody judged it
+            # (#1209).  The session ends without a verdict and the caller
+            # records the BC as not_assessed.
+            log.warning("bc_verdict_missing", bc=bc_name, verdict=str(verdict or ""))
+            return ToolResult(
+                tool_name="finish_bc_assessment",
+                success=False,
+                output="",
+                error=(
+                    "verdict is required and must be one of: "
+                    "action_needed, no_action, user_check."
+                ),
+            )
         # user_check requires a concrete user_question.  When the model omits it,
         # downgrade to no_action — the evidence showed no impact that needs
         # user confirmation.

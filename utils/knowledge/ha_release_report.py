@@ -717,6 +717,13 @@ def _evidence_lines(evidence: "BCEvidence") -> list[str]:
                     f"{t} {n}" for t, n in sorted(evidence.entities_by_type.items())
                 )
                 ev_lines.append(f"By type: {breakdown}")
+                # Types the BC names but this instance has none of: say so in
+                # words, a "light 0" inside a list is easy to miss (#1209).
+                zero_types = sorted(
+                    t for t, n in evidence.entities_by_type.items() if n == 0
+                )
+                if zero_types:
+                    ev_lines.append(f"No entities of type: {', '.join(zero_types)}")
             if evidence.platforms:
                 plat = ", ".join(
                     f"{p} {n}" for p, n in sorted(evidence.platforms.items())

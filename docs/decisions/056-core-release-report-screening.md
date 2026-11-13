@@ -213,3 +213,26 @@ when the report's `installed_version` differs from the pending update's `install
 
 **`ha_update_manager.py`:** passes `installed_version=update.installed_version or ""`
 to `build_core_release_report`.
+
+## Amendment (#1209) — verdict dispatch, reason-first schema, seed-owned rules
+
+The S5 live re-run showed every BC stored as `no_action`. The `finish_bc_assessment`
+dispatch in `ToolExecutor._execute_tool` had not been updated for the #1199 schema: it
+passed only the old `affects` field (defaulting to `"unknown"`), so the model's `verdict`,
+`action`, `when` and `user_question` were dropped and the `user_check`-without-question
+guard then turned every BC into `no_action` — including a real `action_needed`.
+
+- The dispatch passes all schema fields. A call with a missing or unrecognised verdict
+  returns `success=False` and stores nothing; `_bc_session_outcome` in
+  `ha_update_manager.py` then reports `no_verdict`, so the BC is retried once and
+  otherwise recorded as `not_assessed`. A BC nobody judged is never reported as handled.
+- `finish_bc_assessment` lists `reason` before `verdict`. With `think=False` the model
+  commits to whichever field comes first; with the verdict first it wrote reasons that
+  contradicted it ("no light entities" → `action_needed`).
+- Verdict rules live only in `seed_update_bc.md` (`task_bc_assessment.md` is procedural).
+  The seed decides in order: depends on something the evidence cannot see (browser,
+  remote access, firmware) → `user_check`; HAOS + Python-environment BC → `no_action`;
+  an evidence line proving use → `action_needed`; otherwise `no_action`.
+- `_evidence_lines` adds "No entities of type: …" for zero-count types the BC names.
+- BC sessions exclude earlier `update_analysis` / `bc_assessment` sessions from the
+  "Previous investigations" block (they share the update entity as `subject_key`).
