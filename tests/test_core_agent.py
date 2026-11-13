@@ -21943,8 +21943,12 @@ class TestFinishChangeScreeningStringCoercion:
         import json
 
         ex = self._make_executor()
-        highlights_str = json.dumps([{"domain": "mqtt", "feature": "New MQTT v5 topic aliases"}])
-        ex._finish_change_screening(flagged=[], highlights=highlights_str, batch_complete=True)
+        highlights_str = json.dumps(
+            [{"domain": "mqtt", "feature": "New MQTT v5 topic aliases"}]
+        )
+        ex._finish_change_screening(
+            flagged=[], highlights=highlights_str, batch_complete=True
+        )
         flags, hls, _ = ex.get_screening_results()
         assert len(hls) == 1
         assert hls[0]["domain"] == "mqtt"
@@ -21953,17 +21957,28 @@ class TestFinishChangeScreeningStringCoercion:
         import json
 
         ex = self._make_executor()
-        flagged_str = json.dumps([
-            {"domain": "http", "change": "reject overlapping", "concern": "breaks config", "severity": "medium"}
-        ])
-        ex._finish_change_screening(flagged=flagged_str, highlights=[], batch_complete=True)
+        flagged_str = json.dumps(
+            [
+                {
+                    "domain": "http",
+                    "change": "reject overlapping",
+                    "concern": "breaks config",
+                    "severity": "medium",
+                }
+            ]
+        )
+        ex._finish_change_screening(
+            flagged=flagged_str, highlights=[], batch_complete=True
+        )
         flags, hls, _ = ex.get_screening_results()
         assert len(flags) == 1
         assert flags[0]["domain"] == "http"
 
     def test_malformed_json_string_produces_empty(self):
         ex = self._make_executor()
-        ex._finish_change_screening(flagged="not json", highlights="also not json", batch_complete=True)
+        ex._finish_change_screening(
+            flagged="not json", highlights="also not json", batch_complete=True
+        )
         flags, hls, _ = ex.get_screening_results()
         assert flags == []
         assert hls == []
@@ -21973,7 +21988,7 @@ class TestFinishChangeScreeningStringCoercion:
         # Simulate a list that contains some scalars (e.g. the model passed characters)
         ex._finish_change_screening(
             flagged=["[", "{"],
-            highlights=["[", "{", "\""],
+            highlights=["[", "{", '"'],
             batch_complete=True,
         )
         flags, hls, _ = ex.get_screening_results()
