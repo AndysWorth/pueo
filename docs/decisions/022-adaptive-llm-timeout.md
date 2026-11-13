@@ -68,6 +68,18 @@ Pueo is a home-automation safety agent. An incomplete repair is worse than a slo
 - **Config keys added** (triple-update: `config.py`, `config.yaml.default`, commented-out): `AGENT_PER_CALL_TIMEOUT_FACTOR`, `AGENT_PER_CALL_MIN_TIMEOUT_SECONDS`, `AGENT_PER_CALL_MAX_TIMEOUT_SECONDS`, `AGENT_LLM_LATENCY_LOOKBACK`, `AGENT_LLM_LATENCY_PERCENTILE`.
 - The evaluation matrix row `"Loop wall time | ≤ 120 seconds"` is removed; the `"Inference latency"` row is updated to describe the adaptive per-call timeout.
 
+## Amendment — #1195 (2026-11-13): real cancellation, limit_review flag, num_predict cap, stuck-with-0-steps episode
+
+Four follow-on fixes applied to close failure modes observed in the 2026-11-13 Core update analysis run:
+
+1. **`OllamaClient` switched to `ollama.AsyncClient`** — `asyncio.to_thread(lambda: sync_client.chat(...))` does not close the HTTP connection on timeout; the Ollama server keeps generating and the next call queues behind it. Using `AsyncClient` (native coroutine) means task cancellation closes the connection, stopping generation immediately.
+
+2. **`AgentLoop(limit_review=False)`** — one-shot sessions (`bc_assessment`, `change_screening`) have no escalation path. Setting `limit_review=False` returns a "give up" decision immediately, preventing a failed limit-review call from itself timing out and cascading.  Separately, when a session gets stuck with 0 steps completed (the first LLM call never returned), the limit review is now skipped unconditionally — asking a timed-out model a follow-up question will also time out.
+
+3. **`AgentLoop(num_predict=N)`** — adds an optional per-session output cap passed as `num_predict` in the call options. Set to 500 for `bc_assessment` and `change_screening` (empirically ~77-93 tokens per session on the BC assessment task). The limit review inherits `think` and `num_ctx` from the active session's computed call options and is capped at `num_predict=512`.
+
+4. **Debug episodes for stuck-with-0-steps sessions** — these previously wrote no episode (empty `llm_captures`). The HTML is now written whenever `capture_llm=True`, even with no captures, so the initial context and system prompt are visible for diagnosis.
+
 ## Related decisions
 - [ADR 003 — Structured LLM output](003-structured-llm-output.md): `expected_timeout_ms()` reads from SQLite; the timeout derivation is deterministic and requires no LLM call.
 - [ADR 005 — asyncio over agentic framework](005-asyncio-over-agentic-framework.md): per-call `asyncio.wait_for` fits cleanly into the existing asyncio event loop; no framework change required.

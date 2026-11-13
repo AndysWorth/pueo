@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 from typing import Any, Literal, Union
@@ -19,7 +18,7 @@ class OllamaClient:
     """Wraps ollama.chat behind the LLMClientProtocol interface."""
 
     def __init__(self) -> None:
-        self._client = ollama.Client(host=OLLAMA_ENDPOINT)
+        self._client = ollama.AsyncClient(host=OLLAMA_ENDPOINT)
 
     async def chat(
         self,
@@ -51,7 +50,7 @@ class OllamaClient:
         )
         if think is not None:
             call_kwargs["think"] = think
-        resp = await asyncio.to_thread(lambda: self._client.chat(**call_kwargs))
+        resp = await self._client.chat(**call_kwargs)
         content = str(getattr(getattr(resp, "message", None), "content", "") or "")
         duration_ms = round((time.monotonic() - t0) * 1000)
         log.debug(
@@ -128,7 +127,7 @@ class OllamaClient:
             call_kwargs["think"] = think
         if keep_alive is not None:
             call_kwargs["keep_alive"] = keep_alive
-        resp = await asyncio.to_thread(lambda: self._client.chat(**call_kwargs))
+        resp = await self._client.chat(**call_kwargs)
         msg = resp.message
         result: dict = {"role": "assistant", "content": msg.content or ""}
         if msg.tool_calls:

@@ -716,6 +716,8 @@ class AgentLoop:
         capture_llm: bool = False,
         distill: bool = True,
         think: "ThinkValue | object" = _THINK_UNSET,
+        limit_review: bool = True,
+        num_predict: Optional[int] = None,
     ) -> None:
         if model is _UNSET:
             from utils.llm.llm_factory import _default_model_for_provider
@@ -744,6 +746,8 @@ class AgentLoop:
         self._capture_llm = capture_llm
         self._distill = distill
         self._think_override: object = think
+        self._limit_review_enabled = limit_review
+        self._num_predict = num_predict
         self._llm_captures: list = []
         self._tool_call_records: list[ToolCallRecord] = []
         self._seen_calls: dict[tuple[str, str], tuple[int, str]] = {}
@@ -766,6 +770,8 @@ class AgentLoop:
         self._stuck_reason: str = (
             ""  # "host_sleep" when timeout was caused by Mac sleep
         )
+        self._active_num_ctx: int = 0  # set during _loop_body for use by _review_limit
+        self._active_think: "ThinkValue | None" = None  # set during _loop_body
 
     def inject_context(self, message: str) -> None:
         """Append a user message to the live conversation during a running loop.
@@ -1069,6 +1075,12 @@ class AgentLoop:
         elapsed: float,
     ) -> LimitReviewDecision:
         """Ask the LLM whether to extend the budget or give up gracefully."""
+        if not self._limit_review_enabled:
+            return LimitReviewDecision(
+                reason_limit_hit=reason,
+                can_resolve_with_more=False,
+                summary_if_giving_up="",
+            )
         step_trace = _format_step_trace(steps)
         review_prompt = (
             f"[LIMIT REVIEW] You have hit the {reason} limit "
@@ -1089,14 +1101,19 @@ class AgentLoop:
             review_prompt=review_prompt[:500],
             messages_count=len(review_messages),
         )
+        _review_opts: dict = {"temperature": 0.0}
+        if self._active_num_ctx > 0:
+            _review_opts["num_ctx"] = self._active_num_ctx
+        _review_opts["num_predict"] = 512
         _review_t0 = time.monotonic()
         try:
             response = await asyncio.wait_for(
                 self._llm.chat(
                     model=self._model,
                     messages=review_messages,
-                    options={"temperature": 0.0},
+                    options=_review_opts,
                     format=LimitReviewDecision.model_json_schema(),
+                    think=self._active_think,
                 ),
                 timeout=timeout,
             )
@@ -1279,11 +1296,14 @@ class AgentLoop:
                 steps=len(steps),
                 elapsed=round(elapsed, 2),
             )
-            decision = await self._review_limit(
-                messages, steps, "stuck", len(steps), elapsed
-            )
-            if decision.summary_if_giving_up and episode_stub is None:
-                episode_stub = {"summary": decision.summary_if_giving_up}
+            # Skip the review when the model just timed out on its first call —
+            # asking a hung model a follow-up question will also hang.
+            if len(steps) > 0:
+                decision = await self._review_limit(
+                    messages, steps, "stuck", len(steps), elapsed
+                )
+                if decision.summary_if_giving_up and episode_stub is None:
+                    episode_stub = {"summary": decision.summary_if_giving_up}
             outcome = "stuck"
         except Exception as exc:
             # Unexpected crash (e.g. HTTP 500 from Ollama, XML parse error).
@@ -1358,6 +1378,7 @@ class AgentLoop:
 
         if self._capture_llm and self._llm_captures and outcome != "success":
             self._llm_captures[-1].outcome_path = "exhaustion_fallback"
+        _stuck_zero_steps = outcome == "stuck" and len(steps) == 0
 
         debug_log_path: Optional[str] = None
         _session_meta: dict[str, Any] = {}
@@ -1393,7 +1414,7 @@ class AgentLoop:
             # Full history (system, user, assistant and tool-role messages);
             # shallow-copied so later mutation of the live list can't leak in.
             _debug_messages = [dict(m) for m in messages]
-        if self._capture_llm and self._llm_captures:
+        if self._capture_llm and (self._llm_captures or _stuck_zero_steps):
             try:
                 from utils.debug.episode_writer import write_episode_html
                 from paths import get_dirs as _get_dirs
@@ -1725,6 +1746,9 @@ class AgentLoop:
         _effective_think: "ThinkValue | None" = _call_opts.think
         if self._think_override is not _THINK_UNSET and _call_opts.think is not None:
             _effective_think = self._think_override  # type: ignore[assignment]
+        # Expose active call opts so _review_limit can inherit them.
+        self._active_num_ctx = _call_opts.num_ctx
+        self._active_think = _effective_think
 
         while True:
             # Budget check at top of loop so extensions can continue without restart.
@@ -1747,6 +1771,8 @@ class AgentLoop:
             _call_options: dict = {"temperature": _call_opts.temperature}
             if _call_opts.num_ctx > 0:
                 _call_options["num_ctx"] = _call_opts.num_ctx
+            if self._num_predict is not None:
+                _call_options["num_predict"] = self._num_predict
             try:
                 response = await asyncio.wait_for(
                     self._llm.chat_with_tools(
