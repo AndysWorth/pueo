@@ -21923,6 +21923,64 @@ class TestPostUpdateRepairScan:
         asyncio.run(_um._post_update_repair_scan(settle_seconds=0))
 
 
+class TestFinishChangeScreeningStringCoercion:
+    """_finish_change_screening handles LLM-encoded JSON strings instead of arrays."""
+
+    def _make_executor(self):
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.autonomy import FakeAutonomyGate
+
+        ex = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=None,
+        )
+        ex.clear_screening_state()
+        return ex
+
+    def test_highlights_as_json_string_parsed(self):
+        import json
+
+        ex = self._make_executor()
+        highlights_str = json.dumps([{"domain": "mqtt", "feature": "New MQTT v5 topic aliases"}])
+        ex._finish_change_screening(flagged=[], highlights=highlights_str, batch_complete=True)
+        flags, hls, _ = ex.get_screening_results()
+        assert len(hls) == 1
+        assert hls[0]["domain"] == "mqtt"
+
+    def test_flagged_as_json_string_parsed(self):
+        import json
+
+        ex = self._make_executor()
+        flagged_str = json.dumps([
+            {"domain": "http", "change": "reject overlapping", "concern": "breaks config", "severity": "medium"}
+        ])
+        ex._finish_change_screening(flagged=flagged_str, highlights=[], batch_complete=True)
+        flags, hls, _ = ex.get_screening_results()
+        assert len(flags) == 1
+        assert flags[0]["domain"] == "http"
+
+    def test_malformed_json_string_produces_empty(self):
+        ex = self._make_executor()
+        ex._finish_change_screening(flagged="not json", highlights="also not json", batch_complete=True)
+        flags, hls, _ = ex.get_screening_results()
+        assert flags == []
+        assert hls == []
+
+    def test_non_dict_items_in_list_dropped(self):
+        ex = self._make_executor()
+        # Simulate a list that contains some scalars (e.g. the model passed characters)
+        ex._finish_change_screening(
+            flagged=["[", "{"],
+            highlights=["[", "{", "\""],
+            batch_complete=True,
+        )
+        flags, hls, _ = ex.get_screening_results()
+        assert flags == []
+        assert hls == []
+
+
 class TestScreeningBatchRetry:
     """Failed screening batches are retried once before counting as a gap."""
 

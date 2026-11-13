@@ -6362,6 +6362,22 @@ class ToolExecutor:
         Results are stored on the executor so the orchestrating _coro can read them
         back after each AgentLoop.run() and persist them to the report.
         """
+        import json as _json
+
+        # LLMs occasionally pass a JSON-encoded string instead of an array.
+        if isinstance(flagged, str):
+            try:
+                flagged = _json.loads(flagged)
+            except Exception:
+                flagged = []
+        if isinstance(highlights, str):
+            try:
+                highlights = _json.loads(highlights)
+            except Exception:
+                highlights = []
+        # Keep only dict items (drop stray scalars from malformed model output).
+        flagged = [f for f in flagged if isinstance(f, dict)]
+        highlights = [h for h in highlights if isinstance(h, dict)]
         existing_keys = {
             (f.get("domain", ""), f.get("change", "").lower())
             for f in self._screening_flags
