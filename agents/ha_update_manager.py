@@ -1626,119 +1626,150 @@ async def _run_update_analysis(
 
                 executor.clear_bc_assessment_state()
                 _all_bcs = list(_rpt.bc_installed) + list(_rpt.bc_general)
-                for _bc_idx, _bc_entry in enumerate(_all_bcs):
-                    _assess_wq = get_work_queue_or_none()
-                    if _assess_wq is not None:
-                        _assess_wq.set_running_detail(
-                            f"assessing BC {_bc_idx + 1} of {len(_all_bcs)}"
-                        )
-                    executor._current_bc_name = _bc_entry.name  # type: ignore[attr-defined]
-                    _ev_block = ""
-                    if _rpt.bc_evidence.get(_bc_entry.name):
-                        from utils.knowledge.ha_release_report import _evidence_lines
 
-                        _ev_lines = _evidence_lines(_rpt.bc_evidence[_bc_entry.name])
-                        if _ev_lines:
-                            _ev_block = "\n\nEvidence:\n" + "\n".join(
-                                f"- {l}" for l in _ev_lines
-                            )
-                    _is_installed_bc = _bc_entry in _rpt.bc_installed
-                    _install_note = ""
-                    if not _is_installed_bc and _profile and _profile.os_version:
-                        _install_note = (
-                            "\n\nInstall type: HAOS (Home Assistant Operating System)"
-                        )
-                    _bc_context = (
-                        f"HA Core {update.latest_version} breaking change assessment:\n\n"
-                        f"**{_bc_entry.name}**"
-                        f"{' (installed integration)' if _is_installed_bc else ' (general)'}"
-                        f"{_install_note}"
-                        f"\n\n{_bc_entry.body or '(no body)'}"
-                        f"{_ev_block}"
+                # Skip assessment pass if the report already has complete verdicts
+                # (e.g. a previous run stored them before the main analysis failed).
+                # This avoids re-running all sessions on every 30-min retry (#1215).
+                _existing_names = {
+                    v["bc"]
+                    for v in _rpt.bc_verdicts
+                    if isinstance(v, dict) and "bc" in v
+                }
+                _all_bc_names = {e.name for e in _all_bcs}
+                _recognized = {"action_needed", "no_action", "user_check"}
+                _all_assessed = _all_bc_names.issubset(_existing_names) and all(
+                    v.get("verdict") in _recognized
+                    for v in _rpt.bc_verdicts
+                    if isinstance(v, dict) and v.get("bc") in _all_bc_names
+                )
+                if _all_assessed:
+                    log.info(
+                        "bc_assessment_reusing_stored_verdicts",
+                        count=len(_all_bc_names),
                     )
-                    _assess_outcome = "failed"
-                    for _attempt in range(2):
-                        _assess_t0 = time.monotonic()
-                        try:
-                            _assess_prompt = load_agent_prompt(
-                                "bc_assessment", "finish_bc_assessment"
+                    for _v in _rpt.bc_verdicts:
+                        if isinstance(_v, dict) and _v.get("bc") in _all_bc_names:
+                            executor._bc_assessments[_v["bc"]] = dict(_v)  # type: ignore[attr-defined]
+                else:
+                    for _bc_idx, _bc_entry in enumerate(_all_bcs):
+                        _assess_wq = get_work_queue_or_none()
+                        if _assess_wq is not None:
+                            _assess_wq.set_running_detail(
+                                f"assessing BC {_bc_idx + 1} of {len(_all_bcs)}"
                             )
-                            _assess_llm = make_llm_client()  # pragma: no cover
-                            _assess_loop = AgentLoop(
-                                llm_client=_assess_llm,
-                                tool_executor=executor,
-                                tool_registry=build_bc_assessment_registry(),
-                                system_prompt=_assess_prompt,
-                                terminal_tool_name="finish_bc_assessment",
-                                trigger="update_poll",
-                                activity_type="bc_assessment",
-                                db_path=DB_PATH,
-                                knowledge_store=knowledge_store,
-                                capture_llm=True,
-                                max_tool_calls=1,
-                                distill=False,
-                                think=False,
-                                limit_review=False,
-                                num_predict=500,
-                                exclude_prior_session_types=list(
-                                    _BC_EXCLUDED_PRIOR_SESSION_TYPES
-                                ),
+                        executor._current_bc_name = _bc_entry.name  # type: ignore[attr-defined]
+                        _ev_block = ""
+                        if _rpt.bc_evidence.get(_bc_entry.name):
+                            from utils.knowledge.ha_release_report import (
+                                _evidence_lines,
                             )
-                            _assess_result = await _assess_loop.run(
-                                _bc_context,
-                                signature=_sig_update_bc(
-                                    "core_bc",
-                                    (
-                                        _bc_entry.domains[0]
-                                        if _bc_entry.domains
-                                        else "core"
-                                    ),
-                                ),
-                                subject_key=update.entity_id,
+
+                            _ev_lines = _evidence_lines(
+                                _rpt.bc_evidence[_bc_entry.name]
                             )
-                            _assess_elapsed = round(time.monotonic() - _assess_t0, 1)
-                            _assess_outcome = _bc_session_outcome(
-                                _assess_result.outcome,
-                                _bc_entry.name,
-                                executor._bc_assessments,  # type: ignore[attr-defined]
-                            )
-                            log.info(
-                                "bc_assessment_done",
-                                bc=_bc_entry.name,
-                                elapsed=_assess_elapsed,
-                                outcome=_assess_outcome,
-                                attempt=_attempt + 1,
-                            )
-                            if _assess_outcome == "success":
-                                break
-                            if _attempt == 0:
-                                log.warning(
-                                    "bc_assessment_incomplete_retrying",
-                                    bc=_bc_entry.name,
-                                    outcome=_assess_outcome,
+                            if _ev_lines:
+                                _ev_block = "\n\nEvidence:\n" + "\n".join(
+                                    f"- {l}" for l in _ev_lines
                                 )
-                        except Exception as _ae:
-                            _assess_elapsed = round(time.monotonic() - _assess_t0, 1)
-                            log.warning(
-                                "bc_assessment_failed",
-                                bc=_bc_entry.name,
-                                attempt=_attempt + 1,
-                                error=str(_ae),
-                            )
-                    if _assess_outcome != "success":
-                        # Mark gap: verdict will be unknown + card prefix
-                        executor._bc_assessment_gap = True  # type: ignore[attr-defined]
-                        # Store unknown fallback so BC appears in the verdict table
-                        executor._bc_assessments[_bc_entry.name] = {  # type: ignore[attr-defined]
-                            "bc": _bc_entry.name,
-                            "verdict": "not_assessed",
-                            "reason": "assessment did not complete",
-                        }
-                        log.warning(
-                            "bc_assessment_incomplete",
-                            bc=_bc_entry.name,
-                            outcome=_assess_outcome,
+                        _is_installed_bc = _bc_entry in _rpt.bc_installed
+                        _install_note = ""
+                        if not _is_installed_bc and _profile and _profile.os_version:
+                            _install_note = "\n\nInstall type: HAOS (Home Assistant Operating System)"
+                        _bc_context = (
+                            f"HA Core {update.latest_version} breaking change assessment:\n\n"
+                            f"**{_bc_entry.name}**"
+                            f"{' (installed integration)' if _is_installed_bc else ' (general)'}"
+                            f"{_install_note}"
+                            f"\n\n{_bc_entry.body or '(no body)'}"
+                            f"{_ev_block}"
                         )
+                        _assess_outcome = "failed"
+                        for _attempt in range(2):
+                            _assess_t0 = time.monotonic()
+                            try:
+                                _assess_prompt = load_agent_prompt(
+                                    "bc_assessment", "finish_bc_assessment"
+                                )
+                                _assess_llm = make_llm_client()  # pragma: no cover
+                                _assess_loop = AgentLoop(
+                                    llm_client=_assess_llm,
+                                    tool_executor=executor,
+                                    tool_registry=build_bc_assessment_registry(),
+                                    system_prompt=_assess_prompt,
+                                    terminal_tool_name="finish_bc_assessment",
+                                    trigger="update_poll",
+                                    activity_type="bc_assessment",
+                                    db_path=DB_PATH,
+                                    knowledge_store=knowledge_store,
+                                    capture_llm=True,
+                                    max_tool_calls=1,
+                                    distill=False,
+                                    think=False,
+                                    limit_review=False,
+                                    num_predict=500,
+                                    exclude_prior_session_types=list(
+                                        _BC_EXCLUDED_PRIOR_SESSION_TYPES
+                                    ),
+                                )
+                                _assess_result = await _assess_loop.run(
+                                    _bc_context,
+                                    signature=_sig_update_bc(
+                                        "core_bc",
+                                        (
+                                            _bc_entry.domains[0]
+                                            if _bc_entry.domains
+                                            else "core"
+                                        ),
+                                    ),
+                                    subject_key=update.entity_id,
+                                )
+                                _assess_elapsed = round(
+                                    time.monotonic() - _assess_t0, 1
+                                )
+                                _assess_outcome = _bc_session_outcome(
+                                    _assess_result.outcome,
+                                    _bc_entry.name,
+                                    executor._bc_assessments,  # type: ignore[attr-defined]
+                                )
+                                log.info(
+                                    "bc_assessment_done",
+                                    bc=_bc_entry.name,
+                                    elapsed=_assess_elapsed,
+                                    outcome=_assess_outcome,
+                                    attempt=_attempt + 1,
+                                )
+                                if _assess_outcome == "success":
+                                    break
+                                if _attempt == 0:
+                                    log.warning(
+                                        "bc_assessment_incomplete_retrying",
+                                        bc=_bc_entry.name,
+                                        outcome=_assess_outcome,
+                                    )
+                            except Exception as _ae:
+                                _assess_elapsed = round(
+                                    time.monotonic() - _assess_t0, 1
+                                )
+                                log.warning(
+                                    "bc_assessment_failed",
+                                    bc=_bc_entry.name,
+                                    attempt=_attempt + 1,
+                                    error=str(_ae),
+                                )
+                        if _assess_outcome != "success":
+                            # Mark gap: verdict will be unknown + card prefix
+                            executor._bc_assessment_gap = True  # type: ignore[attr-defined]
+                            # Store unknown fallback so BC appears in the verdict table
+                            executor._bc_assessments[_bc_entry.name] = {  # type: ignore[attr-defined]
+                                "bc": _bc_entry.name,
+                                "verdict": "not_assessed",
+                                "reason": "assessment did not complete",
+                            }
+                            log.warning(
+                                "bc_assessment_incomplete",
+                                bc=_bc_entry.name,
+                                outcome=_assess_outcome,
+                            )
 
                 # Persist verdicts to report JSON
                 if executor._bc_assessments:  # type: ignore[attr-defined]
@@ -1807,7 +1838,7 @@ async def _run_update_analysis(
             ),
             capture_llm=True,
             think=False,
-            num_predict=500,
+            num_predict=1000,
             exclude_prior_session_types=(
                 ["update_analysis"] if _has_assessments else []
             ),

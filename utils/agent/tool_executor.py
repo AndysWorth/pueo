@@ -1127,6 +1127,15 @@ class ToolExecutor:
                     batch_complete=bool(args.get("batch_complete", True)),
                 )
             if name == "finish_bc_assessment":
+                _bc_known = {
+                    "verdict",
+                    "reason",
+                    "action",
+                    "when",
+                    "user_question",
+                    "config_fix",
+                    "affects",
+                }
                 return self._finish_bc_assessment(
                     verdict=args.get("verdict"),
                     reason=args.get("reason", ""),
@@ -1135,6 +1144,7 @@ class ToolExecutor:
                     user_question=args.get("user_question"),
                     config_fix=args.get("config_fix"),
                     affects=args.get("affects"),
+                    **{k: v for k, v in args.items() if k not in _bc_known},
                 )
             if name == "get_device_info":
                 return await self._get_device_info(args.get("ip", ""))
@@ -6426,6 +6436,21 @@ class ToolExecutor:
         # Translate old-style affects to new-style verdict if verdict not given.
         if not verdict and affects:
             verdict = _AFFECTS_TO_VERDICT.get(str(affects), "user_check")
+        # Recovery for models that embed verdict/reason as stray key names (#1215).
+        # Pattern: {"reason": "", "LONG REASONING...<tool_call>verdict": "no_action"}
+        # The model put the verdict as the *value* of a key whose name ends with
+        # "verdict", and the reasoning as the key name itself.
+        if not verdict:
+            for _k, _v in _extra.items():
+                if str(_k).endswith("verdict") and str(_v) in _BC_VERDICTS:
+                    verdict = str(_v)
+                    break
+        if not reason:
+            for _k in _extra:
+                _ks = str(_k)
+                if len(_ks) > 50:
+                    reason = _ks.split("<tool_call>")[0].strip()
+                    break
         if str(verdict or "") not in _BC_VERDICTS:
             # A missing or unrecognised verdict is never stored: defaulting it
             # would report a breaking change as handled when nobody judged it

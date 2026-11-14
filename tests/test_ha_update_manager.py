@@ -8972,7 +8972,7 @@ class TestUpdateAnalysisSlimPath:
         assert "highlights" in finish["function"]["parameters"]["properties"]
 
     def test_slim_registry_has_same_investigation_tools(self):
-        """Slim registry still has all investigation tools (get_update_release_notes, etc.)."""
+        """Slim registry has all investigation tools except get_update_release_notes."""
         from utils.agent.tool_registry import (
             build_update_analysis_registry,
             build_update_analysis_slim_registry,
@@ -8980,8 +8980,20 @@ class TestUpdateAnalysisSlimPath:
 
         full_names = set(build_update_analysis_registry().names())
         slim_names = set(build_update_analysis_slim_registry().names())
-        # Same set — both register finish_update_analysis (same name, different schema)
-        assert full_names == slim_names
+        # Slim drops get_update_release_notes — digest is pre-injected (#1215)
+        assert full_names - slim_names == {"get_update_release_notes"}
+        assert slim_names - full_names == set()
+
+    def test_slim_registry_excludes_get_update_release_notes(self):
+        """get_update_release_notes must not be callable from the slim path (#1215).
+
+        The digest is pre-injected into initial_context; the tool must be absent
+        to prevent the model fetching it again (which caused slim-path failures).
+        """
+        from utils.agent.tool_registry import build_update_analysis_slim_registry
+
+        slim_names = set(build_update_analysis_slim_registry().names())
+        assert "get_update_release_notes" not in slim_names
 
     def test_digest_appended_to_context_text(self):
         """format_core_release_digest output includes BC verdict rows that would be
@@ -9074,6 +9086,50 @@ class TestUpdateAnalysisSlimPath:
 
         src = inspect.getsource(um._run_update_analysis)
         assert "executor.adopt_core_release_report(_rpt)" in src
+
+    def test_main_analysis_uses_higher_num_predict(self):
+        """Main update-analysis AgentLoop uses num_predict >= 1000 (#1215).
+
+        500 was too small for finish_update_analysis JSON on the slim path and
+        caused truncated tool calls that the malformed-call retry could not fix
+        (temperature=0 → identical truncated output every time).
+        """
+        import inspect
+
+        import agents.ha_update_manager as um
+
+        src = inspect.getsource(um._run_update_analysis)
+        # Extract num_predict value used for the main AgentLoop (not BC assessment).
+        # The BC assessment loop uses num_predict=500; the main loop must be higher.
+        import re
+
+        # Find the AgentLoop call for the main analysis (after the BC assessment block)
+        # and assert num_predict is at least 1000.
+        matches = re.findall(r"num_predict\s*=\s*(\d+)", src)
+        assert matches, "num_predict not found in _run_update_analysis"
+        # The last num_predict in the function body is for the main analysis loop.
+        main_num_predict = int(matches[-1])
+        assert main_num_predict >= 1000, (
+            f"Main analysis num_predict={main_num_predict} is too small; "
+            "must be >= 1000 to fit finish_update_analysis JSON (#1215)"
+        )
+
+    def test_stored_verdicts_reused_when_all_bcs_assessed(self):
+        """BC assessment LLM sessions are skipped when the report already has
+        complete, valid verdicts for every BC in the update (#1215).
+
+        This prevents re-running 10+ LLM sessions on a pipeline retry.
+        """
+        import inspect
+
+        import agents.ha_update_manager as um
+
+        src = inspect.getsource(um._run_update_analysis)
+        # The optimisation must be present in source
+        assert (
+            "bc_assessment_reusing_stored_verdicts" in src
+        ), "Missing stored-verdict reuse optimisation in _run_update_analysis (#1215)"
+        assert "_all_assessed" in src or "all_assessed" in src
 
     def test_full_registry_still_has_bc_verdicts(self):
         """build_update_analysis_registry (non-slim) still has bc_verdicts for
@@ -9309,6 +9365,47 @@ class TestFinishBCAssessment:
         result = self._dispatch(executor, {"verdict": "maybe", "reason": "Unsure."})
         assert not result.success
         assert executor.get_bc_assessments() == {}
+
+    def test_dispatch_corrupted_verdict_as_stray_key_value(self):
+        """Recovery for model that puts verdict as value of a stray key (#1215).
+
+        Observed pattern:
+          {"reason": "", "LONG_REASONING...<tool_call>verdict": "no_action"}
+        The 'verdict' parameter arrives as None; the stray key ends with 'verdict'
+        and its value is the actual verdict string.
+        """
+        executor = self._make_executor()
+        executor._current_bc_name = "Frontend"
+        # Simulate the corrupted tool call JSON as if the model produced it
+        corrupted_args = {
+            "reason": "",
+            "The BC is settled by evidence block: browsers not in evidence<tool_call>verdict": "no_action",
+        }
+        result = self._dispatch(executor, corrupted_args)
+        assert result.success, f"Expected recovery, got: {result.error}"
+        v = executor.get_bc_assessments()["Frontend"]
+        assert v["verdict"] == "no_action"
+
+    def test_dispatch_corrupted_reason_as_stray_key_name(self):
+        """Recovery for model that puts both verdict and reason in stray key names (#1215).
+
+        Observed pattern:
+          {"reason": "", "LONG_REASONING_TEXT<tool_call>verdict": "no_action"}
+        Recovery extracts the text before '<tool_call>' as the reason.
+        """
+        executor = self._make_executor()
+        executor._current_bc_name = "Auth"
+        long_reason = "The evidence shows no HAOS Python install is affected"
+        corrupted_args = {
+            "reason": "",
+            f"{long_reason}<tool_call>verdict": "no_action",
+        }
+        result = self._dispatch(executor, corrupted_args)
+        assert result.success, f"Expected recovery, got: {result.error}"
+        v = executor.get_bc_assessments()["Auth"]
+        assert v["verdict"] == "no_action"
+        # Reason should have been rescued from the stray key name
+        assert long_reason in (v.get("reason") or "")
 
     def test_dispatch_old_style_affects_still_maps(self):
         executor = self._make_executor()
