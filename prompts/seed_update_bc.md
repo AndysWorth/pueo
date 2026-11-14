@@ -23,6 +23,8 @@ Call `finish_bc_assessment` with one of:
 
 ## Decide in this order
 
+0. **Python environment or pip-dependency BCs on an HAOS install → `no_action` immediately.**
+   HAOS manages Python; skip rules 1–4 entirely.
 1. **Does the BC depend on something the evidence cannot see?**  That is: which
    browsers or tablets open the UI, how Home Assistant is reached from outside
    the home (public IP, VPN, reverse proxy), device firmware versions,
@@ -32,8 +34,6 @@ Call `finish_bc_assessment` with one of:
    Zero entities, "core component (no entities)", a "Config keys present" line
    and 0 search hits do **not** settle these: the evidence never contains
    browser or network-access facts, so nothing in it proves or disproves them.
-2. **Python environment or pip-dependency BCs** on an HAOS install → `no_action`.
-   HAOS manages Python.
 3. **Is there an evidence line proving this install uses the thing that
    changes?**  Proof is one of: a "Config refs" / "Dashboard refs" line, a
    "Tokens checked (N/M hit)" line with N > 0, or a "Config keys present" line

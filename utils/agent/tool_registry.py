@@ -3067,13 +3067,13 @@ def build_update_analysis_registry() -> ToolRegistry:
 def build_update_analysis_slim_registry() -> ToolRegistry:
     """Registry for the main update-analysis loop when BC assessments have been run.
 
-    Identical to build_update_analysis_registry except that FINISH_UPDATE_ANALYSIS_SLIM
-    replaces FINISH_UPDATE_ANALYSIS: bc_verdicts is removed from the tool schema so the
-    model does not re-derive verdicts that the assessment pass already computed.
+    Differs from build_update_analysis_registry in two ways:
+    - FINISH_UPDATE_ANALYSIS_SLIM replaces FINISH_UPDATE_ANALYSIS (bc_verdicts removed).
+    - GET_UPDATE_RELEASE_NOTES is excluded: the digest is pre-injected into the initial
+      context, so the model must use it directly rather than re-fetching (#1215).
     """
     reg = ToolRegistry()
     for tool in (
-        GET_UPDATE_RELEASE_NOTES,
         GET_PUEO_COMMAND_CATALOG,
         CHECK_CONFIG_AGAINST_BREAKING_CHANGE,
         CHECK_AUTOMATION_REFERENCES,
