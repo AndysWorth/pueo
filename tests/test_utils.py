@@ -12720,11 +12720,78 @@ class TestCoreReleaseReport:
             built_at="2026-11-05T00:00:00+00:00",
         )
         batches = make_screening_batches(rpt)
-        # Each batch should not exceed the limit (they cut at section boundaries)
+        # Every batch must be within the limit — no single oversized section passes through
         for b in batches:
-            assert (
-                len(b) <= _SCREENING_BATCH_CHARS + 2000
-            )  # one section can exceed if large
+            assert len(b) <= _SCREENING_BATCH_CHARS
+
+    def test_batches_oversized_single_section_split_at_entries(self):
+        """A single domain with many entries must be split; header repeated each part."""
+        from utils.knowledge.ha_release_report import (
+            ChangeEntry,
+            CoreReleaseReport,
+            _SCREENING_BATCH_CHARS,
+            make_screening_batches,
+        )
+
+        # 200 entries × 50 chars each ≈ 10 000 chars — well over _SCREENING_BATCH_CHARS
+        entries = [ChangeEntry(text="a" * 50) for _ in range(200)]
+        rpt = CoreReleaseReport(
+            version="2026.11.0",
+            changes_by_domain={"frontend": entries},
+            completeness="complete",
+            built_at="2026-11-05T00:00:00+00:00",
+        )
+        batches = make_screening_batches(rpt)
+
+        assert len(batches) > 1, "oversized section must produce multiple batches"
+        for b in batches:
+            assert len(b) <= _SCREENING_BATCH_CHARS
+            # Header is repeated on every sub-batch for LLM context
+            assert "### Changes: frontend" in b
+
+    def test_batches_small_section_not_split(self):
+        """A section that fits in one batch is not split."""
+        from utils.knowledge.ha_release_report import (
+            ChangeEntry,
+            CoreReleaseReport,
+            _SCREENING_BATCH_CHARS,
+            make_screening_batches,
+        )
+
+        rpt = CoreReleaseReport(
+            version="2026.11.0",
+            changes_by_domain={"hue": [ChangeEntry(text="Fix brightness")]},
+            completeness="complete",
+            built_at="2026-11-05T00:00:00+00:00",
+        )
+        batches = make_screening_batches(rpt)
+        assert len(batches) == 1
+        assert len(batches[0]) <= _SCREENING_BATCH_CHARS
+
+    def test_batches_subsections_combine_with_small_sections(self):
+        """Small sections from different domains combine into one batch."""
+        from utils.knowledge.ha_release_report import (
+            ChangeEntry,
+            CoreReleaseReport,
+            _SCREENING_BATCH_CHARS,
+            make_screening_batches,
+        )
+
+        # Four tiny domains — all should fit in one batch
+        rpt = CoreReleaseReport(
+            version="2026.11.0",
+            changes_by_domain={
+                "a": [ChangeEntry(text="fix a")],
+                "b": [ChangeEntry(text="fix b")],
+                "c": [ChangeEntry(text="fix c")],
+                "d": [ChangeEntry(text="fix d")],
+            },
+            completeness="complete",
+            built_at="2026-11-05T00:00:00+00:00",
+        )
+        batches = make_screening_batches(rpt)
+        assert len(batches) == 1
+        assert len(batches[0]) <= _SCREENING_BATCH_CHARS
 
     def test_batches_exclude_bc_entries(self):
         # BC entries are screened by the main analysis loop verbatim; screening
