@@ -663,6 +663,9 @@ class ToolExecutor:
         # Blog URL from CoreReleaseReport (populated when report is loaded); persists
         # across inner loops so _finish_update_analysis can stamp it on the card payload.
         self._core_report_blog_url: Optional[str] = None
+        # Report whose digest the update manager put in the initial context; reset()
+        # re-adopts it so the notes state survives the loop's session reset (#1219).
+        self._preinjected_core_report: Optional[Any] = None
         # Full CoreReleaseReport (populated when report is loaded); used by
         # _finish_update_analysis to normalise bc_verdicts.
         self._core_release_report: Optional[Any] = None
@@ -726,6 +729,8 @@ class ToolExecutor:
         self._installed_bc_found = False
         self._screening_gap = None
         self._report_highlights = []
+        if self._preinjected_core_report is not None:
+            self.adopt_core_release_report(self._preinjected_core_report)
         # Screening state is accumulated across batch loops; not reset here.
         # _dynamic_tools intentionally not reset — registered tools persist across loops
 
@@ -6628,12 +6633,22 @@ class ToolExecutor:
                 error=str(exc),
             )
 
+    def preinject_core_release_report(self, rpt: Any) -> None:
+        """Adopt *rpt* now and again after every ``reset()``.
+
+        For the slim path: the digest is in the initial context and the
+        release-notes tool is not offered, so nothing inside the loop can
+        re-establish the notes state that ``reset()`` clears (#1219).
+        """
+        self._preinjected_core_report = rpt
+        self.adopt_core_release_report(rpt)
+
     def adopt_core_release_report(self, rpt: Any) -> None:
         """Record a CoreReleaseReport whose digest the model has been given.
 
-        Called when ``get_update_release_notes`` returns the digest and when the
-        update manager pre-injects it on the slim path, where the model may
-        finish without calling that tool (#1211).  Notes completeness comes from
+        Called when ``get_update_release_notes`` returns the digest, and via
+        ``preinject_core_release_report`` on the slim path, where the model
+        finishes without calling that tool (#1211).  Notes completeness comes from
         the deterministic report only; a partial screening pass is tracked
         separately (#1148).
         """

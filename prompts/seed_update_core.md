@@ -23,10 +23,11 @@ releases (2026.9.x → 2026.10.x) may carry breaking changes.
 
 ## Investigation steps
 
-1. If the initial context already contains a `## Pre-computed BC assessment results`
-   section, **skip this step** — the full digest is already in the context.
-   Otherwise call `get_update_release_notes(entity_id=<entity>)` to get the pre-built
-   digest, which contains:
+1. Get the digest. If the initial context already contains a
+   `## Pre-computed BC assessment results` section, that section **is** the digest:
+   go straight to step 2 — the release-notes tool is not offered in that session and
+   calling it fails. Only when there is no such section, fetch the digest with
+   `get_update_release_notes(entity_id=<entity>)`. The digest contains:
    - `Backward-incompatible changes` — a verdict table (name | verdict | reason | fix)
      with per-BC assessments already filled in.
    - `Patch changes` — real fix lines from the patch body (installed domains only).

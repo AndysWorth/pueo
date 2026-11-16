@@ -236,3 +236,17 @@ guard then turned every BC into `no_action` — including a real `action_needed`
 - `_evidence_lines` adds "No entities of type: …" for zero-count types the BC names.
 - BC sessions exclude earlier `update_analysis` / `bc_assessment` sessions from the
   "Previous investigations" block (they share the update entity as `subject_key`).
+
+## Amendment (#1219): slim path keeps its notes state and its own prompt
+
+- `AgentLoop.run()` resets the executor, which clears the notes state set by
+  `adopt_core_release_report()`. The slim path has no release-notes tool, so the update
+  manager calls `preinject_core_release_report()` instead; `reset()` re-adopts that report.
+  A digest fetched by tool stays per-loop state.
+- The slim path uses `task_update_slim.md`, which never names `get_update_release_notes`.
+  `task_update.md` is the tool-fetch path only.
+- A session is never told to call a tool it does not have: `AgentLoop` drops the
+  SELF-KNOWLEDGE paragraph of `agent_core.md` when `read_source` is not in its registry,
+  and the `hallucinated_tool` notice suggests `read_source` only when it is offered.
+- Regression test runs the slim path through a real `AgentLoop` with a fake LLM; tests
+  that mock `AgentLoop` cannot see reset-related state loss.

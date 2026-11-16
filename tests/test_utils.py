@@ -8429,7 +8429,7 @@ class TestPromptNoVerdictRules:
         )
 
     def test_finds_task_prompts(self):
-        assert len(self._agent_prompts()) == 13  # agent_core + 12 task_*.md
+        assert len(self._agent_prompts()) == 14  # agent_core + 13 task_*.md
 
     def test_no_per_type_verdicts(self):
         import re
@@ -8510,6 +8510,7 @@ class TestLoadAgentPrompt:
             "device": "finish_device_availability",
             "host": "finish_host_health",
             "update": "finish_update_analysis",
+            "update_slim": "finish_update_analysis",
             "setup": "finish_setup_plan",
             "log_recurrence": "finish_log_investigation",
         }
@@ -8518,6 +8519,61 @@ class TestLoadAgentPrompt:
             result = load_agent_prompt(task, tool)
             assert len(result) > 200, f"task {task!r} prompt too short"
             assert "{terminal_tool}" not in result
+
+    def test_update_slim_prompt_names_only_offered_tools(self):
+        """The slim path must not name a tool its registry lacks (#1219)."""
+        import re
+
+        from utils.agent.tool_registry import build_update_analysis_slim_registry
+        from utils.core.prompts import load_prompt
+
+        text = load_prompt("task_update_slim")
+        offered = set(build_update_analysis_slim_registry().names())
+        assert "get_update_release_notes" not in text
+        assert "read_source" not in text
+        named = set(re.findall(r"[Cc]all\s+([a-z][a-z0-9_]+)\b", text))
+        assert named and named <= offered
+
+    def test_strip_self_knowledge_removes_only_that_paragraph(self):
+        from utils.core.prompts import load_agent_prompt, strip_self_knowledge
+
+        full = load_agent_prompt("update", "finish_update_analysis")
+        assert "SELF-KNOWLEDGE:" in full
+        stripped = strip_self_knowledge(full)
+        assert "SELF-KNOWLEDGE" not in stripped
+        assert "read_source" not in stripped
+        assert "STOPPING:" in stripped
+        assert "Trigger: a Home Assistant update" in stripped
+        assert strip_self_knowledge("no such paragraph") == "no such paragraph"
+
+    def test_agent_loop_keeps_self_knowledge_only_with_read_source(self):
+        from unittest.mock import MagicMock
+
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.tool_registry import (
+            build_ha_tool_registry,
+            build_update_analysis_registry,
+        )
+        from utils.core.prompts import load_agent_prompt
+
+        prompt = load_agent_prompt("update", "finish_update_analysis")
+
+        def _loop(registry):
+            return AgentLoop(
+                llm_client=MagicMock(),
+                tool_executor=MagicMock(),
+                tool_registry=registry,
+                model="fake",
+                system_prompt=prompt,
+            )
+
+        assert "read_source" in build_ha_tool_registry()
+        assert "SELF-KNOWLEDGE:" in _loop(build_ha_tool_registry())._system_prompt
+        assert "read_source" not in build_update_analysis_registry()
+        assert (
+            "SELF-KNOWLEDGE"
+            not in _loop(build_update_analysis_registry())._system_prompt
+        )
 
     def test_task_tool_names_are_registered(self):
         """Tool names mentioned in task prompts must exist in build_ha_tool_registry."""

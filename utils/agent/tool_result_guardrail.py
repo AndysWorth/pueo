@@ -164,8 +164,13 @@ class ToolResultGuardrail:
                 rule="hallucinated_tool",
                 observation=(
                     f"The tool '{tool_name}' is not in the registered tool list. "
-                    "This call was executed but may not have worked as expected. "
-                    "Check available tools via read_source('utils/agent/tool_registry.py')."
+                    + (
+                        "This call was executed but may not have worked as expected. "
+                        "Check available tools via "
+                        "read_source('utils/agent/tool_registry.py')."
+                        if "read_source" in self._state.known_tool_names
+                        else "Use only the tools offered in this session."
+                    )
                 ),
                 severity="warning",
             )

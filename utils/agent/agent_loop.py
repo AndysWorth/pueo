@@ -32,7 +32,7 @@ from config import (
 from utils.ha.context_sanitizer import sanitize_update_context
 from utils.llm.model_options import ModelCallOptions, ThinkValue, derive_call_options
 from utils.core.logging import get_logger
-from utils.core.prompts import load_agent_prompt, load_prompt
+from utils.core.prompts import load_agent_prompt, load_prompt, strip_self_knowledge
 from utils.agent.tool_registry import AgentLoopResult, AgentStep, ToolCall, ToolResult
 from utils.agent.tool_result_guardrail import ToolResultGuardrail
 from utils.debug.capture import ToolCallRecord
@@ -756,6 +756,12 @@ class AgentLoop:
         self._executor = tool_executor
         self._registry = tool_registry
         self._model: str = model  # type: ignore[assignment]
+        if (
+            isinstance(system_prompt, str)
+            and tool_registry is not None
+            and "read_source" not in tool_registry
+        ):
+            system_prompt = strip_self_knowledge(system_prompt)
         self._system_prompt = system_prompt  # type: ignore[assignment]
         self._max_tool_calls = max_tool_calls
         self._terminal_tool_name = terminal_tool_name

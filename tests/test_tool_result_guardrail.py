@@ -358,6 +358,25 @@ def test_hallucinated_tool_triggers_for_unknown_name() -> None:
     assert "hallucinated_tool" in result
 
 
+def test_hallucinated_tool_notice_omits_read_source_when_not_offered() -> None:
+    """Never point the model at a tool the session does not have (#1219)."""
+    g = make_guardrail(known_tool_names={"read_config"})
+    result = g.process(
+        "nonexistent_tool_xyz", {}, "", success=False, remaining_budget=20
+    )
+    assert "hallucinated_tool" in result
+    assert "read_source" not in result
+    assert "Use only the tools offered" in result
+
+
+def test_hallucinated_tool_notice_suggests_read_source_when_offered() -> None:
+    g = make_guardrail(known_tool_names={"read_config", "read_source"})
+    result = g.process(
+        "nonexistent_tool_xyz", {}, "", success=False, remaining_budget=20
+    )
+    assert "read_source('utils/agent/tool_registry.py')" in result
+
+
 def test_hallucinated_tool_does_not_trigger_for_known_tool() -> None:
     g = make_guardrail()
     result = g.process("read_config", {}, "ok", success=True, remaining_budget=20)

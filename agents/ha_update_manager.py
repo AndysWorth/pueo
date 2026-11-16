@@ -1809,9 +1809,10 @@ async def _run_update_analysis(
                     + "\n\n## Pre-computed BC assessment results\n\n"
                     + _digest
                 )
-                # The model now has the notes and may finish without calling
-                # get_update_release_notes, so record them as obtained (#1211).
-                executor.adopt_core_release_report(_rpt)
+                # The model has the notes and is not offered
+                # get_update_release_notes, so record them as obtained (#1211) in a
+                # way that survives the loop's executor reset (#1219).
+                executor.preinject_core_release_report(_rpt)
 
         _analyse_wq = get_work_queue_or_none()
         if _analyse_wq is not None:
@@ -1825,7 +1826,12 @@ async def _run_update_analysis(
                 if _has_assessments
                 else build_update_analysis_registry()
             ),
-            system_prompt=system_prompt,
+            # The slim prompt never names get_update_release_notes (#1219).
+            system_prompt=(
+                load_agent_prompt("update_slim", terminal_tool)
+                if _has_assessments
+                else system_prompt
+            ),
             terminal_tool_name=terminal_tool,
             trigger="update_poll",
             activity_type="update_analysis",
