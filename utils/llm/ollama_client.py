@@ -266,7 +266,9 @@ class FakeToolCallingLLMClient:
         think: Union[bool, Literal["low", "medium", "high"], None] = None,
         keep_alive: int | str | None = None,
     ) -> dict:
-        self.calls.append({"model": model, "messages": messages, "think": think})
+        self.calls.append(
+            {"model": model, "messages": messages, "think": think, "options": options}
+        )
         if self._index >= len(self._sequence):
             return {"role": "assistant", "content": ""}
         resp = dict(self._sequence[self._index])

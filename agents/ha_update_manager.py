@@ -1513,6 +1513,7 @@ async def _run_update_analysis(
                                 think=False,
                                 limit_review=False,
                                 num_predict=1000,
+                                seed=0,
                             )
                             _screen_result = await _screen_loop.run(
                                 (

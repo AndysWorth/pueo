@@ -760,6 +760,7 @@ class AgentLoop:
         think: "ThinkValue | object" = _THINK_UNSET,
         limit_review: bool = True,
         num_predict: Optional[int] = None,
+        seed: Optional[int] = None,
         exclude_prior_session_types: Optional[list[str]] = None,
     ) -> None:
         if model is _UNSET:
@@ -797,6 +798,7 @@ class AgentLoop:
         self._think_override: object = think
         self._limit_review_enabled = limit_review
         self._num_predict = num_predict
+        self._seed = seed
         self._exclude_prior_session_types: list[str] = list(
             exclude_prior_session_types or []
         )
@@ -1828,6 +1830,8 @@ class AgentLoop:
                 _call_options["num_ctx"] = _call_opts.num_ctx
             if self._num_predict is not None:
                 _call_options["num_predict"] = self._num_predict
+            if self._seed is not None:
+                _call_options["seed"] = self._seed
             try:
                 response = await asyncio.wait_for(
                     self._llm.chat_with_tools(

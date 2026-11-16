@@ -19720,6 +19720,85 @@ class TestAgentLoopThinkOverride:
         ), "screening AgentLoop construction must pass think=False"
 
 
+class TestAgentLoopSeedOption:
+    """AgentLoop passes seed to call options when set (#1229)."""
+
+    def _stub_call_opts(self, monkeypatch):
+        from utils.llm.model_options import ModelCallOptions
+        import utils.agent.agent_loop as al
+
+        opts = ModelCallOptions(think=None, num_ctx=0, temperature=0.0, keep_alive="5m")
+        monkeypatch.setattr(al, "_derive_loop_call_options", lambda _: opts)
+
+    def _make_finish_llm(self):
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        return FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_repair",
+                                "arguments": {
+                                    "summary": "done",
+                                    "action_taken": "no_fix_needed",
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
+
+    def _make_executor(self):
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+
+        return ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+        )
+
+    def test_seed_included_in_call_options(self, monkeypatch):
+        """seed parameter is forwarded to the LLM call options dict."""
+        import asyncio
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.tool_registry import build_ha_tool_registry
+
+        self._stub_call_opts(monkeypatch)
+        llm = self._make_finish_llm()
+        loop = AgentLoop(
+            llm_client=llm,
+            tool_executor=self._make_executor(),
+            tool_registry=build_ha_tool_registry(),
+            seed=42,
+        )
+        asyncio.run(loop.run("check config"))
+        assert llm.calls, "no LLM call recorded"
+        assert llm.calls[0]["options"].get("seed") == 42
+
+    def test_no_seed_omits_key(self, monkeypatch):
+        """When seed is not set the 'seed' key is absent from call options."""
+        import asyncio
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.tool_registry import build_ha_tool_registry
+
+        self._stub_call_opts(monkeypatch)
+        llm = self._make_finish_llm()
+        loop = AgentLoop(
+            llm_client=llm,
+            tool_executor=self._make_executor(),
+            tool_registry=build_ha_tool_registry(),
+        )
+        asyncio.run(loop.run("check config"))
+        assert llm.calls, "no LLM call recorded"
+        assert "seed" not in llm.calls[0]["options"]
+
+
 class TestAgentLoopActivityType:
     """AgentLoop stores activity_type and writes timeline events at start/end of run()."""
 

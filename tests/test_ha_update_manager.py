@@ -2650,7 +2650,7 @@ class TestCoreScreeningBatchCounts:
                 )
             )
 
-        # First AgentLoop call is the screening batch; verify capture and num_predict.
+        # First AgentLoop call is the screening batch; verify capture, num_predict, seed.
         screening_kwargs = MockLoop.call_args_list[0].kwargs
         assert (
             screening_kwargs.get("capture_llm") is True
@@ -2658,6 +2658,9 @@ class TestCoreScreeningBatchCounts:
         assert (
             screening_kwargs.get("num_predict") == 1000
         ), "Screening num_predict must be 1000 to avoid truncation on large batches (#1225)"
+        assert (
+            screening_kwargs.get("seed") == 0
+        ), "Screening AgentLoop must use seed=0 for deterministic output (#1229)"
 
     def test_screening_sets_running_detail(self, tmp_path, pueo_dirs):
         """Screening loop calls set_running_detail per batch and 'analysing' before main loop."""
