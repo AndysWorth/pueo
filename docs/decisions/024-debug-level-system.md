@@ -37,7 +37,7 @@ Replace `DEBUG_MODE` and `DEBUG_VERBOSE` with a single integer `DEBUG_LEVEL` (0â
 
 ### Episode capture for all AgentLoop sessions
 
-`capture_llm=True` is now set at all 9 non-chat `AgentLoop` call sites (HA repair, NetAlertX healing, disk recovery investigation, update manager, notification investigation, etc.). Episode HTML is written by `AgentLoop.run()` unconditionally when `DEBUG_LEVEL >= 1`. Old episode files are rotated by `rotate_old_episodes()` after `DEBUG_EPISODE_RETENTION_DAYS` (default: 7).
+`capture_llm=True` is now set at all non-chat `AgentLoop` call sites (HA repair, NetAlertX healing, disk recovery investigation, update manager including per-batch `change_screening` sessions (#1225), notification investigation, etc.). Episode HTML is written by `AgentLoop.run()` unconditionally when `DEBUG_LEVEL >= 1`. Old episode files are rotated by `rotate_old_episodes()` after `DEBUG_EPISODE_RETENTION_DAYS` (default: 7).
 
 ### One-shot LLM call recording
 

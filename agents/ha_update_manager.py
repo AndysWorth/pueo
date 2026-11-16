@@ -1507,12 +1507,12 @@ async def _run_update_analysis(
                                 activity_type="change_screening",
                                 db_path=DB_PATH,
                                 knowledge_store=knowledge_store,
-                                capture_llm=False,
+                                capture_llm=True,
                                 max_tool_calls=3,
                                 distill=False,
                                 think=False,
                                 limit_review=False,
-                                num_predict=500,
+                                num_predict=1000,
                             )
                             _screen_result = await _screen_loop.run(
                                 (

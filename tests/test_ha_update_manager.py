@@ -2583,6 +2583,82 @@ class TestCoreScreeningBatchCounts:
         row = self._backoff_row(db_path)
         assert row is not None and row[0] == "deferred"
 
+    def test_screening_agentloop_capture_llm_and_num_predict(self, tmp_path, pueo_dirs):
+        """Screening AgentLoop uses capture_llm=True and num_predict=1000 (F5, F6 #1225)."""
+        import asyncio
+        from contextlib import ExitStack
+        from unittest import mock
+        from unittest.mock import AsyncMock, MagicMock
+
+        from utils.agent.tool_registry import AgentLoopResult
+        from utils.ha.ha_environment import HAEnvironmentProfile
+        from utils.knowledge.ha_release_report import CoreReleaseReport
+
+        db_path = _make_db(tmp_path)
+
+        class _FakeUpdate:
+            entity_id = "update.home_assistant_core_update"
+            component = "core"
+            installed_version = "2026.10.4"
+            latest_version = "2026.11.1"
+            release_url = None
+            release_summary = None
+
+        rpt = CoreReleaseReport(version="2026.11.1", completeness="complete")
+
+        with ExitStack() as stack:
+            MockLoop = stack.enter_context(
+                mock.patch("utils.agent.agent_loop.AgentLoop")
+            )
+            for target, kwargs in {
+                "utils.agent.supervisor.increment_active_agent": {},
+                "utils.agent.supervisor.decrement_active_agent": {},
+                "utils.agent.supervisor.make_activity_timeline_callback": {
+                    "return_value": None
+                },
+                "utils.llm.llm_factory.make_llm_client": {"return_value": MagicMock()},
+                "agents.ha_update_manager.DB_PATH": {"new": db_path},
+                "agents.ha_update_manager.HA_API_TOKEN": {"new": "tok"},
+                "utils.ha.ha_ws_client.HAWebSocketClient": {},
+                "utils.knowledge.ha_release_report.build_core_release_report": {
+                    "new": AsyncMock(return_value=rpt)
+                },
+                "utils.knowledge.ha_release_report.make_screening_batches": {
+                    "return_value": ["batch a"]
+                },
+                "utils.agent.work_queue.get_work_queue_or_none": {"return_value": None},
+            }.items():
+                stack.enter_context(mock.patch(target, **kwargs))
+
+            mock_instance = MagicMock()
+            mock_instance.run = AsyncMock(
+                side_effect=[
+                    AgentLoopResult(outcome="success"),
+                    AgentLoopResult(outcome="success"),
+                ]
+            )
+            MockLoop.return_value = mock_instance
+
+            from agents.ha_update_manager import _run_update_analysis
+            from utils.hitl.notify import FakeNotifier
+
+            asyncio.run(
+                _run_update_analysis(
+                    update=_FakeUpdate(),
+                    notifier=FakeNotifier(),
+                    ha_profile=HAEnvironmentProfile(installed_integrations=["lifx"]),
+                )
+            )
+
+        # First AgentLoop call is the screening batch; verify capture and num_predict.
+        screening_kwargs = MockLoop.call_args_list[0].kwargs
+        assert (
+            screening_kwargs.get("capture_llm") is True
+        ), "Screening AgentLoop must use capture_llm=True (ADR 024, #1225)"
+        assert (
+            screening_kwargs.get("num_predict") == 1000
+        ), "Screening num_predict must be 1000 to avoid truncation on large batches (#1225)"
+
     def test_screening_sets_running_detail(self, tmp_path, pueo_dirs):
         """Screening loop calls set_running_detail per batch and 'analysing' before main loop."""
         import asyncio
