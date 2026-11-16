@@ -977,6 +977,74 @@ def format_core_release_digest(report: "CoreReleaseReport") -> str:
 _SCREENING_BATCH_CHARS = 6000
 
 
+_DOMAIN_RECOVERY_MIN_RATIO = 0.85
+
+
+def _recover_screening_domain(report: "CoreReleaseReport", text: str) -> str:
+    """Return the changelog domain whose entry best matches *text*, or ""."""
+    import difflib
+
+    needle = " ".join(text.lower().split())
+    if not needle:
+        return ""
+    best_domain, best_ratio = "", 0.0
+    for source in (report.changes_by_domain, report.patch_changes_by_domain):
+        for domain, entries in source.items():
+            for entry in entries:
+                hay = " ".join(entry.text.lower().split())
+                if needle in hay:
+                    return domain
+                ratio = difflib.SequenceMatcher(None, needle, hay).ratio()
+                if ratio > best_ratio:
+                    best_domain, best_ratio = domain, ratio
+    return best_domain if best_ratio >= _DOMAIN_RECOVERY_MIN_RATIO else ""
+
+
+def coerce_screening_items(
+    report: "CoreReleaseReport", flags: list, highlights: list
+) -> tuple[list[ScreeningFlag], list[ScreeningHighlight], int]:
+    """Build screening models from raw LLM items; never raises.
+
+    The model sometimes omits ``domain``.  It is recovered by matching the item's
+    text against the report's changelog entries; items that still fail validation
+    are dropped.  Returns (flags, highlights, dropped_count).
+    """
+    from pydantic import ValidationError
+
+    def _build(items: list, model: type, text_key: str) -> tuple[list, int]:
+        built: list = []
+        dropped = 0
+        for item in items:
+            if isinstance(item, model):
+                built.append(item)
+                continue
+            if not isinstance(item, dict):
+                dropped += 1
+                continue
+            data = dict(item)
+            if not data.get("domain"):
+                data["domain"] = _recover_screening_domain(
+                    report, str(data.get(text_key) or "")
+                )
+            try:
+                if not data["domain"]:
+                    raise ValueError("no domain")
+                built.append(model(**data))
+            except (ValidationError, ValueError, TypeError) as exc:
+                dropped += 1
+                log.warning(
+                    "screening_item_dropped",
+                    kind=model.__name__,
+                    item=str(item)[:200],
+                    error=str(exc)[:200],
+                )
+        return built, dropped
+
+    out_flags, dropped_flags = _build(flags, ScreeningFlag, "change")
+    out_hls, dropped_hls = _build(highlights, ScreeningHighlight, "feature")
+    return out_flags, out_hls, dropped_flags + dropped_hls
+
+
 def make_screening_batches(report: "CoreReleaseReport") -> list[str]:
     """Split the report's changelog content into LLM-sized batches.
 

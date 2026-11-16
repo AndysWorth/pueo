@@ -9768,6 +9768,45 @@ class TestPueoWorkQueue:
         asyncio.run(run())
         assert ran == [True]
 
+    def test_failed_item_logs_exception_type_and_traceback(self):
+        """A failing item is logged with exc_type and a traceback (#1217)."""
+        from unittest import mock
+
+        from utils.agent.work_queue import PRIORITY_NORMAL, PueoWorkQueue, WorkItem
+
+        async def run():
+            q = PueoWorkQueue()
+            q.start()
+
+            async def _coro():
+                raise KeyError("boom")
+
+            await q.submit(
+                WorkItem(
+                    priority=PRIORITY_NORMAL,
+                    activity_type="test",
+                    description="failing item",
+                    dedup_key="",
+                    suppress_while_running=frozenset(),
+                    coro_factory=_coro,
+                )
+            )
+            await asyncio.sleep(0.05)
+            await self._cancel_queue(q)
+
+        with mock.patch("utils.agent.work_queue.log") as fake_log:
+            asyncio.run(run())
+
+        failed = [
+            c
+            for c in fake_log.error.call_args_list
+            if c.args[0] == "work_queue_item_failed"
+        ]
+        assert len(failed) == 1
+        assert failed[0].kwargs["exc_type"] == "KeyError"
+        assert "_coro" in failed[0].kwargs["traceback"]
+        assert "KeyError" in failed[0].kwargs["traceback"]
+
     def test_priority_ordering(self):
         """CRITICAL item queued before queue starts runs before LOW item."""
         from utils.agent.work_queue import (
@@ -12363,6 +12402,92 @@ class TestCoreReleaseReport:
 
         with pytest.raises(ValidationError):
             ScreeningFlag(change="x", concern="y", severity="low")  # type: ignore[call-arg]
+
+    # ── coerce_screening_items (#1217) ──────────────────────────────────────
+
+    @staticmethod
+    def _coerce_report():
+        from utils.knowledge.ha_release_report import ChangeEntry, CoreReleaseReport
+
+        return CoreReleaseReport(
+            version="2026.11.1",
+            changes_by_domain={
+                "lifx": [
+                    ChangeEntry(
+                        text="Return True for the removed legacy entry in lifx migration"
+                    ),
+                    ChangeEntry(text="Add LIFX Ceiling lights and Color Sweep effect"),
+                ],
+                "input_boolean": [
+                    ChangeEntry(text="Use the enums in the input_boolean tests")
+                ],
+            },
+            patch_changes_by_domain={
+                "mqtt": [ChangeEntry(text="Fix MQTT discovery crash on empty payload")]
+            },
+        )
+
+    def test_coerce_keeps_valid_items(self):
+        from utils.knowledge.ha_release_report import (
+            ScreeningFlag,
+            coerce_screening_items,
+        )
+
+        existing = ScreeningFlag(domain="hue", change="c", concern="k")
+        flags, hls, dropped = coerce_screening_items(
+            self._coerce_report(),
+            [existing, {"domain": "mqtt", "change": "x", "concern": "y"}],
+            [{"domain": "zha", "feature": "f"}],
+        )
+        assert [f.domain for f in flags] == ["hue", "mqtt"]
+        assert flags[0] is existing
+        assert [h.domain for h in hls] == ["zha"]
+        assert dropped == 0
+
+    def test_coerce_recovers_missing_domain_exact(self):
+        from utils.knowledge.ha_release_report import coerce_screening_items
+
+        flags, hls, dropped = coerce_screening_items(
+            self._coerce_report(),
+            [
+                {
+                    "change": "Return True for the removed legacy entry in lifx migration",
+                    "concern": "Migration behavior change.",
+                }
+            ],
+            [{"feature": "Fix MQTT discovery crash on empty payload"}],
+        )
+        assert flags[0].domain == "lifx"
+        assert hls[0].domain == "mqtt"
+        assert dropped == 0
+
+    def test_coerce_recovers_missing_domain_paraphrased(self):
+        from utils.knowledge.ha_release_report import coerce_screening_items
+
+        flags, _, dropped = coerce_screening_items(
+            self._coerce_report(),
+            [{"change": "Use enums in the input_boolean tests", "concern": "none"}],
+            [],
+        )
+        assert flags[0].domain == "input_boolean"
+        assert dropped == 0
+
+    def test_coerce_drops_unrecoverable_items(self):
+        from utils.knowledge.ha_release_report import coerce_screening_items
+
+        flags, hls, dropped = coerce_screening_items(
+            self._coerce_report(),
+            [
+                {"change": "Something entirely unrelated", "concern": "c"},
+                {"domain": "lifx", "change": "missing concern"},
+                {"concern": "no change text at all"},
+                "not a dict",
+            ],
+            [{"feature": "Unknown shiny thing"}, {"domain": "lifx"}],
+        )
+        assert flags == []
+        assert hls == []
+        assert dropped == 6
 
     def test_screening_flag_json_roundtrip(self):
         from utils.knowledge.ha_release_report import ScreeningFlag

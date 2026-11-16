@@ -9,6 +9,7 @@ have finished.
 import asyncio
 import bisect
 import time
+import traceback
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from typing import Any
@@ -177,7 +178,11 @@ class PueoWorkQueue:
                 log.error(
                     "work_queue_item_failed",
                     activity=item.activity_type,
+                    exc_type=type(exc).__name__,
                     error=str(exc),
+                    traceback="".join(
+                        traceback.format_exception(type(exc), exc, exc.__traceback__)
+                    )[-4000:],
                 )
             finally:
                 async with self._lock:
