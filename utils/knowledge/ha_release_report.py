@@ -1089,6 +1089,98 @@ def make_screening_batches(report: "CoreReleaseReport") -> list[str]:
     return batches
 
 
+_REUSABLE_VERDICTS = frozenset({"action_needed", "no_action", "user_check"})
+
+
+def load_stored_core_report(
+    path: Path, version: str, installed_version: str
+) -> Optional["CoreReleaseReport"]:
+    """Return the report stored at *path* when it covers the same update, else None.
+
+    Must be called before ``build_core_release_report``, which overwrites the
+    file.  A missing or unreadable file, or one built for another target or
+    installed version, returns None (#1221).
+    """
+    try:
+        if not path.exists():
+            return None
+        stored = CoreReleaseReport.model_validate_json(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        log.warning("core_release_report_stored_unreadable", error=str(exc)[:200])
+        return None
+    if stored.version != version or stored.installed_version != installed_version:
+        log.info(
+            "core_release_report_stored_stale",
+            stored_version=stored.version,
+            stored_installed=stored.installed_version,
+            version=version,
+            installed=installed_version,
+        )
+        return None
+    return stored
+
+
+def carry_over_screening(prev: "CoreReleaseReport", new: "CoreReleaseReport") -> bool:
+    """Copy *prev*'s screening results into *new* when they are still valid.
+
+    Valid means the stored pass finished every batch and the screening input
+    (the batch texts) is identical.  Returns True when results were copied, so
+    the caller can skip the screening sessions (#1221).
+    """
+    if not prev.screening_complete:
+        return False
+    if make_screening_batches(prev) != make_screening_batches(new):
+        return False
+    new.screening_flags = list(prev.screening_flags)
+    new.screening_highlights = list(prev.screening_highlights)
+    new.screening_complete = True
+    new.screening_batches_total = prev.screening_batches_total
+    new.screening_batches_done = prev.screening_batches_done
+    return True
+
+
+def carry_over_bc_verdicts(
+    prev: "CoreReleaseReport", new: "CoreReleaseReport"
+) -> list[dict]:
+    """Return *prev*'s BC verdicts that still apply to *new*.
+
+    A verdict is kept only when everything the assessment session saw is
+    unchanged: the BC text, whether it is an installed-integration BC, and the
+    evidence lines built for this run.  ``not_assessed`` is never kept (#1221).
+    """
+
+    def _inputs(report: "CoreReleaseReport") -> dict[str, tuple]:
+        out: dict[str, tuple] = {}
+        for installed, entries in (
+            (True, report.bc_installed),
+            (False, report.bc_general),
+        ):
+            for e in entries:
+                ev = report.bc_evidence.get(e.name)
+                out[e.name] = (
+                    e.body,
+                    installed,
+                    tuple(_evidence_lines(ev)) if ev is not None else (),
+                )
+        return out
+
+    prev_inputs = _inputs(prev)
+    new_inputs = _inputs(new)
+    kept: list[dict] = []
+    seen: set[str] = set()
+    for v in prev.bc_verdicts:
+        name = v.get("bc")
+        if name in seen or name not in new_inputs:
+            continue
+        if v.get("verdict") not in _REUSABLE_VERDICTS:
+            continue
+        if prev_inputs.get(name) != new_inputs[name]:
+            continue
+        seen.add(name)
+        kept.append(dict(v))
+    return kept
+
+
 async def _fetch_core_github_stub(version: str) -> str:  # pragma: no cover
     """Fetch HA Core release notes from the GitHub API."""
     import httpx

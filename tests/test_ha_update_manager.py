@@ -2670,6 +2670,266 @@ class TestCoreScreeningBatchCounts:
         assert "analysing" in detail_calls
 
 
+class TestStoredReportReuse:
+    """A re-run keeps stored screening results and unchanged BC verdicts (#1221)."""
+
+    @staticmethod
+    def _report(**overrides):
+        from utils.knowledge.ha_release_report import (
+            BCEntry,
+            BCEvidence,
+            ChangeEntry,
+            CoreReleaseReport,
+        )
+
+        base = dict(
+            version="2026.11.1",
+            installed_version="2026.10.4",
+            completeness="complete",
+            bc_installed=[BCEntry(name="MQTT", domains=["mqtt"], body="mqtt body")],
+            bc_general=[BCEntry(name="Auth", body="auth body")],
+            changes_by_domain={"lifx": [ChangeEntry(text="Fix LIFX thing")]},
+            bc_evidence={
+                "MQTT": BCEvidence(
+                    domains=["mqtt"], entity_count=28, entity_examples=["sensor.a"]
+                )
+            },
+        )
+        base.update(overrides)
+        return CoreReleaseReport(**base)
+
+    @classmethod
+    def _stored(cls, **overrides):
+        from utils.knowledge.ha_release_report import (
+            ScreeningFlag,
+            ScreeningHighlight,
+        )
+
+        base = dict(
+            screening_flags=[
+                ScreeningFlag(domain="lifx", change="Fix LIFX thing", concern="c")
+            ],
+            screening_highlights=[ScreeningHighlight(domain="lifx", feature="f")],
+            screening_complete=True,
+            screening_batches_total=1,
+            screening_batches_done=1,
+            bc_verdicts=[
+                {"bc": "MQTT", "verdict": "no_action", "reason": "r1"},
+                {"bc": "Auth", "verdict": "user_check", "reason": "r2"},
+            ],
+        )
+        base.update(overrides)
+        return cls._report(**base)
+
+    # ── load_stored_core_report ──────────────────────────────────────────
+
+    def test_load_missing_file_returns_none(self, tmp_path):
+        from utils.knowledge.ha_release_report import load_stored_core_report
+
+        assert (
+            load_stored_core_report(tmp_path / "nope.json", "2026.11.1", "2026.10.4")
+            is None
+        )
+
+    def test_load_corrupt_file_returns_none(self, tmp_path):
+        from utils.knowledge.ha_release_report import load_stored_core_report
+
+        path = tmp_path / "core.json"
+        path.write_text("{not json", encoding="utf-8")
+        assert load_stored_core_report(path, "2026.11.1", "2026.10.4") is None
+
+    def test_load_matches_version_and_installed_version(self, tmp_path):
+        from utils.knowledge.ha_release_report import load_stored_core_report
+
+        path = tmp_path / "core.json"
+        path.write_text(self._stored().model_dump_json(), encoding="utf-8")
+        loaded = load_stored_core_report(path, "2026.11.1", "2026.10.4")
+        assert loaded is not None and len(loaded.bc_verdicts) == 2
+        assert load_stored_core_report(path, "2026.11.1", "2026.10.3") is None
+        assert load_stored_core_report(path, "2026.11.2", "2026.10.4") is None
+
+    # ── carry_over_screening ─────────────────────────────────────────────
+
+    def test_screening_carried_when_complete_and_input_unchanged(self):
+        from utils.knowledge.ha_release_report import carry_over_screening
+
+        new = self._report()
+        assert carry_over_screening(self._stored(), new) is True
+        assert [f.change for f in new.screening_flags] == ["Fix LIFX thing"]
+        assert [h.feature for h in new.screening_highlights] == ["f"]
+        assert new.screening_complete is True
+        assert (new.screening_batches_total, new.screening_batches_done) == (1, 1)
+
+    def test_screening_not_carried_when_stored_pass_incomplete(self):
+        from utils.knowledge.ha_release_report import carry_over_screening
+
+        new = self._report()
+        assert (
+            carry_over_screening(self._stored(screening_complete=False), new) is False
+        )
+        assert new.screening_flags == [] and new.screening_complete is False
+
+    def test_screening_not_carried_when_changelog_differs(self):
+        from utils.knowledge.ha_release_report import (
+            ChangeEntry,
+            carry_over_screening,
+        )
+
+        new = self._report(
+            changes_by_domain={"lifx": [ChangeEntry(text="A different change")]}
+        )
+        assert carry_over_screening(self._stored(), new) is False
+        assert new.screening_flags == []
+
+    # ── carry_over_bc_verdicts ───────────────────────────────────────────
+
+    def test_verdicts_carried_when_inputs_unchanged(self):
+        from utils.knowledge.ha_release_report import carry_over_bc_verdicts
+
+        kept = carry_over_bc_verdicts(self._stored(), self._report())
+        assert [(v["bc"], v["verdict"]) for v in kept] == [
+            ("MQTT", "no_action"),
+            ("Auth", "user_check"),
+        ]
+
+    def test_verdict_dropped_when_evidence_changed(self):
+        from utils.knowledge.ha_release_report import (
+            BCEvidence,
+            carry_over_bc_verdicts,
+        )
+
+        new = self._report(
+            bc_evidence={
+                "MQTT": BCEvidence(
+                    domains=["mqtt"], entity_count=29, entity_examples=["sensor.a"]
+                )
+            }
+        )
+        kept = carry_over_bc_verdicts(self._stored(), new)
+        assert [v["bc"] for v in kept] == ["Auth"]
+
+    def test_verdict_dropped_when_evidence_missing_this_run(self):
+        from utils.knowledge.ha_release_report import carry_over_bc_verdicts
+
+        kept = carry_over_bc_verdicts(self._stored(), self._report(bc_evidence={}))
+        assert [v["bc"] for v in kept] == ["Auth"]
+
+    def test_verdict_dropped_when_bc_text_or_group_changed(self):
+        from utils.knowledge.ha_release_report import BCEntry, carry_over_bc_verdicts
+
+        new = self._report(
+            # MQTT body changed; Auth moved from general to installed.
+            bc_installed=[
+                BCEntry(name="MQTT", domains=["mqtt"], body="new mqtt body"),
+                BCEntry(name="Auth", body="auth body"),
+            ],
+            bc_general=[],
+        )
+        assert carry_over_bc_verdicts(self._stored(), new) == []
+
+    def test_unusable_stored_verdicts_are_skipped(self):
+        from utils.knowledge.ha_release_report import carry_over_bc_verdicts
+
+        stored = self._stored(
+            bc_verdicts=[
+                {"bc": "Gone", "verdict": "no_action", "reason": "x"},
+                {"bc": "MQTT", "verdict": "not_assessed", "reason": "x"},
+                {"bc": "Auth", "verdict": "user_check", "reason": "first"},
+                {"bc": "Auth", "verdict": "no_action", "reason": "duplicate"},
+            ]
+        )
+        kept = carry_over_bc_verdicts(stored, self._report())
+        assert kept == [{"bc": "Auth", "verdict": "user_check", "reason": "first"}]
+
+    # ── _run_update_analysis ─────────────────────────────────────────────
+
+    def _run(self, tmp_path, pueo_dirs, stored, new, results, evidence=None):
+        from unittest.mock import AsyncMock
+
+        from utils.knowledge.ha_release_report import CoreReleaseReport
+
+        report_dir = pueo_dirs.state_dir / "update_reports"
+        report_dir.mkdir(parents=True, exist_ok=True)
+        path = report_dir / "core_2026.11.1.json"
+        path.write_text(stored.model_dump_json(), encoding="utf-8")
+        ev = dict(new.bc_evidence if evidence is None else evidence)
+        loop = TestCoreScreeningBatchCounts._run_core_analysis(
+            _make_db(tmp_path),
+            new,
+            results,
+            **{
+                "utils.ha.update_bc_evidence.build_bc_evidence": {
+                    "new": AsyncMock(return_value=(ev, {}))
+                }
+            },
+        )
+        return loop, CoreReleaseReport.model_validate_json(path.read_text())
+
+    def test_rerun_with_unchanged_inputs_runs_only_the_main_loop(
+        self, tmp_path, pueo_dirs
+    ):
+        from utils.agent.tool_registry import AgentLoopResult
+
+        loop, saved = self._run(
+            tmp_path,
+            pueo_dirs,
+            self._stored(),
+            self._report(),
+            [AgentLoopResult(outcome="success")],
+        )
+
+        assert loop.run.await_count == 1  # no screening, no BC assessment
+        assert [f.change for f in saved.screening_flags] == ["Fix LIFX thing"]
+        assert saved.screening_complete is True
+        assert (saved.screening_batches_total, saved.screening_batches_done) == (1, 1)
+        assert [(v["bc"], v["verdict"]) for v in saved.bc_verdicts] == [
+            ("MQTT", "no_action"),
+            ("Auth", "user_check"),
+        ]
+
+    def test_only_the_bc_with_changed_evidence_is_reassessed(self, tmp_path, pueo_dirs):
+        from utils.agent.tool_registry import AgentLoopResult
+        from utils.knowledge.ha_release_report import BCEvidence
+
+        changed = {
+            "MQTT": BCEvidence(
+                domains=["mqtt"], entity_count=30, entity_examples=["sensor.a"]
+            )
+        }
+        loop, saved = self._run(
+            tmp_path,
+            pueo_dirs,
+            self._stored(),
+            self._report(),
+            # MQTT is assessed again (the mocked loop records no verdict, so both
+            # attempts run), Auth is carried over, then the main loop.
+            [AgentLoopResult(outcome="success")] * 3,
+            evidence=changed,
+        )
+
+        assert loop.run.await_count == 3
+        verdicts = {v["bc"]: v["verdict"] for v in saved.bc_verdicts}
+        assert verdicts == {"Auth": "user_check", "MQTT": "not_assessed"}
+
+    def test_report_from_another_installed_version_is_not_reused(
+        self, tmp_path, pueo_dirs
+    ):
+        from utils.agent.tool_registry import AgentLoopResult
+
+        loop, saved = self._run(
+            tmp_path,
+            pueo_dirs,
+            self._stored(installed_version="2026.10.3"),
+            self._report(),
+            # 1 screening batch + 2 BCs × 2 attempts + main loop
+            [AgentLoopResult(outcome="success")] * 6,
+        )
+
+        assert loop.run.await_count == 6
+        assert saved.screening_flags == []
+        assert {v["verdict"] for v in saved.bc_verdicts} == {"not_assessed"}
+
+
 class TestFinishUpdateAnalysisScreeningGap:
     """Partial screening with complete notes gets its own honest prefix (#1148)."""
 
@@ -9405,7 +9665,7 @@ class TestUpdateAnalysisSlimPath:
         assert (
             "bc_assessment_reusing_stored_verdicts" in src
         ), "Missing stored-verdict reuse optimisation in _run_update_analysis (#1215)"
-        assert "_all_assessed" in src or "all_assessed" in src
+        assert "carry_over_bc_verdicts(_prev_rpt, _rpt)" in src
 
     def test_full_registry_still_has_bc_verdicts(self):
         """build_update_analysis_registry (non-slim) still has bc_verdicts for
