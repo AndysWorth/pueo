@@ -1668,6 +1668,10 @@ async def _run_update_analysis(
                             f"assessing BC {_bc_idx + 1} of {len(_all_bcs)}"
                         )
                     executor._current_bc_name = _bc_entry.name  # type: ignore[attr-defined]
+                    executor._current_bc_evidence = _rpt.bc_evidence.get(  # type: ignore[attr-defined]
+                        _bc_entry.name
+                    )
+                    executor._bc_rejection_note = ""  # type: ignore[attr-defined]
                     _ev_block = ""
                     if _rpt.bc_evidence.get(_bc_entry.name):
                         from utils.knowledge.ha_release_report import (
@@ -1721,8 +1725,12 @@ async def _run_update_analysis(
                                     _BC_EXCLUDED_PRIOR_SESSION_TYPES
                                 ),
                             )
+                            # A retry after an ungrounded action_needed is told why
+                            # the first answer was rejected (#1223).
+                            _retry_note = executor._bc_rejection_note  # type: ignore[attr-defined]
                             _assess_result = await _assess_loop.run(
-                                _bc_context,
+                                _bc_context
+                                + (f"\n\nNote: {_retry_note}" if _retry_note else ""),
                                 signature=_sig_update_bc(
                                     "core_bc",
                                     (
@@ -1769,7 +1777,12 @@ async def _run_update_analysis(
                         executor._bc_assessments[_bc_entry.name] = {  # type: ignore[attr-defined]
                             "bc": _bc_entry.name,
                             "verdict": "not_assessed",
-                            "reason": "assessment did not complete",
+                            "reason": (
+                                "answered action_needed without evidence that"
+                                " this install is affected"
+                                if executor._bc_rejection_note  # type: ignore[attr-defined]
+                                else "assessment did not complete"
+                            ),
                         }
                         log.warning(
                             "bc_assessment_incomplete",

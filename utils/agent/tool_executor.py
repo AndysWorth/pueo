@@ -677,6 +677,12 @@ class ToolExecutor:
         self._bc_assessment_gap: bool = False
         # Name of the BC currently being assessed (set before each assessment loop).
         self._current_bc_name: Optional[str] = None
+        # BCEvidence of the BC being assessed; None when no evidence was built.
+        # finish_bc_assessment checks an action_needed verdict against it (#1223).
+        self._current_bc_evidence: Optional[Any] = None
+        # Why the last finish_bc_assessment call was rejected as ungrounded; the
+        # update manager puts it in the retry session's context.
+        self._bc_rejection_note: str = ""
         self._lovelace_suspicious: list[str] = []
         self._event_subscriber: Optional[Any] = None
         # Per-session KB tracking (reset in reset())
@@ -6483,6 +6489,37 @@ class ToolExecutor:
                 reason="user_check requires user_question; none provided",
             )
             verdict = "no_action"
+        # action_needed needs a proof line (seed_update_bc.md rule 2).  When the
+        # evidence has none, the verdict is not stored: a blocker nobody can
+        # point to evidence for must not reach the card (#1223).
+        if str(verdict) == "action_needed" and self._current_bc_evidence is not None:
+            from utils.knowledge.ha_release_report import evidence_proof_lines
+
+            if not evidence_proof_lines(self._current_bc_evidence):
+                self._bc_rejection_note = (
+                    "A previous attempt answered action_needed, which was rejected:"
+                    ' the Evidence block has no "Config refs", "Dashboard refs",'
+                    ' "Tokens checked (N/M hit)" or "Config keys present" line, so'
+                    " nothing shows this install uses what changes."
+                )
+                log.warning(
+                    "bc_verdict_ungrounded",
+                    bc=bc_name,
+                    verdict="action_needed",
+                    reason=str(reason)[:200],
+                )
+                return ToolResult(
+                    tool_name="finish_bc_assessment",
+                    success=False,
+                    output="",
+                    error=(
+                        "action_needed rejected: the Evidence block has no proof"
+                        " line (Config refs, Dashboard refs, Tokens checked with"
+                        " hits, or Config keys present). Entities existing is not"
+                        " proof. Choose no_action, or user_check if it depends on"
+                        " something only the user knows."
+                    ),
+                )
         grounded_fix: Optional[dict] = None
         if config_fix and isinstance(config_fix, dict):
             old_text = str(config_fix.get("old", ""))
@@ -6540,6 +6577,8 @@ class ToolExecutor:
         self._bc_assessments = {}
         self._bc_assessment_gap = False
         self._current_bc_name = None
+        self._current_bc_evidence = None
+        self._bc_rejection_note = ""
 
     def get_bc_assessments(self) -> dict[str, dict]:
         """Return per-BC assessment verdicts accumulated from the assessment pass."""
@@ -7092,8 +7131,10 @@ class ToolExecutor:
                 for v in _normalized_verdicts
                 if v.get("verdict") in ("action_needed", "user_check", "not_assessed")
             ]
-            # Collect grounded config fixes from per-BC assessments.
+            # Collect grounded config fixes from per-BC assessments.  The main
+            # loop judged no BC itself, so its affected-keys guess is dropped.
             if self._bc_assessments:
+                affected_config_keys = []
                 proposed_config_fixes = [
                     v["config_fix"]
                     for v in self._bc_assessments.values()

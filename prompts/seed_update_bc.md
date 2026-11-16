@@ -24,24 +24,26 @@ Call `finish_bc_assessment` with one of:
 ## Decide in this order
 
 0. **Python environment or pip-dependency BCs on an HAOS install → `no_action` immediately.**
-   HAOS manages Python; skip rules 1–4 entirely.
+   HAOS manages Python; skip rules 1–3 entirely.
 1. **Does the BC depend on something the evidence cannot see?**  That is: which
    browsers or tablets open the UI, how Home Assistant is reached from outside
    the home (public IP, VPN, reverse proxy), device firmware versions,
    cloud-service accounts, BLE/Zigbee radio capabilities.  An "Outside the
    evidence (only the user knows)" line means yes.  If yes → `user_check`
-   with a question about exactly that thing, and stop: steps 2–4 do not apply.
+   with a question about exactly that thing, and stop: steps 2–3 do not apply.
    Zero entities, "core component (no entities)", a "Config keys present" line
    and 0 search hits do **not** settle these: the evidence never contains
    browser or network-access facts, so nothing in it proves or disproves them.
-3. **Is there an evidence line proving this install uses the thing that
+2. **Is there an evidence line proving this install uses the thing that
    changes?**  Proof is one of: a "Config refs" / "Dashboard refs" line, a
    "Tokens checked (N/M hit)" line with N > 0, or a "Config keys present" line
    naming the YAML key the BC changes.  Only then → `action_needed`, and the
    `reason` must quote that line.  A "Config keys present" line that only names
    the component itself (`frontend`, `http`, `auth`) is not proof: it shows the
    component is configured, not that the configuration uses what changes.
-4. **Otherwise → `no_action`.**  This covers:
+   `finish_bc_assessment` rejects `action_needed` when the Evidence block has
+   none of these lines.
+3. **Otherwise → `no_action`.**  This covers:
    - the entity type the BC names shows 0 under "By type" / "No entities of
      type", however many other entities the integration has;
    - searches returned 0 hits;

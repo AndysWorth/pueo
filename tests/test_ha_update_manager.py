@@ -2911,6 +2911,72 @@ class TestStoredReportReuse:
         verdicts = {v["bc"]: v["verdict"] for v in saved.bc_verdicts}
         assert verdicts == {"Auth": "user_check", "MQTT": "not_assessed"}
 
+    def test_ungrounded_action_needed_is_retried_with_note_then_not_assessed(
+        self, tmp_path, pueo_dirs
+    ):
+        """action_needed with no proof line never reaches the report (#1223)."""
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import AgentLoopResult
+        from utils.knowledge.ha_release_report import BCEvidence
+
+        executors: list = []
+        contexts: list[str] = []
+        orig_init = ToolExecutor.__init__
+
+        def _init(self, *a, **kw):
+            orig_init(self, *a, **kw)
+            executors.append(self)
+
+        async def _run_session(context, **_kw):
+            contexts.append(context)
+            ex = executors[-1]
+            if context.startswith("HA Core 2026.11.1 breaking change assessment"):
+                ex._finish_bc_assessment(
+                    verdict="action_needed",
+                    reason="28 MQTT entities exist.",
+                    action="Add a unique_id.",
+                    when="before_update",
+                )
+            return AgentLoopResult(outcome="success")
+
+        changed = {
+            "MQTT": BCEvidence(
+                domains=["mqtt"],
+                entity_count=30,
+                entity_examples=["sensor.a"],
+                tokens=["unique_id"],
+                tokens_searched=1,
+            )
+        }
+        report_dir = pueo_dirs.state_dir / "update_reports"
+        report_dir.mkdir(parents=True, exist_ok=True)
+        path = report_dir / "core_2026.11.1.json"
+        path.write_text(self._stored().model_dump_json(), encoding="utf-8")
+        from unittest.mock import AsyncMock
+
+        from utils.knowledge.ha_release_report import CoreReleaseReport
+
+        TestCoreScreeningBatchCounts._run_core_analysis(
+            _make_db(tmp_path),
+            self._report(),
+            _run_session,
+            **{
+                "utils.ha.update_bc_evidence.build_bc_evidence": {
+                    "new": AsyncMock(return_value=(changed, {}))
+                },
+                "utils.agent.tool_executor.ToolExecutor.__init__": {"new": _init},
+            },
+        )
+        saved = CoreReleaseReport.model_validate_json(path.read_text())
+
+        bc_contexts = [c for c in contexts if c.startswith("HA Core 2026.11.1 br")]
+        assert len(bc_contexts) == 2
+        assert "Note: A previous attempt" not in bc_contexts[0]
+        assert "Note: A previous attempt answered action_needed" in bc_contexts[1]
+        mqtt = next(v for v in saved.bc_verdicts if v["bc"] == "MQTT")
+        assert mqtt["verdict"] == "not_assessed"
+        assert "without evidence" in mqtt["reason"]
+
     def test_report_from_another_installed_version_is_not_reused(
         self, tmp_path, pueo_dirs
     ):
@@ -9371,6 +9437,54 @@ class TestUpdateAnalysisSlimPath:
         assert "summary" in finish["function"]["parameters"]["properties"]
         assert "highlights" in finish["function"]["parameters"]["properties"]
 
+    def test_slim_finish_omits_code_derived_fields(self):
+        """Fields code derives from the BC verdicts are not asked of the model (#1223)."""
+        from utils.agent.tool_registry import (
+            FINISH_UPDATE_ANALYSIS,
+            FINISH_UPDATE_ANALYSIS_SLIM,
+        )
+
+        params = FINISH_UPDATE_ANALYSIS_SLIM.parameters
+        for field in (
+            "safe_to_update",
+            "breaking_changes",
+            "affected_config_keys",
+            "recommendation",
+            "instance_impact",
+            "proposed_config_fixes",
+            "bc_verdicts",
+        ):
+            assert field not in params["properties"]
+            assert field not in params["required"]
+        assert params["required"] == ["pueo_command_risks", "create_hitl_card"]
+        assert set(params["required"]) <= set(params["properties"])
+        # The full tool is unchanged.
+        assert "instance_impact" in FINISH_UPDATE_ANALYSIS.parameters["required"]
+
+    def test_slim_prompt_names_no_code_derived_field(self):
+        from pathlib import Path
+
+        text = (
+            Path(__file__).parent.parent / "prompts" / "task_update_slim.md"
+        ).read_text("utf-8")
+        for field in ("safe_to_update", "instance_impact", "breaking_changes"):
+            assert field not in text
+
+    def test_nudge_field_falls_back_when_terminal_tool_lacks_it(self):
+        from utils.agent.agent_loop import _terminal_primary_field
+        from utils.agent.tool_registry import (
+            build_update_analysis_registry,
+            build_update_analysis_slim_registry,
+        )
+
+        name = "finish_update_analysis"
+        full = build_update_analysis_registry().get_ollama_tools()
+        slim = build_update_analysis_slim_registry().get_ollama_tools()
+        assert _terminal_primary_field(name, full) == "recommendation"
+        assert _terminal_primary_field(name, slim) == "summary"
+        assert _terminal_primary_field(name, []) == "recommendation"
+        assert _terminal_primary_field("finish_chat", slim) == "summary"
+
     def test_slim_registry_has_same_investigation_tools(self):
         """Slim registry has all investigation tools except get_update_release_notes."""
         from utils.agent.tool_registry import (
@@ -9577,13 +9691,14 @@ class TestUpdateAnalysisSlimPath:
                         {
                             "function": {
                                 "name": "finish_update_analysis",
+                                # Only slim fields, plus stray model-written
+                                # impact fields that code must ignore (#1223).
                                 "arguments": {
-                                    "safe_to_update": True,
-                                    "breaking_changes": [],
-                                    "affected_config_keys": [],
                                     "pueo_command_risks": [],
-                                    "recommendation": "Safe to update.",
-                                    "instance_impact": "none",
+                                    "summary": "Safe to update.",
+                                    "affected_config_keys": ["mqtt"],
+                                    "instance_impact": "high",
+                                    "breaking_changes": ["MQTT changed"],
                                     "create_hitl_card": True,
                                 },
                             }
@@ -9614,6 +9729,10 @@ class TestUpdateAnalysisSlimPath:
         assert payloads[0]["release_notes_completeness"] == "complete"
         assert payloads[0]["installed_bc_found"] is True
         assert payloads[0]["highlights"] == ["mqtt: New"]
+        assert payloads[0]["instance_impact"] == "none"
+        assert payloads[0]["breaking_changes"] == []
+        assert payloads[0]["affected_config_keys"] == []
+        assert payloads[0]["safe_to_update"] is True
         refused = [
             m
             for m in llm.calls[-1]["messages"]
@@ -9887,6 +10006,98 @@ class TestFinishBCAssessment:
         assert v["verdict"] == "user_check"
         assert v["user_question"] == "Do you open Home Assistant via a public IP?"
 
+    @staticmethod
+    def _evidence(**kw):
+        from utils.knowledge.ha_release_report import BCEvidence
+
+        base = dict(
+            domains=["mqtt"],
+            entity_count=28,
+            entity_examples=["light.tree"],
+            multi_channel_devices=["Christmas Tree"],
+            tokens=["unique_id", "via_device"],
+            tokens_searched=2,
+        )
+        base.update(kw)
+        return BCEvidence(**base)
+
+    _ACTION = {
+        "verdict": "action_needed",
+        "reason": "28 MQTT entities exist.",
+        "action": "Add a unique_id.",
+        "when": "before_update",
+    }
+
+    def test_action_needed_without_proof_line_is_rejected(self):
+        """Entities existing is not proof: the verdict is not stored (#1223)."""
+        executor = self._make_executor()
+        executor._current_bc_name = "MQTT"
+        executor._current_bc_evidence = self._evidence()
+        result = self._dispatch(executor, dict(self._ACTION))
+        assert not result.success
+        assert "action_needed rejected" in (result.error or "")
+        assert executor.get_bc_assessments() == {}
+        assert "rejected" in executor._bc_rejection_note
+
+    def test_other_verdicts_pass_without_proof_line(self):
+        executor = self._make_executor()
+        executor._current_bc_name = "MQTT"
+        executor._current_bc_evidence = self._evidence()
+        result = self._dispatch(executor, {"verdict": "no_action", "reason": "0 hits."})
+        assert result.success
+        assert executor._bc_rejection_note == ""
+
+    @pytest.mark.parametrize(
+        "proof",
+        [
+            {"tokens_hit": 1},
+            {"automation_hits": ["automations.yaml: via_device"]},
+            {"dashboard_hits": ["lovelace: unique_id"]},
+            {"config_keys_present": ["mqtt"]},
+        ],
+    )
+    def test_action_needed_with_a_proof_line_is_stored(self, proof):
+        executor = self._make_executor()
+        executor._current_bc_name = "MQTT"
+        executor._current_bc_evidence = self._evidence(**proof)
+        result = self._dispatch(executor, dict(self._ACTION))
+        assert result.success
+        assert executor.get_bc_assessments()["MQTT"]["verdict"] == "action_needed"
+
+    def test_action_needed_without_evidence_object_is_stored(self):
+        """No evidence was built for the BC, so there is nothing to check against."""
+        executor = self._make_executor()
+        executor._current_bc_name = "MQTT"
+        result = self._dispatch(executor, dict(self._ACTION))
+        assert result.success
+
+    def test_clear_state_resets_evidence_and_note(self):
+        executor = self._make_executor()
+        executor._current_bc_evidence = self._evidence()
+        executor._bc_rejection_note = "x"
+        executor.clear_bc_assessment_state()
+        assert executor._current_bc_evidence is None
+        assert executor._bc_rejection_note == ""
+
+    def test_evidence_proof_lines(self):
+        from utils.knowledge.ha_release_report import evidence_proof_lines
+
+        assert evidence_proof_lines(self._evidence()) == []
+        lines = evidence_proof_lines(
+            self._evidence(
+                tokens_hit=1,
+                automation_hits=["a.yaml: x"],
+                dashboard_hits=["d: y"],
+                config_keys_present=["mqtt"],
+            )
+        )
+        assert [line.split(" (")[0].split(":")[0] for line in lines] == [
+            "Config keys present",
+            "Config refs",
+            "Dashboard refs",
+            "Tokens checked",
+        ]
+
     def test_dispatch_missing_verdict_fails_and_stores_nothing(self):
         executor = self._make_executor()
         executor._current_bc_name = "MQTT"
@@ -9995,7 +10206,7 @@ class TestFinishBCAssessment:
         assert "do **not** settle" in seed
         # A core component's own config key is not proof, and a user-only
         # question ends the decision (#1211).
-        assert "steps 2–4 do not apply" in seed
+        assert "steps 2–3 do not apply" in seed
         assert "only names\n   the component itself" in seed
         assert "not a question for the user" in seed
 

@@ -2657,22 +2657,42 @@ FINISH_UPDATE_ANALYSIS = ToolDefinition(
 )
 
 
+# Fields code derives from the pre-run BC verdicts on the slim path.  They are
+# not offered to the model: asking for them made it write its own versions in a
+# long call that arrived with a corrupted key (#1223).
+_SLIM_CODE_DERIVED_FIELDS = frozenset(
+    {
+        "bc_verdicts",
+        "safe_to_update",
+        "breaking_changes",
+        "affected_config_keys",
+        "recommendation",
+        "instance_impact",
+        "proposed_config_fixes",
+    }
+)
+
 FINISH_UPDATE_ANALYSIS_SLIM = ToolDefinition(
     name="finish_update_analysis",
     description=(
         "Call when the update analysis is complete. BC verdicts have been pre-computed "
-        "and are injected in the initial context — do not re-derive them. Provide "
-        "summary and highlights; other impact fields are overridden from the pre-run "
-        "BC assessments. Setting create_hitl_card=true sends an approval card to the user."
+        "and are injected in the initial context — do not re-derive them. Safety, "
+        "impact and breaking changes on the card come from those verdicts; provide "
+        "summary, highlights and any Pueo command risks. "
+        "Setting create_hitl_card=true sends an approval card to the user."
     ),
     parameters={
         "type": "object",
         "properties": {
             k: v
             for k, v in FINISH_UPDATE_ANALYSIS.parameters["properties"].items()
-            if k != "bc_verdicts"
+            if k not in _SLIM_CODE_DERIVED_FIELDS
         },
-        "required": FINISH_UPDATE_ANALYSIS.parameters["required"],
+        "required": [
+            k
+            for k in FINISH_UPDATE_ANALYSIS.parameters["required"]
+            if k not in _SLIM_CODE_DERIVED_FIELDS
+        ],
     },
 )
 

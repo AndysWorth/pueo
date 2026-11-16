@@ -791,6 +791,25 @@ def _evidence_lines(evidence: "BCEvidence") -> list[str]:
     return ev_lines
 
 
+def evidence_proof_lines(evidence: "BCEvidence") -> list[str]:
+    """Return the evidence lines that can prove a BC applies to this install.
+
+    These are the line kinds `seed_update_bc.md` names as proof for an
+    `action_needed` verdict: config refs, dashboard refs, a token search with
+    hits, and config keys present.  Entity counts are not proof.  An empty
+    result means nothing in the evidence can ground `action_needed` (#1223).
+    """
+    has_token_hits = bool(evidence.tokens and evidence.tokens_hit > 0)
+    prefixes = ["Config refs (", "Dashboard refs (", "Config keys present:"]
+    if has_token_hits:
+        prefixes.append("Tokens checked (")
+    return [
+        line
+        for line in _evidence_lines(evidence)
+        if any(line.startswith(p) for p in prefixes)
+    ]
+
+
 def _format_bc_entry(e: "BCEntry", evidence: Optional["BCEvidence"] = None) -> str:
     """Format a single BC entry as Markdown, appending evidence when available."""
     text = f"### {e.name}\n\n{e.body}" if e.body else f"### {e.name}"
