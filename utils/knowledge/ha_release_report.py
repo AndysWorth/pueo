@@ -1064,6 +1064,34 @@ def coerce_screening_items(
     return out_flags, out_hls, dropped_flags + dropped_hls
 
 
+def _section_parts(header: str, entry_lines: list[str]) -> list[str]:
+    """Return one or more text parts for *header* + *entry_lines*.
+
+    When the whole section fits within ``_SCREENING_BATCH_CHARS`` it is
+    returned as a single string.  Otherwise entries are split at boundaries
+    so each part is ≤ the limit; the header is repeated on each part so the
+    LLM retains context about the domain.
+    """
+    full = header + "\n\n" + "\n".join(entry_lines)
+    if len(full) <= _SCREENING_BATCH_CHARS:
+        return [full]
+    base_len = len(header) + 2  # header + "\n\n"
+    parts: list[str] = []
+    current: list[str] = []
+    current_len = base_len
+    for entry in entry_lines:
+        entry_len = len(entry) + 1  # +1 for "\n"
+        if current and current_len + entry_len > _SCREENING_BATCH_CHARS:
+            parts.append(header + "\n\n" + "\n".join(current))
+            current = []
+            current_len = base_len
+        current.append(entry)
+        current_len += entry_len
+    if current:
+        parts.append(header + "\n\n" + "\n".join(current))
+    return parts or [full]
+
+
 def make_screening_batches(report: "CoreReleaseReport") -> list[str]:
     """Split the report's changelog content into LLM-sized batches.
 
@@ -1072,22 +1100,21 @@ def make_screening_batches(report: "CoreReleaseReport") -> list[str]:
     flags.  Only changelog sections (changes_by_domain) are batched.
 
     Each batch is a self-contained text block ≤ _SCREENING_BATCH_CHARS that
-    cuts at integration boundaries (never mid-entry).  Returns a list of
-    batch strings.
+    cuts at entry boundaries.  A single domain with many entries is split into
+    multiple parts, each repeating the domain header for context.  Returns a
+    list of batch strings.
     """
     sections: list[str] = []
 
     # Changelog sections per domain only (no BC entries)
     for domain, entries in report.changes_by_domain.items():
-        text = f"### Changes: {domain}\n\n" + "\n".join(f"- {e.text}" for e in entries)
-        sections.append(text)
+        entry_lines = [f"- {e.text}" for e in entries]
+        sections.extend(_section_parts(f"### Changes: {domain}", entry_lines))
 
     # Patch note sections — always included, even when the domain is also in the changelog
     for domain, entries in report.patch_changes_by_domain.items():
-        text = f"### Patch changes: {domain}\n\n" + "\n".join(
-            f"- {e.text}" for e in entries
-        )
-        sections.append(text)
+        entry_lines = [f"- {e.text}" for e in entries]
+        sections.extend(_section_parts(f"### Patch changes: {domain}", entry_lines))
 
     batches: list[str] = []
     current_parts: list[str] = []
