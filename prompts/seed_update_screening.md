@@ -27,12 +27,19 @@ entity.
 Ignore entries that describe:
 - Internal refactors: "Define public names", "Move … classes", "Move … to …",
   "Mark … final", "Remove leftovers of …", "Migrate to …", "Refactor …",
-  "Clean up …", "Split …", "Use …"
-- Quality / maintenance: "Bump …", "quality scale", "typo", "Add tests", "Add types",
+  "Clean up …", "Split …", "Use …", "Use enums …", "Convert … to …"
+- Test-only changes: "Add tests", "Add assertions", "Use enums in … tests",
+  "assert …", anything whose scope is clearly limited to test files
+- Quality / maintenance: "Bump …", "quality scale", "typo", "Add types",
   "Improve …", "Update …", "Fix …", "Handle …", "Catch …", "Log …"
 - Clarifications: "Clarify …", "Add exception translations", "Add translation",
   "Translate …"
 - Features that add new capability without removing existing behaviour
+
+**Explicit rule:** If your own assessment of a flag is that it has no user-facing
+impact ("Internal test refactor", "no user impact", "no user-facing impact", etc.),
+**do not emit it as a flag**.  A flag whose concern acknowledges no user impact is
+not a flag.
 
 When in doubt, **do not flag**.
 
