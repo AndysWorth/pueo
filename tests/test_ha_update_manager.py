@@ -2443,6 +2443,146 @@ class TestCoreScreeningBatchCounts:
         assert saved.screening_complete is False
         assert saved.completeness == "complete"
 
+    @staticmethod
+    def _run_core_analysis(db_path, rpt, results, screening_results=None, **patches):
+        """Run _run_update_analysis for a Core update with one screening batch."""
+        import asyncio
+        from contextlib import ExitStack
+        from unittest import mock
+        from unittest.mock import AsyncMock, MagicMock
+
+        from utils.ha.ha_environment import HAEnvironmentProfile
+
+        class _FakeUpdate:
+            entity_id = "update.home_assistant_core_update"
+            component = "core"
+            installed_version = "2026.10.4"
+            latest_version = "2026.11.1"
+            release_url = None
+            release_summary = None
+
+        with ExitStack() as stack:
+            MockLoop = stack.enter_context(
+                mock.patch("utils.agent.agent_loop.AgentLoop")
+            )
+            for target, kwargs in {
+                "utils.agent.supervisor.increment_active_agent": {},
+                "utils.agent.supervisor.decrement_active_agent": {},
+                "utils.agent.supervisor.make_activity_timeline_callback": {
+                    "return_value": None
+                },
+                "utils.llm.llm_factory.make_llm_client": {"return_value": MagicMock()},
+                "agents.ha_update_manager.DB_PATH": {"new": db_path},
+                "agents.ha_update_manager.HA_API_TOKEN": {"new": "tok"},
+                "utils.ha.ha_ws_client.HAWebSocketClient": {},
+                "utils.knowledge.ha_release_report.build_core_release_report": {
+                    "new": AsyncMock(return_value=rpt)
+                },
+                "utils.knowledge.ha_release_report.make_screening_batches": {
+                    "return_value": ["batch a"]
+                },
+                "utils.agent.work_queue.get_work_queue_or_none": {"return_value": None},
+                **patches,
+            }.items():
+                stack.enter_context(mock.patch(target, **kwargs))
+            if screening_results is not None:
+                stack.enter_context(
+                    mock.patch(
+                        "utils.agent.tool_executor.ToolExecutor.get_screening_results",
+                        return_value=screening_results,
+                    )
+                )
+            mock_instance = MagicMock()
+            mock_instance.run = AsyncMock(side_effect=results)
+            MockLoop.return_value = mock_instance
+
+            from agents.ha_update_manager import _run_update_analysis
+            from utils.hitl.notify import FakeNotifier
+
+            asyncio.run(
+                _run_update_analysis(
+                    update=_FakeUpdate(),
+                    notifier=FakeNotifier(),
+                    ha_profile=HAEnvironmentProfile(installed_integrations=["lifx"]),
+                )
+            )
+        return mock_instance
+
+    @staticmethod
+    def _backoff_row(db_path):
+        import sqlite3
+
+        with sqlite3.connect(db_path) as conn:
+            return conn.execute(
+                "SELECT last_action FROM hitl_suppression WHERE card_key = "
+                "'update_analysis_backoff:update.home_assistant_core_update'"
+            ).fetchone()
+
+    def test_domainless_screening_items_do_not_crash(self, tmp_path, pueo_dirs):
+        """A flag/highlight without `domain` is repaired or dropped, not fatal (#1217)."""
+        from utils.agent.tool_registry import AgentLoopResult
+        from utils.knowledge.ha_release_report import ChangeEntry, CoreReleaseReport
+
+        db_path = _make_db(tmp_path)
+        rpt = CoreReleaseReport(
+            version="2026.11.1",
+            completeness="complete",
+            changes_by_domain={
+                "lifx": [ChangeEntry(text="Return True for the removed legacy entry")]
+            },
+        )
+        loop = self._run_core_analysis(
+            db_path,
+            rpt,
+            [AgentLoopResult(outcome="success"), AgentLoopResult(outcome="success")],
+            screening_results=(
+                [
+                    {
+                        "change": "Return True for the removed legacy entry",
+                        "concern": "Migration behavior change.",
+                    },
+                    {"change": "Nothing like any changelog line", "concern": "c"},
+                ],
+                [{"feature": "Unknown feature"}],
+                True,
+            ),
+        )
+
+        assert loop.run.await_count == 2  # screening batch + main loop both ran
+        saved = CoreReleaseReport.model_validate_json(
+            (pueo_dirs.state_dir / "update_reports" / "core_2026.11.1.json").read_text()
+        )
+        assert [(f.domain, f.change) for f in saved.screening_flags] == [
+            ("lifx", "Return True for the removed legacy entry")
+        ]
+        assert saved.screening_highlights == []
+        assert self._backoff_row(db_path) is None
+
+    def test_prepass_exception_writes_backoff(self, tmp_path, pueo_dirs):
+        """A crash before the main loop still writes the 30-minute backoff (#1217)."""
+        from unittest.mock import MagicMock
+
+        from utils.agent.tool_registry import AgentLoopResult
+        from utils.knowledge.ha_release_report import CoreReleaseReport
+
+        db_path = _make_db(tmp_path)
+        rpt = CoreReleaseReport(version="2026.11.1", completeness="complete")
+
+        with pytest.raises(RuntimeError, match="prepass boom"):
+            self._run_core_analysis(
+                db_path,
+                rpt,
+                [AgentLoopResult(outcome="success")],
+                **{
+                    "utils.knowledge.ha_release_report.coerce_screening_items": {
+                        "new": MagicMock(side_effect=RuntimeError("prepass boom"))
+                    }
+                },
+            )
+
+        row = self._backoff_row(db_path)
+        assert row is not None and row[0] == "deferred"
+
     def test_screening_sets_running_detail(self, tmp_path, pueo_dirs):
         """Screening loop calls set_running_detail per batch and 'analysing' before main loop."""
         import asyncio

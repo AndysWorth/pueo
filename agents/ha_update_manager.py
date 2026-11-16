@@ -1405,9 +1405,8 @@ async def _run_update_analysis(
         if _is_core_update and _profile is not None and HA_API_TOKEN:
             from utils.knowledge.ha_release_report import (
                 CoreReleaseReport as _CRR,
-                ScreeningFlag,
-                ScreeningHighlight,
                 build_core_release_report,
+                coerce_screening_items,
                 make_screening_batches,
             )
             from utils.agent.tool_registry import build_change_screening_registry
@@ -1552,12 +1551,11 @@ async def _run_update_analysis(
 
                 # Persist screening results to report
                 _flags, _hls, _sc = executor.get_screening_results()
-                _rpt.screening_flags = [
-                    ScreeningFlag(**f) if isinstance(f, dict) else f for f in _flags
-                ]
-                _rpt.screening_highlights = [
-                    ScreeningHighlight(**h) if isinstance(h, dict) else h for h in _hls
-                ]
+                (
+                    _rpt.screening_flags,
+                    _rpt.screening_highlights,
+                    _screen_dropped,
+                ) = coerce_screening_items(_rpt, _flags, _hls)
                 _rpt.screening_complete = _all_complete
                 _rpt.screening_batches_total = _batches_total
                 _rpt.screening_batches_done = _batches_done
@@ -1572,8 +1570,9 @@ async def _run_update_analysis(
                     log.info(
                         "core_release_report_screening_persisted",
                         version=update.latest_version,
-                        flags=len(_flags),
-                        highlights=len(_hls),
+                        flags=len(_rpt.screening_flags),
+                        highlights=len(_rpt.screening_highlights),
+                        dropped=_screen_dropped,
                         complete=_all_complete,
                     )
                 except Exception as _persist_exc:
@@ -1967,6 +1966,31 @@ async def _run_update_analysis(
             except Exception:  # nosec B110 — best-effort SSE
                 pass
 
+    async def _coro_with_backoff() -> None:
+        # The Core pre-pass (report, screening, BC evidence, BC assessment) runs
+        # before the main loop's own handler, so a failure there would otherwise
+        # leave no backoff row and be retried on every poll.
+        try:
+            await _coro()
+        except Exception as _exc:
+            import sqlite3 as _sqlite3
+            from utils.hitl.hitl_tracker import mark_investigation_backoff
+
+            try:
+                with _sqlite3.connect(DB_PATH) as _conn:
+                    mark_investigation_backoff(
+                        _conn, f"update_analysis_backoff:{update.entity_id}"
+                    )
+            except Exception:  # nosec B110
+                pass
+            log.error(
+                "update_analysis_failed_backoff",
+                component=update.component,
+                exc_type=type(_exc).__name__,
+                error=str(_exc),
+            )
+            raise
+
     _wq = get_work_queue_or_none()
     if _wq is not None:
         return await _wq.submit(
@@ -1976,11 +2000,11 @@ async def _run_update_analysis(
                 description=f"Update analysis: {update.component} → {update.latest_version}",
                 dedup_key=f"update_analysis:{update.entity_id}",
                 suppress_while_running=frozenset(),
-                coro_factory=_coro,
+                coro_factory=_coro_with_backoff,
             )
         )
     else:
-        await _coro()
+        await _coro_with_backoff()
         return True
 
 
