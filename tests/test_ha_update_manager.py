@@ -9219,13 +9219,149 @@ class TestUpdateAnalysisSlimPath:
         assert executor._release_notes_completeness == "incomplete"
         assert executor._screening_gap is None
 
-    def test_slim_path_adopts_report_when_digest_injected(self):
+    def test_slim_path_preinjects_report_when_digest_injected(self):
         import inspect
 
         import agents.ha_update_manager as um
 
         src = inspect.getsource(um._run_update_analysis)
-        assert "executor.adopt_core_release_report(_rpt)" in src
+        assert "executor.preinject_core_release_report(_rpt)" in src
+        assert 'load_agent_prompt("update_slim", terminal_tool)' in src
+
+    def test_plain_adopt_is_cleared_by_reset(self):
+        """adopt alone is per-loop state: a tool-fetched digest must be re-fetched."""
+        executor = _bc_executor(None)
+        executor.adopt_core_release_report(self._report())
+        executor.reset()
+        assert executor._release_notes_completeness == "none"
+        assert executor._report_highlights == []
+
+    def test_preinjected_report_survives_reset(self):
+        """reset() re-adopts a pre-injected report (#1219)."""
+        executor = _bc_executor(None)
+        executor.preinject_core_release_report(
+            self._report(
+                screening_complete=False,
+                screening_batches_done=2,
+                screening_batches_total=5,
+            )
+        )
+        executor.reset()
+        assert executor._release_notes_completeness == "complete"
+        assert executor._installed_bc_found is True
+        assert executor._screening_gap == (2, 5)
+        assert executor._report_highlights == ["mqtt: New"]
+
+    def test_slim_path_card_keeps_notes_through_real_agent_loop(
+        self, tmp_path, pueo_dirs
+    ):
+        """A real AgentLoop resets the executor; the card must still say the notes
+        were obtained and carry the report highlights (#1219).
+
+        The model also calls get_update_release_notes, which the slim registry
+        does not offer: it must be refused, not executed.
+        """
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import build_update_analysis_slim_registry
+        from utils.core.prompts import load_agent_prompt
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        db_path = _make_db(tmp_path)
+        payloads: list[dict] = []
+        notifier = MagicMock()
+        notifier.send = AsyncMock(
+            side_effect=lambda **kw: payloads.append(kw.get("payload", {}))
+        )
+        executor = ToolExecutor(
+            ha_ssh_client=MagicMock(),
+            gate=MagicMock(),
+            notifier=notifier,
+            db_path=db_path,
+        )
+        executor.set_update_status(
+            SimpleNamespace(
+                entity_id="update.home_assistant_core_update",
+                component="core",
+                installed_version="2026.10.4",
+                latest_version="2026.11.1",
+                release_url=None,
+                release_summary=None,
+            )
+        )
+        executor._bc_assessments["MQTT"] = {
+            "bc": "MQTT",
+            "verdict": "no_action",
+            "reason": "No YAML MQTT entities.",
+        }
+        executor.preinject_core_release_report(self._report())
+
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "get_update_release_notes",
+                                "arguments": {},
+                            }
+                        }
+                    ]
+                },
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_update_analysis",
+                                "arguments": {
+                                    "safe_to_update": True,
+                                    "breaking_changes": [],
+                                    "affected_config_keys": [],
+                                    "pueo_command_risks": [],
+                                    "recommendation": "Safe to update.",
+                                    "instance_impact": "none",
+                                    "create_hitl_card": True,
+                                },
+                            }
+                        }
+                    ]
+                },
+            ]
+        )
+        loop = AgentLoop(
+            llm_client=llm,
+            tool_executor=executor,
+            tool_registry=build_update_analysis_slim_registry(),
+            model="fake",
+            system_prompt=load_agent_prompt("update_slim", "finish_update_analysis"),
+            terminal_tool_name="finish_update_analysis",
+            trigger="update_poll",
+            activity_type="update_analysis",
+            db_path=db_path,
+            distill=False,
+        )
+        with patch("agents.ha_log_monitor._update_mark_card_sent"):
+            result = asyncio.run(
+                loop.run("ctx\n\n## Pre-computed BC assessment results\n\ndigest")
+            )
+
+        assert result.outcome == "success"
+        assert payloads, "no card was sent"
+        assert payloads[0]["release_notes_completeness"] == "complete"
+        assert payloads[0]["installed_bc_found"] is True
+        assert payloads[0]["highlights"] == ["mqtt: New"]
+        refused = [
+            m
+            for m in llm.calls[-1]["messages"]
+            if m.get("role") == "tool" and m.get("name") == "get_update_release_notes"
+        ]
+        assert refused and "not available in this session" in refused[0]["content"]
+        assert "read_source" not in refused[0]["content"]
+        assert "SELF-KNOWLEDGE" not in llm.calls[0]["messages"][0]["content"]
 
     def test_main_analysis_uses_higher_num_predict(self):
         """Main update-analysis AgentLoop uses num_predict >= 1000 (#1215).

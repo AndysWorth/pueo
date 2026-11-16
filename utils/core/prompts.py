@@ -16,6 +16,7 @@ _VALID_TASKS = frozenset(
         "device",
         "host",
         "update",
+        "update_slim",
         "setup",
         "log_recurrence",
     }
@@ -43,6 +44,16 @@ def load_agent_prompt(task: str, terminal_tool: str) -> str:
     task_text = load_prompt(f"task_{task}")
     combined = f"{core}\n\n{task_text}"
     return combined.format(terminal_tool=terminal_tool)
+
+
+def strip_self_knowledge(prompt: str) -> str:
+    """Remove the SELF-KNOWLEDGE paragraph from a composed agent prompt.
+
+    That paragraph tells the model to call ``read_source``; a session whose
+    registry lacks the tool must not be told to call it (#1219).
+    """
+    paragraphs = prompt.split("\n\n")
+    return "\n\n".join(p for p in paragraphs if not p.startswith("SELF-KNOWLEDGE:"))
 
 
 def repeat_query(system_prompt: str, user_content: str) -> str:
