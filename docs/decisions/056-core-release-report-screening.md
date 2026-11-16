@@ -269,3 +269,25 @@ guard then turned every BC into `no_action` — including a real `action_needed`
   reference) re-opens exactly the BCs it touches.
 - Deleting `update_reports/core_<version>.json` forces a from-scratch run. A stored verdict
   that is wrong but whose evidence has not changed is kept until then.
+
+## Amendment (#1223): `action_needed` must be grounded; slim finish tool asks only for what the model decides
+
+- On identical evidence (0 token hits, no config or dashboard refs) the MQTT BC was judged
+  `no_action` in one run and `action_needed` in the next ("28 MQTT entities exist"), against
+  the seed's rule that entities existing is never proof. That made a false "fix before
+  updating" card, and since #1221 the wrong verdict would also be reused.
+- `finish_bc_assessment` now enforces the seed's proof rule (rule 2; the steps were renumbered 0–3, they had skipped 2 since #1216, which is when the verdict flipped). `evidence_proof_lines()` in
+  `ha_release_report.py` returns the evidence lines the seed names as proof: "Config refs",
+  "Dashboard refs", "Tokens checked (N/M hit)" and "Config keys present". An `action_needed`
+  verdict for a BC whose evidence has none of them is rejected and not stored
+  (`bc_verdict_ungrounded`). A BC with no evidence object is not checked.
+- The check never picks a verdict. The retry session is told why the first answer was
+  rejected; if the second answer is also ungrounded the BC is `not_assessed` ("Could not
+  assess"), never a blocker and never "not affected".
+- Whether a present proof line really shows use (for example a "Config keys present" line
+  naming only the component) stays the model's judgment under the seed.
+- `FINISH_UPDATE_ANALYSIS_SLIM` drops the fields code derives from the verdicts
+  (`safe_to_update`, `breaking_changes`, `instance_impact`, `recommendation`,
+  `proposed_config_fixes`, `affected_config_keys`). Asking for them made the model write
+  its own versions in a long call that arrived with a corrupted key. On the slim path the
+  card's `affected_config_keys` is empty: the main loop judged no BC itself.

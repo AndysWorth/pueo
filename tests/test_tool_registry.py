@@ -390,7 +390,8 @@ class TestRegistryMembership:
         # required fields must still be present
         assert "summary" in props
         assert "highlights" in props
-        assert "safe_to_update" in props
+        # Derived from the BC verdicts by code, so not asked of the model (#1223).
+        assert "safe_to_update" not in props
 
     def test_slim_update_registry_token_budget(self):
         """Slim update-analysis registry schema must fit within budget."""

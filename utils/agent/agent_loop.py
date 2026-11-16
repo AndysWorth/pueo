@@ -627,6 +627,22 @@ _TERMINAL_TOOL_PRIMARY_FIELD: dict[str, str] = {
 }
 
 
+def _terminal_primary_field(terminal_tool_name: str, tools: list[dict]) -> str:
+    """Return the field a nudge tells the model to put its answer in.
+
+    Falls back to "summary" when the offered terminal tool does not list the
+    mapped field (the slim finish_update_analysis has no "recommendation").
+    """
+    field = _TERMINAL_TOOL_PRIMARY_FIELD.get(terminal_tool_name, "summary")
+    for tool in tools:
+        fn = tool.get("function") or {}
+        if fn.get("name") == terminal_tool_name:
+            props = (fn.get("parameters") or {}).get("properties") or {}
+            if props and field not in props:
+                return "summary"
+    return field
+
+
 def _derive_loop_call_options(model_name: str) -> ModelCallOptions:
     """Derive ModelCallOptions for an agent loop session.
 
@@ -2032,8 +2048,8 @@ class AgentLoop:
                     # the terminal tool causes the model to skip investigation
                     # and hallucinate answers.  Instead, demand any tool call
                     # and let the system prompt guide which one to use first.
-                    _primary_field = _TERMINAL_TOOL_PRIMARY_FIELD.get(
-                        self._terminal_tool_name, "summary"
+                    _primary_field = _terminal_primary_field(
+                        self._terminal_tool_name, tools
                     )
                     if tool_call_count == 0:
                         # When the content already names a registered tool, or the
