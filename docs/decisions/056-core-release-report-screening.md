@@ -250,3 +250,22 @@ guard then turned every BC into `no_action` — including a real `action_needed`
   and the `hallucinated_tool` notice suggests `read_source` only when it is offered.
 - Regression test runs the slim path through a real `AgentLoop` with a fake LLM; tests
   that mock `AgentLoop` cannot see reset-related state loss.
+
+## Amendment (#1221): a re-run reuses stored screening results and unchanged verdicts
+
+- `build_core_release_report` overwrites `core_<version>.json`, so every re-run (retry
+  after a failure, restart, forced run) repeated all screening and BC sessions, and a
+  verdict could flip on identical input. The reuse branch from #1215 read `bc_verdicts`
+  from the fresh report, which is always empty, so it never fired.
+- The update manager now reads the stored report with `load_stored_core_report()` before
+  the build. It is used only when `version` and `installed_version` both match.
+- `carry_over_screening()` copies flags, highlights and batch counts when the stored pass
+  was complete and `make_screening_batches()` gives the same text for both reports; the
+  screening sessions are then skipped.
+- `carry_over_bc_verdicts()` keeps a verdict only when everything its session saw is the
+  same: BC body, installed/general group, and the evidence lines built in this run.
+  `not_assessed` is never kept. Only the remaining BCs get a session.
+- Evidence is always rebuilt, so a change on the instance (new entities, a new config
+  reference) re-opens exactly the BCs it touches.
+- Deleting `update_reports/core_<version>.json` forces a from-scratch run. A stored verdict
+  that is wrong but whose evidence has not changed is kept until then.
