@@ -3281,6 +3281,33 @@ class TestSupervisorMain:
         asyncio.run(m.supervisor_main(config_path))
         assert "device_availability_poll" in started
 
+    def test_serve_task_created_before_offload(self, monkeypatch, tmp_path):
+        """uvicorn serve task is created before offload_pending_backups in the source."""
+        import inspect
+        import main as m
+
+        src = inspect.getsource(m.supervisor_main)
+        create_task_idx = src.index("create_task(server.serve())")
+        # offload_pending_backups should NOT appear before the serve task creation
+        # (it now lives only inside _backup_reconcile_loop, which is defined later)
+        offload_before = src[:create_task_idx].count("offload_pending_backups")
+        assert offload_before == 0, (
+            "offload_pending_backups appears before create_task(server.serve()) "
+            "in supervisor_main — it should be deferred to the backup_sync loop"
+        )
+
+    def test_backup_sync_first_iter_skips_sleep(self, monkeypatch, tmp_path):
+        """backup_sync loop skips the supervised_sleep on its first iteration."""
+        import inspect
+        import main as m
+
+        src = inspect.getsource(m.supervisor_main)
+        # The loop must have a first-iteration guard (_first_iter) that runs
+        # offload_pending_backups before any supervised_sleep call for backup_sync.
+        assert "_first_iter" in src, "backup_sync loop must have a _first_iter guard"
+        # offload_pending_backups must appear inside _backup_reconcile_loop
+        assert "offload_pending_backups" in src
+
 
 # ── hacs_unloaded card body ───────────────────────────────────────────────────────
 

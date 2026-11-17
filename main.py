@@ -950,9 +950,70 @@ async def supervisor_main(config_path: Path) -> None:
     from web.dashboard import app as dashboard_app
 
     ha_agent_advanced.init_local_database()
+
+    # Start uvicorn immediately so the dashboard is reachable during the slow
+    # startup work (hardware detection, update reconcile, initial profile build).
+    # Signal handlers are registered here so SIGTERM is handled from the start.
+    # _shutdown guards on supervisor/mcp being None during early startup.
+    supervisor: LoopSupervisor | None = (
+        None  # assigned below after all loops are registered
+    )
+    _mcp_server_obj = None  # assigned below when MCP is enabled
+    loop = asyncio.get_running_loop()
+    uvi_config = uvicorn.Config(
+        dashboard_app,
+        host="127.0.0.1",
+        port=cfg.DASHBOARD_PORT,
+        log_level="warning",
+        limit_concurrency=DASHBOARD_LIMIT_CONCURRENCY,
+    )
+    server = uvicorn.Server(uvi_config)
+
+    def _shutdown() -> None:
+        from utils.core.logging import get_logger as _gl
+
+        _gl("main").info("shutdown_requested", pid=os.getpid())
+        # Mute uvicorn.error before cancellation so the expected CancelledErrors
+        # from open SSE connections (listen_for_disconnect / lifespan) don't
+        # flood the terminal.  They are normal shutdown noise, not real errors.
+        logging.getLogger("uvicorn.error").setLevel(logging.CRITICAL)
+        if supervisor is not None:
+            supervisor.cancel_all()
+        server.should_exit = True
+        if _mcp_server_obj is not None:
+            _mcp_server_obj.stop()
+        from utils.system.sleep_guard import get_sleep_guard
+
+        get_sleep_guard().stop()
+
+        # Hard-exit watchdog: if the event loop doesn't unwind within
+        # _SHUTDOWN_GRACE_S, flush log handlers and force-exit.  Runs on a
+        # daemon thread so it fires even if the event loop is blocked.
+        def _watchdog() -> None:
+            from utils.core.logging import get_logger as _wl
+
+            _wl("main").warning("shutdown_forced", grace_s=_SHUTDOWN_GRACE_S)
+            for h in logging.root.handlers:
+                try:
+                    h.flush()
+                except Exception:  # nosec B110
+                    pass
+            os._exit(0)  # noqa: SLF001  # hard exit — asyncio.run never sees this
+
+        _t = threading.Timer(_SHUTDOWN_GRACE_S, _watchdog)
+        _t.daemon = True
+        _t.start()
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, _shutdown)
+
+    serve_task = asyncio.create_task(server.serve())
+
+    # Keep reconcile_backup_inventory() inline — it is fast (one SSH call) and
+    # the backup_sync loop depends on the inventory being populated at startup.
+    # offload_pending_backups() runs on the first iteration of backup_sync instead.
     try:
         await ha_agent_advanced.reconcile_backup_inventory()
-        await ha_agent_advanced.offload_pending_backups()
     except Exception as _e:  # nosec B110
         from utils.core.logging import get_logger as _gl
 
@@ -1268,17 +1329,22 @@ async def supervisor_main(config_path: Path) -> None:
         from utils.ha.ssh_client import AsyncSSHClient as _SSH
 
         _log = _gl("main")
+        _first_iter = True
         while True:
-            from utils.agent.supervisor import supervised_sleep as _sup_sleep_bs
+            if _first_iter:
+                _first_iter = False
+                # First iteration: skip sleep and reconcile — reconcile_backup_inventory()
+                # ran at startup.  Run the offload immediately in the background.
+                ssh = _SSH(cfg.HA_HOST, cfg.HA_USER, cfg.SSH_KEY_PATH)
+            else:
+                from utils.agent.supervisor import supervised_sleep as _sup_sleep_bs
 
-            await _sup_sleep_bs(
-                "backup_sync", 30 * 60
-            )  # 30-minute interval; startup reconcile+offload already ran
-            ssh = _SSH(cfg.HA_HOST, cfg.HA_USER, cfg.SSH_KEY_PATH)
-            try:
-                await ha_agent_advanced.reconcile_backup_inventory(ssh_client=ssh)
-            except Exception as e:  # pragma: no cover  # nosec B110
-                _log.warning("backup_reconcile_loop_failed", error=str(e))
+                await _sup_sleep_bs("backup_sync", 30 * 60)
+                ssh = _SSH(cfg.HA_HOST, cfg.HA_USER, cfg.SSH_KEY_PATH)
+                try:
+                    await ha_agent_advanced.reconcile_backup_inventory(ssh_client=ssh)
+                except Exception as e:  # pragma: no cover  # nosec B110
+                    _log.warning("backup_reconcile_loop_failed", error=str(e))
             # Offload + retention enforcement issues SSH writes (ha backups remove).
             # Route through the work queue so it doesn't overlap with repair sessions
             # that call ha backup new (ADR 026).
@@ -1912,69 +1978,24 @@ async def supervisor_main(config_path: Path) -> None:
             pass
 
     # Start the MCP server if enabled (separate port, reachable from HA over LAN).
-    _mcp_server_obj = None
     if cfg.MCP_ENABLED:
         from utils.mcp.pueo_mcp_server import PueoMCPServer
 
         _mcp_server_obj = PueoMCPServer(executor=_shared_executor)
         supervisor.start("mcp_server", _mcp_server_obj.run)
 
-    # Register signal handlers for clean shutdown.
-    # cancel_all() cancels asyncio tasks; server.should_exit stops uvicorn.
-    # call_later forces an exit after 3 s in case SSH streams or Ollama
-    # threads don't yield to the cancellation in time.
-    loop = asyncio.get_running_loop()
+    # Yield once so loop tasks started above can begin their first iteration
+    # before we block on the serve task.  In production serve_task runs until
+    # _shutdown() sets server.should_exit; this yield is a no-op.
+    await asyncio.sleep(0)
 
-    def _shutdown() -> None:
-        from utils.core.logging import get_logger as _gl
+    # Await the serve task started at the top of supervisor_main.
+    # serve_task returns when _shutdown() sets server.should_exit = True.
+    await serve_task
 
-        _gl("main").info("shutdown_requested", pid=os.getpid())
-        # Mute uvicorn.error before cancellation so the expected CancelledErrors
-        # from open SSE connections (listen_for_disconnect / lifespan) don't
-        # flood the terminal.  They are normal shutdown noise, not real errors.
-        logging.getLogger("uvicorn.error").setLevel(logging.CRITICAL)
+    # serve_task returned — cancel all loops on clean exit
+    if supervisor is not None:
         supervisor.cancel_all()
-        server.should_exit = True
-        if _mcp_server_obj is not None:
-            _mcp_server_obj.stop()
-        from utils.system.sleep_guard import get_sleep_guard
-
-        get_sleep_guard().stop()
-
-        # Hard-exit watchdog: if the event loop doesn't unwind within
-        # _SHUTDOWN_GRACE_S, flush log handlers and force-exit.  Runs on a
-        # daemon thread so it fires even if the event loop is blocked.
-        def _watchdog() -> None:
-            from utils.core.logging import get_logger as _wl
-
-            _wl("main").warning("shutdown_forced", grace_s=_SHUTDOWN_GRACE_S)
-            for h in logging.root.handlers:
-                try:
-                    h.flush()
-                except Exception:  # nosec B110
-                    pass
-            os._exit(0)  # noqa: SLF001  # hard exit — asyncio.run never sees this
-
-        _t = threading.Timer(_SHUTDOWN_GRACE_S, _watchdog)
-        _t.daemon = True
-        _t.start()
-
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, _shutdown)
-
-    # Run uvicorn as an asyncio coroutine alongside the supervised loops
-    uvi_config = uvicorn.Config(
-        dashboard_app,
-        host="127.0.0.1",
-        port=cfg.DASHBOARD_PORT,
-        log_level="warning",
-        limit_concurrency=DASHBOARD_LIMIT_CONCURRENCY,
-    )
-    server = uvicorn.Server(uvi_config)
-    await server.serve()
-
-    # serve() returned — cancel all loops on clean exit
-    supervisor.cancel_all()
 
 
 def main() -> None:
