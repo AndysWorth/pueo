@@ -14141,3 +14141,381 @@ class TestResourcePollerNaxWake:
         poller = self._make_poller(tmp_path)
         asyncio.run(poller._wake_netalertx_on_disk_recovery(disk_free_gb=6.0))
         assert woken == []
+
+
+class TestBCEvidenceCompleteness:
+    """Tests for S4 additions to update_bc_evidence.py and ha_release_report.py."""
+
+    # ── URL classification ────────────────────────────────────────────────
+
+    def test_classify_url_domain(self):
+        from utils.ha.update_bc_evidence import _classify_url
+
+        result = _classify_url("https://neumopho.duckdns.org:8123")
+        assert result["type"] == "domain"
+        assert result["host"] == "neumopho.duckdns.org"
+
+    def test_classify_url_lan_ip(self):
+        from utils.ha.update_bc_evidence import _classify_url
+
+        result = _classify_url("http://192.168.1.100:8123")
+        assert result["type"] == "lan_ip"
+        assert result["host"] == "192.168.1.100"
+
+    def test_classify_url_public_ip(self):
+        from utils.ha.update_bc_evidence import _classify_url
+
+        result = _classify_url("https://1.2.3.4:8123/")
+        assert result["type"] == "public_ip"
+        assert result["host"] == "1.2.3.4"
+
+    def test_classify_url_tailscale(self):
+        from utils.ha.update_bc_evidence import _classify_url
+
+        result = _classify_url("https://100.64.1.5")
+        assert result["type"] == "tailscale_ip"
+        assert result["host"] == "100.64.1.5"
+
+    def test_classify_url_global_ipv6(self):
+        from utils.ha.update_bc_evidence import _classify_url
+
+        # 2600:1700::1 is a public (non-private) global IPv6 address
+        result = _classify_url("http://[2600:1700::1]:8123")
+        assert result["type"] == "global_ipv6"
+        assert result["host"] == "2600:1700::1"
+
+    def test_classify_url_empty(self):
+        from utils.ha.update_bc_evidence import _classify_url
+
+        result = _classify_url("")
+        assert result["type"] == "none"
+
+    def test_classify_url_private_10(self):
+        from utils.ha.update_bc_evidence import _classify_url
+
+        result = _classify_url("http://10.0.0.1:8123")
+        assert result["type"] == "lan_ip"
+
+    # ── _outside_evidence suppression ────────────────────────────────────
+
+    def test_outside_evidence_suppresses_url_when_known(self):
+        from utils.ha.update_bc_evidence import _outside_evidence
+
+        body = (
+            "When you reach Home Assistant at a public address or Tailscale address, "
+            "the IP is validated."
+        )
+        # Without URL classification: "how HA is reached" should be in outside_evidence
+        lines_without = _outside_evidence(body, has_url_classification=False)
+        assert any("reached from outside" in line for line in lines_without)
+        # With URL classification: "how HA is reached" suppressed
+        lines_with = _outside_evidence(body, has_url_classification=True)
+        assert not any("reached from outside" in line for line in lines_with)
+
+    def test_outside_evidence_keeps_browser_line(self):
+        from utils.ha.update_bc_evidence import _outside_evidence
+
+        body = "Safari 15.4 or newer is now required. Older browsers show a warning."
+        lines = _outside_evidence(body, has_url_classification=True)
+        assert any("browsers" in line for line in lines)
+
+    # ── Evidence lines for new fields ────────────────────────────────────
+
+    def test_evidence_lines_url_classification(self):
+        from utils.knowledge.ha_release_report import BCEvidence, _evidence_lines
+
+        ev = BCEvidence(
+            domains=["auth"],
+            is_core_component=True,
+            url_classification={
+                "external_url": {
+                    "url": "https://example.duckdns.org:8123",
+                    "type": "domain",
+                    "host": "example.duckdns.org",
+                }
+            },
+        )
+        lines = _evidence_lines(ev)
+        assert any("domain" in line and "example.duckdns.org" in line for line in lines)
+
+    def test_evidence_lines_mobile_clients(self):
+        from utils.knowledge.ha_release_report import BCEvidence, _evidence_lines
+
+        ev = BCEvidence(
+            domains=["frontend"],
+            is_core_component=True,
+            mobile_clients=[
+                "Samsung Galaxy S22 (Android 14)",
+                "iPhone 15 Pro (iOS 17)",
+            ],
+        )
+        lines = _evidence_lines(ev)
+        assert any("Mobile app clients" in line for line in lines)
+        assert any("Samsung" in line for line in lines)
+
+    def test_evidence_lines_sensor_device_class_counts(self):
+        from utils.knowledge.ha_release_report import BCEvidence, _evidence_lines
+
+        ev = BCEvidence(
+            domains=["matter"],
+            sensor_device_class_counts={
+                "carbon_monoxide": 0,
+                "volatile_organic_compounds": 1,
+            },
+        )
+        lines = _evidence_lines(ev)
+        assert any("Sensor device classes" in line for line in lines)
+        # Zero entry should be called out explicitly
+        assert any(
+            "No sensors of class" in line and "carbon_monoxide" in line
+            for line in lines
+        )
+
+    # ── BCEvidence Pydantic rules ─────────────────────────────────────────
+
+    def test_bc_evidence_valid_construction(self):
+        from utils.knowledge.ha_release_report import BCEvidence
+
+        ev = BCEvidence(
+            url_classification={
+                "external_url": {
+                    "url": "http://1.2.3.4",
+                    "type": "public_ip",
+                    "host": "1.2.3.4",
+                }
+            },
+            mobile_clients=["Pixel 7"],
+            sensor_device_class_counts={"ozone": 2},
+            bc_part_tokens=[["tvoc", "ppm"], ["climate", "hvac"]],
+        )
+        assert ev.url_classification["external_url"]["type"] == "public_ip"
+        assert ev.mobile_clients == ["Pixel 7"]
+        assert ev.sensor_device_class_counts["ozone"] == 2
+        assert len(ev.bc_part_tokens) == 2
+
+    def test_bc_evidence_invalid_url_classification_type(self):
+        from pydantic import ValidationError
+        from utils.knowledge.ha_release_report import BCEvidence
+
+        # url_classification must be dict[str, dict[str, str]] — wrong inner type
+        try:
+            BCEvidence(url_classification={"external_url": "domain"})
+            assert False, "should have raised"
+        except (ValidationError, TypeError):
+            pass
+
+    def test_bc_evidence_json_roundtrip(self):
+        import json
+        from utils.knowledge.ha_release_report import BCEvidence
+
+        ev = BCEvidence(
+            mobile_clients=["Pixel 7"],
+            sensor_device_class_counts={"ozone": 2},
+            bc_part_tokens=[["tvoc"], ["climate"]],
+            url_classification={
+                "external_url": {
+                    "url": "https://ha.local",
+                    "type": "lan_ip",
+                    "host": "ha.local",
+                }
+            },
+        )
+        data = json.loads(ev.model_dump_json())
+        ev2 = BCEvidence(**data)
+        assert ev2.mobile_clients == ["Pixel 7"]
+        assert ev2.sensor_device_class_counts["ozone"] == 2
+        assert ev2.bc_part_tokens == [["tvoc"], ["climate"]]
+
+    # ── _split_bc_parts and _part_key_tokens ─────────────────────────────
+
+    def test_split_bc_parts_matter_like(self):
+        from utils.ha.update_bc_evidence import _split_bc_parts
+
+        body = (
+            "Concentration sensors change their unit. TVOC in ppb. "
+            "( @alice - #12345 )\n\n"
+            "Climate entities resume hvac_mode on turn_on. "
+            "( @bob - #67890 )\n\n"
+            "Covers that only tilt are shown as tilt covers."
+        )
+        parts = _split_bc_parts(body)
+        assert len(parts) == 3
+        assert "ppb" in parts[0]
+        assert "hvac_mode" in parts[1]
+        assert "tilt" in parts[2]
+
+    def test_split_bc_parts_no_pr_ref(self):
+        from utils.ha.update_bc_evidence import _split_bc_parts
+
+        body = "Single part BC with no PR reference."
+        parts = _split_bc_parts(body)
+        assert len(parts) == 1
+
+    def test_part_key_tokens_distinctive(self):
+        from utils.ha.update_bc_evidence import _part_key_tokens
+
+        parts = [
+            "TVOC sensors report ppb units now automatically converted.",
+            "Climate entities resume hvac_mode selection when turned on.",
+            "Cover tilt blinds report state correctly and use tilt actions.",
+        ]
+        tokens_0 = _part_key_tokens(parts[0], parts, 0)
+        tokens_1 = _part_key_tokens(parts[1], parts, 1)
+        tokens_2 = _part_key_tokens(parts[2], parts, 2)
+        # Each part should have its own distinctive tokens
+        assert len(tokens_0) > 0
+        assert len(tokens_1) > 0
+        assert len(tokens_2) > 0
+        # Tokens shouldn't overlap between parts
+        assert not (set(tokens_0) & set(tokens_1))
+
+    # ── _device_classes_from_text ─────────────────────────────────────────
+
+    def test_device_classes_from_text_tvoc(self):
+        from utils.ha.update_bc_evidence import _device_classes_from_text
+
+        body = "TVOC sensors reporting ppb are now shown correctly."
+        dcs = _device_classes_from_text(body)
+        assert "volatile_organic_compounds" in dcs
+
+    def test_device_classes_from_text_multiple(self):
+        from utils.ha.update_bc_evidence import _device_classes_from_text
+
+        body = "carbon monoxide, nitrogen dioxide, and ozone sensors affected."
+        dcs = _device_classes_from_text(body)
+        assert "carbon_monoxide" in dcs
+        assert "nitrogen_dioxide" in dcs
+        assert "ozone" in dcs
+
+    def test_device_classes_from_text_none(self):
+        from utils.ha.update_bc_evidence import _device_classes_from_text
+
+        body = "Light entities now have a new default name."
+        dcs = _device_classes_from_text(body)
+        assert dcs == []
+
+    # ── _build_mobile_clients ─────────────────────────────────────────────
+
+    def test_build_mobile_clients(self):
+        from utils.ha.update_bc_evidence import _build_mobile_clients
+
+        entity_registry = [
+            {
+                "entity_id": "sensor.phone_battery",
+                "platform": "mobile_app",
+                "device_id": "dev1",
+            },
+            {
+                "entity_id": "sensor.tablet_battery",
+                "platform": "mobile_app",
+                "device_id": "dev2",
+            },
+            {"entity_id": "light.living_room", "platform": "hue", "device_id": "dev3"},
+        ]
+        device_registry = [
+            {
+                "id": "dev1",
+                "name": "Andy's Phone",
+                "model": "Pixel 7",
+                "sw_version": "Android 14",
+            },
+            {
+                "id": "dev2",
+                "name": "Tablet",
+                "model": "iPad Pro",
+                "sw_version": "iPadOS 17",
+            },
+            {
+                "id": "dev3",
+                "name": "Living Room Light",
+                "model": "Hue Bulb",
+                "sw_version": "1.0",
+            },
+        ]
+        clients = _build_mobile_clients(entity_registry, device_registry)
+        assert len(clients) == 2
+        assert any("Pixel 7" in c for c in clients)
+        assert any("iPad Pro" in c for c in clients)
+        assert not any("Hue Bulb" in c for c in clients)
+
+    def test_build_mobile_clients_empty(self):
+        from utils.ha.update_bc_evidence import _build_mobile_clients
+
+        clients = _build_mobile_clients([], [])
+        assert clients == []
+
+    # ── Multi-part BC reason rejection ───────────────────────────────────
+
+    def test_finish_bc_assessment_rejects_incomplete_multipart_reason(self):
+        """reason that skips part 2 of a 3-part BC is rejected."""
+        from utils.knowledge.ha_release_report import BCEvidence
+
+        bc_part_tokens = [
+            ["tvoc", "ppb", "concentration"],  # part 1
+            ["climate", "hvac_mode", "turn_on"],  # part 2
+            ["tilt", "cover_tilt", "blinds"],  # part 3
+        ]
+        ev = BCEvidence(
+            domains=["matter", "matter", "matter"],
+            bc_part_tokens=bc_part_tokens,
+        )
+
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.ha.ha_rest_client import FakeHARestClient
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        exec_ = ToolExecutor(
+            ha_ssh_client=None,
+            gate=None,
+            notifier=None,
+            ha_rest_client=FakeHARestClient(),
+            ha_ws_client=FakeHAWebSocketClient(),
+        )
+        exec_._current_bc_name = "Matter"
+        exec_._current_bc_evidence = ev
+
+        # Reason only mentions parts 1 and 3 (skips climate/hvac terms)
+        result = exec_._finish_bc_assessment(
+            bc_name="Matter",
+            verdict="no_action",
+            reason="No tvoc ppb sensors exist. Covers only tilt blinds present.",
+        )
+        assert not result.success
+        assert "2" in result.error  # part 2 uncovered
+
+    def test_finish_bc_assessment_accepts_complete_multipart_reason(self):
+        """reason that addresses all parts of a 3-part BC is accepted."""
+        from utils.knowledge.ha_release_report import BCEvidence
+
+        ev = BCEvidence(
+            domains=["matter", "matter", "matter"],
+            bc_part_tokens=[
+                ["tvoc", "ppb"],
+                ["climate", "hvac_mode"],
+                ["tilt", "blind"],
+            ],
+        )
+
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.ha.ha_rest_client import FakeHARestClient
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        exec_ = ToolExecutor(
+            ha_ssh_client=None,
+            gate=None,
+            notifier=None,
+            ha_rest_client=FakeHARestClient(),
+            ha_ws_client=FakeHAWebSocketClient(),
+        )
+        exec_._current_bc_name = "Matter"
+        exec_._current_bc_evidence = ev
+
+        # Reason mentions key terms from all three parts
+        result = exec_._finish_bc_assessment(
+            bc_name="Matter",
+            verdict="no_action",
+            reason="No tvoc ppb sensors exist on this instance. "
+            "No climate hvac_mode entities. "
+            "No tilt blind covers.",
+        )
+        assert result.success
