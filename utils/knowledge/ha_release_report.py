@@ -95,6 +95,18 @@ class BCEvidence(BaseModel):
     found: bool = False
 
 
+class PueoDependencyHit(BaseModel):
+    """One release-note passage that mentions an HA surface Pueo itself uses."""
+
+    # Search term shared by the manifest entries it came from, lowercased ("hacs").
+    dependency: str
+    # Manifest section of those entries ("integrations" when one of them is there).
+    kind: str
+    # Where the passage is from: "blog:2026.11", "changelog:2026.11", "patch:2026.11.1".
+    source: str
+    snippet: str
+
+
 class CoreReleaseReport(BaseModel):
     version: str
     # installed_version at the time the report was built; "" on old reports.
@@ -133,6 +145,8 @@ class CoreReleaseReport(BaseModel):
     bc_verdicts: list[dict] = []
     # Per-flag verdicts; each entry: {flag: str, affects: "yes"|"no"|"unknown", reason: str}
     flag_verdicts: list[dict] = []
+    # Release-note passages that mention an HA surface Pueo depends on (#1233).
+    pueo_dependency_hits: list[PueoDependencyHit] = []
     # Deterministic report status (blog + changelog parsed).  Screening status is
     # tracked separately in screening_complete / screening_batches_* (#1148).
     completeness: str = "incomplete"
@@ -442,6 +456,81 @@ def parse_patch_notes(
     return result
 
 
+# A release-note line that says something changed, as opposed to merely naming it.
+_CHANGE_VERB_RE = re.compile(
+    r"\b(?:remov\w*|renam\w*|replac\w*|deprecat\w*|drop(?:s|ped|ping)?"
+    r"|no longer|migrat\w*)\b",
+    re.IGNORECASE,
+)
+_MAX_HITS_PER_DEPENDENCY = 6
+_HIT_SNIPPET_CHARS = 600
+
+
+def _term_regex(term: str) -> "re.Pattern[str]":
+    """Whole-term, case-insensitive match; ``hacs`` matches ``hacs/x`` but not ``xhacs``."""
+    head = r"(?<![\w/])" if term[0].isalnum() else ""
+    tail = r"(?!\w)" if term[-1].isalnum() else ""
+    return re.compile(head + re.escape(term) + tail, re.IGNORECASE)
+
+
+def _is_specific_term(term: str, sections: set[str]) -> bool:
+    """An integration name, CLI command or full path is worth a hit wherever it appears.
+
+    A generic word or phrase (``repairs``, ``automation trace``) is not: it counts
+    only on a line that also says something changed.
+    """
+    return bool(sections & {"integrations", "ssh_commands"}) or "/" in term
+
+
+def find_pueo_dependency_hits(
+    texts: list[tuple[str, str]],
+    manifest: dict[str, list[dict[str, Any]]],
+) -> list[PueoDependencyHit]:
+    """Find release-note passages that mention something Pueo depends on.
+
+    ``texts`` is ``[(source, text), ...]``; each non-heading line of a text is one
+    candidate passage.  Deterministic, no LLM: it gathers evidence only, and a
+    later step judges whether a passage means Pueo breaks.  Per dependency the
+    passages with a change verb come first, and at most
+    ``_MAX_HITS_PER_DEPENDENCY`` are kept.
+    """
+    from utils.ha.pueo_dependencies import dependency_term_index
+
+    hits: list[PueoDependencyHit] = []
+    for term, owners in sorted(dependency_term_index(manifest).items()):
+        sections = {section for section, _ in owners}
+        kind = "integrations" if "integrations" in sections else owners[0][0]
+        specific = _is_specific_term(term, sections)
+        rx = _term_regex(term)
+        with_verb: list[PueoDependencyHit] = []
+        without_verb: list[PueoDependencyHit] = []
+        seen: set[str] = set()
+        for source, text in texts:
+            for raw_line in text.splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                m = rx.search(line)
+                if m is None:
+                    continue
+                has_verb = _CHANGE_VERB_RE.search(line) is not None
+                if not specific and not has_verb:
+                    continue
+                snippet = line
+                if len(snippet) > _HIT_SNIPPET_CHARS:
+                    start = max(0, m.start() - _HIT_SNIPPET_CHARS // 3)
+                    snippet = snippet[start : start + _HIT_SNIPPET_CHARS].strip()
+                if snippet in seen:
+                    continue
+                seen.add(snippet)
+                hit = PueoDependencyHit(
+                    dependency=term, kind=kind, source=source, snippet=snippet
+                )
+                (with_verb if has_verb else without_verb).append(hit)
+        hits.extend((with_verb + without_verb)[:_MAX_HITS_PER_DEPENDENCY])
+    return hits
+
+
 async def build_core_release_report(
     version: str,
     installed_integrations: list[str],
@@ -453,6 +542,7 @@ async def build_core_release_report(
     _github_fetcher: Optional[Callable[[str], str]] = None,
     _blog_fetcher: Optional[Callable[[str], Any]] = None,
     _changelog_fetcher: Optional[Callable[[str], str]] = None,
+    _pueo_manifest: Optional[dict[str, list[dict[str, Any]]]] = None,
 ) -> CoreReleaseReport:
     """Build a structured Core release report.
 
@@ -485,6 +575,8 @@ async def build_core_release_report(
         installed_version=installed_version,
         built_at=datetime.now(timezone.utc).isoformat(),
     )
+    # Full text of everything fetched, for the Pueo dependency scan (step 5).
+    scan_texts: list[tuple[str, str]] = []
 
     async def _get_stub(ver: str) -> str:
         if _github_fetcher is not None:
@@ -531,6 +623,7 @@ async def build_core_release_report(
                 else:  # pragma: no cover
                     blog_text = await asyncio.to_thread(fetch_blog_post, blog_url)
 
+                scan_texts.append((f"blog:{month}", blog_text))
                 if not _BC_SECTION_RE.search(blog_text):
                     report.missing.append(f"bc_section:{month}")
 
@@ -574,6 +667,7 @@ async def build_core_release_report(
             else:
                 blog_text = stub
 
+            scan_texts.append((f"blog:{version.rsplit('.', 1)[0]}", blog_text))
             _add_bc_entries(extract_breaking_changes(blog_text), "")
             farewell_m = re.search(r"\n##\s+Farewell\b", blog_text, re.IGNORECASE)
             if farewell_m:
@@ -601,6 +695,7 @@ async def build_core_release_report(
     for patch in patches:
         try:
             patch_body = await _get_stub(patch)
+            scan_texts.append((f"patch:{patch}", patch_body))
             patch_changes = parse_patch_notes(patch_body, installed_set, name_to_domain)
             for domain, entries in patch_changes.items():
                 report.patch_changes_by_domain.setdefault(domain, []).extend(entries)
@@ -650,6 +745,7 @@ async def build_core_release_report(
                     else:
                         raise
 
+            scan_texts.append((f"changelog:{yymm}", changelog_text))
             bc_prs = _extract_bc_prs(report.bc_installed + report.bc_general)
             changes, noise_dropped = parse_changelog_sections(
                 changelog_text, installed_set, name_to_domain, bc_prs=bc_prs
@@ -672,7 +768,22 @@ async def build_core_release_report(
         # Same-month patch (installed_version set, months=[]): changelog not needed
         changelog_parsed = True
 
-    # ── 5. Completeness ───────────────────────────────────────────────────
+    # ── 5. Pueo dependency scan ───────────────────────────────────────────
+    # Over the full text, not the parsed sections: what breaks Pueo may be in
+    # blog prose or under an integration this instance does not have (#1233).
+    if _pueo_manifest is None:
+        from utils.ha.pueo_dependencies import PUEO_HA_DEPENDENCIES
+
+        _pueo_manifest = PUEO_HA_DEPENDENCIES
+    report.pueo_dependency_hits = find_pueo_dependency_hits(scan_texts, _pueo_manifest)
+    log.info(
+        "pueo_dependency_scan",
+        version=version,
+        hits=len(report.pueo_dependency_hits),
+        dependencies=sorted({h.dependency for h in report.pueo_dependency_hits}),
+    )
+
+    # ── 6. Completeness ───────────────────────────────────────────────────
     if months:
         # New path: complete only when nothing is missing
         if not report.missing:
@@ -688,7 +799,7 @@ async def build_core_release_report(
             if not report.missing:
                 report.completeness = "complete"
 
-    # ── 6. Persist ────────────────────────────────────────────────────────
+    # ── 7. Persist ────────────────────────────────────────────────────────
     report_dir = state_dir / "update_reports"
     report_dir.mkdir(parents=True, exist_ok=True)
     (report_dir / f"core_{version}.json").write_text(

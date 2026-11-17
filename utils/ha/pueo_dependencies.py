@@ -138,7 +138,7 @@ PUEO_HA_DEPENDENCIES: dict[str, list[dict[str, Any]]] = {
         {
             "cmd": "config_entries/flow/progress",
             "feature": "list in-progress config flows (integration setup)",
-            "terms": ["config_entries/flow", "config flow"],
+            "terms": ["config_entries/flow"],
         },
         {
             "cmd": "config_entries/disable",
@@ -369,3 +369,21 @@ def dependency_terms(section: str, entry: dict[str, Any]) -> list[str]:
     if section == "repair_id_patterns":
         return [key.split("*")[0].rstrip("_")]
     return [key]
+
+
+def dependency_term_index(
+    manifest: dict[str, list[dict[str, Any]]],
+) -> dict[str, list[tuple[str, dict[str, Any]]]]:
+    """Map each lowercased search term to the ``(section, entry)`` pairs that carry it.
+
+    Entries that share a term (``hacs/repositories/list`` and the ``hacs``
+    integration) form one dependency: release notes are scanned once per term.
+    """
+    index: dict[str, list[tuple[str, dict[str, Any]]]] = {}
+    for section, entries in manifest.items():
+        for entry in entries:
+            for term in dependency_terms(section, entry):
+                term = term.strip().lower()
+                if term:
+                    index.setdefault(term, []).append((section, entry))
+    return index
