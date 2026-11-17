@@ -7,6 +7,7 @@ Called as step 1 of the Core update analysis pipeline before the LLM loop.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -134,6 +135,11 @@ class CoreReleaseReport(BaseModel):
     # Batch counts from the screening pass; None on reports persisted before #1148.
     screening_batches_total: Optional[int] = None
     screening_batches_done: Optional[int] = None
+    # Per-batch results keyed by sha256 of the batch text; enables per-batch reuse.
+    # Each value: {"flags": [...], "highlights": [...]}
+    screening_batch_results: dict[str, dict] = {}
+    # Domains whose batch could not be screened even after split-and-retry.
+    screening_unscreened_domains: list[str] = []
     # Mechanical-noise lines dropped during changelog parsing; None on old reports.
     screening_noise_dropped: Optional[int] = None
     # Per-BC entity and config evidence; populated by utils.ha.update_bc_evidence.
@@ -1250,6 +1256,19 @@ def make_screening_batches(report: "CoreReleaseReport") -> list[str]:
     return batches
 
 
+_BATCH_HEADER_RE = re.compile(r"^### (?:Changes|Patch changes): (.+)$", re.MULTILINE)
+
+
+def batch_hash(text: str) -> str:
+    """Return a short sha256 hex digest of *text* for use as a cache key."""
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def batch_domains(text: str) -> list[str]:
+    """Return the domain names appearing in *text*'s section headers."""
+    return _BATCH_HEADER_RE.findall(text)
+
+
 _REUSABLE_VERDICTS = frozenset({"action_needed", "no_action", "user_check"})
 
 
@@ -1282,22 +1301,53 @@ def load_stored_core_report(
 
 
 def carry_over_screening(prev: "CoreReleaseReport", new: "CoreReleaseReport") -> bool:
-    """Copy *prev*'s screening results into *new* when they are still valid.
+    """Copy *prev*'s screening results into *new* on a per-batch basis.
 
-    Valid means the stored pass finished every batch and the screening input
-    (the batch texts) is identical.  Returns True when results were copied, so
-    the caller can skip the screening sessions (#1221).
+    For each batch in *new*, if its sha256 matches a result stored in *prev*,
+    that result is reused and the batch is skipped.  When *every* batch is
+    covered this way the full pass is considered complete and the caller can
+    skip the screening sessions entirely (returns True).  When only some batches
+    are covered, copies those results into *new* and returns False so the caller
+    runs only the remaining batches (#1221, amended).
+
+    Backward compat: old reports with ``screening_complete=True`` but no
+    ``screening_batch_results`` fall back to the previous all-or-nothing check.
     """
-    if not prev.screening_complete:
+    if not prev.screening_batch_results:
+        # Old report format: all-or-nothing
+        if not prev.screening_complete:
+            return False
+        if make_screening_batches(prev) != make_screening_batches(new):
+            return False
+        new.screening_flags = list(prev.screening_flags)
+        new.screening_highlights = list(prev.screening_highlights)
+        new.screening_complete = True
+        new.screening_batches_total = prev.screening_batches_total
+        new.screening_batches_done = prev.screening_batches_done
+        return True
+    new_batches = make_screening_batches(new)
+    if not new_batches:
         return False
-    if make_screening_batches(prev) != make_screening_batches(new):
+    all_covered = True
+    carried_batch_results: dict[str, dict] = {}
+    for batch_text in new_batches:
+        h = batch_hash(batch_text)
+        if h in prev.screening_batch_results:
+            carried_batch_results[h] = prev.screening_batch_results[h]
+        else:
+            all_covered = False
+    if not carried_batch_results:
         return False
-    new.screening_flags = list(prev.screening_flags)
-    new.screening_highlights = list(prev.screening_highlights)
-    new.screening_complete = True
-    new.screening_batches_total = prev.screening_batches_total
-    new.screening_batches_done = prev.screening_batches_done
-    return True
+    # Merge carried results into new report
+    new.screening_batch_results = dict(carried_batch_results)
+    if all_covered:
+        new.screening_flags = list(prev.screening_flags)
+        new.screening_highlights = list(prev.screening_highlights)
+        new.screening_complete = True
+        new.screening_batches_total = prev.screening_batches_total
+        new.screening_batches_done = prev.screening_batches_done
+        return True
+    return False
 
 
 def carry_over_bc_verdicts(

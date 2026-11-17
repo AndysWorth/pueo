@@ -2385,11 +2385,13 @@ class TestCoreScreeningBatchCounts:
 
         rpt = CoreReleaseReport(version="2026.11.0", completeness="complete")
         # 3 screening batches + 1 blank (skipped) → main loop result last.
-        # Batch 2 is stuck on both attempts (retry), so it consumes 2 results.
+        # Batch 2 is stuck on both attempts (retry), then split-and-retry (1 sub-batch,
+        # no section headers so unsplittable) also fails → batch 2 unscreened.
         results = [
             AgentLoopResult(outcome="success"),  # batch 1
             AgentLoopResult(outcome="stuck"),  # batch 2, attempt 1 → retry
-            AgentLoopResult(outcome="stuck"),  # batch 2, attempt 2 → still stuck
+            AgentLoopResult(outcome="stuck"),  # batch 2, attempt 2 → split
+            AgentLoopResult(outcome="stuck"),  # batch 2 sub-batch (split, 1 part)
             AgentLoopResult(outcome="success"),  # batch 3
             AgentLoopResult(outcome="success"),  # main analysis loop
         ]
@@ -2747,6 +2749,403 @@ class TestCoreScreeningBatchCounts:
         assert detail_calls[0] == "screening batch 1 of 2"
         assert detail_calls[1] == "screening batch 2 of 2"
         assert "analysing" in detail_calls
+
+
+class TestScreeningRobustness:
+    """Split-on-failure, per-batch reuse, and unscreened-domain reporting (#1249)."""
+
+    # ── batch_hash / batch_domains ────────────────────────────────────────
+
+    def test_batch_hash_stable(self):
+        from utils.knowledge.ha_release_report import batch_hash
+
+        h = batch_hash("hello")
+        assert h == batch_hash("hello")
+        assert h != batch_hash("world")
+        assert len(h) == 64  # sha256 hex
+
+    def test_batch_domains_extracts_headers(self):
+        from utils.knowledge.ha_release_report import batch_domains
+
+        text = (
+            "### Changes: logbook\n\n- Fix thing\n\n"
+            "### Patch changes: auth\n\n- Security patch"
+        )
+        assert batch_domains(text) == ["logbook", "auth"]
+
+    def test_batch_domains_empty_on_no_headers(self):
+        from utils.knowledge.ha_release_report import batch_domains
+
+        assert batch_domains("no headers here") == []
+
+    # ── CoreReleaseReport new fields (3-test rule) ────────────────────────
+
+    def test_new_fields_valid_construction(self):
+        from utils.knowledge.ha_release_report import CoreReleaseReport
+
+        rpt = CoreReleaseReport(
+            version="2026.11.1",
+            screening_batch_results={"abc123": {"flags": [], "highlights": []}},
+            screening_unscreened_domains=["auth", "logbook"],
+        )
+        assert rpt.screening_batch_results == {
+            "abc123": {"flags": [], "highlights": []}
+        }
+        assert rpt.screening_unscreened_domains == ["auth", "logbook"]
+
+    def test_new_fields_default_empty(self):
+        from utils.knowledge.ha_release_report import CoreReleaseReport
+
+        rpt = CoreReleaseReport(version="2026.11.1")
+        assert rpt.screening_batch_results == {}
+        assert rpt.screening_unscreened_domains == []
+
+    def test_new_fields_json_round_trip(self):
+        from utils.knowledge.ha_release_report import CoreReleaseReport
+
+        rpt = CoreReleaseReport(
+            version="2026.11.1",
+            screening_batch_results={
+                "deadbeef": {"flags": [{"f": 1}], "highlights": []}
+            },
+            screening_unscreened_domains=["auth"],
+        )
+        restored = CoreReleaseReport.model_validate_json(rpt.model_dump_json())
+        assert restored.screening_batch_results == rpt.screening_batch_results
+        assert restored.screening_unscreened_domains == rpt.screening_unscreened_domains
+
+    # ── carry_over_screening per-batch reuse ──────────────────────────────
+
+    def test_per_batch_reuse_hit_returns_true(self):
+        """All batches in new report match stored hashes → full reuse (True)."""
+        from unittest.mock import patch
+
+        from utils.knowledge.ha_release_report import (
+            ChangeEntry,
+            CoreReleaseReport,
+            ScreeningFlag,
+            ScreeningHighlight,
+            batch_hash,
+            carry_over_screening,
+            make_screening_batches,
+        )
+
+        rpt = CoreReleaseReport(
+            version="2026.11.1",
+            installed_version="2026.10.4",
+            changes_by_domain={"lifx": [ChangeEntry(text="Fix LIFX")]},
+        )
+        batches = make_screening_batches(rpt)
+        assert len(batches) == 1
+        h = batch_hash(batches[0])
+
+        stored = CoreReleaseReport(
+            version="2026.11.1",
+            installed_version="2026.10.4",
+            completeness="complete",
+            changes_by_domain={"lifx": [ChangeEntry(text="Fix LIFX")]},
+            screening_batch_results={
+                h: {
+                    "flags": [{"domain": "lifx", "change": "Fix LIFX", "concern": "c"}],
+                    "highlights": [{"domain": "lifx", "feature": "f"}],
+                }
+            },
+            screening_flags=[
+                ScreeningFlag(domain="lifx", change="Fix LIFX", concern="c")
+            ],
+            screening_highlights=[ScreeningHighlight(domain="lifx", feature="f")],
+            screening_complete=True,
+            screening_batches_total=1,
+            screening_batches_done=1,
+        )
+        new = CoreReleaseReport(
+            version="2026.11.1",
+            installed_version="2026.10.4",
+            completeness="complete",
+            changes_by_domain={"lifx": [ChangeEntry(text="Fix LIFX")]},
+        )
+        assert carry_over_screening(stored, new) is True
+        assert new.screening_complete is True
+        assert new.screening_batch_results == {h: stored.screening_batch_results[h]}
+
+    def test_per_batch_reuse_miss_returns_false(self):
+        """New batch text doesn't match stored hashes → no reuse (False)."""
+        from utils.knowledge.ha_release_report import (
+            ChangeEntry,
+            CoreReleaseReport,
+            carry_over_screening,
+        )
+
+        stored = CoreReleaseReport(
+            version="2026.11.1",
+            installed_version="2026.10.4",
+            completeness="complete",
+            changes_by_domain={"lifx": [ChangeEntry(text="Old change")]},
+            screening_batch_results={"aabbcc": {"flags": [], "highlights": []}},
+            screening_complete=False,
+        )
+        new = CoreReleaseReport(
+            version="2026.11.1",
+            installed_version="2026.10.4",
+            completeness="complete",
+            changes_by_domain={"lifx": [ChangeEntry(text="Totally different change")]},
+        )
+        assert carry_over_screening(stored, new) is False
+        assert new.screening_batch_results == {}
+
+    def test_per_batch_partial_reuse_copies_matching_batches(self):
+        """When some batches match and some don't, matching ones are copied."""
+        from utils.knowledge.ha_release_report import (
+            ChangeEntry,
+            CoreReleaseReport,
+            batch_hash,
+            carry_over_screening,
+            make_screening_batches,
+        )
+
+        rpt = CoreReleaseReport(
+            version="2026.11.1",
+            installed_version="2026.10.4",
+            changes_by_domain={"lifx": [ChangeEntry(text="Fix A")]},
+        )
+        batches = make_screening_batches(rpt)
+        h = batch_hash(batches[0])
+
+        stored = CoreReleaseReport(
+            version="2026.11.1",
+            installed_version="2026.10.4",
+            completeness="complete",
+            changes_by_domain={"lifx": [ChangeEntry(text="Fix A")]},
+            screening_batch_results={
+                h: {"flags": [], "highlights": []},
+                "unrelated_hash": {"flags": [], "highlights": []},
+            },
+            screening_complete=False,
+        )
+        new = CoreReleaseReport(
+            version="2026.11.1",
+            installed_version="2026.10.4",
+            completeness="complete",
+            changes_by_domain={"lifx": [ChangeEntry(text="Fix A")]},
+        )
+        result = carry_over_screening(stored, new)
+        # new has 1 batch that matches → all_covered=True → returns True
+        assert result is True
+        assert h in new.screening_batch_results
+
+    # ── _split_batch_at_sections ──────────────────────────────────────────
+
+    def test_split_at_section_boundaries(self):
+        from agents.ha_update_manager import _split_batch_at_sections
+
+        text = (
+            "### Changes: auth\n\n- Fix A\n\n"
+            "### Changes: backup\n\n- Fix B\n\n"
+            "### Changes: cover\n\n- Fix C"
+        )
+        parts = _split_batch_at_sections(text)
+        assert len(parts) == 2
+        assert "auth" in parts[0]
+        assert "backup" in parts[1] or "cover" in parts[1]
+
+    def test_split_no_headers_returns_original(self):
+        from agents.ha_update_manager import _split_batch_at_sections
+
+        text = "Some text with no section headers"
+        parts = _split_batch_at_sections(text)
+        assert parts == [text]
+
+    def test_split_one_section_returns_original(self):
+        from agents.ha_update_manager import _split_batch_at_sections
+
+        text = "### Changes: auth\n\n- Fix A\n- Fix B"
+        parts = _split_batch_at_sections(text)
+        assert parts == [text]
+
+    # ── split-on-failure integration ─────────────────────────────────────
+
+    def test_split_on_failure_screens_halves(self, tmp_path, pueo_dirs):
+        """When a full batch fails both attempts, it splits and retries each half."""
+        import asyncio
+        from unittest import mock
+        from unittest.mock import AsyncMock, MagicMock
+
+        from utils.agent.tool_registry import AgentLoopResult
+        from utils.ha.ha_environment import HAEnvironmentProfile
+        from utils.knowledge.ha_release_report import ChangeEntry, CoreReleaseReport
+
+        db_path = _make_db(tmp_path)
+
+        # Two-section batch so split produces 2 halves
+        rpt = CoreReleaseReport(version="2026.11.0", completeness="complete")
+        big_batch = "### Changes: auth\n\n- Fix A\n\n" "### Changes: backup\n\n- Fix B"
+
+        class _FakeUpdate:
+            entity_id = "update.home_assistant_core_update"
+            component = "core"
+            installed_version = "2026.10.4"
+            latest_version = "2026.11.0"
+            release_url = None
+            release_summary = None
+
+        # batch fails twice → split into 2 halves, each succeeds → batch done
+        results = [
+            AgentLoopResult(outcome="stuck"),  # batch 1, attempt 1
+            AgentLoopResult(outcome="stuck"),  # batch 1, attempt 2 → split
+            AgentLoopResult(outcome="success"),  # half 1 (auth)
+            AgentLoopResult(outcome="success"),  # half 2 (backup)
+            AgentLoopResult(outcome="success"),  # main analysis loop
+        ]
+
+        with (
+            mock.patch("utils.agent.agent_loop.AgentLoop") as MockLoop,
+            mock.patch("utils.agent.supervisor.increment_active_agent"),
+            mock.patch("utils.agent.supervisor.decrement_active_agent"),
+            mock.patch(
+                "utils.agent.supervisor.make_activity_timeline_callback",
+                return_value=None,
+            ),
+            mock.patch(
+                "utils.llm.llm_factory.make_llm_client", return_value=MagicMock()
+            ),
+            mock.patch("agents.ha_update_manager.DB_PATH", db_path),
+            mock.patch("agents.ha_update_manager.HA_API_TOKEN", "tok"),
+            mock.patch("utils.ha.ha_ws_client.HAWebSocketClient"),
+            mock.patch(
+                "utils.knowledge.ha_release_report.build_core_release_report",
+                AsyncMock(return_value=rpt),
+            ),
+            mock.patch(
+                "utils.knowledge.ha_release_report.make_screening_batches",
+                return_value=[big_batch],
+            ),
+            mock.patch(
+                "utils.agent.work_queue.get_work_queue_or_none", return_value=None
+            ),
+        ):
+            mock_instance = MagicMock()
+            mock_instance.run = AsyncMock(side_effect=results)
+            MockLoop.return_value = mock_instance
+
+            from agents.ha_update_manager import _run_update_analysis
+            from utils.hitl.notify import FakeNotifier
+
+            asyncio.run(
+                _run_update_analysis(
+                    update=_FakeUpdate(),
+                    notifier=FakeNotifier(),
+                    ha_profile=HAEnvironmentProfile(installed_integrations=["mqtt"]),
+                )
+            )
+
+        saved = CoreReleaseReport.model_validate_json(
+            (pueo_dirs.state_dir / "update_reports" / "core_2026.11.0.json").read_text()
+        )
+        # Split succeeded: batch should count as done
+        assert saved.screening_batches_done == 1
+        assert saved.screening_complete is True
+
+    def test_split_failure_records_unscreened_domains(self, tmp_path, pueo_dirs):
+        """When halves also fail, unscreened domains are recorded in the report."""
+        import asyncio
+        from unittest import mock
+        from unittest.mock import AsyncMock, MagicMock
+
+        from utils.agent.tool_registry import AgentLoopResult
+        from utils.ha.ha_environment import HAEnvironmentProfile
+        from utils.knowledge.ha_release_report import CoreReleaseReport
+
+        db_path = _make_db(tmp_path)
+
+        rpt = CoreReleaseReport(version="2026.11.0", completeness="complete")
+        big_batch = "### Changes: auth\n\n- Fix A\n\n" "### Changes: backup\n\n- Fix B"
+
+        class _FakeUpdate:
+            entity_id = "update.home_assistant_core_update"
+            component = "core"
+            installed_version = "2026.10.4"
+            latest_version = "2026.11.0"
+            release_url = None
+            release_summary = None
+
+        # batch fails twice → split, both halves fail too
+        results = [
+            AgentLoopResult(outcome="stuck"),  # attempt 1
+            AgentLoopResult(outcome="stuck"),  # attempt 2 → split
+            AgentLoopResult(outcome="stuck"),  # half 1 fails
+            AgentLoopResult(outcome="stuck"),  # half 2 fails
+            AgentLoopResult(outcome="success"),  # main loop
+        ]
+
+        with (
+            mock.patch("utils.agent.agent_loop.AgentLoop") as MockLoop,
+            mock.patch("utils.agent.supervisor.increment_active_agent"),
+            mock.patch("utils.agent.supervisor.decrement_active_agent"),
+            mock.patch(
+                "utils.agent.supervisor.make_activity_timeline_callback",
+                return_value=None,
+            ),
+            mock.patch(
+                "utils.llm.llm_factory.make_llm_client", return_value=MagicMock()
+            ),
+            mock.patch("agents.ha_update_manager.DB_PATH", db_path),
+            mock.patch("agents.ha_update_manager.HA_API_TOKEN", "tok"),
+            mock.patch("utils.ha.ha_ws_client.HAWebSocketClient"),
+            mock.patch(
+                "utils.knowledge.ha_release_report.build_core_release_report",
+                AsyncMock(return_value=rpt),
+            ),
+            mock.patch(
+                "utils.knowledge.ha_release_report.make_screening_batches",
+                return_value=[big_batch],
+            ),
+            mock.patch(
+                "utils.agent.work_queue.get_work_queue_or_none", return_value=None
+            ),
+        ):
+            mock_instance = MagicMock()
+            mock_instance.run = AsyncMock(side_effect=results)
+            MockLoop.return_value = mock_instance
+
+            from agents.ha_update_manager import _run_update_analysis
+            from utils.hitl.notify import FakeNotifier
+
+            asyncio.run(
+                _run_update_analysis(
+                    update=_FakeUpdate(),
+                    notifier=FakeNotifier(),
+                    ha_profile=HAEnvironmentProfile(installed_integrations=["mqtt"]),
+                )
+            )
+
+        saved = CoreReleaseReport.model_validate_json(
+            (pueo_dirs.state_dir / "update_reports" / "core_2026.11.0.json").read_text()
+        )
+        assert saved.screening_complete is False
+        assert "auth" in saved.screening_unscreened_domains
+        assert "backup" in saved.screening_unscreened_domains
+
+    # ── unscreened-domain text in prefix ─────────────────────────────────
+
+    def test_screening_gap_prefix_with_domains(self):
+        from utils.agent.tool_executor import _screening_gap_prefix
+
+        text = _screening_gap_prefix((2, 3), ["auth", "logbook"])
+        assert "auth" in text and "logbook" in text
+        assert "not screened" in text.lower()
+
+    def test_screening_gap_prefix_without_domains(self):
+        from utils.agent.tool_executor import _screening_gap_prefix
+
+        text = _screening_gap_prefix((2, 3))
+        assert "2 of 3 batches" in text
+        assert "some changelog entries" in text
+
+    def test_screening_gap_prefix_empty_domains_uses_fallback(self):
+        from utils.agent.tool_executor import _screening_gap_prefix
+
+        text = _screening_gap_prefix((1, 2), [])
+        assert "some changelog entries" in text
 
 
 class TestStoredReportReuse:
