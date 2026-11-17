@@ -7,6 +7,7 @@ degrades gracefully when its client is unavailable.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import re
 import shlex
@@ -133,6 +134,196 @@ _SKIP_CARD_WORDS = frozenset(
     {"the", "a", "an", "this", "that", "these", "those", "each", "any", "one", "two"}
 )
 
+# PR reference pattern used to split multi-part BC bodies: ( @author - #12345 )
+_PR_REF_RE = re.compile(r"\(\s*@\S+\s*-\s*#\d+\s*\)", re.IGNORECASE)
+
+# Tailscale CGNAT range
+_TAILSCALE_NET = ipaddress.ip_network("100.64.0.0/10")
+
+# Sensor device_class keyword → canonical device_class value.
+# Used to extract which device classes a BC body mentions so we can zero-fill
+# sensor state counts for classes the BC names but this instance lacks.
+_DC_KEYWORD_MAP: dict[str, str] = {
+    "tvoc": "volatile_organic_compounds",
+    "volatile organic": "volatile_organic_compounds",
+    "volatile_organic_compounds": "volatile_organic_compounds",
+    "carbon monoxide": "carbon_monoxide",
+    "carbon_monoxide": "carbon_monoxide",
+    "nitrogen dioxide": "nitrogen_dioxide",
+    "nitrogen_dioxide": "nitrogen_dioxide",
+    "ozone": "ozone",
+    "pm2.5": "pm25",
+    "pm10": "pm10",
+    "pm1": "pm1",
+    "co2": "carbon_dioxide",
+    "carbon dioxide": "carbon_dioxide",
+    "carbon_dioxide": "carbon_dioxide",
+}
+
+# Common English words to exclude when computing distinctive part tokens
+_COMMON_PART_WORDS = frozenset(
+    {
+        "home",
+        "assistant",
+        "this",
+        "that",
+        "with",
+        "from",
+        "have",
+        "been",
+        "will",
+        "when",
+        "which",
+        "their",
+        "they",
+        "were",
+        "your",
+        "also",
+        "only",
+        "then",
+        "some",
+        "each",
+        "other",
+        "these",
+        "those",
+        "over",
+        "into",
+        "than",
+        "such",
+        "used",
+        "uses",
+        "both",
+        "more",
+        "less",
+        "made",
+        "make",
+        "adds",
+        "added",
+        "before",
+        "after",
+        "changed",
+        "change",
+        "entity",
+        "entities",
+        "device",
+        "devices",
+        "integration",
+        "support",
+        "supported",
+        "setting",
+        "settings",
+        "example",
+        "value",
+        "values",
+        "would",
+        "should",
+        "could",
+        "their",
+        "using",
+        "being",
+        "already",
+        "however",
+        "without",
+    }
+)
+
+_PART_WORD_RE = re.compile(r"\b([a-z][a-z0-9_]{3,30})\b")
+
+
+def _classify_url(url: str) -> dict[str, str]:
+    """Classify a URL's host as domain, lan_ip, public_ip, tailscale_ip, or global_ipv6.
+
+    Returns {"url": url, "type": type, "host": host}.
+    """
+    if not url:
+        return {"url": url, "type": "none", "host": ""}
+    without_proto = url.split("://", 1)[-1] if "://" in url else url
+    authority = without_proto.split("/")[0]
+    # Bracketed IPv6 literal: "[2001:db8::1]:8123" → "2001:db8::1"
+    if authority.startswith("[") and "]" in authority:
+        host = authority[1 : authority.index("]")]
+    else:
+        host = authority.split(":")[0]
+    host = host.strip("[]")
+    if not host:
+        return {"url": url, "type": "none", "host": ""}
+    try:
+        addr = ipaddress.ip_address(host)
+        if addr.is_loopback or addr.is_private:
+            return {"url": url, "type": "lan_ip", "host": host}
+        if isinstance(addr, ipaddress.IPv4Address) and addr in _TAILSCALE_NET:
+            return {"url": url, "type": "tailscale_ip", "host": host}
+        if isinstance(addr, ipaddress.IPv6Address) and addr.is_global:
+            return {"url": url, "type": "global_ipv6", "host": host}
+        return {"url": url, "type": "public_ip", "host": host}
+    except ValueError:
+        return {"url": url, "type": "domain", "host": host}
+
+
+def _device_classes_from_text(text: str) -> list[str]:
+    """Extract sensor device_class values mentioned in a BC text."""
+    text_lower = text.lower()
+    found: set[str] = set()
+    for keyword, dc in _DC_KEYWORD_MAP.items():
+        if keyword in text_lower:
+            found.add(dc)
+    return sorted(found)
+
+
+def _split_bc_parts(body: str) -> list[str]:
+    """Split a multi-part BC body into individual parts by PR reference markers.
+
+    Returns the list of non-empty part bodies.
+    """
+    parts = _PR_REF_RE.split(body)
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _part_key_tokens(part_text: str, all_parts: list[str], part_idx: int) -> list[str]:
+    """Extract up to 5 tokens that are distinctive to this part vs all other parts."""
+    my_words = set(_PART_WORD_RE.findall(part_text.lower()))
+    other_words: set[str] = set()
+    for i, p in enumerate(all_parts):
+        if i != part_idx:
+            other_words.update(_PART_WORD_RE.findall(p.lower()))
+    unique = (
+        my_words
+        - other_words
+        - _STATE_WORDS
+        - frozenset(_SKIP_KEYS)
+        - _COMMON_PART_WORDS
+    )
+    return sorted(w for w in unique if len(w) >= 5)[:5]
+
+
+def _build_mobile_clients(
+    entity_registry: list[dict],
+    device_registry: list[dict],
+) -> list[str]:
+    """Return display labels for devices registered via the mobile_app platform."""
+    mobile_device_ids: set[str] = set()
+    for e in entity_registry:
+        if e.get("platform") == "mobile_app" and e.get("device_id"):
+            mobile_device_ids.add(e["device_id"])
+    device_map = {d.get("id", ""): d for d in device_registry if d.get("id")}
+    clients: list[str] = []
+    for dev_id in mobile_device_ids:
+        d = device_map.get(dev_id)
+        if d:
+            name = d.get("name_by_user") or d.get("name") or ""
+            model = d.get("model") or ""
+            sw = d.get("sw_version") or ""
+            if model and sw:
+                label = f"{name} ({model}, {sw})" if name else f"{model} ({sw})"
+            elif model:
+                label = f"{name} ({model})" if name else model
+            elif name:
+                label = name
+            else:
+                label = dev_id[:8]
+            clients.append(label)
+    return sorted(clients)
+
 
 def _extract_tokens(bc_name: str, bc_body: str) -> list[str]:
     """Extract searchable tokens from a BC entry's name and body.
@@ -200,13 +391,20 @@ def _extract_tokens(bc_name: str, bc_body: str) -> list[str]:
     return sorted(tokens)[:_MAX_TOKENS]
 
 
-def _outside_evidence(bc_body: str) -> list[str]:
-    """Return what the BC text depends on that the evidence can never show."""
-    return [
-        label
-        for label, pattern in _OUTSIDE_EVIDENCE_PATTERNS
-        if pattern.search(bc_body)
-    ]
+def _outside_evidence(bc_body: str, has_url_classification: bool = False) -> list[str]:
+    """Return what the BC text depends on that the evidence can never show.
+
+    When has_url_classification is True, the "how HA is reached from outside"
+    entry is suppressed because url_classification already carries that answer.
+    """
+    lines = []
+    for label, pattern in _OUTSIDE_EVIDENCE_PATTERNS:
+        if not pattern.search(bc_body):
+            continue
+        if has_url_classification and "reached from outside" in label:
+            continue
+        lines.append(label)
+    return lines
 
 
 def _entity_summary(
@@ -418,6 +616,8 @@ async def _build_one_evidence(
     ssh_client: Optional[Any],
     all_registry_domains: set[str],
     config_yaml_top_keys: list[str],
+    ha_config_data: Optional[dict] = None,
+    sensor_states: Optional[list] = None,
 ) -> "Any":
     """Build BCEvidence for a single entry (BC or flag).  Returns a BCEvidence."""
     from utils.knowledge.ha_release_report import BCEvidence
@@ -453,6 +653,41 @@ async def _build_one_evidence(
         set(t for t in tokens if any(t in h for h in automation_hits + dashboard_hits))
     )
 
+    # URL classification for auth/http/frontend BCs
+    url_classification: dict[str, dict[str, str]] = {}
+    if ha_config_data and domain_set & {"auth", "http", "frontend"}:
+        for key in ("external_url", "internal_url"):
+            val = ha_config_data.get(key) or ""
+            if val:
+                url_classification[key] = _classify_url(val)
+
+    # Mobile app clients for frontend BCs
+    mobile_clients: list[str] = []
+    if domain_set & {"frontend", "mobile_app"}:
+        mobile_clients = _build_mobile_clients(entity_registry, device_registry)
+
+    # Sensor device_class counts for BCs mentioning concentration/sensor device classes
+    sensor_device_class_counts: dict[str, int] = {}
+    if sensor_states is not None:
+        mentioned_dcs = _device_classes_from_text(body)
+        if mentioned_dcs:
+            all_dc_counts: dict[str, int] = {}
+            for s in sensor_states:
+                dc = (s.get("attributes") or {}).get("device_class", "")
+                if dc:
+                    all_dc_counts[dc] = all_dc_counts.get(dc, 0) + 1
+            for dc in mentioned_dcs:
+                sensor_device_class_counts[dc] = all_dc_counts.get(dc, 0)
+
+    # Per-part key tokens for multi-part BC reason-coverage validation.
+    # Only computed for BCs with repeated domain entries (the marker of a multi-part BC).
+    bc_part_tokens: list[list[str]] = []
+    if domains and len(domains) != len(set(domains)):
+        parts = _split_bc_parts(body)
+        if len(parts) > 1:
+            for idx, part in enumerate(parts):
+                bc_part_tokens.append(_part_key_tokens(part, parts, idx))
+
     found = entity_count > 0 or bool(automation_hits) or bool(dashboard_hits)
     return BCEvidence(
         domains=domains,
@@ -468,8 +703,14 @@ async def _build_one_evidence(
         tokens_hit=tokens_hit,
         automation_hits=automation_hits,
         dashboard_hits=dashboard_hits,
-        outside_evidence=_outside_evidence(body),
+        outside_evidence=_outside_evidence(
+            body, has_url_classification=bool(url_classification)
+        ),
         found=found,
+        url_classification=url_classification,
+        mobile_clients=mobile_clients,
+        sensor_device_class_counts=sensor_device_class_counts,
+        bc_part_tokens=bc_part_tokens,
     )
 
 
@@ -514,7 +755,7 @@ async def scan_custom_components(
 async def build_bc_evidence(
     report: Any,  # CoreReleaseReport
     ws_client: Optional[Any] = None,
-    rest_client: Optional[Any] = None,  # noqa: ARG001 — reserved for future use
+    rest_client: Optional[Any] = None,
     ssh_client: Optional[Any] = None,
     config_yaml_top_keys: Optional[list[str]] = None,
 ) -> "tuple[dict[str, Any], dict[str, Any]]":
@@ -559,6 +800,25 @@ async def build_bc_evidence(
         except Exception as exc:
             log.warning("bc_evidence_lovelace_failed", error=str(exc))
 
+    # ── REST data: HA system config (URL data) and sensor states (device_class) ──
+    ha_config_data: Optional[dict] = None
+    sensor_states: Optional[list] = None
+    if rest_client is not None:
+        try:
+            ha_config_data = await rest_client.get_raw("/api/config")
+        except Exception as exc:
+            log.warning("bc_evidence_ha_config_failed", error=str(exc))
+        # Only fetch sensor states when any BC mentions sensor device_class keywords
+        all_bc_text = " ".join(
+            (bc.name + " " + (bc.body or ""))
+            for bc in list(report.bc_installed) + list(report.bc_general)
+        )
+        if _device_classes_from_text(all_bc_text):
+            try:
+                sensor_states = await rest_client.get_states("sensor.")
+            except Exception as exc:
+                log.warning("bc_evidence_sensor_states_failed", error=str(exc))
+
     all_reg_domains = _all_registry_domains(entity_registry)
     cfg_keys = config_yaml_top_keys or []
 
@@ -569,6 +829,8 @@ async def build_bc_evidence(
         ssh_client,
         all_reg_domains,
         cfg_keys,
+        ha_config_data,
+        sensor_states,
     )
 
     # ── Per-BC evidence ───────────────────────────────────────────────────

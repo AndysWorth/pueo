@@ -388,3 +388,42 @@ API.  These appeared as noise on the card (`flag_verdicts: []`).
   (custom-component scan found no caller); developer flags with a hit are still shown.
   User flags are unaffected.
 - New helper `_is_dev_flag_no_action(flag, flag_verdicts)` in `tool_executor.py`.
+
+## Amendment — S4: BC evidence completeness (#1255, 2026-11-17)
+
+Addresses three evidence gaps that caused answerable BCs to go to `user_check`:
+
+**Auth/HTTP URL classification:** `build_bc_evidence()` now calls
+`rest_client.get_raw("/api/config")` and passes the result to `_build_one_evidence`.
+For BCs whose domains include `auth`, `http`, or `frontend`, it classifies
+`external_url`/`internal_url` via `_classify_url()` → `BCEvidence.url_classification`
+(`{"external_url": {"url": "...", "type": "domain", "host": "..."} }`).  Types: `domain`,
+`lan_ip`, `public_ip`, `tailscale_ip` (100.64.0.0/10), `global_ipv6`.  When
+`url_classification` is non-empty, `_outside_evidence()` suppresses the "how HA is
+reached from outside" entry (we now know the answer).  `_evidence_lines()` renders
+each URL as "External Url: domain (neumopho.duckdns.org)".  `seed_update_bc.md` rule
+1 exception: `domain` or `lan_ip` → `no_action` immediately; only `public_ip`,
+`tailscale_ip`, or `global_ipv6` are affected by that BC.
+
+**Frontend mobile clients:** For BCs with domain `frontend` or `mobile_app`,
+`_build_mobile_clients(entity_registry, device_registry)` lists devices linked via
+`platform=mobile_app`, stored in `BCEvidence.mobile_clients`.  `_evidence_lines()`
+renders "Mobile app clients: …".  `seed_update_bc.md` instructs: use this list
+instead of asking the user.
+
+**Multi-part BC (Matter-class): sensor device_class counts.** When any BC body
+mentions sensor device_class keywords (TVOC, carbon monoxide, ozone, etc.),
+`build_bc_evidence` calls `rest_client.get_states("sensor.")` once and passes the
+results to `_build_one_evidence`.  `_device_classes_from_text()` extracts the
+device_class values the BC names; sensor state counts (with zero-fill) are stored
+in `BCEvidence.sensor_device_class_counts`.  `_evidence_lines()` renders
+"Sensor device classes: carbon_monoxide 0, ozone 2 …" and
+"No sensors of class: carbon_monoxide".
+
+**Multi-part BC reason coverage:** BCs with repeated domain entries (e.g. Matter ×3)
+have their body split by PR-reference markers (`_split_bc_parts()`) and distinctive
+tokens extracted per part (`_part_key_tokens()`), stored in
+`BCEvidence.bc_part_tokens`.  `finish_bc_assessment` rejects a reason that cites
+none of a part's tokens (same `_bc_rejection_note` path as the proof-line check,
+#1223), giving the model one retry.  `seed_update_bc.md` documents the multi-part
+rule.

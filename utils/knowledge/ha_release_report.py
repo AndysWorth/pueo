@@ -98,6 +98,15 @@ class BCEvidence(BaseModel):
     # evidence" is not read as "not affected" (#1213).
     outside_evidence: list[str] = []
     found: bool = False
+    # URL classification for auth/http BCs: {"external_url": {"url": "...", "type": "domain", "host": "..."}}
+    # Suppresses the "how HA is reached" outside_evidence entry when present.
+    url_classification: dict[str, dict[str, str]] = {}
+    # Mobile app clients from device registry (for frontend BCs)
+    mobile_clients: list[str] = []
+    # Sensor entity counts by device_class (for concentration sensor BCs, with zero-fill)
+    sensor_device_class_counts: dict[str, int] = {}
+    # Per-part key tokens for multi-part BC reason-coverage validation
+    bc_part_tokens: list[list[str]] = []
 
 
 class PueoDependencyHit(BaseModel):
@@ -871,6 +880,30 @@ def _evidence_lines(evidence: "BCEvidence") -> list[str]:
             )
         elif evidence.domains:
             ev_lines.append(f"0 {'/'.join(evidence.domains)} entities on this instance")
+    # URL classification: show which URL types are configured (auth/http BCs)
+    if evidence.url_classification:
+        for key, info in sorted(evidence.url_classification.items()):
+            url_type = info.get("type", "")
+            host = info.get("host", "")
+            label = key.replace("_", " ").title()
+            if url_type and host:
+                ev_lines.append(f"{label}: {url_type} ({host})")
+            elif url_type:
+                ev_lines.append(f"{label}: {url_type}")
+    # Mobile clients: list mobile_app devices (frontend BCs)
+    if evidence.mobile_clients:
+        ev_lines.append(f"Mobile app clients: {', '.join(evidence.mobile_clients[:5])}")
+    # Sensor device_class counts (concentration sensor BCs)
+    if evidence.sensor_device_class_counts:
+        counts = ", ".join(
+            f"{dc} {n}" for dc, n in sorted(evidence.sensor_device_class_counts.items())
+        )
+        ev_lines.append(f"Sensor device classes: {counts}")
+        zero_dcs = sorted(
+            dc for dc, n in evidence.sensor_device_class_counts.items() if n == 0
+        )
+        if zero_dcs:
+            ev_lines.append(f"No sensors of class: {', '.join(zero_dcs)}")
     if evidence.outside_evidence:
         ev_lines.append(
             "Outside the evidence (only the user knows): "

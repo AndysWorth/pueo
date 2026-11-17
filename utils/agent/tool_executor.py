@@ -6587,6 +6587,41 @@ class ToolExecutor:
                         " something only the user knows."
                     ),
                 )
+        # Multi-part BC coverage check: reason must mention at least one token
+        # from each part so the LLM cannot ignore a part entirely (#1255).
+        if self._current_bc_evidence is not None:
+            part_tokens_list = getattr(self._current_bc_evidence, "bc_part_tokens", [])
+            if len(part_tokens_list) > 1:
+                reason_lower = str(reason).lower()
+                uncovered = [
+                    i + 1
+                    for i, tokens_for_part in enumerate(part_tokens_list)
+                    if tokens_for_part
+                    and not any(t in reason_lower for t in tokens_for_part)
+                ]
+                if uncovered:
+                    part_nums = ", ".join(str(p) for p in uncovered)
+                    self._bc_rejection_note = (
+                        f"A previous attempt did not address part(s) {part_nums} of"
+                        " this multi-part BC. The reason must mention at least one"
+                        " key term from each part. Each part covers a distinct scenario."
+                    )
+                    log.warning(
+                        "bc_verdict_multipart_incomplete",
+                        bc=bc_name,
+                        uncovered_parts=uncovered,
+                        reason=str(reason)[:200],
+                    )
+                    return ToolResult(
+                        tool_name="finish_bc_assessment",
+                        success=False,
+                        output="",
+                        error=(
+                            f"Multi-part BC: reason did not address part(s) {part_nums}."
+                            " This BC covers multiple distinct scenarios; your reason"
+                            " must mention at least one term from each part."
+                        ),
+                    )
         grounded_fix: Optional[dict] = None
         if config_fix and isinstance(config_fix, dict):
             old_text = str(config_fix.get("old", ""))

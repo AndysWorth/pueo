@@ -34,6 +34,12 @@ Call `finish_bc_assessment` with one of:
    Zero entities, "core component (no entities)", a "Config keys present" line
    and 0 search hits do **not** settle these: the evidence never contains
    browser or network-access facts, so nothing in it proves or disproves them.
+   **Exception — URL data is known:** when the Evidence block shows "External
+   Url: domain (…)" or "External Url: lan_ip (…)", the auth/http BC about IP
+   address access does not apply — a domain or LAN IP is not affected.  Use
+   `no_action`.  Only "public_ip", "tailscale_ip", or "global_ipv6" are affected.
+   **Mobile app clients:** when the Evidence block shows "Mobile app clients: …",
+   those are the client devices.  Use that list instead of asking the user.
 2. **Is there an evidence line proving this install uses the thing that
    changes?**  Proof is one of: a "Config refs" / "Dashboard refs" line, a
    "Tokens checked (N/M hit)" line with N > 0, or a "Config keys present" line
@@ -72,6 +78,14 @@ Call `finish_bc_assessment` with one of:
   edit, schema migration, uninstall of a conflicting integration).
 - `after_update`: the action is a follow-up after the update is applied (rename
   entities, update automations to use a renamed service, enable a capability that was not available before).
+
+## Multi-part BCs
+
+When a BC covers multiple distinct scenarios (e.g., Matter concentration sensors,
+Matter climate behavior, and Matter covers separately), you must address **each part**
+in your reason.  `finish_bc_assessment` will reject a reason that ignores a part
+entirely.  Treat each part as a separate question: does this install have the entity
+type or configuration the part changes?  Cite the evidence for each part explicitly.
 
 ## Config-fix grounding
 
