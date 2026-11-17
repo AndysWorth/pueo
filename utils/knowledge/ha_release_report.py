@@ -62,6 +62,10 @@ class ScreeningFlag(BaseModel):
     change: str
     concern: str
     severity: str = "medium"
+    # "user" = visible config/automation/entity impact; "developer" = Python API change.
+    audience: str = "user"
+    # Verbatim Python identifier/constant that custom components might call (developer flags only).
+    symbol: Optional[str] = None
 
 
 class ScreeningHighlight(BaseModel):

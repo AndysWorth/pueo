@@ -444,6 +444,23 @@ def _normalize_bc_verdicts(
     return result
 
 
+def _is_dev_flag_no_action(flag: Any, flag_verdicts: list[dict]) -> bool:
+    """Return True when a flag is developer-audience with a no_action verdict.
+
+    Dev flags with no_action are suppressed from the card's screening_flags list
+    because the custom-component scan confirmed no installed integration uses that API.
+    """
+    if getattr(flag, "audience", "user") != "developer":
+        return False
+    # Look up this flag's verdict in the scan results.
+    change = flag.change
+    for v in flag_verdicts:
+        if v.get("flag") == change:
+            return v.get("verdict") == "no_action"
+    # No verdict yet (scan skipped or ssh unavailable) → show the flag.
+    return False
+
+
 def _normalize_flag_verdicts(
     flag_verdicts_raw: Optional[list],
     all_flag_changes: list[str],
@@ -7682,13 +7699,22 @@ class ToolExecutor:
                 else ""
             ),
             "bc_verdicts": _normalized_verdicts,
-            "flag_verdicts": [],
+            "flag_verdicts": list(_rpt.flag_verdicts) if _rpt else [],
             "pueo_verdicts": _pueo_verdicts_list,
             # High/medium screening flags for informational collapsed display on the card.
+            # Developer flags (audience=="developer") are shown only when scan found a hit.
             "screening_flags": [
-                {"domain": f.domain, "severity": f.severity, "change": f.change}
+                {
+                    "domain": f.domain,
+                    "severity": f.severity,
+                    "change": f.change,
+                    "audience": getattr(f, "audience", "user"),
+                }
                 for f in (_rpt.screening_flags if _rpt else [])
                 if f.severity in ("high", "medium")
+                and not _is_dev_flag_no_action(
+                    f, list(_rpt.flag_verdicts) if _rpt else []
+                )
             ],
         }
         # Verification comes from the post-update result card (run_pueo_self_check /

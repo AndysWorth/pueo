@@ -27,6 +27,8 @@ _READ_ONLY_COMMAND_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^ha host logs --boot -1 --lines \d{1,4}$"),
     re.compile(r"^ha apps logs [a-z0-9][a-z0-9_\-]* -n \d{1,4}$"),
     re.compile(r"^ha apps list --raw-json$"),
+    # Custom-component symbol scan; symbol is restricted to Python identifiers (no shell metacharacters).
+    re.compile(r"^grep -rnF [A-Za-z_][A-Za-z0-9_]* /config/custom_components$"),
 )
 
 _ALLOWED_READ_PREFIXES: tuple[str, ...] = ("/config/", "/backup/")

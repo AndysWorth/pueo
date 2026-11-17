@@ -363,3 +363,28 @@ was byte-identical so it failed for the same reason.
   when non-empty it names the domains ("Not screened: auth, logbook.") instead of the opaque
   "some changelog entries".
 - `_split_batch_at_sections(text)` in `ha_update_manager.py` (module-level helper).
+
+## Amendment (#1253): developer flag classification + custom-component scan
+
+**Problem:** screening produces many developer-facing Python API change flags (removed
+arguments, renamed constants) that are only relevant if a custom integration calls that
+API.  These appeared as noise on the card (`flag_verdicts: []`).
+
+**Changes:**
+- `ScreeningFlag` gains `audience: str = "user"` and `symbol: Optional[str] = None`.
+  `"developer"` audience flags carry a `symbol` (the Python identifier being removed).
+- `finish_change_screening` tool schema updated to include `audience` (required) and
+  `symbol` (optional) on each flagged item.  `task_change_screening.md` prompt updated
+  with audience classification guidance.
+- `scan_custom_components(symbols, ssh_client)` in `utils/ha/update_bc_evidence.py`:
+  runs `grep -rnF <symbol> /config/custom_components` per symbol, restricted to
+  plain Python identifiers.  Called at the end of `build_bc_evidence()` for all
+  developer flags with a symbol.  Populates `CoreReleaseReport.flag_verdicts` with
+  `user_check` (hit) or `no_action` (miss) entries, naming the matching integration.
+- `_READ_ONLY_COMMAND_PATTERNS` in `read_only_ssh.py` gains an anchored pattern for
+  the grep command (Python identifier regex prevents shell injection).
+- Card payload: `flag_verdicts` now populated from the scan results (was always `[]`).
+  `screening_flags` on the card suppresses developer flags whose verdict is `no_action`
+  (custom-component scan found no caller); developer flags with a hit are still shown.
+  User flags are unaffected.
+- New helper `_is_dev_flag_no_action(flag, flag_verdicts)` in `tool_executor.py`.
