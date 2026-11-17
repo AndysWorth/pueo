@@ -297,6 +297,7 @@ class LoopSupervisor:
         self._handles: dict[str, LoopStatus] = {}
         self._tasks: dict[str, "asyncio.Task[None]"] = {}
         self._tool_executor: Any = None  # shared ToolExecutor; set by supervisor_main
+        self._shutting_down: bool = False
 
     def start(
         self,
@@ -336,9 +337,14 @@ class LoopSupervisor:
                 try:
                     await asyncio.sleep(1.0)
                 except asyncio.CancelledError:
+                    if self._shutting_down:
+                        return  # clean exit during shutdown
                     if status.paused:
                         raise  # shutdown cancel; paused still True → propagate to exit
                     # run_now() cleared paused before cancelling; fall through
+                status.run_now_pending = (
+                    False  # clear stale flag on paused fall-through
+                )
                 continue  # re-check status.paused
 
             # --- Running state ---
@@ -350,6 +356,10 @@ class LoopSupervisor:
                 await coro_factory()
                 break  # Clean return — daemon loops normally run forever
             except asyncio.CancelledError:
+                if self._shutting_down:
+                    status.status = "disabled"
+                    self._emit(name)
+                    return  # clean exit during shutdown
                 if status.paused:
                     continue  # pause() called while running → enter paused state
                 if status.run_now_pending:
@@ -413,6 +423,8 @@ class LoopSupervisor:
                 try:
                     await asyncio.sleep(delay)
                 except asyncio.CancelledError:
+                    if self._shutting_down:
+                        return  # clean exit during shutdown
                     if status.paused:
                         continue  # pause() during backoff → paused state
                     if status.run_now_pending:
@@ -453,6 +465,8 @@ class LoopSupervisor:
         Cancelling an unstarted task leaves a pending CancelledError that fires in the
         first asyncio.sleep(1) of the paused branch; since paused is still True at that
         point the handler re-raises, killing the task permanently."""
+        if self._shutting_down:
+            return
         status = self._handles[name]  # raises KeyError if unknown
         if status.paused:
             return
@@ -468,6 +482,8 @@ class LoopSupervisor:
     def resume(self, name: str) -> None:
         """Resume a paused loop. The next paused-sleep tick will detect paused=False
         and proceed to run the coro."""
+        if self._shutting_down:
+            return
         status = self._handles[name]  # raises KeyError if unknown
         if not status.paused:
             return
@@ -480,6 +496,8 @@ class LoopSupervisor:
         Unlike run_now(), a running iteration is never cancelled — the wake is latched
         in the loop's wake_event and fires on the next supervised_sleep call.
         """
+        if self._shutting_down:
+            return
         status = self._handles.get(name)
         if status is not None:
             status.wake_event.set()
@@ -487,6 +505,8 @@ class LoopSupervisor:
     def run_now(self, name: str) -> None:
         """Run a loop's next iteration immediately, interrupting any sleep or pause.
         If the loop is paused it is also resumed."""
+        if self._shutting_down:
+            return
         status = self._handles[name]  # raises KeyError if unknown
         status.paused = False
         status.run_now_pending = True
@@ -496,8 +516,12 @@ class LoopSupervisor:
 
     def cancel_all(self) -> None:
         """Cancel all supervised tasks (called on SIGTERM/SIGINT)."""
+        self._shutting_down = True
         for task in self._tasks.values():
             task.cancel()
+
+    def is_shutting_down(self) -> bool:
+        return self._shutting_down
 
     def touch(self, name: str, outcome: str = "") -> None:
         """Update last_run to now after a loop completes one work cycle.
