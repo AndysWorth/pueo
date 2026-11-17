@@ -160,6 +160,11 @@ _SEED_PROMPTS: list[tuple[str, str, str]] = [
         "release change screening, changelog batch, BC entry review, flagged change, feature highlight, change_screening session",
     ),
     (
+        "seed_update_pueo_impact.md",
+        "Pueo-dependency impact assessment",
+        "pueo_impact session, pueo dependency break, hacs removed, ws command removed, rest path renamed, Pueo surface changed",
+    ),
+    (
         "seed_update_hacs.md",
         "HACS integration update analysis",
         "HACS update available, HACS integration update, custom integration update",

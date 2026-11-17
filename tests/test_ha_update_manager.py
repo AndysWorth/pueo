@@ -11399,3 +11399,307 @@ class TestBuildCoreReleaseReport:
         assert saved_path.exists()
         saved = CoreReleaseReport.model_validate_json(saved_path.read_text())
         assert saved.installed_version == "2026.10.4"
+
+
+class TestPueoImpactRegistry:
+    """Tests for build_pueo_impact_registry and FINISH_PUEO_IMPACT schema."""
+
+    def test_registry_contains_only_terminal_tool(self):
+        from utils.agent.tool_registry import build_pueo_impact_registry
+
+        reg = build_pueo_impact_registry()
+        names = set(reg.names())
+        assert "finish_pueo_impact" in names
+        assert len(names) == 1, f"Expected only finish_pueo_impact, got: {names}"
+
+    def test_finish_pueo_impact_schema(self):
+        from utils.agent.tool_registry import FINISH_PUEO_IMPACT
+
+        props = FINISH_PUEO_IMPACT.parameters["properties"]
+        assert "verdict" in props
+        assert "reason" in props
+        assert "quote" in props
+        # reason before verdict so model commits to evidence first
+        assert list(props)[:2] == ["reason", "verdict"]
+        assert FINISH_PUEO_IMPACT.parameters["required"] == ["reason", "verdict"]
+
+    def test_finish_pueo_impact_verdict_enum(self):
+        from utils.agent.tool_registry import FINISH_PUEO_IMPACT
+
+        props = FINISH_PUEO_IMPACT.parameters["properties"]
+        assert props["verdict"]["enum"] == ["breaks_pueo", "no_impact", "dev_check"]
+
+
+class TestFinishPueoImpact:
+    """Tests for ToolExecutor._finish_pueo_impact and pueo_impact state."""
+
+    def _make_executor(self):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from utils.agent.autonomy import AutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+
+        notifier = MagicMock()
+        notifier.send = AsyncMock()
+        gate = AutonomyGate(level=2)
+        return ToolExecutor(
+            ha_ssh_client=MagicMock(),
+            gate=gate,
+            notifier=notifier,
+            db_path=":memory:",
+        )
+
+    def _dispatch(self, executor, args: dict):
+        import asyncio
+
+        from utils.agent.tool_registry import ToolCall
+
+        return asyncio.run(
+            executor.execute(ToolCall(name="finish_pueo_impact", arguments=args))
+        )
+
+    def test_no_impact_stored(self):
+        executor = self._make_executor()
+        executor._current_pueo_dependency = "hacs"
+        result = executor._finish_pueo_impact(
+            verdict="no_impact", reason="Manifest already includes marketplace."
+        )
+        assert result.success
+        assert executor._pueo_verdicts["hacs"]["verdict"] == "no_impact"
+
+    def test_dev_check_stored(self):
+        executor = self._make_executor()
+        executor._current_pueo_dependency = "lovelace"
+        result = executor._finish_pueo_impact(
+            verdict="dev_check", reason="Ambiguous wording in snippet."
+        )
+        assert result.success
+        assert executor._pueo_verdicts["lovelace"]["verdict"] == "dev_check"
+
+    def test_breaks_pueo_accepted_when_quote_in_snippets(self):
+        executor = self._make_executor()
+        executor._current_pueo_dependency = "hacs"
+        executor._current_pueo_snippets = [
+            "HACS is no longer possible on this version of HA."
+        ]
+        result = executor._finish_pueo_impact(
+            verdict="breaks_pueo",
+            quote="no longer possible on this version",
+            reason="HACS WS commands removed.",
+        )
+        assert result.success
+        v = executor._pueo_verdicts["hacs"]
+        assert v["verdict"] == "breaks_pueo"
+        assert v["quote"] == "no longer possible on this version"
+
+    def test_breaks_pueo_rejected_when_quote_not_in_snippets(self):
+        executor = self._make_executor()
+        executor._current_pueo_dependency = "hacs"
+        executor._current_pueo_snippets = ["HACS is no longer possible."]
+        result = executor._finish_pueo_impact(
+            verdict="breaks_pueo",
+            quote="text that does not appear anywhere",
+            reason="HACS removed.",
+        )
+        assert not result.success
+        assert "breaks_pueo rejected" in (result.error or "")
+        assert "hacs" not in executor._pueo_verdicts
+        # Rejection note must be populated for the caller to build a retry message
+        assert executor._pueo_rejection_note
+
+    def test_breaks_pueo_rejected_when_quote_empty(self):
+        executor = self._make_executor()
+        executor._current_pueo_dependency = "hacs"
+        executor._current_pueo_snippets = ["HACS is no longer possible."]
+        result = executor._finish_pueo_impact(
+            verdict="breaks_pueo",
+            quote="",
+            reason="No quote provided.",
+        )
+        assert not result.success
+        assert "hacs" not in executor._pueo_verdicts
+
+    def test_missing_verdict_fails(self):
+        executor = self._make_executor()
+        executor._current_pueo_dependency = "hacs"
+        result = executor._finish_pueo_impact(reason="No verdict given.")
+        assert not result.success
+        assert "verdict is required" in (result.error or "")
+
+    def test_unrecognised_verdict_fails(self):
+        executor = self._make_executor()
+        executor._current_pueo_dependency = "hacs"
+        result = executor._finish_pueo_impact(verdict="unknown", reason="x")
+        assert not result.success
+
+    def test_clear_pueo_impact_state_resets(self):
+        executor = self._make_executor()
+        executor._current_pueo_dependency = "hacs"
+        executor._current_pueo_snippets = ["snippet"]
+        executor._finish_pueo_impact(verdict="no_impact", reason="x")
+        executor.clear_pueo_impact_state()
+        assert executor._pueo_verdicts == {}
+        assert executor._current_pueo_dependency == ""
+        assert executor._current_pueo_snippets == []
+        assert executor._pueo_rejection_note == ""
+
+    def test_dispatch_no_impact(self):
+        executor = self._make_executor()
+        executor._current_pueo_dependency = "recorder"
+        result = self._dispatch(
+            executor,
+            {"verdict": "no_impact", "reason": "Only statistics API, no changes."},
+        )
+        assert result.success
+        assert executor._pueo_verdicts["recorder"]["verdict"] == "no_impact"
+
+    def test_dispatch_breaks_pueo_grounded(self):
+        executor = self._make_executor()
+        executor._current_pueo_dependency = "hacs"
+        executor._current_pueo_snippets = [
+            "hacs/repositories/list is no longer available"
+        ]
+        result = self._dispatch(
+            executor,
+            {
+                "verdict": "breaks_pueo",
+                "quote": "no longer available",
+                "reason": "WS command removed.",
+            },
+        )
+        assert result.success
+        assert executor._pueo_verdicts["hacs"]["verdict"] == "breaks_pueo"
+
+    def test_dispatch_breaks_pueo_ungrounded_fails(self):
+        executor = self._make_executor()
+        executor._current_pueo_dependency = "hacs"
+        executor._current_pueo_snippets = ["HACS has a new UI."]
+        result = self._dispatch(
+            executor,
+            {
+                "verdict": "breaks_pueo",
+                "quote": "completely invented phrase",
+                "reason": "HACS removed.",
+            },
+        )
+        assert not result.success
+        assert executor._pueo_verdicts == {}
+
+
+class TestCarryOverPueoVerdicts:
+    """Tests for carry_over_pueo_verdicts."""
+
+    def _report(self, hits=None, verdicts=None):
+        from utils.knowledge.ha_release_report import (
+            CoreReleaseReport,
+            PueoDependencyHit,
+        )
+
+        return CoreReleaseReport(
+            version="2026.11.1",
+            installed_version="2026.10.4",
+            pueo_dependency_hits=hits
+            or [
+                PueoDependencyHit(
+                    dependency="hacs",
+                    kind="integrations",
+                    source="blog:2026.11",
+                    snippet="HACS is no longer possible on this version.",
+                ),
+                PueoDependencyHit(
+                    dependency="hacs",
+                    kind="websocket_commands",
+                    source="changelog:2026.11",
+                    snippet="hacs/* commands have been removed.",
+                ),
+            ],
+            pueo_verdicts=verdicts
+            or [
+                {
+                    "dependency": "hacs",
+                    "verdict": "no_impact",
+                    "quote": "",
+                    "reason": "Manifest already lists marketplace.",
+                }
+            ],
+        )
+
+    def test_verdict_carried_when_snippets_unchanged(self):
+        from utils.knowledge.ha_release_report import carry_over_pueo_verdicts
+
+        kept = carry_over_pueo_verdicts(self._report(), self._report())
+        assert len(kept) == 1
+        assert kept[0]["dependency"] == "hacs"
+        assert kept[0]["verdict"] == "no_impact"
+
+    def test_verdict_dropped_when_snippet_text_changes(self):
+        from utils.knowledge.ha_release_report import (
+            PueoDependencyHit,
+            carry_over_pueo_verdicts,
+        )
+
+        new = self._report(
+            hits=[
+                PueoDependencyHit(
+                    dependency="hacs",
+                    kind="integrations",
+                    source="blog:2026.11",
+                    snippet="HACS is completely different now.",
+                ),
+            ]
+        )
+        kept = carry_over_pueo_verdicts(self._report(), new)
+        assert kept == []
+
+    def test_dev_check_verdict_never_carried(self):
+        from utils.knowledge.ha_release_report import carry_over_pueo_verdicts
+
+        stored = self._report(
+            verdicts=[
+                {
+                    "dependency": "hacs",
+                    "verdict": "dev_check",
+                    "quote": "",
+                    "reason": "Ambiguous.",
+                }
+            ]
+        )
+        kept = carry_over_pueo_verdicts(stored, self._report())
+        assert kept == []
+
+    def test_verdict_dropped_when_dependency_absent_from_new(self):
+        from utils.knowledge.ha_release_report import (
+            PueoDependencyHit,
+            carry_over_pueo_verdicts,
+        )
+
+        new_report = self._report(
+            hits=[
+                PueoDependencyHit(
+                    dependency="lovelace",
+                    kind="websocket_commands",
+                    source="changelog:2026.11",
+                    snippet="lovelace/config updated.",
+                )
+            ],
+            verdicts=[],
+        )
+        kept = carry_over_pueo_verdicts(self._report(), new_report)
+        assert kept == []
+
+    def test_breaks_pueo_verdict_carried(self):
+        from utils.knowledge.ha_release_report import carry_over_pueo_verdicts
+
+        stored = self._report(
+            verdicts=[
+                {
+                    "dependency": "hacs",
+                    "verdict": "breaks_pueo",
+                    "quote": "no longer possible",
+                    "reason": "Removed.",
+                }
+            ]
+        )
+        kept = carry_over_pueo_verdicts(stored, self._report())
+        assert len(kept) == 1
+        assert kept[0]["verdict"] == "breaks_pueo"

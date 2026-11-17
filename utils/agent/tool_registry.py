@@ -2768,6 +2768,51 @@ FINISH_BC_ASSESSMENT = ToolDefinition(
 )
 
 
+FINISH_PUEO_IMPACT = ToolDefinition(
+    name="finish_pueo_impact",
+    description=(
+        "Report the verdict for a single Pueo-dependency impact assessment and close the "
+        "session.  Call exactly once after reviewing the dependency entries and release-note "
+        "snippets."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "reason": {
+                "type": "string",
+                "description": (
+                    "Write this first.  One sentence explaining the verdict; "
+                    "if 'breaks_pueo', the reason must name the specific Pueo feature "
+                    "affected and quote the exact snippet text that shows the break."
+                ),
+            },
+            "verdict": {
+                "type": "string",
+                "enum": ["breaks_pueo", "no_impact", "dev_check"],
+                "description": (
+                    "'breaks_pueo': a snippet confirms this HA change removes or renames "
+                    "something Pueo actively uses, with no replacement already in the "
+                    "manifest.  Set 'quote' to text found verbatim in a snippet. "
+                    "'no_impact': the change does not affect any listed Pueo feature, or "
+                    "the manifest already lists the replacement surface. "
+                    "'dev_check': the change might affect Pueo but cannot be confirmed "
+                    "from the snippets alone."
+                ),
+            },
+            "quote": {
+                "type": "string",
+                "description": (
+                    "Required when verdict='breaks_pueo'.  "
+                    "A short phrase copied verbatim from one of the provided snippets that "
+                    "shows the break.  Must appear in one of the snippets exactly as written."
+                ),
+            },
+        },
+        "required": ["reason", "verdict"],
+    },
+)
+
+
 FINISH_CHANGE_SCREENING = ToolDefinition(
     name="finish_change_screening",
     description=(
@@ -3121,6 +3166,17 @@ def build_change_screening_registry() -> ToolRegistry:
     """
     reg = ToolRegistry()
     reg.register(FINISH_CHANGE_SCREENING)
+    return reg
+
+
+def build_pueo_impact_registry() -> ToolRegistry:
+    """Registry for a per-dependency Pueo-impact assessment session.
+
+    Text-only: the snippets are in the initial context.  No tool calls
+    are needed or allowed before the terminal tool.
+    """
+    reg = ToolRegistry()
+    reg.register(FINISH_PUEO_IMPACT)
     return reg
 
 
