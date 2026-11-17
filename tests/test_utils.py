@@ -13450,6 +13450,15 @@ class TestCoreReleaseReport:
             "highlights",
             "batch_complete",
         ]
+        # S3: flag items must include audience and symbol
+        flag_item_props = props["flagged"]["items"]["properties"]
+        assert "audience" in flag_item_props
+        assert flag_item_props["audience"]["enum"] == ["user", "developer"]
+        assert "symbol" in flag_item_props
+        # audience is required; symbol is optional
+        flag_required = props["flagged"]["items"]["required"]
+        assert "audience" in flag_required
+        assert "symbol" not in flag_required
 
     # ── get_update_release_notes digest short-circuit ─────────────────────
 
@@ -13607,6 +13616,247 @@ class TestCoreReleaseReport:
             version="x", screening_batches_total=7, screening_batches_done=6
         )
         assert CoreReleaseReport.model_validate_json(rpt2.model_dump_json()) == rpt2
+
+
+class TestScreeningFlagAudienceSchema:
+    """Tests for ScreeningFlag.audience / symbol fields (S3)."""
+
+    def test_screening_flag_valid_user(self):
+        from utils.knowledge.ha_release_report import ScreeningFlag
+
+        f = ScreeningFlag(
+            domain="mqtt",
+            change="config key renamed",
+            concern="update needed",
+            severity="medium",
+            audience="user",
+        )
+        assert f.audience == "user"
+        assert f.symbol is None
+
+    def test_screening_flag_valid_developer(self):
+        from utils.knowledge.ha_release_report import ScreeningFlag
+
+        f = ScreeningFlag(
+            domain="core",
+            change="suggest_area removed",
+            concern="custom integrations may break",
+            severity="low",
+            audience="developer",
+            symbol="suggest_area",
+        )
+        assert f.audience == "developer"
+        assert f.symbol == "suggest_area"
+
+    def test_screening_flag_default_audience(self):
+        from utils.knowledge.ha_release_report import ScreeningFlag
+
+        f = ScreeningFlag(domain="hue", change="x", concern="y", severity="medium")
+        assert f.audience == "user"
+
+    def test_screening_flag_invalid_missing_domain(self):
+        from pydantic import ValidationError
+        from utils.knowledge.ha_release_report import ScreeningFlag
+
+        with pytest.raises(ValidationError):
+            ScreeningFlag(change="x", concern="y", severity="medium")  # type: ignore[call-arg]
+
+    def test_screening_flag_json_roundtrip(self):
+        from utils.knowledge.ha_release_report import ScreeningFlag
+
+        f = ScreeningFlag(
+            domain="core",
+            change="suggest_area removed",
+            concern="dev break",
+            severity="low",
+            audience="developer",
+            symbol="suggest_area",
+        )
+        f2 = ScreeningFlag.model_validate_json(f.model_dump_json())
+        assert f2 == f
+
+
+class TestScanCustomComponents:
+    """Tests for scan_custom_components in utils/ha/update_bc_evidence.py (S3)."""
+
+    def _make_ssh(self, run_responses: dict):
+        """Create a minimal async SSH stub whose run() returns from run_responses.
+
+        run_responses: {command_string: (rc, stdout, stderr)}
+        """
+
+        class _FakeSSH:
+            async def run(self, command: str, check: bool = False):
+                if command in run_responses:
+                    return run_responses[command]
+                return (1, "", "not found")
+
+        return _FakeSSH()
+
+    def test_scan_hit(self):
+        import asyncio
+        from utils.ha.update_bc_evidence import scan_custom_components
+
+        ssh = self._make_ssh(
+            {
+                "grep -rnF suggest_area /config/custom_components": (
+                    0,
+                    "/config/custom_components/my_int/entry.py:12: suggest_area(device)\n",
+                    "",
+                )
+            }
+        )
+        result = asyncio.run(scan_custom_components(["suggest_area"], ssh))
+        assert "suggest_area" in result
+        assert len(result["suggest_area"]) == 1
+        assert "my_int" in result["suggest_area"][0]
+
+    def test_scan_miss(self):
+        import asyncio
+        from utils.ha.update_bc_evidence import scan_custom_components
+
+        ssh = self._make_ssh(
+            {"grep -rnF suggest_area /config/custom_components": (1, "", "")}
+        )
+        result = asyncio.run(scan_custom_components(["suggest_area"], ssh))
+        assert result["suggest_area"] == []
+
+    def test_scan_multiple_symbols(self):
+        import asyncio
+        from utils.ha.update_bc_evidence import scan_custom_components
+
+        ssh = self._make_ssh(
+            {
+                "grep -rnF sym_a /config/custom_components": (
+                    0,
+                    "file.py:1: sym_a()\n",
+                    "",
+                ),
+                "grep -rnF sym_b /config/custom_components": (1, "", ""),
+            }
+        )
+        result = asyncio.run(scan_custom_components(["sym_a", "sym_b"], ssh))
+        assert len(result["sym_a"]) == 1
+        assert result["sym_b"] == []
+
+    def test_scan_skips_invalid_symbol(self):
+        import asyncio
+        from utils.ha.update_bc_evidence import scan_custom_components
+
+        ssh = self._make_ssh({})
+        result = asyncio.run(scan_custom_components(["bad; rm -rf /"], ssh))
+        assert result.get("bad; rm -rf /") == []
+
+    def test_scan_ssh_error_returns_empty(self):
+        import asyncio
+        from utils.ha.update_bc_evidence import scan_custom_components
+
+        class _ErrSSH:
+            async def run(self, command: str, check: bool = False):
+                raise OSError("connection lost")
+
+        result = asyncio.run(scan_custom_components(["sym_a"], _ErrSSH()))
+        assert result["sym_a"] == []
+
+
+class TestReadOnlySshGrepPattern:
+    """Test that the custom-component grep pattern is correctly gated (S3)."""
+
+    def test_grep_valid_symbol_allowed(self):
+        from utils.ha.read_only_ssh import is_read_only_command
+
+        assert is_read_only_command(
+            "grep -rnF async_forward_entry_setups /config/custom_components"
+        )
+
+    def test_grep_valid_simple_symbol_allowed(self):
+        from utils.ha.read_only_ssh import is_read_only_command
+
+        assert is_read_only_command("grep -rnF suggest_area /config/custom_components")
+
+    def test_grep_shell_injection_denied(self):
+        from utils.ha.read_only_ssh import is_read_only_command
+
+        assert not is_read_only_command(
+            "grep -rnF sym; rm -rf / /config/custom_components"
+        )
+
+    def test_grep_different_path_denied(self):
+        from utils.ha.read_only_ssh import is_read_only_command
+
+        assert not is_read_only_command("grep -rnF sym /config/secrets.yaml")
+
+    def test_grep_quoted_symbol_denied(self):
+        """Quoted symbols are not in the pattern — only bare identifiers."""
+        from utils.ha.read_only_ssh import is_read_only_command
+
+        assert not is_read_only_command(
+            'grep -rnF "suggest_area" /config/custom_components'
+        )
+
+
+class TestDevFlagCardFiltering:
+    """Developer flags with no_action verdict are suppressed on the card (S3)."""
+
+    def test_is_dev_flag_no_action_true(self):
+        from utils.agent.tool_executor import _is_dev_flag_no_action
+        from utils.knowledge.ha_release_report import ScreeningFlag
+
+        flag = ScreeningFlag(
+            domain="core",
+            change="suggest_area removed",
+            concern="dev break",
+            severity="low",
+            audience="developer",
+            symbol="suggest_area",
+        )
+        verdicts = [{"flag": "suggest_area removed", "verdict": "no_action"}]
+        assert _is_dev_flag_no_action(flag, verdicts) is True
+
+    def test_is_dev_flag_no_action_false_when_hit(self):
+        from utils.agent.tool_executor import _is_dev_flag_no_action
+        from utils.knowledge.ha_release_report import ScreeningFlag
+
+        flag = ScreeningFlag(
+            domain="core",
+            change="suggest_area removed",
+            concern="dev break",
+            severity="low",
+            audience="developer",
+            symbol="suggest_area",
+        )
+        verdicts = [{"flag": "suggest_area removed", "verdict": "user_check"}]
+        assert _is_dev_flag_no_action(flag, verdicts) is False
+
+    def test_is_dev_flag_no_action_false_for_user_flag(self):
+        from utils.agent.tool_executor import _is_dev_flag_no_action
+        from utils.knowledge.ha_release_report import ScreeningFlag
+
+        flag = ScreeningFlag(
+            domain="mqtt",
+            change="config key renamed",
+            concern="update needed",
+            severity="medium",
+            audience="user",
+        )
+        verdicts = [{"flag": "config key renamed", "verdict": "no_action"}]
+        # User flags are never suppressed by this function.
+        assert _is_dev_flag_no_action(flag, verdicts) is False
+
+    def test_is_dev_flag_no_action_false_when_no_verdict(self):
+        from utils.agent.tool_executor import _is_dev_flag_no_action
+        from utils.knowledge.ha_release_report import ScreeningFlag
+
+        flag = ScreeningFlag(
+            domain="core",
+            change="suggest_area removed",
+            concern="dev break",
+            severity="low",
+            audience="developer",
+            symbol="suggest_area",
+        )
+        # No verdict yet → show the flag (conservative).
+        assert _is_dev_flag_no_action(flag, []) is False
 
 
 class TestAgentLoopUnregisteredTool:

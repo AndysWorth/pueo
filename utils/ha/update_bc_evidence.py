@@ -473,6 +473,44 @@ async def _build_one_evidence(
     )
 
 
+async def scan_custom_components(
+    symbols: list[str],
+    ssh_client: Any,
+) -> dict[str, list[str]]:
+    """grep /config/custom_components for each Python identifier symbol.
+
+    Returns {symbol: [matched lines]} for each symbol.  Symbols must be plain
+    Python identifiers (letters/digits/underscores) — no shell metacharacters.
+    Missing or unreadable custom_components directory returns empty lists.
+    """
+    import re as _re
+
+    _ident_re = _re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+    results: dict[str, list[str]] = {}
+    for symbol in symbols:
+        if not _ident_re.match(symbol):
+            log.warning(
+                "scan_custom_components_skipped_invalid_symbol", symbol=symbol[:80]
+            )
+            results[symbol] = []
+            continue
+        cmd = f"grep -rnF {symbol} /config/custom_components"
+        try:
+            rc, stdout, _stderr = await ssh_client.run(cmd)
+            if rc == 0 and stdout:
+                results[symbol] = [
+                    line.strip() for line in stdout.strip().splitlines() if line.strip()
+                ]
+            else:
+                results[symbol] = []
+        except Exception as exc:
+            log.warning(
+                "scan_custom_components_error", symbol=symbol[:80], error=str(exc)
+            )
+            results[symbol] = []
+    return results
+
+
 async def build_bc_evidence(
     report: Any,  # CoreReleaseReport
     ws_client: Optional[Any] = None,
@@ -568,5 +606,76 @@ async def build_bc_evidence(
             automation_hits=len(ev.automation_hits),
             found=ev.found,
         )
+
+    # ── Developer-flag custom-component scan ─────────────────────────────────
+    if ssh_client is not None:
+        dev_flags = [
+            f
+            for f in list(getattr(report, "screening_flags", []))
+            if getattr(f, "audience", "user") == "developer"
+            and getattr(f, "symbol", None)
+        ]
+        if dev_flags:
+            symbols = [f.symbol for f in dev_flags]
+            scan = await scan_custom_components(symbols, ssh_client)  # type: ignore[arg-type]
+            # Build flag_verdicts entries for developer flags based on scan hits.
+            existing_verdict_flags = {
+                v.get("flag", "") for v in getattr(report, "flag_verdicts", [])
+            }
+            new_verdicts: list[dict] = []
+            for flag in dev_flags:
+                sym = flag.symbol
+                if flag.change in existing_verdict_flags:
+                    continue
+                hits = scan.get(sym, [])
+                if hits:
+                    # Extract integration names from hit paths like
+                    # /config/custom_components/my_integration/sensor.py:12:...
+                    integrations: list[str] = []
+                    for hit in hits[:20]:
+                        parts = hit.split("/")
+                        if "custom_components" in parts:
+                            idx = parts.index("custom_components")
+                            if idx + 1 < len(parts):
+                                integrations.append(parts[idx + 1])
+                    unique_integrations = list(dict.fromkeys(integrations))
+                    new_verdicts.append(
+                        {
+                            "flag": flag.change,
+                            "verdict": "user_check",
+                            "reason": (
+                                f"Custom integration(s) {', '.join(unique_integrations) or 'unknown'} "
+                                f"use {sym!r} which is being removed."
+                            ),
+                            "integrations": unique_integrations,
+                            "hits": hits[:10],
+                        }
+                    )
+                    log.info(
+                        "dev_flag_custom_component_hit",
+                        symbol=sym,
+                        integrations=unique_integrations,
+                    )
+                else:
+                    new_verdicts.append(
+                        {
+                            "flag": flag.change,
+                            "verdict": "no_action",
+                            "reason": f"No custom integration uses {sym!r}.",
+                            "integrations": [],
+                            "hits": [],
+                        }
+                    )
+            if new_verdicts and hasattr(report, "flag_verdicts"):
+                report.flag_verdicts = (
+                    list(getattr(report, "flag_verdicts", [])) + new_verdicts
+                )
+                log.info(
+                    "dev_flag_verdicts_built",
+                    total=len(new_verdicts),
+                    user_check=sum(
+                        1 for v in new_verdicts if v["verdict"] == "user_check"
+                    ),
+                )
 
     return bc_result, flag_result

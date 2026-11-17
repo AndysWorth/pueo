@@ -2848,8 +2848,17 @@ FINISH_CHANGE_SCREENING = ToolDefinition(
                             "enum": ["low", "medium", "high"],
                             "description": "'high' for breaking / data-loss risk; 'medium' for config changes; 'low' for deprecations.",
                         },
+                        "audience": {
+                            "type": "string",
+                            "enum": ["user", "developer"],
+                            "description": "'user' for config/automation/entity changes visible to end users; 'developer' for Python API removals/renames (hass argument, entity methods, constants) that only matter if custom integrations call that API.",
+                        },
+                        "symbol": {
+                            "type": "string",
+                            "description": "For developer flags only: the exact Python identifier or constant being removed/renamed (e.g. 'async_forward_entry_setups', 'suggest_area'). Omit for user flags.",
+                        },
                     },
-                    "required": ["domain", "change", "concern", "severity"],
+                    "required": ["domain", "change", "concern", "severity", "audience"],
                 },
                 "description": "Changes that need user attention.  Empty if none.",
             },
