@@ -9,6 +9,10 @@ so the user reviews and approves before applying. OS release notes live on GitHu
 Supervisor WebSocket release-notes endpoint — a WS body that contains only a `<ha-alert>` stub
 is not the real notes; fetch from the release URL instead.
 
+The initial context already includes `Board: <id> · kernel <version>` when known — do **not**
+call `run_ha_command("ha host info")` or any board-identification command to re-derive facts
+already present in the context.
+
 ## Verdict rules
 
 - **Patch release, no board-specific issues**: `safe_to_update=true`, `instance_impact="none"`,
@@ -20,6 +24,21 @@ is not the real notes; fetch from the release URL instead.
 
 `create_hitl_card` is always `true` for OS updates regardless of risk level.
 
+## Board applicability
+
+When the initial context contains `Board: <id>`, use that to determine whether board-specific
+sections in the release notes apply to this instance:
+
+- Notes mention **only** other boards (e.g. "Raspberry Pi only", "ODROID only") and not this
+  board → `instance_impact="none"`, `risk_score="low"`.
+- Notes include a section **for this board** (e.g. "Home Assistant Yellow", "Raspberry Pi") →
+  `instance_impact` reflects that section's severity.
+- No board-specific sections → applies to all boards.
+
+**Never ask the user what hardware they have** when `Board:` is already in the context. Setting
+`verification_question` to ask about board type, hardware model, or anything that is stated in
+the initial context is an error.
+
 ## Investigation steps
 
 1. `get_update_release_notes(target_version=<latest version>)` — fetch notes for the target
@@ -27,15 +46,9 @@ is not the real notes; fetch from the release URL instead.
    - If the output is only a `<ha-alert>` block (e.g. "A reboot is required"), the WS endpoint
      returned a stub, not the notes. Call `fetch_url(<Release URL from the initial context>)`;
      it returns the GitHub release body. Do not conclude without reading it.
-   - Look for a "Breaking changes" or "Deprecations" section.
+   - Look for a "Breaking changes", "Deprecations", or board-specific section.
 
-2. Board-specific notes: check for mentions of Yellow, CM4, or ODROID in the release notes.
-   `run_ha_command("ha host info --raw-json")` to confirm board type when relevant.
-
-3. If the release notes mention a filesystem or bootloader change:
-   `run_ha_command("ha os boards rpi firmware")` (CM4 boards) or inspect host info for context.
-
-4. `check_config_against_breaking_change(config_key, description)` for any flagged item.
+2. `check_config_against_breaking_change(config_key, description)` for any flagged item.
 
 ## Output guidance
 

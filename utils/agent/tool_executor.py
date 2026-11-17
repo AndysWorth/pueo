@@ -751,6 +751,9 @@ class ToolExecutor:
         # (tool name, output) of each successful call this session; remember() in an
         # automated session must be grounded in one of these (#993).
         self._session_outputs: list[tuple[str, str]] = []
+        # Board context fetched deterministically for OS updates (#1257).
+        # Keys: board (str), kernel (str), raw_cpe (str).
+        self._os_board_ctx: Optional[dict] = None
 
     def reset(self) -> None:
         """Reset per-loop state. Called by AgentLoop before each run()."""
@@ -821,6 +824,43 @@ class ToolExecutor:
     def set_update_status(self, update_status: Any) -> None:
         """Store the pending UpdateStatus so finish_update_analysis can create the card."""
         self._pending_update_status = update_status
+
+    def set_os_board_context(self, ctx: dict) -> None:
+        """Store board/kernel info fetched for an OS update (#1257)."""
+        self._os_board_ctx = ctx
+
+    def _derive_os_applicability(self) -> dict:
+        """Derive code-based OS applicability from board context + fetched notes."""
+        ctx = self._os_board_ctx
+        if not ctx:
+            return {}
+        board = ctx.get("board", "")
+        kernel = ctx.get("kernel", "")
+        if not board:
+            return {}
+        # Collect any release notes text from session outputs.
+        notes = ""
+        for tool_name, output in self._session_outputs:
+            if tool_name in ("get_update_release_notes", "fetch_url"):
+                notes += "\n" + output
+        if not notes:
+            return {
+                "board": board,
+                "kernel": kernel,
+                "applies": "unknown",
+                "reason": "Release notes not fetched during this session.",
+                "board_sections": [],
+                "other_board_sections": [],
+            }
+        try:
+            from utils.ha.os_applicability import os_release_applicability
+
+            result = os_release_applicability(notes, board)
+            result["board"] = board
+            result["kernel"] = kernel
+            return result
+        except Exception:  # nosec B110
+            return {"board": board, "kernel": kernel, "applies": "unknown"}
 
     def set_lovelace_suspicious(self, entity_ids: list[str]) -> None:
         """Store entity IDs under investigation so _finish_lovelace_investigation can
@@ -7740,6 +7780,7 @@ class ToolExecutor:
             "flag_verdicts": list(_rpt.flag_verdicts) if _rpt else [],
             "pueo_verdicts": _pueo_verdicts_list,
             "heads_up_items": list(_rpt.heads_up_items) if _rpt else [],
+            "os_applicability": self._derive_os_applicability(),
             # High/medium screening flags for informational collapsed display on the card.
             # Developer flags (audience=="developer") are shown only when scan found a hit.
             "screening_flags": [

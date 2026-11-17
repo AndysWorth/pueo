@@ -1225,6 +1225,32 @@ async def _run_update_analysis(
 
         initial_context = sanitize_update_context(initial_context)
 
+        # ── OS: inject board + kernel context deterministically (S5) ──────────
+        # For OS updates only: fetch board identifier and kernel version so the
+        # agent (and os_release_applicability) can reason about board-specific
+        # release notes without asking the user what hardware they have.
+        _os_board_ctx: Optional[dict] = None
+        if _update_type_early == "os":
+            try:
+                from utils.ha.os_applicability import fetch_os_board_context
+
+                _os_board_ctx = await fetch_os_board_context(_ssh)
+                if _os_board_ctx:
+                    executor.set_os_board_context(_os_board_ctx)
+                    _board = _os_board_ctx.get("board", "")
+                    _kernel = _os_board_ctx.get("kernel", "")
+                    _board_line = f"Board: {_board}" if _board else ""
+                    if _kernel:
+                        _board_line += (
+                            f" · kernel {_kernel}"
+                            if _board_line
+                            else f"Kernel: {_kernel}"
+                        )
+                    if _board_line:
+                        initial_context += f"\n{_board_line}"
+            except Exception:  # nosec B110
+                pass
+
         # ── Non-Core: scan available notes text for Pueo dependency hits (S4) ──
         # For Supervisor/OS/add-on updates the full notes are fetched during the
         # agent session; we scan what's available upfront (release_summary) so the

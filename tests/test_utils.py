@@ -14519,3 +14519,299 @@ class TestBCEvidenceCompleteness:
             "No tilt blind covers.",
         )
         assert result.success
+
+
+# ---------------------------------------------------------------------------
+# os_applicability — board-heading parser and fetch helper (#1257)
+# ---------------------------------------------------------------------------
+
+
+class TestOSApplicability:
+    """Tests for utils/ha/os_applicability.py."""
+
+    def test_yellow_board_section_applies(self):
+        """Notes with a Yellow-specific section → applies=yes."""
+        from utils.ha.os_applicability import os_release_applicability
+
+        notes = "## Home Assistant Yellow\n\nKernel updated to 6.18.59.\n"
+        result = os_release_applicability(notes, "yellow")
+        assert result["applies"] == "yes"
+        assert "Home Assistant Yellow" in result["board_sections"]
+
+    def test_other_board_only_does_not_apply(self):
+        """Notes with only a Raspberry Pi section, board=yellow → applies=no."""
+        from utils.ha.os_applicability import os_release_applicability
+
+        notes = "## Raspberry Pi\n\nKernel patch for RPi only.\n"
+        result = os_release_applicability(notes, "yellow")
+        assert result["applies"] == "no"
+        assert result["board_sections"] == []
+        assert result["other_board_sections"]
+
+    def test_no_board_sections_applies_to_all(self):
+        """Notes with no board-specific headings → applies=yes (all boards)."""
+        from utils.ha.os_applicability import os_release_applicability
+
+        notes = "## What's changed\n\nSecurity fixes and stability improvements.\n"
+        result = os_release_applicability(notes, "yellow")
+        assert result["applies"] == "yes"
+        assert result["board_sections"] == []
+        assert result["other_board_sections"] == []
+
+    def test_empty_notes_unknown(self):
+        """Empty notes → applies=unknown."""
+        from utils.ha.os_applicability import os_release_applicability
+
+        result = os_release_applicability("", "yellow")
+        assert result["applies"] == "unknown"
+
+    def test_empty_board_unknown(self):
+        """Empty board → applies=unknown."""
+        from utils.ha.os_applicability import os_release_applicability
+
+        result = os_release_applicability("## Home Assistant Yellow\n\nFoo.\n", "")
+        assert result["applies"] == "unknown"
+
+    def test_rpi4_board_matches_own_section(self):
+        """rpi4 board matches 'Raspberry Pi 4' heading."""
+        from utils.ha.os_applicability import os_release_applicability
+
+        notes = "## Raspberry Pi 4\n\nFirmware update.\n"
+        result = os_release_applicability(notes, "rpi4")
+        assert result["applies"] == "yes"
+
+    def test_generic_board_no_board_sections(self):
+        """generic-x86-64 board with no board sections → applies to all."""
+        from utils.ha.os_applicability import os_release_applicability
+
+        notes = "## Changelog\n\nBug fixes.\n"
+        result = os_release_applicability(notes, "generic-x86-64")
+        assert result["applies"] == "yes"
+
+
+class TestFetchOSBoardContext:
+    """Tests for fetch_os_board_context."""
+
+    def test_happy_path(self):
+        """Board from ha os info, kernel from ha host info."""
+        import asyncio
+        import json
+
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.ha.os_applicability import fetch_os_board_context
+
+        ssh = FakeSSHClient(
+            command_results={
+                "ha os info --raw-json": (
+                    0,
+                    json.dumps(
+                        {"result": "ok", "data": {"board": "yellow", "version": "18.5"}}
+                    ),
+                    "",
+                ),
+                "ha host info --raw-json": (
+                    0,
+                    json.dumps(
+                        {
+                            "result": "ok",
+                            "data": {
+                                "kernel": "6.18.39-haos-raspi",
+                                "cpe": "cpe:2.3:o:home-assistant:haos:*:*:*:*:*:*:yellow:*",
+                            },
+                        }
+                    ),
+                    "",
+                ),
+            }
+        )
+        result = asyncio.run(fetch_os_board_context(ssh))
+        assert result is not None
+        assert result["board"] == "yellow"
+        assert result["kernel"] == "6.18.39-haos-raspi"
+        assert "raw_cpe" in result
+
+    def test_ssh_failure_returns_none(self):
+        """SSH failure on both commands → None."""
+        import asyncio
+
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.ha.os_applicability import fetch_os_board_context
+
+        ssh = FakeSSHClient(command_results={})
+        result = asyncio.run(fetch_os_board_context(ssh))
+        assert result is None
+
+    def test_partial_failure_returns_partial(self):
+        """ha os info success but ha host info fails → board only."""
+        import asyncio
+        import json
+
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.ha.os_applicability import fetch_os_board_context
+
+        ssh = FakeSSHClient(
+            command_results={
+                "ha os info --raw-json": (
+                    0,
+                    json.dumps({"result": "ok", "data": {"board": "green"}}),
+                    "",
+                ),
+            }
+        )
+        result = asyncio.run(fetch_os_board_context(ssh))
+        assert result is not None
+        assert result["board"] == "green"
+        assert "kernel" not in result
+
+
+class TestDeriveOSApplicability:
+    """Tests for ToolExecutor._derive_os_applicability."""
+
+    def test_no_board_ctx_returns_empty(self):
+        """No board context → empty dict."""
+        from utils.agent.tool_executor import ToolExecutor
+
+        ex = ToolExecutor(ha_ssh_client=None, gate=None, notifier=None)
+        assert ex._derive_os_applicability() == {}
+
+    def test_board_no_notes_unknown(self):
+        """Board set but no session outputs → applies=unknown."""
+        from utils.agent.tool_executor import ToolExecutor
+
+        ex = ToolExecutor(ha_ssh_client=None, gate=None, notifier=None)
+        ex.set_os_board_context({"board": "yellow", "kernel": "6.18.39-haos-raspi"})
+        result = ex._derive_os_applicability()
+        assert result["applies"] == "unknown"
+        assert result["board"] == "yellow"
+
+    def test_board_with_notes_applies(self):
+        """Board + notes with matching heading → applies=yes."""
+        from utils.agent.tool_executor import ToolExecutor
+
+        ex = ToolExecutor(ha_ssh_client=None, gate=None, notifier=None)
+        ex.set_os_board_context({"board": "yellow", "kernel": "6.18.39-haos-raspi"})
+        ex._session_outputs.append(
+            (
+                "get_update_release_notes",
+                "## Home Assistant Yellow\n\nKernel 6.18.59.\n",
+            )
+        )
+        result = ex._derive_os_applicability()
+        assert result["applies"] == "yes"
+        assert result["board"] == "yellow"
+        assert result["kernel"] == "6.18.39-haos-raspi"
+
+
+_OS_BOARD_HITL_DDL = """
+CREATE TABLE IF NOT EXISTS hitl_suppression (
+    card_key TEXT PRIMARY KEY,
+    card_type TEXT DEFAULT '',
+    description TEXT DEFAULT '',
+    first_sent_at REAL DEFAULT 0,
+    last_sent_at REAL DEFAULT 0,
+    send_count INTEGER DEFAULT 1,
+    known_issue INTEGER DEFAULT 0,
+    known_issue_note TEXT DEFAULT '',
+    last_action TEXT,
+    last_action_at REAL,
+    rejection_count INTEGER DEFAULT 0,
+    next_allowed_at REAL,
+    resolved_at REAL
+)
+"""
+
+
+class TestOSBoardInjection:
+    """Integration test: OS update injects Board line into initial_context."""
+
+    def test_board_line_injected_for_os_update(self, tmp_path, pueo_dirs):
+        """_run_update_analysis for an OS update includes 'Board:' in context."""
+        import asyncio
+        import json
+        import sqlite3
+        from contextlib import ExitStack
+        from unittest import mock
+        from unittest.mock import MagicMock
+
+        from utils.agent.tool_registry import AgentLoopResult
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+
+        class _FakeOSUpdate:
+            component = "os"
+            entity_id = "update.home_assistant_operating_system_update"
+            installed_version = "18.4"
+            latest_version = "18.5"
+            release_url = (
+                "https://github.com/home-assistant/operating-system/releases/tag/18.5"
+            )
+            release_summary = None
+
+        db_path = str(tmp_path / "os_test.db")
+        with sqlite3.connect(db_path) as _conn:
+            _conn.execute(_OS_BOARD_HITL_DDL)
+
+        captured_context = []
+
+        ssh = FakeSSHClient(
+            command_results={
+                "ha os info --raw-json": (
+                    0,
+                    json.dumps(
+                        {"result": "ok", "data": {"board": "yellow", "version": "18.5"}}
+                    ),
+                    "",
+                ),
+                "ha host info --raw-json": (
+                    0,
+                    json.dumps(
+                        {
+                            "result": "ok",
+                            "data": {"kernel": "6.18.39-haos-raspi"},
+                        }
+                    ),
+                    "",
+                ),
+            }
+        )
+
+        with ExitStack() as stack:
+            patches = [
+                mock.patch("utils.agent.agent_loop.AgentLoop"),
+                mock.patch("utils.agent.supervisor.increment_active_agent"),
+                mock.patch("utils.agent.supervisor.decrement_active_agent"),
+                mock.patch(
+                    "utils.agent.supervisor.make_activity_timeline_callback",
+                    return_value=None,
+                ),
+                mock.patch("utils.llm.llm_factory.make_llm_client"),
+                mock.patch("agents.ha_update_manager.DB_PATH", db_path),
+                mock.patch(
+                    "utils.agent.work_queue.get_work_queue_or_none", return_value=None
+                ),
+            ]
+            mocks = [stack.enter_context(p) for p in patches]
+            MockLoop = mocks[0]
+            mock_instance = MagicMock()
+
+            async def _capture_run(ctx, **kwargs):
+                captured_context.append(ctx)
+                return AgentLoopResult(outcome="success")
+
+            mock_instance.run = _capture_run
+            MockLoop.return_value = mock_instance
+            mocks[4].return_value = MagicMock()
+
+            from agents.ha_update_manager import _run_update_analysis
+
+            asyncio.run(
+                _run_update_analysis(
+                    update=_FakeOSUpdate(),
+                    ssh_client=ssh,
+                    notifier=FakeNotifier(),
+                )
+            )
+
+        ctx = captured_context[0] if captured_context else ""
+        assert "Board: yellow" in ctx
+        assert "6.18.39-haos-raspi" in ctx
