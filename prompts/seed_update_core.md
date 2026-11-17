@@ -36,14 +36,7 @@ releases (2026.9.x → 2026.10.x) may carry breaking changes.
    Do NOT call `fetch_url`, `read_source`, `get_ha_profile`, or
    `check_config_against_breaking_change` — the per-BC assessments have already been run.
 
-2. For any minor or major release: **always** call `get_pueo_command_catalog`.
-   Compare every removed, renamed, or replaced integration, API command, or service
-   mentioned in the digest against the catalog entries.  For each match, add an entry to
-   `pueo_command_risks`.
-   A catalog entry whose note says it falls back for the target version (e.g. `hacs/*` →
-   `marketplace/*` on 2026.11+) is **not** a risk — do not list it.
-
-3. Call `finish_update_analysis` with:
+2. Call `finish_update_analysis` with:
    - `highlights`: 2–5 one-sentence items from `Feature highlights`.
    - `instance_impact`: derived from BC verdicts only (flags never raise impact).
      Server overrides this from the verdict table, so pass your best read from the digest.

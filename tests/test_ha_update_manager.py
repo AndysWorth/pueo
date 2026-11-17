@@ -9517,7 +9517,7 @@ class TestUpdateAnalysisSlimPath:
         assert "highlights" in finish["function"]["parameters"]["properties"]
 
     def test_slim_finish_omits_code_derived_fields(self):
-        """Fields code derives from the BC verdicts are not asked of the model (#1223)."""
+        """Fields code derives from BC and pueo_impact verdicts not asked of the model (#1223, #1237)."""
         from utils.agent.tool_registry import (
             FINISH_UPDATE_ANALYSIS,
             FINISH_UPDATE_ANALYSIS_SLIM,
@@ -9532,13 +9532,15 @@ class TestUpdateAnalysisSlimPath:
             "instance_impact",
             "proposed_config_fixes",
             "bc_verdicts",
+            "pueo_command_risks",
         ):
             assert field not in params["properties"]
             assert field not in params["required"]
-        assert params["required"] == ["pueo_command_risks", "create_hitl_card"]
+        assert params["required"] == ["create_hitl_card"]
         assert set(params["required"]) <= set(params["properties"])
         # The full tool is unchanged.
         assert "instance_impact" in FINISH_UPDATE_ANALYSIS.parameters["required"]
+        assert "pueo_command_risks" in FINISH_UPDATE_ANALYSIS.parameters["required"]
 
     def test_slim_prompt_names_no_code_derived_field(self):
         from pathlib import Path
@@ -9546,7 +9548,13 @@ class TestUpdateAnalysisSlimPath:
         text = (
             Path(__file__).parent.parent / "prompts" / "task_update_slim.md"
         ).read_text("utf-8")
-        for field in ("safe_to_update", "instance_impact", "breaking_changes"):
+        for field in (
+            "safe_to_update",
+            "instance_impact",
+            "breaking_changes",
+            "pueo_command_risks",
+            "get_pueo_command_catalog",
+        ):
             assert field not in text
 
     def test_nudge_field_falls_back_when_terminal_tool_lacks_it(self):
@@ -9565,7 +9573,7 @@ class TestUpdateAnalysisSlimPath:
         assert _terminal_primary_field("finish_chat", slim) == "summary"
 
     def test_slim_registry_has_same_investigation_tools(self):
-        """Slim registry has all investigation tools except get_update_release_notes."""
+        """Slim registry drops get_update_release_notes and get_pueo_command_catalog."""
         from utils.agent.tool_registry import (
             build_update_analysis_registry,
             build_update_analysis_slim_registry,
@@ -9573,8 +9581,11 @@ class TestUpdateAnalysisSlimPath:
 
         full_names = set(build_update_analysis_registry().names())
         slim_names = set(build_update_analysis_slim_registry().names())
-        # Slim drops get_update_release_notes — digest is pre-injected (#1215)
-        assert full_names - slim_names == {"get_update_release_notes"}
+        # Slim drops notes tool (pre-injected #1215) and catalog tool (verdicts pre-computed #1237)
+        assert full_names - slim_names == {
+            "get_update_release_notes",
+            "get_pueo_command_catalog",
+        }
         assert slim_names - full_names == set()
 
     def test_slim_registry_excludes_get_update_release_notes(self):
@@ -11703,3 +11714,186 @@ class TestCarryOverPueoVerdicts:
         kept = carry_over_pueo_verdicts(stored, self._report())
         assert len(kept) == 1
         assert kept[0]["verdict"] == "breaks_pueo"
+
+
+# ---------------------------------------------------------------------------
+# S4: breaks_pueo sets safe_to_update=False and pueo_verdicts in payload (#1237)
+# ---------------------------------------------------------------------------
+
+
+class TestBreaksPueoSafetyVerdict:
+    """breaks_pueo verdict overrides safe_to_update and appears in card payload."""
+
+    def _make_executor(self):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from utils.agent.autonomy import AutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+
+        notifier = MagicMock()
+        notifier.send = AsyncMock()
+        gate = AutonomyGate(level=2)
+        executor = ToolExecutor(
+            ha_ssh_client=MagicMock(),
+            gate=gate,
+            notifier=notifier,
+            db_path=":memory:",
+        )
+        return executor, notifier
+
+    def _make_update(self, component="addon_xyz"):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            entity_id=f"update.{component}",
+            component=component,
+            installed_version="1.0.0",
+            latest_version="1.1.0",
+            release_url=None,
+            release_summary=None,
+        )
+
+    def test_breaks_pueo_sets_safe_to_update_false(self, pueo_dirs):
+        """A breaks_pueo verdict forces safe_to_update=False in the card payload."""
+        import asyncio
+
+        from unittest.mock import patch
+
+        executor, notifier = self._make_executor()
+        update = self._make_update()
+        executor.set_update_status(update)
+        executor._release_notes_completeness = "complete"
+        # Inject a breaks_pueo verdict directly.
+        executor._pueo_verdicts["hacs"] = {
+            "dependency": "hacs",
+            "verdict": "breaks_pueo",
+            "quote": "hacs is no longer supported",
+            "reason": "hacs/* commands removed",
+        }
+
+        with patch("agents.ha_log_monitor._update_mark_card_sent"):
+            result = asyncio.run(
+                executor._finish_update_analysis(
+                    safe_to_update=True,  # model said safe; code must override
+                    breaking_changes=[],
+                    affected_config_keys=[],
+                    pueo_command_risks=[],
+                    recommendation="No breaking changes.",
+                    instance_impact="none",
+                    proposed_config_fixes=[],
+                    create_hitl_card=True,
+                )
+            )
+
+        assert result.success
+        assert notifier.send.called
+        payload = notifier.send.call_args.kwargs["payload"]
+        assert payload["safe_to_update"] is False
+        assert any("hacs" in r for r in payload["pueo_command_risks"])
+
+    def test_no_breaks_pueo_leaves_safe_to_update_true(self, pueo_dirs):
+        """no_impact verdicts do not affect safe_to_update."""
+        import asyncio
+
+        from unittest.mock import patch
+
+        executor, notifier = self._make_executor()
+        update = self._make_update()
+        executor.set_update_status(update)
+        executor._release_notes_completeness = "complete"
+        executor._pueo_verdicts["hacs"] = {
+            "dependency": "hacs",
+            "verdict": "no_impact",
+            "quote": "",
+            "reason": "Falls back to marketplace",
+        }
+
+        with patch("agents.ha_log_monitor._update_mark_card_sent"):
+            result = asyncio.run(
+                executor._finish_update_analysis(
+                    safe_to_update=True,
+                    breaking_changes=[],
+                    affected_config_keys=[],
+                    pueo_command_risks=[],
+                    recommendation="Safe.",
+                    instance_impact="none",
+                    proposed_config_fixes=[],
+                    create_hitl_card=True,
+                )
+            )
+
+        assert result.success
+        payload = notifier.send.call_args.kwargs["payload"]
+        assert payload["safe_to_update"] is True
+        assert payload["pueo_command_risks"] == []
+
+    def test_pueo_verdicts_in_payload(self, pueo_dirs):
+        """pueo_verdicts list is included in the card payload."""
+        import asyncio
+
+        from unittest.mock import patch
+
+        executor, notifier = self._make_executor()
+        update = self._make_update()
+        executor.set_update_status(update)
+        executor._release_notes_completeness = "complete"
+        executor._pueo_verdicts["repairs"] = {
+            "dependency": "repairs",
+            "verdict": "dev_check",
+            "quote": "",
+            "reason": "Repairs API changed, manual check needed",
+        }
+
+        with patch("agents.ha_log_monitor._update_mark_card_sent"):
+            asyncio.run(
+                executor._finish_update_analysis(
+                    safe_to_update=True,
+                    breaking_changes=[],
+                    affected_config_keys=[],
+                    pueo_command_risks=[],
+                    recommendation="Safe.",
+                    instance_impact="none",
+                    proposed_config_fixes=[],
+                    create_hitl_card=True,
+                )
+            )
+
+        payload = notifier.send.call_args.kwargs["payload"]
+        assert "pueo_verdicts" in payload
+        assert len(payload["pueo_verdicts"]) == 1
+        assert payload["pueo_verdicts"][0]["dependency"] == "repairs"
+        assert payload["pueo_verdicts"][0]["verdict"] == "dev_check"
+
+    def test_dev_check_in_pueo_command_risks(self, pueo_dirs):
+        """dev_check verdicts appear in pueo_command_risks."""
+        import asyncio
+
+        from unittest.mock import patch
+
+        executor, notifier = self._make_executor()
+        update = self._make_update()
+        executor.set_update_status(update)
+        executor._release_notes_completeness = "complete"
+        executor._pueo_verdicts["lovelace"] = {
+            "dependency": "lovelace",
+            "verdict": "dev_check",
+            "quote": "",
+            "reason": "Lovelace config API changed",
+        }
+
+        with patch("agents.ha_log_monitor._update_mark_card_sent"):
+            asyncio.run(
+                executor._finish_update_analysis(
+                    safe_to_update=True,
+                    breaking_changes=[],
+                    affected_config_keys=[],
+                    pueo_command_risks=[],
+                    recommendation="Safe.",
+                    instance_impact="none",
+                    proposed_config_fixes=[],
+                    create_hitl_card=True,
+                )
+            )
+
+        payload = notifier.send.call_args.kwargs["payload"]
+        assert any("lovelace" in r for r in payload["pueo_command_risks"])

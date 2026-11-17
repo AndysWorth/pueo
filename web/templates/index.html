@@ -80,9 +80,18 @@
       {% if r.payload.get("last_suppressed_at") %}&nbsp;·&nbsp; last recurrence {{ r.payload.last_suppressed_at | epoch_to_iso }}{% endif %}
     </p>
     {% endif %}
-    {% if r.payload.get("bc_verdicts") or r.payload.get("breaking_changes") %}
+    {% if r.payload.get("bc_verdicts") or r.payload.get("breaking_changes") or r.payload.get("pueo_verdicts") %}
     <details open>
       <summary><span class="section-label label-diagnosis">Breaking Changes</span>Advisory — review before updating</summary>
+      {# Pueo impact groups (S4): breaks_pueo above BC groups, dev_check after user_check #}
+      {% if r.payload.get("pueo_verdicts") %}
+      {% set _pueo_breaks = r.payload.pueo_verdicts | selectattr("verdict", "eq", "breaks_pueo") | list %}
+      {% set _pueo_check  = r.payload.pueo_verdicts | selectattr("verdict", "eq", "dev_check") | list %}
+      {% if _pueo_breaks %}
+      <p style="font-weight:600;color:var(--red,#b91c1c);margin:0.4rem 0 0.3rem;">🔧 Pueo needs a change first</p>
+      <ul style="margin:0 0 0.5rem 1.25rem;">{% for v in _pueo_breaks %}<li style="margin-bottom:0.3rem;"><strong>{{ v.dependency }}</strong>{% if v.reason %} — {{ v.reason }}{% endif %}{% if v.quote %}<br><code style="font-size:0.82rem;color:#555;">"{{ v.quote }}"</code>{% endif %}<br><a href="https://github.com/AndysWorth/pueo/issues/new?title={{ ('Pueo impact: ' + v.dependency + ' compatibility with this HA update') | urlencode }}&amp;labels=bug&amp;body={{ ('Pueo detected a compatibility break with the HA update:\n\n**Dependency:** ' + v.dependency + '\n**Reason:** ' + (v.reason or '') + '\n**Quote from release notes:** ' + (v.quote or '')) | urlencode }}" target="_blank" rel="noopener" style="font-size:0.82rem;">File a Pueo issue →</a></li>{% endfor %}</ul>
+      {% endif %}
+      {% endif %}
       {% if r.payload.get("bc_verdicts") %}
       {# Five-group verdict display (S3): before / after / check / not_affected / not_assessed #}
       {% set _before_vds = r.payload.bc_verdicts | selectattr("verdict", "eq", "action_needed") | rejectattr("when", "eq", "after_update") | list %}
@@ -136,6 +145,11 @@
       {% endif %}
       <ul>{% for bc in r.payload.breaking_changes %}<li>{{ bc }}</li>{% endfor %}</ul>
       {% endif %}
+      {# Pueo dev_check verdicts — shown after BC groups #}
+      {% if _pueo_check is defined and _pueo_check %}
+      <p style="font-weight:600;color:var(--orange,#b45309);margin:0.4rem 0 0.3rem;">🔍 Check yourself (Pueo)</p>
+      <ul style="margin:0 0 0.5rem 1.25rem;">{% for v in _pueo_check %}<li style="margin-bottom:0.2rem;"><strong>{{ v.dependency }}</strong>{% if v.reason %} — {{ v.reason }}{% endif %}</li>{% endfor %}</ul>
+      {% endif %}
       {# Screening flags — informational only, collapsed #}
       {% if r.payload.get("screening_flags") %}
       <details style="margin-top:0.5rem;border-top:1px solid #eee;padding-top:0.5rem;">
@@ -145,10 +159,6 @@
       {% endif %}
       {% if r.payload.get("affected_config_keys") %}
       <p><strong>Affected config keys:</strong> {{ r.payload.affected_config_keys | join(", ") }}</p>
-      {% endif %}
-      {% if r.payload.get("pueo_command_risks") %}
-      <p><strong>⚠ Affects Pueo</strong> — these Pueo features rely on APIs changed in this update:</p>
-      <ul>{% for risk in r.payload.pueo_command_risks %}<li>{{ risk }}</li>{% endfor %}</ul>
       {% endif %}
       {% if r.payload.get("proposed_config_fixes") %}
       <details>
