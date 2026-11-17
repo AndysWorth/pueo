@@ -338,3 +338,28 @@ guard then turned every BC into `no_action` — including a real `action_needed`
   to a pre-filled GitHub new-issue URL. Old pueo_command_risks flat list removed.
 - Non-Core updates: release_summary scanned with `find_pueo_dependency_hits` and any hits
   are appended to `initial_context` (keep catalog tool + existing field for those paths).
+
+## Amendment (#1249): split-on-failure + per-batch reuse
+
+**Problem:** a single Ollama 500 / garbled tool call during one screening batch forces a
+full re-run (the previous `carry_over_screening` check was all-or-nothing), and the retry
+was byte-identical so it failed for the same reason.
+
+**Changes:**
+- `CoreReleaseReport` gains `screening_batch_results: dict[str, dict]` (keyed by sha256 of
+  batch text; value `{flags, highlights}`) and `screening_unscreened_domains: list[str]`.
+- `batch_hash(text)` and `batch_domains(text)` helpers in `ha_release_report.py`.
+- `carry_over_screening` now operates per-batch: each batch in the new report is looked up by
+  hash in `prev.screening_batch_results`; matching batches are reused individually.  Returns
+  `True` only when every batch is covered (whole pass reused).  Old reports with
+  `screening_complete=True` but no `screening_batch_results` fall back to the old all-or-nothing
+  behavior for backward compat.
+- Screening loop in `ha_update_manager.py`: on failure after 2 attempts, the batch is split at
+  `### Changes:` / `### Patch changes:` boundaries (at most once) and each half is screened
+  independently.  On success, the delta flags/highlights are stored in
+  `_rpt.screening_batch_results` keyed by the sub-batch hash.  Domains from permanently failed
+  halves are added to `_rpt.screening_unscreened_domains`.
+- `_screening_gap_prefix` in `tool_executor.py` accepts an optional `unscreened_domains` list;
+  when non-empty it names the domains ("Not screened: auth, logbook.") instead of the opaque
+  "some changelog entries".
+- `_split_batch_at_sections(text)` in `ha_update_manager.py` (module-level helper).

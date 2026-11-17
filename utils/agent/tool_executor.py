@@ -351,10 +351,19 @@ def _version_score_multiplier(
     return 1.0
 
 
-def _screening_gap_prefix(gap: tuple[int | None, int | None] | None) -> str:
+def _screening_gap_prefix(
+    gap: tuple[int | None, int | None] | None,
+    unscreened_domains: list[str] | None = None,
+) -> str:
     """Card prefix for complete notes with a partial all-changes screening (#1148)."""
     done, total = gap if gap is not None else (None, None)
     counts = f" ({done} of {total} batches)" if done is not None and total else ""
+    if unscreened_domains:
+        domain_list = ", ".join(unscreened_domains)
+        return (
+            f"All-changes screening incomplete{counts} — not screened:"
+            f" {domain_list}. "
+        )
     return (
         f"All-changes screening incomplete{counts} — some changelog entries"
         " were not reviewed. "
@@ -658,6 +667,8 @@ class ToolExecutor:
         # screening pass was partial: (batches_done, batches_total), either may be
         # None for pre-#1148 reports.  Reset per loop like the completeness flag.
         self._screening_gap: Optional[tuple[Optional[int], Optional[int]]] = None
+        # Domains that could not be screened even after split-and-retry.
+        self._screening_unscreened_domains: list[str] = []
         # Fallback card highlights ("domain: feature") from the Core report.
         self._report_highlights: list[str] = []
         # Blog URL from CoreReleaseReport (populated when report is loaded); persists
@@ -742,6 +753,7 @@ class ToolExecutor:
         self._release_notes_completeness = "none"
         self._installed_bc_found = False
         self._screening_gap = None
+        self._screening_unscreened_domains = []
         self._report_highlights = []
         if self._preinjected_core_report is not None:
             self.adopt_core_release_report(self._preinjected_core_report)
@@ -6601,6 +6613,7 @@ class ToolExecutor:
         self._screening_highlights = []
         self._screening_complete = True  # will be set False on any incomplete batch
         self._screening_gap = None
+        self._screening_unscreened_domains = []
 
     def get_screening_results(self) -> tuple[list[dict], list[dict], bool]:
         """Return (flags, highlights, complete) accumulated from all batch sessions."""
@@ -6810,6 +6823,9 @@ class ToolExecutor:
                 self._screening_gap = (
                     rpt.screening_batches_done,
                     rpt.screening_batches_total,
+                )
+                self._screening_unscreened_domains = list(
+                    rpt.screening_unscreened_domains
                 )
         else:
             self._release_notes_completeness = "incomplete"
@@ -7330,7 +7346,10 @@ class ToolExecutor:
                     version=self._pending_update_status.latest_version,
                 )
             elif _screening_partial and not _bc_unchecked:
-                _unverified_prefix = _screening_gap_prefix(self._screening_gap)
+                _unverified_prefix = _screening_gap_prefix(
+                    self._screening_gap,
+                    self._screening_unscreened_domains or None,
+                )
                 log.warning(
                     "update_analysis_screening_partial",
                     component=self._pending_update_status.component,
@@ -7353,7 +7372,10 @@ class ToolExecutor:
                     " check was performed — impact unconfirmed. "
                 )
                 if _screening_partial:
-                    _unverified_prefix += _screening_gap_prefix(self._screening_gap)
+                    _unverified_prefix += _screening_gap_prefix(
+                        self._screening_gap,
+                        self._screening_unscreened_domains or None,
+                    )
                 log.warning(
                     "update_analysis_bc_not_checked",
                     component=self._pending_update_status.component,

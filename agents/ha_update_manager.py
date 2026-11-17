@@ -1029,6 +1029,26 @@ _BC_EXCLUDED_PRIOR_SESSION_TYPES = (
     "change_screening",
 )
 
+_SCREENING_SECTION_RE = re.compile(
+    r"(?=^### (?:Changes|Patch changes): )", re.MULTILINE
+)
+
+
+def _split_batch_at_sections(text: str) -> list[str]:
+    """Split a screening batch at section boundaries for a split-and-retry.
+
+    Splits at ``### Changes:`` / ``### Patch changes:`` headers and returns
+    up to two halves of roughly equal size.  Returns [text] when there is only
+    one section or the text is empty.
+    """
+    sections = [s for s in _SCREENING_SECTION_RE.split(text) if s.strip()]
+    if len(sections) <= 1:
+        return [text]
+    mid = max(1, len(sections) // 2)
+    first = "\n\n".join(s.rstrip() for s in sections[:mid])
+    second = "\n\n".join(s.rstrip() for s in sections[mid:])
+    return [first, second]
+
 
 def _bc_session_outcome(
     loop_outcome: str, bc_name: str, assessments: dict[str, dict]
@@ -1240,6 +1260,8 @@ async def _run_update_analysis(
         if _is_core_update and _profile is not None and HA_API_TOKEN:
             from utils.knowledge.ha_release_report import (
                 CoreReleaseReport as _CRR,
+                batch_domains as _batch_domains,
+                batch_hash as _batch_hash,
                 build_core_release_report,
                 carry_over_bc_verdicts,
                 carry_over_screening,
@@ -1295,7 +1317,8 @@ async def _run_update_analysis(
             # Step 2: screening batches (LLM, sequential, same WorkItem)
             if _rpt is not None:
                 executor.clear_screening_state()
-                # A complete stored pass over the same input is reused (#1221).
+                # Per-batch reuse: batches already in prev report are skipped;
+                # carry_over_screening returns True only when ALL batches are covered.
                 _screening_reused = _prev_rpt is not None and carry_over_screening(
                     _prev_rpt, _rpt
                 )
@@ -1309,8 +1332,70 @@ async def _run_update_analysis(
                 _all_complete = True
                 _batches_total = 0
                 _batches_done = 0
+                # Snapshot executor result counts before each batch to compute delta.
+                _prev_flags_len = 0
+                _prev_hls_len = 0
+
+                async def _run_one_screening_sub_batch(
+                    sub_text: str,
+                    label: str,
+                ) -> str:
+                    """Run one AgentLoop for *sub_text*; return outcome string."""
+                    _sp = load_agent_prompt(
+                        "change_screening", "finish_change_screening"
+                    )
+                    _sl = make_llm_client()  # pragma: no cover
+                    _sl_loop = AgentLoop(
+                        llm_client=_sl,
+                        tool_executor=executor,
+                        tool_registry=build_change_screening_registry(),
+                        system_prompt=_sp,
+                        terminal_tool_name="finish_change_screening",
+                        trigger="update_poll",
+                        activity_type="change_screening",
+                        db_path=DB_PATH,
+                        knowledge_store=knowledge_store,
+                        capture_llm=True,
+                        max_tool_calls=3,
+                        distill=False,
+                        think=False,
+                        limit_review=False,
+                        num_predict=1000,
+                        seed=0,
+                    )
+                    _sr = await _sl_loop.run(
+                        label + f":\n\n{sub_text}",
+                        signature=_sig_update("core_screen", update.component),
+                        subject_key=update.entity_id,
+                    )
+                    return _sr.outcome
+
                 for _batch_idx, _batch_text in enumerate(_batches):
                     if not _batch_text.strip():
+                        continue
+                    _bh = _batch_hash(_batch_text)
+                    if _bh in _rpt.screening_batch_results:
+                        # Already carried from prev report; inject results into executor
+                        # so get_screening_results() totals are correct.
+                        _stored = _rpt.screening_batch_results[_bh]
+                        for _sf in _stored.get("flags", []):
+                            executor._finish_change_screening(
+                                [_sf], [], batch_complete=True
+                            )
+                        for _sh in _stored.get("highlights", []):
+                            executor._finish_change_screening(
+                                [], [_sh], batch_complete=True
+                            )
+                        log.info(
+                            "screening_batch_reused",
+                            batch=_batch_idx + 1,
+                            total=len(_batches),
+                        )
+                        _batches_total += 1
+                        _batches_done += 1
+                        _prev_flags_len, _prev_hls_len = len(
+                            executor.get_screening_results()[0]
+                        ), len(executor.get_screening_results()[1])
                         continue
                     _batches_total += 1
                     _screen_wq = get_work_queue_or_none()
@@ -1318,49 +1403,24 @@ async def _run_update_analysis(
                         _screen_wq.set_running_detail(
                             f"screening batch {_batch_idx + 1} of {len(_batches)}"
                         )
-                    _screen_t0 = time.monotonic()
                     log.info(
                         "screening_batch_started",
                         batch=_batch_idx + 1,
                         total=len(_batches),
                     )
+                    _batch_label = (
+                        f"HA Core {update.latest_version} — batch"
+                        f" {_batch_idx + 1} of {len(_batches)}"
+                    )
                     _batch_outcome = "failed"
+                    _screen_t0 = time.monotonic()
                     for _attempt in range(2):
                         _screen_t0 = time.monotonic()
                         try:
-                            _screen_prompt = load_agent_prompt(
-                                "change_screening", "finish_change_screening"
-                            )
-                            _screen_llm = make_llm_client()  # pragma: no cover
-                            _screen_loop = AgentLoop(
-                                llm_client=_screen_llm,
-                                tool_executor=executor,
-                                tool_registry=build_change_screening_registry(),
-                                system_prompt=_screen_prompt,
-                                terminal_tool_name="finish_change_screening",
-                                trigger="update_poll",
-                                activity_type="change_screening",
-                                db_path=DB_PATH,
-                                knowledge_store=knowledge_store,
-                                capture_llm=True,
-                                max_tool_calls=3,
-                                distill=False,
-                                think=False,
-                                limit_review=False,
-                                num_predict=1000,
-                                seed=0,
-                            )
-                            _screen_result = await _screen_loop.run(
-                                (
-                                    f"HA Core {update.latest_version} — batch"
-                                    f" {_batch_idx + 1} of {len(_batches)}:"
-                                    f"\n\n{_batch_text}"
-                                ),
-                                signature=_sig_update("core_screen", update.component),
-                                subject_key=update.entity_id,
+                            _batch_outcome = await _run_one_screening_sub_batch(
+                                _batch_text, _batch_label
                             )
                             _screen_elapsed = round(time.monotonic() - _screen_t0, 1)
-                            _batch_outcome = _screen_result.outcome
                             log.info(
                                 "screening_batch_done",
                                 batch=_batch_idx + 1,
@@ -1393,15 +1453,83 @@ async def _run_update_analysis(
                                 outcome="failed",
                                 attempt=_attempt + 1,
                             )
+
                     if _batch_outcome == "success":
                         _batches_done += 1
+                        # Store delta flags/highlights for per-batch reuse.
+                        _cur_flags, _cur_hls, _ = executor.get_screening_results()
+                        _delta_flags = list(_cur_flags[_prev_flags_len:])
+                        _delta_hls = list(_cur_hls[_prev_hls_len:])
+                        _rpt.screening_batch_results[_bh] = {
+                            "flags": _delta_flags,
+                            "highlights": _delta_hls,
+                        }
+                        _prev_flags_len = len(_cur_flags)
+                        _prev_hls_len = len(_cur_hls)
                     else:
-                        _all_complete = False
-                        log.warning(
-                            "screening_batch_incomplete",
-                            batch=_batch_idx + 1,
-                            outcome=_batch_outcome,
-                        )
+                        # Split and retry halves (at most once each).
+                        _sub_batches = _split_batch_at_sections(_batch_text)
+                        if len(_sub_batches) > 1:
+                            log.warning(
+                                "screening_batch_splitting",
+                                batch=_batch_idx + 1,
+                                parts=len(_sub_batches),
+                            )
+                        _split_all_ok = True
+                        for _si, _sub_text in enumerate(_sub_batches):
+                            _sub_hash = _batch_hash(_sub_text)
+                            _sub_outcome = "failed"
+                            _sub_t0 = time.monotonic()
+                            try:
+                                _sub_outcome = await _run_one_screening_sub_batch(
+                                    _sub_text,
+                                    f"{_batch_label} part {_si + 1}/{len(_sub_batches)}",
+                                )
+                            except Exception as _sub_exc:
+                                log.warning(
+                                    "screening_split_batch_failed",
+                                    batch=_batch_idx + 1,
+                                    part=_si + 1,
+                                    error=str(_sub_exc),
+                                )
+                            _sub_elapsed = round(time.monotonic() - _sub_t0, 1)
+                            log.info(
+                                "screening_split_batch_done",
+                                batch=_batch_idx + 1,
+                                part=_si + 1,
+                                elapsed=_sub_elapsed,
+                                outcome=_sub_outcome,
+                            )
+                            if _sub_outcome == "success":
+                                _cur_flags, _cur_hls, _ = (
+                                    executor.get_screening_results()
+                                )
+                                _delta_flags = list(_cur_flags[_prev_flags_len:])
+                                _delta_hls = list(_cur_hls[_prev_hls_len:])
+                                _rpt.screening_batch_results[_sub_hash] = {
+                                    "flags": _delta_flags,
+                                    "highlights": _delta_hls,
+                                }
+                                _prev_flags_len = len(_cur_flags)
+                                _prev_hls_len = len(_cur_hls)
+                            else:
+                                _split_all_ok = False
+                                _unscreened = _batch_domains(_sub_text)
+                                _rpt.screening_unscreened_domains.extend(
+                                    d
+                                    for d in _unscreened
+                                    if d not in _rpt.screening_unscreened_domains
+                                )
+                        if _split_all_ok:
+                            _batches_done += 1
+                        else:
+                            _all_complete = False
+                            log.warning(
+                                "screening_batch_incomplete",
+                                batch=_batch_idx + 1,
+                                outcome=_batch_outcome,
+                                unscreened=_rpt.screening_unscreened_domains,
+                            )
 
                 # Persist screening results to report
                 _screen_dropped = 0
