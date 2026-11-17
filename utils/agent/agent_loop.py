@@ -1363,9 +1363,9 @@ class AgentLoop:
             outcome = "stuck"
         except Exception as exc:
             # Unexpected crash (e.g. HTTP 500 from Ollama, XML parse error).
-            # Capture as "failed" so the episode writer still runs and callers
-            # can handle it through the normal non-success path instead of
-            # propagating an unhandled exception to the work queue.
+            # Use "error" so callers treat this as non-success, the 30-min
+            # backoff fires, but gap distillation is skipped — a code bug is
+            # not a knowledge gap.
             elapsed = time.monotonic() - start_time
             log.error(
                 "agent_loop_crash",
@@ -1374,7 +1374,7 @@ class AgentLoop:
                 steps=len(steps),
                 elapsed=round(elapsed, 2),
             )
-            outcome = "failed"
+            outcome = "error"
 
         log.info(
             "agent_loop_complete",
@@ -1612,8 +1612,12 @@ class AgentLoop:
             # Success sessions are deferred until S5 wires distillation to verification.
             # awaiting_approval is not a failure: its card's executor verifies it.
             # host_sleep-stuck sessions are infrastructure interruptions, not knowledge gaps.
+            # error outcome = code crash, not a knowledge gap — skip distillation.
             _is_sleep_stuck = outcome == "stuck" and self._stuck_reason == "host_sleep"
-            if outcome not in ("success", "awaiting_approval") and not _is_sleep_stuck:
+            if (
+                outcome not in ("success", "awaiting_approval", "error")
+                and not _is_sleep_stuck
+            ):
                 _steps_snap = list(steps)
                 _outcome = outcome
                 _stub = dict(episode_stub) if episode_stub else None
@@ -1704,11 +1708,12 @@ class AgentLoop:
             # Standalone / test mode: write gap for non-success sessions only.
             # Success distillation requires verification (no queue = skip).
             # host_sleep-stuck sessions are infrastructure interruptions, not gaps.
+            # error outcome = code crash, not a knowledge gap — skip distillation.
             _is_sleep_stuck_sa = (
                 outcome == "stuck" and self._stuck_reason == "host_sleep"
             )
             if (
-                outcome not in ("success", "awaiting_approval")
+                outcome not in ("success", "awaiting_approval", "error")
                 and not _is_sleep_stuck_sa
             ):
                 try:
@@ -2342,7 +2347,7 @@ class AgentLoop:
                     log.debug(
                         "tool_call_full",
                         tool_name=tool_call.name,
-                        args=str(tool_call.arguments),
+                        tool_args=str(tool_call.arguments),
                         result=(result_text or ""),
                     )
 

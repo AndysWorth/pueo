@@ -55,6 +55,11 @@ Every `_run_*_investigation` caller writes a 30-minute suppression row (`mark_in
 ## Plain-text console formatter
 `_TextFormatter` in `utils/core/logging.py` is used on `stderr` when `setup_logging(console_text=True)` is called. The file handler always stays JSON. `main.py` enables `console_text` for `--mode netalertx-setup` to produce human-readable installer output.
 
+`StructuredLogger._log` auto-renames any kwarg whose name collides with a `LogRecord` reserved attribute (`args`, `name`, `msg`, etc. — the full set is `_STANDARD_ATTRS` in `logging.py`) to `<key>_` before passing to `extra=`. This prevents `KeyError: Attempt to overwrite '...' in LogRecord`. Callers should still avoid reserved names (rename `args=` to `tool_args=` at the call site), but the safety net means a slip will never crash the caller.
+
+## AgentLoop crash outcome
+An unhandled Python exception inside `AgentLoop.run()` sets `outcome = "error"`. This outcome triggers the normal 30-min stuck-loop backoff (callers check `!= "success"`), but gap distillation is **skipped** — a code bug is not a knowledge gap. All other non-success outcomes (`failed`, `exhausted`, `stuck`, `timeout`, `fix_failed`) still write gaps as before.
+
 ## LLM-guided all actions — 6-phase methodology
 Every significant Pueo action flows through LLM tool-calling reasoning via `AgentLoop`. Infrastructure operations that bypass the LLM (scheduled scraper runs, disk-space enforcement, backup retention sweeps) are housekeeping, not decisions. The boundary rule: if a function changes HA state or makes a judgment call about what to do next, it belongs in an agent loop, not a direct call.
 
