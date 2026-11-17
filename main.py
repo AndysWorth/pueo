@@ -9,6 +9,7 @@ import logging
 import os
 import signal
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Optional
@@ -515,6 +516,9 @@ def _load_registered_tools(executor: "Any", db_path: str) -> None:
 
 
 _RAG_LAST_RUN_PREF_KEY = "rag_refresh:last_run_at"
+# Hard-exit watchdog: if the event loop hasn't unwound within this many seconds
+# after SIGTERM, os._exit(0) is called from a daemon thread.
+_SHUTDOWN_GRACE_S: float = 10.0
 
 
 def _read_last_rag_refresh(db_path: str) -> Optional[float]:
@@ -667,7 +671,7 @@ async def _rag_refresh_loop(knowledge_store: Any, interval_hours: int) -> None:
             )  # pragma: no cover
         finally:
             set_rag_refreshing(False)
-            if _sv_pre is not None:
+            if _sv_pre is not None and not _sv_pre.is_shutting_down():
                 for _lname in _AGENT_LOOPS:
                     try:
                         _sv_pre.run_now(_lname)
@@ -1936,7 +1940,24 @@ async def supervisor_main(config_path: Path) -> None:
         from utils.system.sleep_guard import get_sleep_guard
 
         get_sleep_guard().stop()
-        loop.call_later(3.0, sys.exit, 0)
+
+        # Hard-exit watchdog: if the event loop doesn't unwind within
+        # _SHUTDOWN_GRACE_S, flush log handlers and force-exit.  Runs on a
+        # daemon thread so it fires even if the event loop is blocked.
+        def _watchdog() -> None:
+            from utils.core.logging import get_logger as _wl
+
+            _wl("main").warning("shutdown_forced", grace_s=_SHUTDOWN_GRACE_S)
+            for h in logging.root.handlers:
+                try:
+                    h.flush()
+                except Exception:  # nosec B110
+                    pass
+            os._exit(0)  # noqa: SLF001  # hard exit — asyncio.run never sees this
+
+        _t = threading.Timer(_SHUTDOWN_GRACE_S, _watchdog)
+        _t.daemon = True
+        _t.start()
 
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, _shutdown)

@@ -69,13 +69,26 @@ case "$CMD" in
     stop)
         if ! _running; then
             echo "Pueo is not running." >&2
-            [ -f "$PID_FILE" ] && rm "$PID_FILE"
+            [ -f "$PID_FILE" ] && command rm -f "$PID_FILE"
             exit 0
         fi
         PID="$(cat "$PID_FILE")"
         kill "$PID"
-        rm "$PID_FILE"
-        echo "Pueo stopped (PID $PID)."
+        # Poll up to 15 s for the process to exit, then SIGKILL.
+        _waited=0
+        printf "Stopping Pueo (PID %s)" "$PID"
+        while kill -0 "$PID" 2>/dev/null; do
+            if [ "$_waited" -ge 15 ]; then
+                kill -9 "$PID" 2>/dev/null || true
+                printf " forced (SIGKILL)"
+                break
+            fi
+            sleep 1
+            printf "."
+            _waited=$((_waited + 1))
+        done
+        echo " done."
+        command rm -f "$PID_FILE"
         ;;
     status)
         if _running; then
