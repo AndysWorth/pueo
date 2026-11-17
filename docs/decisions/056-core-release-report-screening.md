@@ -291,3 +291,26 @@ guard then turned every BC into `no_action` — including a real `action_needed`
   `proposed_config_fixes`, `affected_config_keys`). Asking for them made the model write
   its own versions in a long call that arrived with a corrupted key. On the slim path the
   card's `affected_config_keys` is empty: the main loop judged no BC itself.
+
+## Amendment (#1233): the report scans the full release notes for what Pueo itself depends on
+
+- The first Core 2026.11.0 analysis called the update safe although it removed the
+  `hacs/*` WebSocket commands Pueo used. The report kept only the blog's breaking-changes
+  and Farewell sections; the news was in blog prose ("a separate HACS installation is no
+  longer possible on this version"), so no step ever saw it.
+- `build_core_release_report` now keeps the full text of every blog post, the changelog and
+  each patch body it fetched, and passes it to `find_pueo_dependency_hits()` with the
+  manifest in `utils/ha/pueo_dependencies.py`. The result is stored as
+  `CoreReleaseReport.pueo_dependency_hits` (`PueoDependencyHit`: `dependency`, `kind`,
+  `source`, `snippet`). No LLM is involved.
+- Manifest entries that share a search term (`hacs/repositories/list`, the `hacs`
+  integration) are one dependency (`dependency_term_index`). Each non-heading line of the
+  text is a candidate passage.
+- Noise control: an integration name, a CLI command or a term containing `/` matches
+  wherever it appears. Any other term (`repairs`, `lovelace`) matches only on a line that
+  also has a change verb (remove, rename, replace, deprecate, drop, no longer, migrate).
+  At most 6 passages are kept per dependency, those with a change verb first; a passage is
+  cut to 600 characters around the match.
+- The scan gathers evidence only. Nothing reads the field yet: the verdict sessions and
+  the card that holds an update follow in later changes. Release notes can only reveal
+  what they mention.

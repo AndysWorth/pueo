@@ -11150,7 +11150,6 @@ class TestBuildCoreReleaseReport:
         from utils.knowledge.ha_release_report import build_core_release_report
 
         ws = MagicMock()
-        ws.list_manifests = asyncio.coroutine(lambda: [])
 
         async def _ws_coro():
             return []
@@ -11170,6 +11169,66 @@ class TestBuildCoreReleaseReport:
                 _changelog_fetcher=changelogs.__getitem__,
             )
         )
+
+    def test_pueo_dependency_hits_from_blog_changelog_and_patch(self, tmp_path):
+        """Full blog prose, changelog and patch bodies are scanned (#1233)."""
+        import json
+
+        blog = self._BLOG_11.replace(
+            b"<h2>Farewell</h2>",
+            b"<p>A separate HACS installation is no longer possible.</p>"
+            b"<h2>Farewell</h2>",
+        )
+        report = self._run(
+            "2026.11.1",
+            ["device_tracker"],
+            stubs={
+                "2026.11.0": self._STUB_11_0,
+                "2026.11.1": self._STUB_11_1 + "- Spook compatibility note\n",
+            },
+            blogs={
+                "https://www.home-assistant.io/blog/2026/11/04/release-202611/": blog
+            },
+            changelogs={
+                "https://www.home-assistant.io/changelogs/core-2026.11": (
+                    self._CHANGELOG_11 + "\n- Remove the Marketplace beta flag\n"
+                )
+            },
+            state_dir=tmp_path,
+            installed_version="2026.10.4",
+        )
+        found = {(h.dependency, h.source) for h in report.pueo_dependency_hits}
+        assert ("hacs", "blog:2026.11") in found
+        assert ("marketplace", "changelog:2026.11") in found
+        assert ("spook", "patch:2026.11.1") in found
+        stored = json.loads(
+            (tmp_path / "update_reports" / "core_2026.11.1.json").read_text()
+        )
+        assert len(stored["pueo_dependency_hits"]) == len(report.pueo_dependency_hits)
+
+    def test_pueo_dependency_hits_legacy_path(self, tmp_path):
+        """Without installed_version the target blog is still scanned."""
+        blog = self._BLOG_11.replace(
+            b"<h2>Farewell</h2>",
+            b"<p>HACS was replaced by the Marketplace.</p><h2>Farewell</h2>",
+        )
+        report = self._run(
+            "2026.11.0",
+            [],
+            stubs={"2026.11.0": self._STUB_11_0},
+            blogs={
+                "https://www.home-assistant.io/blog/2026/11/04/release-202611/": blog
+            },
+            changelogs={
+                "https://www.home-assistant.io/changelogs/core-2026.11": (
+                    self._CHANGELOG_11
+                )
+            },
+            state_dir=tmp_path,
+        )
+        assert ("hacs", "blog:2026.11") in {
+            (h.dependency, h.source) for h in report.pueo_dependency_hits
+        }
 
     def test_cross_month_patch_fetches_bc_from_zero_stub(self, tmp_path):
         """2026.10.4 → 2026.11.1: BCs come from the 2026.11.0 blog."""

@@ -8,7 +8,12 @@ import pytest
 from utils.ha.pueo_dependencies import (
     PUEO_HA_DEPENDENCIES,
     dependency_key,
+    dependency_term_index,
     dependency_terms,
+)
+from utils.knowledge.ha_release_report import (
+    PueoDependencyHit,
+    find_pueo_dependency_hits,
 )
 
 _ROOT = Path(__file__).resolve().parent.parent
@@ -175,3 +180,168 @@ class TestDependencyTerms:
         assert dependency_key({"domain": "c"}) == "c"
         assert dependency_key({"pattern": "d"}) == "d"
         assert dependency_key({}) == ""
+
+
+# The HACS part of the manifest as it was before #1127 (git show e39983e^), when
+# Pueo still called hacs/* and knew nothing about the Marketplace.
+_PRE_1127_MANIFEST = {
+    "websocket_commands": [
+        {
+            "cmd": "hacs/repositories/list",
+            "feature": "HACS integration discovery and companion provisioning",
+        },
+        {
+            "cmd": "hacs/repositories/add",
+            "feature": "HACS integration install (companion provisioning)",
+        },
+        {
+            "cmd": "hacs/repository/download",
+            "feature": "HACS integration download (companion provisioning)",
+        },
+        {
+            "cmd": "repairs/list_issues",
+            "feature": "repair issue triage and host-health investigation",
+        },
+    ],
+    "repair_id_patterns": [
+        {
+            "pattern": "hacs/restart_required_*",
+            "feature": "HACS restart-required repair detection in log monitor",
+        },
+    ],
+}
+
+# Cut from the Home Assistant 2026.11 release blog post (plain text, as cached).
+_BLOG_2026_11 = """\
+## Welcome to the Marketplace
+
+For years, the community has built custom integrations , dashboard cards, themes, and templates for Home Assistant. People found them through HACS, the Home Assistant Community Store. With this release, HACS becomes part of Home Assistant as the new Marketplace .
+
+### Thank you, HACS
+
+HACS made this possible. @ludeeus founded it and donated it to the Open Home Foundation about a year and a half ago, which is what made bringing it into Home Assistant possible.
+
+If you use HACS today, there is nothing you need to do. Home Assistant migrates it when it starts after the update. Everything you installed stays installed and keeps receiving updates.
+
+The HACS installer stops at Home Assistant 2026.11, so a separate HACS installation is no longer possible on this version. The old HACS won\u2019t get new releases either: the Marketplace ships with every Home Assistant update.
+
+## Exclude items from a target
+
+Sometimes you want an automation to run everywhere except one room. Repairs to old automations are not needed.
+"""
+
+
+class TestDependencyTermIndex:
+    def test_entries_sharing_a_term_are_grouped(self):
+        index = dependency_term_index(PUEO_HA_DEPENDENCIES)
+        sections = {section for section, _ in index["hacs"]}
+        assert {"websocket_commands", "integrations"} <= sections
+        assert all(term == term.lower() for term in index)
+
+    def test_blank_terms_are_skipped(self):
+        index = dependency_term_index(
+            {"integrations": [{"domain": "x", "terms": [" "]}]}
+        )
+        assert index == {}
+
+
+class TestPueoDependencyHit:
+    def test_valid(self):
+        hit = PueoDependencyHit(
+            dependency="hacs", kind="integrations", source="blog:2026.11", snippet="s"
+        )
+        assert hit.dependency == "hacs"
+
+    def test_missing_field(self):
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            PueoDependencyHit(dependency="hacs", kind="integrations", source="b")
+
+    def test_json_round_trip(self):
+        hit = PueoDependencyHit(
+            dependency="hacs", kind="integrations", source="blog:2026.11", snippet="s"
+        )
+        assert PueoDependencyHit.model_validate_json(hit.model_dump_json()) == hit
+
+
+class TestFindPueoDependencyHits:
+    def test_old_manifest_finds_the_hacs_removal_in_blog_prose(self):
+        """Acceptance (#1233): what the 2026.11.0 analysis missed is now found."""
+        hits = find_pueo_dependency_hits(
+            [("blog:2026.11", _BLOG_2026_11)], _PRE_1127_MANIFEST
+        )
+        hacs = [h for h in hits if h.dependency == "hacs"]
+        assert any("no longer possible" in h.snippet for h in hacs)
+        assert all(h.source == "blog:2026.11" for h in hacs)
+        assert all(h.kind == "websocket_commands" for h in hacs)
+
+    def test_generic_word_needs_a_change_verb(self):
+        # "hacs" comes only from WS commands here, so prose that merely names
+        # HACS is not a hit; neither is "Repairs ... are not needed".
+        hits = find_pueo_dependency_hits(
+            [("blog:2026.11", _BLOG_2026_11)], _PRE_1127_MANIFEST
+        )
+        assert {h.dependency for h in hits} == {"hacs"}
+        assert not any("made this possible" in h.snippet for h in hits)
+        assert not any(h.dependency == "repairs" for h in hits)
+
+    def test_integration_name_matches_without_a_verb(self):
+        manifest = {"integrations": [{"domain": "hacs", "terms": ["HACS"]}]}
+        hits = find_pueo_dependency_hits([("blog:2026.11", _BLOG_2026_11)], manifest)
+        assert any("made this possible" in h.snippet for h in hits)
+        assert all(h.kind == "integrations" for h in hits)
+        # Passages that say something changed come first.
+        assert "migrates" in hits[0].snippet or "no longer" in hits[0].snippet
+
+    def test_headings_are_not_hits(self):
+        manifest = {"integrations": [{"domain": "hacs", "terms": ["HACS"]}]}
+        hits = find_pueo_dependency_hits([("b", "### Thank you, HACS\n")], manifest)
+        assert hits == []
+
+    def test_full_command_and_path_match_anywhere(self):
+        manifest = {
+            "ssh_commands": [{"cmd": "ha apps info <slug>", "feature": "f"}],
+            "rest_paths": [{"path": "GET /api/states/<entity_id>", "feature": "f"}],
+        }
+        text = (
+            "- The `ha apps info` output gained a field\n"
+            "- http://host:8123/api/states now paginates\n"
+            "- Unrelated /api/statesman line\n"
+        )
+        hits = find_pueo_dependency_hits([("changelog:2026.11", text)], manifest)
+        assert [(h.dependency, h.kind) for h in hits] == [
+            ("/api/states", "rest_paths"),
+            ("ha apps info", "ssh_commands"),
+        ]
+
+    def test_term_is_matched_whole(self):
+        manifest = {"websocket_commands": [{"cmd": "repairs/list_issues"}]}
+        text = (
+            "- Remove the prerepairs helper\n"
+            "- Removed repairsman\n"
+            "- Rename repairs/list_issues to repairs/list\n"
+        )
+        hits = find_pueo_dependency_hits([("c", text)], manifest)
+        assert [h.snippet for h in hits] == [
+            "- Rename repairs/list_issues to repairs/list"
+        ]
+
+    def test_cap_keeps_verb_lines_and_dedups_across_sources(self):
+        manifest = {"integrations": [{"domain": "spook", "terms": ["Spook"]}]}
+        plain = "".join(f"- Spook note {i}\n" for i in range(10))
+        text = plain + "- Spook service removed\n"
+        hits = find_pueo_dependency_hits([("a", text), ("b", text)], manifest)
+        assert len(hits) == 6
+        assert hits[0].snippet == "- Spook service removed"
+        assert {h.source for h in hits} == {"a"}
+
+    def test_long_passage_is_cut_around_the_match(self):
+        manifest = {"integrations": [{"domain": "spook", "terms": ["Spook"]}]}
+        text = "x" * 2000 + " Spook was removed " + "y" * 2000
+        (hit,) = find_pueo_dependency_hits([("a", text)], manifest)
+        assert len(hit.snippet) <= 600
+        assert "Spook was removed" in hit.snippet
+
+    def test_no_texts_no_hits(self):
+        assert find_pueo_dependency_hits([], PUEO_HA_DEPENDENCIES) == []
