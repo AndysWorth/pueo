@@ -42,8 +42,8 @@ Call `finish_pueo_impact` with one of:
    - "no longer supported", "removed", "deprecated and removed", "replaced by",
      "renamed to", "dropped" applied to a command, path, or API Pueo uses
      → `breaks_pueo` with the confirming phrase as `quote`.
-3. **Is the change about *adding* a new feature, improving behaviour, or renaming
-   something not in the manifest?**  → `no_impact`.
+3. **Is the change about *adding* functionality, improving behaviour, or renaming
+   something not listed in the manifest?**  → `no_impact`.
 4. **Otherwise** (ambiguous wording, partial information, possible future removal)
    → `dev_check`.
 
