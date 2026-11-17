@@ -7166,6 +7166,94 @@ class TestAgentLoopDistillFlag:
         assert rows == 1, "distill=True must write one session_outcomes row"
 
 
+class TestAgentLoopErrorOutcome:
+    """Unhandled AgentLoop exceptions produce outcome='error', no gap distillation."""
+
+    @pytest.fixture
+    def db_path(self, monkeypatch, tmp_path):
+        path = str(tmp_path / "test.db")
+        monkeypatch.setattr(_haa_mod, "DB_PATH", path)
+        _haa_mod.init_local_database()
+        return path
+
+    def _make_crashing_loop(self, db_path, store):
+        """Loop whose LLM client raises RuntimeError, simulating an unexpected crash."""
+        import asyncio  # noqa: F401
+
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import build_ha_tool_registry
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        class _CrashingLLM(FakeToolCallingLLMClient):
+            async def chat_with_tools(self, *args, **kwargs):
+                raise RuntimeError("simulated LLM crash")
+
+        ex = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+        )
+        return AgentLoop(
+            llm_client=_CrashingLLM([]),
+            tool_executor=ex,
+            tool_registry=build_ha_tool_registry(),
+            max_tool_calls=5,
+            trigger="host_health",
+            activity_type="host_health",
+            db_path=db_path,
+            knowledge_store=store,
+            distill=True,
+        )
+
+    def test_crash_produces_error_outcome(self, db_path):
+        """An unexpected exception → outcome 'error', not 'failed'."""
+        import asyncio
+
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        loop = self._make_crashing_loop(db_path, FakeKnowledgeStore())
+        result = asyncio.run(loop.run("Check host health"))
+        assert result.outcome == "error"
+
+    def test_crash_does_not_enqueue_gap_distillation(self, db_path, monkeypatch):
+        """outcome='error' must skip gap distillation (no distill_and_persist call)."""
+        import asyncio
+
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        distill_calls: list[str] = []
+
+        async def _fake_distill(*args, **kwargs):
+            distill_calls.append(kwargs.get("outcome", "?"))
+
+        monkeypatch.setattr(
+            "utils.knowledge.runbook_distiller.distill_and_persist",
+            _fake_distill,
+        )
+        loop = self._make_crashing_loop(db_path, FakeKnowledgeStore())
+        asyncio.run(loop.run("Check host health"))
+        assert (
+            distill_calls == []
+        ), f"distill_and_persist called with outcomes: {distill_calls}"
+
+    def test_crash_still_writes_session_outcome_row(self, db_path):
+        """outcome='error' still writes a session_outcomes row for audit trail."""
+        import asyncio
+        import sqlite3
+
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        loop = self._make_crashing_loop(db_path, FakeKnowledgeStore())
+        asyncio.run(loop.run("Check host health"))
+        with sqlite3.connect(db_path) as conn:
+            rows = conn.execute("SELECT COUNT(*) FROM session_outcomes").fetchone()[0]
+        assert rows == 1, "session_outcomes row must be written even on crash"
+
+
 # ── utils/anonymizer.py ──────────────────────────────────────────────────────────
 
 

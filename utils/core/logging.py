@@ -92,7 +92,12 @@ class StructuredLogger:
         if cid:
             kwargs.setdefault("correlation_id", cid)
         passthrough = {k: kwargs.pop(k) for k in _STDLIB_PASSTHROUGH if k in kwargs}
-        self._logger.log(level, event, extra=kwargs, **passthrough)
+        # Rename any kwarg that collides with a LogRecord reserved attribute to
+        # avoid "Attempt to overwrite '...' in LogRecord" KeyError at runtime.
+        safe: dict[str, Any] = {}
+        for k, v in kwargs.items():
+            safe[f"{k}_" if k in _STANDARD_ATTRS else k] = v
+        self._logger.log(level, event, extra=safe, **passthrough)
 
     def debug(self, event: str, **kwargs: Any) -> None:
         self._log(logging.DEBUG, event, **kwargs)

@@ -100,3 +100,49 @@ class TestStructuredLoggerReservedKwargs:
         )
         assert len(records) == 1
         assert records[0].__dict__.get("tool_args") == {"path": "/config"}
+
+    def test_reserved_kwargs_renamed_with_suffix(self):
+        """args=, name=, msg= must be silently renamed to args_, name_, msg_ in extra."""
+        log, records = self._make_capturing_logger()
+        log.debug(
+            "tool_call_full",
+            args="the_args_value",
+            name="the_name_value",
+            msg="the_msg_value",
+        )
+        assert len(records) == 1
+        record = records[0]
+        # The renamed keys must appear in the record's extra dict
+        assert record.__dict__.get("args_") == "the_args_value"
+        assert record.__dict__.get("name_") == "the_name_value"
+        assert record.__dict__.get("msg_") == "the_msg_value"
+        # The originals must not have been assigned as direct record attributes
+        # (stdlib would have raised if they were passed into extra= directly)
+        assert "args_renamed" not in record.__dict__
+
+    def test_reserved_kwargs_json_output(self):
+        """The JSON formatter must include the renamed keys in the payload."""
+        import json
+
+        from utils.core.logging import StructuredLogger, _JsonFormatter
+
+        records = []
+
+        class _Cap(logging.Handler):
+            def emit(self, r):
+                records.append(r)
+
+        inner = logging.getLogger("pueo.test_json_reserved")
+        inner.handlers = []
+        inner.propagate = False
+        inner.setLevel(logging.DEBUG)
+        h = _Cap()
+        h.setFormatter(_JsonFormatter())
+        inner.addHandler(h)
+        log = StructuredLogger(inner)
+
+        log.debug("tool_call_full", args="payload", extra_field="ok")
+        assert len(records) == 1
+        payload = json.loads(h.format(records[0]))
+        assert payload.get("args_") == "payload"
+        assert payload.get("extra_field") == "ok"

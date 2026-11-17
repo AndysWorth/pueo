@@ -52,6 +52,7 @@ AgentLoopOutcome = Literal[
     "awaiting_approval",
     "stuck",
     "failed",
+    "error",
 ]
 
 

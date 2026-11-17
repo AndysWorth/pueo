@@ -19390,7 +19390,8 @@ class TestAgentLoopStuckOutcome:
 
         result = asyncio.run(loop.run("diagnose the system"))
 
-        assert result.outcome == "failed"
+        # Exhausted retries → exception propagates to outer except → "error"
+        assert result.outcome == "error"
         assert llm.calls == _MAX_MALFORMED_TOOL_CALL_RETRIES + 1
 
     def test_other_llm_errors_are_not_retried(self):
@@ -19399,7 +19400,8 @@ class TestAgentLoopStuckOutcome:
 
         result = asyncio.run(loop.run("diagnose the system"))
 
-        assert result.outcome == "failed"
+        # Non-malformed exception goes straight to outer except → "error"
+        assert result.outcome == "error"
         assert llm.calls == 1
 
     def test_sleep_stuck_sets_stuck_reason_on_double_timeout(self):
@@ -20182,7 +20184,7 @@ class TestAgentLoopDiscardResult:
 
 
 class TestAgentLoopCrashOutcome:
-    """Unexpected exceptions in _loop_body are caught; outcome is 'failed'."""
+    """Unexpected exceptions in _loop_body are caught; outcome is 'error'."""
 
     def _make_crash_loop(self):
         from utils.agent.agent_loop import AgentLoop
@@ -20211,10 +20213,10 @@ class TestAgentLoopCrashOutcome:
             tool_registry=build_ha_tool_registry(),
         )
 
-    def test_crash_returns_failed_not_exception(self):
+    def test_crash_returns_error_not_exception(self):
         loop = self._make_crash_loop()
         result = asyncio.run(loop.run("diagnose"))
-        assert result.outcome == "failed"
+        assert result.outcome == "error"
 
     def test_crash_does_not_propagate_exception(self):
         loop = self._make_crash_loop()
