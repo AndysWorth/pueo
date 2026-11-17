@@ -2657,9 +2657,9 @@ FINISH_UPDATE_ANALYSIS = ToolDefinition(
 )
 
 
-# Fields code derives from the pre-run BC verdicts on the slim path.  They are
-# not offered to the model: asking for them made it write its own versions in a
-# long call that arrived with a corrupted key (#1223).
+# Fields code derives from the pre-run BC and pueo_impact verdicts on the slim
+# path.  They are not offered to the model: asking for them made it write its
+# own versions in a long call that arrived with a corrupted key (#1223).
 _SLIM_CODE_DERIVED_FIELDS = frozenset(
     {
         "bc_verdicts",
@@ -2669,16 +2669,17 @@ _SLIM_CODE_DERIVED_FIELDS = frozenset(
         "recommendation",
         "instance_impact",
         "proposed_config_fixes",
+        "pueo_command_risks",
     }
 )
 
 FINISH_UPDATE_ANALYSIS_SLIM = ToolDefinition(
     name="finish_update_analysis",
     description=(
-        "Call when the update analysis is complete. BC verdicts have been pre-computed "
-        "and are injected in the initial context — do not re-derive them. Safety, "
-        "impact and breaking changes on the card come from those verdicts; provide "
-        "summary, highlights and any Pueo command risks. "
+        "Call when the update analysis is complete. BC and Pueo-impact verdicts have "
+        "been pre-computed and are injected in the initial context — do not re-derive "
+        "them. Safety, impact and breaking changes on the card come from those verdicts; "
+        "provide summary and highlights. "
         "Setting create_hitl_card=true sends an approval card to the user."
     ),
     parameters={
@@ -3132,14 +3133,15 @@ def build_update_analysis_registry() -> ToolRegistry:
 def build_update_analysis_slim_registry() -> ToolRegistry:
     """Registry for the main update-analysis loop when BC assessments have been run.
 
-    Differs from build_update_analysis_registry in two ways:
+    Differs from build_update_analysis_registry in three ways:
     - FINISH_UPDATE_ANALYSIS_SLIM replaces FINISH_UPDATE_ANALYSIS (bc_verdicts removed).
     - GET_UPDATE_RELEASE_NOTES is excluded: the digest is pre-injected into the initial
       context, so the model must use it directly rather than re-fetching (#1215).
+    - GET_PUEO_COMMAND_CATALOG is excluded: Pueo-impact verdicts are pre-computed
+      and injected by code; the model must not re-derive them (#1237).
     """
     reg = ToolRegistry()
     for tool in (
-        GET_PUEO_COMMAND_CATALOG,
         CHECK_CONFIG_AGAINST_BREAKING_CHANGE,
         CHECK_AUTOMATION_REFERENCES,
         READ_FILE,

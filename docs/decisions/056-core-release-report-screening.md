@@ -311,6 +311,30 @@ guard then turned every BC into `no_action` — including a real `action_needed`
   also has a change verb (remove, rename, replace, deprecate, drop, no longer, migrate).
   At most 6 passages are kept per dependency, those with a change verb first; a passage is
   cut to 600 characters around the match.
-- The scan gathers evidence only. Nothing reads the field yet: the verdict sessions and
-  the card that holds an update follow in later changes. Release notes can only reveal
-  what they mention.
+- The scan gathers evidence only; the verdict sessions (Amendment #1235) and the card
+  update (Amendment #1237) follow. Release notes can only reveal what they mention.
+
+## Amendment (#1235): pueo_impact verdict sessions
+
+- One one-shot `AgentLoop` session per dependency that has hits, using
+  `build_pueo_impact_registry()` with only `finish_pueo_impact`.
+- `finish_pueo_impact(verdict, quote, reason)`: `breaks_pueo` | `no_impact` | `dev_check`.
+  `breaks_pueo` is rejected unless `quote` is found verbatim in a snippet.
+- Verdicts persisted to `CoreReleaseReport.pueo_verdicts` in the report JSON.
+- `carry_over_pueo_verdicts` reuses unchanged verdicts across re-runs (excludes `dev_check`).
+- Seed `seed_update_pueo_impact.md` (signature `update:core_pueo:*`).
+
+## Amendment (#1237): card and safety verdict from pueo_impact verdicts
+
+- `breaks_pueo` sets `safe_to_update=False` in `_finish_update_analysis`, overriding the BC
+  verdict and blocking the level-4 auto-apply path.
+- `pueo_command_risks` on the update card is now derived from `pueo_verdicts` (entries with
+  `breaks_pueo` or `dev_check`) instead of being model-supplied.
+- `pueo_command_risks` added to `_SLIM_CODE_DERIVED_FIELDS`; slim path description updated.
+- `task_update_slim.md` and `seed_update_core.md` step 2 (get_pueo_command_catalog) removed
+  from Core path; non-Core keeps the catalog tool and existing field.
+- Dashboard (`index.html`): "Pueo needs a change first" group (breaks_pueo) above BC groups;
+  "Check yourself (Pueo)" group (dev_check) after user_check; each breaks_pueo item links
+  to a pre-filled GitHub new-issue URL. Old pueo_command_risks flat list removed.
+- Non-Core updates: release_summary scanned with `find_pueo_dependency_hits` and any hits
+  are appended to `initial_context` (keep catalog tool + existing field for those paths).

@@ -1205,6 +1205,30 @@ async def _run_update_analysis(
 
         initial_context = sanitize_update_context(initial_context)
 
+        # ── Non-Core: scan available notes text for Pueo dependency hits (S4) ──
+        # For Supervisor/OS/add-on updates the full notes are fetched during the
+        # agent session; we scan what's available upfront (release_summary) so the
+        # agent has early context and can still call get_pueo_command_catalog.
+        if _update_type_early != "core" and update.release_summary:
+            try:
+                from utils.knowledge.ha_release_report import find_pueo_dependency_hits
+                from utils.ha.pueo_dependencies import PUEO_HA_DEPENDENCIES
+
+                _nc_hits = find_pueo_dependency_hits(
+                    [("summary", update.release_summary)], PUEO_HA_DEPENDENCIES
+                )
+                if _nc_hits:
+                    _hit_lines = [
+                        f"  [{h.dependency}] {h.snippet}" for h in _nc_hits[:6]
+                    ]
+                    initial_context += (
+                        "\n\nPotential Pueo dependency mentions in release summary:\n"
+                        + "\n".join(_hit_lines)
+                        + "\nCompare against get_pueo_command_catalog entries."
+                    )
+            except Exception:  # nosec B110
+                pass
+
         # ── Core: build report + run screening batches (S3) ──────────────
         # For Core updates only: build the structured release report (step 1),
         # then run sequential LLM screening batches (step 2) inside this same

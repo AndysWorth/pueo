@@ -7234,6 +7234,27 @@ class ToolExecutor:
                     for v in self._bc_assessments.values()
                     if v.get("config_fix")
                 ]
+        # Derive pueo_command_risks and safety verdict from pueo_impact sessions.
+        # When pueo impact sessions ran, their verdicts are authoritative for the
+        # pueo_command_risks field; the model-supplied value is ignored.
+        _pueo_verdicts_list = list(self._pueo_verdicts.values())
+        if _pueo_verdicts_list:
+            pueo_command_risks = [
+                f"{v['dependency']}: {v['reason']}"
+                for v in _pueo_verdicts_list
+                if v.get("verdict") in ("breaks_pueo", "dev_check")
+            ]
+            # Any breaks_pueo verdict makes the update unsafe regardless of BC verdicts.
+            if any(v.get("verdict") == "breaks_pueo" for v in _pueo_verdicts_list):
+                safe_to_update = False
+                log.warning(
+                    "update_analysis_breaks_pueo",
+                    count=sum(
+                        1
+                        for v in _pueo_verdicts_list
+                        if v.get("verdict") == "breaks_pueo"
+                    ),
+                )
 
         # Server-side enforcement: core/OS/Supervisor always require a card at levels 0–3.
         # Level 4 + high confidence + safe_to_update is the only allowed bypass (ADR 035).
@@ -7621,6 +7642,7 @@ class ToolExecutor:
             ),
             "bc_verdicts": _normalized_verdicts,
             "flag_verdicts": [],
+            "pueo_verdicts": _pueo_verdicts_list,
             # High/medium screening flags for informational collapsed display on the card.
             "screening_flags": [
                 {"domain": f.domain, "severity": f.severity, "change": f.change}
