@@ -147,6 +147,10 @@ class CoreReleaseReport(BaseModel):
     flag_verdicts: list[dict] = []
     # Release-note passages that mention an HA surface Pueo depends on (#1233).
     pueo_dependency_hits: list[PueoDependencyHit] = []
+    # Per-dependency verdicts from the LLM pueo_impact pass (#1235).
+    # Each entry: {dependency: str, verdict: "breaks_pueo"|"no_impact"|"dev_check",
+    #              quote: str, reason: str}
+    pueo_verdicts: list[dict] = []
     # Deterministic report status (blog + changelog parsed).  Screening status is
     # tracked separately in screening_complete / screening_batches_* (#1148).
     completeness: str = "incomplete"
@@ -1334,6 +1338,42 @@ def carry_over_bc_verdicts(
         if prev_inputs.get(name) != new_inputs[name]:
             continue
         seen.add(name)
+        kept.append(dict(v))
+    return kept
+
+
+def carry_over_pueo_verdicts(
+    prev: "CoreReleaseReport", new: "CoreReleaseReport"
+) -> list[dict]:
+    """Return *prev*'s pueo_impact verdicts that still apply to *new*.
+
+    A verdict is kept only when the set of snippets for that dependency is
+    unchanged between the two reports.  This covers the case where a re-run
+    re-fetches identical notes — the session is skipped and the old verdict
+    is reused.
+    """
+
+    def _snippets(report: "CoreReleaseReport") -> dict[str, tuple[str, ...]]:
+        out: dict[str, list[str]] = {}
+        for h in report.pueo_dependency_hits:
+            out.setdefault(h.dependency, []).append(h.snippet)
+        return {dep: tuple(sorted(snips)) for dep, snips in out.items()}
+
+    prev_snips = _snippets(prev)
+    new_snips = _snippets(new)
+    kept: list[dict] = []
+    seen: set[str] = set()
+    for v in prev.pueo_verdicts:
+        dep = v.get("dependency")
+        if dep in seen or dep not in new_snips:
+            continue
+        # dev_check verdicts are never reused — they indicate uncertainty and
+        # should be re-evaluated each run.
+        if v.get("verdict") == "dev_check":
+            continue
+        if prev_snips.get(dep) != new_snips.get(dep):
+            continue
+        seen.add(dep)
         kept.append(dict(v))
     return kept
 

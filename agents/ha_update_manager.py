@@ -1624,6 +1624,183 @@ async def _run_update_analysis(
                             error=str(_persist_exc),
                         )
 
+        # ── Step 4b: pueo_impact verdict sessions (#1235) ─────────────────────
+        # One one-shot session per dependency term that has hits in the report.
+        # Runs after BC assessment so both passes share the same WorkItem and the
+        # no-concurrent-LLM rule is satisfied.
+        if _rpt is not None and _rpt.pueo_dependency_hits:
+            from utils.agent.tool_registry import build_pueo_impact_registry
+            from utils.knowledge.ha_release_report import (
+                carry_over_pueo_verdicts,
+            )
+            from utils.knowledge.runbook_signature import (
+                sig_update as _sig_update_pueo,
+            )
+            from utils.ha.pueo_dependencies import PUEO_HA_DEPENDENCIES
+
+            executor.clear_pueo_impact_state()
+
+            # Group hits by dependency term.
+            _dep_hits: dict[str, list] = {}
+            for _hit in _rpt.pueo_dependency_hits:
+                _dep_hits.setdefault(_hit.dependency, []).append(_hit)
+
+            # Carry over verdicts whose snippet set is unchanged.
+            if _prev_rpt is not None:
+                for _pv in carry_over_pueo_verdicts(_prev_rpt, _rpt):
+                    executor._pueo_verdicts[_pv["dependency"]] = _pv  # type: ignore[attr-defined]
+            if executor._pueo_verdicts:  # type: ignore[attr-defined]
+                log.info(
+                    "pueo_impact_reusing_stored_verdicts",
+                    count=len(executor._pueo_verdicts),  # type: ignore[attr-defined]
+                    total=len(_dep_hits),
+                )
+
+            # Build a {term: [(section, entry), ...]} index for context rendering.
+            from utils.ha.pueo_dependencies import (
+                dependency_term_index as _dep_term_idx,
+            )
+
+            _term_index = _dep_term_idx(PUEO_HA_DEPENDENCIES)
+
+            for _dep_term, _dep_hit_list in _dep_hits.items():
+                if _dep_term in executor._pueo_verdicts:  # type: ignore[attr-defined]
+                    continue
+                _pueo_wq = get_work_queue_or_none()
+                if _pueo_wq is not None:
+                    _pueo_wq.set_running_detail(f"assessing pueo impact: {_dep_term}")
+
+                executor._current_pueo_dependency = _dep_term  # type: ignore[attr-defined]
+                executor._current_pueo_snippets = [h.snippet for h in _dep_hit_list]  # type: ignore[attr-defined]
+                executor._pueo_rejection_note = ""  # type: ignore[attr-defined]
+
+                # Render manifest entries for this term.
+                _manifest_lines: list[str] = []
+                for _section, _entry in _term_index.get(_dep_term, []):
+                    _key = str(
+                        _entry.get("cmd")
+                        or _entry.get("path")
+                        or _entry.get("domain")
+                        or _entry.get("pattern", "")
+                    )
+                    _note = f" — {_entry['note']}" if _entry.get("note") else ""
+                    _manifest_lines.append(f"  - [{_section}] {_key}{_note}")
+                _manifest_block = (
+                    "\n".join(_manifest_lines)
+                    if _manifest_lines
+                    else "  (no manifest entries found)"
+                )
+
+                # Render snippets.
+                _snippet_block = "\n\n".join(
+                    f"[{h.source}] {h.snippet}" for h in _dep_hit_list
+                )
+
+                _pueo_context = (
+                    f"Pueo-dependency impact assessment for: **{_dep_term}**\n\n"
+                    f"## Manifest entries Pueo uses for this term\n\n"
+                    f"{_manifest_block}\n\n"
+                    f"## Release-note snippets mentioning '{_dep_term}'\n\n"
+                    f"{_snippet_block}"
+                )
+
+                _pueo_outcome = "failed"
+                for _attempt in range(2):
+                    _pueo_t0 = time.monotonic()
+                    try:
+                        _pueo_prompt = load_agent_prompt(
+                            "pueo_impact", "finish_pueo_impact"
+                        )
+                        _pueo_llm = make_llm_client()  # pragma: no cover
+                        _pueo_loop = AgentLoop(
+                            llm_client=_pueo_llm,
+                            tool_executor=executor,
+                            tool_registry=build_pueo_impact_registry(),
+                            system_prompt=_pueo_prompt,
+                            terminal_tool_name="finish_pueo_impact",
+                            trigger="update_poll",
+                            activity_type="pueo_impact",
+                            db_path=DB_PATH,
+                            knowledge_store=knowledge_store,
+                            capture_llm=True,
+                            max_tool_calls=1,
+                            distill=False,
+                            think=False,
+                            limit_review=False,
+                            num_predict=500,
+                        )
+                        _retry_note = executor._pueo_rejection_note  # type: ignore[attr-defined]
+                        _pueo_result = await _pueo_loop.run(
+                            _pueo_context
+                            + (f"\n\nNote: {_retry_note}" if _retry_note else ""),
+                            signature=_sig_update_pueo(
+                                "core_pueo",
+                                _dep_term,
+                            ),
+                            subject_key=update.entity_id,
+                        )
+                        _pueo_elapsed = round(time.monotonic() - _pueo_t0, 1)
+                        _pueo_outcome = (
+                            "success"
+                            if _dep_term in executor._pueo_verdicts  # type: ignore[attr-defined]
+                            else _pueo_result.outcome
+                        )
+                        log.info(
+                            "pueo_impact_done",
+                            dependency=_dep_term,
+                            elapsed=_pueo_elapsed,
+                            outcome=_pueo_outcome,
+                            attempt=_attempt + 1,
+                        )
+                        if _pueo_outcome == "success":
+                            break
+                        if _attempt == 0:
+                            log.warning(
+                                "pueo_impact_incomplete_retrying",
+                                dependency=_dep_term,
+                                outcome=_pueo_outcome,
+                            )
+                    except Exception as _pe:
+                        _pueo_elapsed = round(time.monotonic() - _pueo_t0, 1)
+                        log.warning(
+                            "pueo_impact_failed",
+                            dependency=_dep_term,
+                            attempt=_attempt + 1,
+                            error=str(_pe),
+                        )
+                if _pueo_outcome != "success":
+                    # Fall back to dev_check so the dependency appears in verdicts.
+                    executor._pueo_verdicts[_dep_term] = {  # type: ignore[attr-defined]
+                        "dependency": _dep_term,
+                        "verdict": "dev_check",
+                        "quote": "",
+                        "reason": "assessment did not complete",
+                    }
+                    log.warning(
+                        "pueo_impact_incomplete",
+                        dependency=_dep_term,
+                        outcome=_pueo_outcome,
+                    )
+
+            # Persist pueo_verdicts to report JSON.
+            if executor._pueo_verdicts:  # type: ignore[attr-defined]
+                _rpt.pueo_verdicts = list(
+                    executor._pueo_verdicts.values()  # type: ignore[attr-defined]
+                )
+                try:
+                    _report_dir = _get_dirs().state_dir / "update_reports"
+                    _report_dir.mkdir(parents=True, exist_ok=True)
+                    (_report_dir / f"core_{update.latest_version}.json").write_text(
+                        _rpt.model_dump_json(indent=2), encoding="utf-8"
+                    )
+                    log.info(
+                        "pueo_impact_verdicts_persisted",
+                        version=update.latest_version,
+                        count=len(executor._pueo_verdicts),  # type: ignore[attr-defined]
+                    )
+                except Exception as _pp_exc:
+                    log.warning("pueo_impact_persist_failed", error=str(_pp_exc))
+
         # ── Slim path: when BC assessments ran, pre-inject the digest and use the
         # slim registry (no bc_verdicts in the tool schema) so the model writes only
         # summary/highlights.  Also exclude prior update_analysis sessions from

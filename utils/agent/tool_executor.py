@@ -683,6 +683,14 @@ class ToolExecutor:
         # Why the last finish_bc_assessment call was rejected as ungrounded; the
         # update manager puts it in the retry session's context.
         self._bc_rejection_note: str = ""
+        # Per-dependency pueo_impact verdicts (#1235).
+        self._pueo_verdicts: dict[str, dict] = {}
+        # Dependency term currently being assessed by finish_pueo_impact.
+        self._current_pueo_dependency: str = ""
+        # Snippets for the current pueo_impact session; quote must appear in one.
+        self._current_pueo_snippets: list[str] = []
+        # Why the last finish_pueo_impact call was rejected; put in retry context.
+        self._pueo_rejection_note: str = ""
         self._lovelace_suspicious: list[str] = []
         self._event_subscriber: Optional[Any] = None
         # Per-session KB tracking (reset in reset())
@@ -1156,6 +1164,17 @@ class ToolExecutor:
                     config_fix=args.get("config_fix"),
                     affects=args.get("affects"),
                     **{k: v for k, v in args.items() if k not in _bc_known},
+                )
+            if name == "finish_pueo_impact":
+                return self._finish_pueo_impact(
+                    verdict=args.get("verdict"),
+                    quote=args.get("quote", ""),
+                    reason=args.get("reason", ""),
+                    **{
+                        k: v
+                        for k, v in args.items()
+                        if k not in {"verdict", "quote", "reason"}
+                    },
                 )
             if name == "get_device_info":
                 return await self._get_device_info(args.get("ip", ""))
@@ -6583,6 +6602,81 @@ class ToolExecutor:
     def get_bc_assessments(self) -> dict[str, dict]:
         """Return per-BC assessment verdicts accumulated from the assessment pass."""
         return dict(self._bc_assessments)
+
+    def clear_pueo_impact_state(self) -> None:
+        """Reset accumulated pueo_impact verdicts before a new assessment pass."""
+        self._pueo_verdicts = {}
+        self._current_pueo_dependency = ""
+        self._current_pueo_snippets = []
+        self._pueo_rejection_note = ""
+
+    def _finish_pueo_impact(
+        self,
+        verdict: Optional[str] = None,
+        quote: str = "",
+        reason: str = "",
+        **_extra: Any,
+    ) -> ToolResult:
+        """Store a per-dependency pueo_impact verdict.
+
+        ``breaks_pueo`` is rejected unless ``quote`` appears verbatim in one of
+        the snippets provided in the initial context, mirroring the
+        ``action_needed`` grounding check in ``_finish_bc_assessment``.
+        """
+        _PUEO_VERDICTS = frozenset({"breaks_pueo", "no_impact", "dev_check"})
+        dep = self._current_pueo_dependency or "unknown"
+        if str(verdict or "") not in _PUEO_VERDICTS:
+            log.warning(
+                "pueo_impact_verdict_missing",
+                dependency=dep,
+                verdict=str(verdict or ""),
+            )
+            return ToolResult(
+                tool_name="finish_pueo_impact",
+                success=False,
+                output="",
+                error=(
+                    "verdict is required and must be one of: "
+                    "breaks_pueo, no_impact, dev_check."
+                ),
+            )
+        if str(verdict) == "breaks_pueo":
+            if not quote or not any(
+                quote in snippet for snippet in self._current_pueo_snippets
+            ):
+                self._pueo_rejection_note = (
+                    "A previous attempt answered breaks_pueo, which was rejected: "
+                    "the 'quote' field must contain text found verbatim in one of "
+                    "the provided snippets.  If no snippet confirms the break, use "
+                    "dev_check instead."
+                )
+                log.warning(
+                    "pueo_impact_verdict_ungrounded",
+                    dependency=dep,
+                    quote=(quote or "")[:120],
+                )
+                return ToolResult(
+                    tool_name="finish_pueo_impact",
+                    success=False,
+                    output="",
+                    error=(
+                        "breaks_pueo rejected: 'quote' must be text found verbatim in "
+                        "one of the provided snippets.  Copy a short phrase exactly as "
+                        "it appears.  If no snippet confirms the break, use dev_check."
+                    ),
+                )
+        entry: dict = {
+            "dependency": dep,
+            "verdict": str(verdict),
+            "quote": quote,
+            "reason": str(reason),
+        }
+        self._pueo_verdicts[dep] = entry
+        return ToolResult(
+            tool_name="finish_pueo_impact",
+            success=True,
+            output=f"Dependency '{dep}' assessed: {verdict}.",
+        )
 
     async def _get_device_info(self, ip: str) -> ToolResult:
         """Enrich a source IP with ARP, DNS, NetAlertX, and HA device registry context."""

@@ -8110,6 +8110,7 @@ class TestSeedRegistry:
             sig_update("core", "homeassistant"),
             sig_update("core_bc", "homeassistant"),
             sig_update("core_screen", "homeassistant"),
+            sig_update("core_pueo", "homeassistant"),
             sig_update("os", "home_assistant_operating_system"),
             sig_update("supervisor", "home_assistant_supervisor"),
             sig_host_health("resolution_issue", "rpi_firmware_update_blocked"),
@@ -8429,7 +8430,7 @@ class TestPromptNoVerdictRules:
         )
 
     def test_finds_task_prompts(self):
-        assert len(self._agent_prompts()) == 14  # agent_core + 13 task_*.md
+        assert len(self._agent_prompts()) == 15  # agent_core + 14 task_*.md
 
     def test_no_per_type_verdicts(self):
         import re
@@ -8513,6 +8514,7 @@ class TestLoadAgentPrompt:
             "update_slim": "finish_update_analysis",
             "setup": "finish_setup_plan",
             "log_recurrence": "finish_log_investigation",
+            "pueo_impact": "finish_pueo_impact",
         }
         for task in _VALID_TASKS:
             tool = terminal_tools[task]
