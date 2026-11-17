@@ -11596,6 +11596,48 @@ class TestFinishPueoImpact:
         assert not result.success
         assert executor._pueo_verdicts == {}
 
+    def test_dispatch_verdict_recovered_from_malformed_key(self):
+        # Flint model quirk: embeds reasoning text + <tool_call>verdict as a key,
+        # with the actual verdict as the value.
+        executor = self._make_executor()
+        executor._current_pueo_dependency = "hacs"
+        result = self._dispatch(
+            executor,
+            {
+                "reason": "",
+                "The release notes say HACS stops at 2026.11<tool_call>verdict": "no_impact",
+            },
+        )
+        assert result.success, result.error
+        assert executor._pueo_verdicts["hacs"]["verdict"] == "no_impact"
+
+    def test_dispatch_verdict_not_recovered_when_ambiguous(self):
+        # Two different valid verdicts in values — cannot safely pick one.
+        executor = self._make_executor()
+        executor._current_pueo_dependency = "hacs"
+        result = self._dispatch(
+            executor,
+            {
+                "reason": "no_impact",
+                "some_key<tool_call>verdict": "dev_check",
+            },
+        )
+        assert not result.success
+        assert "verdict is required" in (result.error or "")
+        assert executor._pueo_verdicts == {}
+
+    def test_dispatch_verdict_not_recovered_when_none_in_values(self):
+        # No valid verdict appears anywhere — standard missing-verdict failure.
+        executor = self._make_executor()
+        executor._current_pueo_dependency = "hacs"
+        result = self._dispatch(
+            executor,
+            {"reason": "Something changed but I cannot classify it."},
+        )
+        assert not result.success
+        assert "verdict is required" in (result.error or "")
+        assert executor._pueo_verdicts == {}
+
 
 class TestCarryOverPueoVerdicts:
     """Tests for carry_over_pueo_verdicts."""

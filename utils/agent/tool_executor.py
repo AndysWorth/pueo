@@ -1166,8 +1166,27 @@ class ToolExecutor:
                     **{k: v for k, v in args.items() if k not in _bc_known},
                 )
             if name == "finish_pueo_impact":
+                _verdict = args.get("verdict")
+                # Recover when the model embeds the verdict as the value of a
+                # malformed key (e.g. "some text<tool_call>verdict": "no_impact").
+                # Scan all values; use the match only when exactly one valid
+                # verdict appears, so we never guess from ambiguous output.
+                if str(_verdict or "") not in {
+                    "breaks_pueo",
+                    "no_impact",
+                    "dev_check",
+                }:
+                    _VALID = {"breaks_pueo", "no_impact", "dev_check"}
+                    _found = [v for v in args.values() if v in _VALID]
+                    if len(_found) == 1:
+                        log.warning(
+                            "pueo_impact_verdict_recovered",
+                            original_verdict=str(_verdict or ""),
+                            recovered=_found[0],
+                        )
+                        _verdict = _found[0]
                 return self._finish_pueo_impact(
-                    verdict=args.get("verdict"),
+                    verdict=_verdict,
                     quote=args.get("quote", ""),
                     reason=args.get("reason", ""),
                     **{
