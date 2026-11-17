@@ -1267,6 +1267,7 @@ async def _run_update_analysis(
                 carry_over_screening,
                 coerce_screening_items,
                 load_stored_core_report,
+                load_stored_core_report_any_patch,
                 make_screening_batches,
             )
             from utils.agent.tool_registry import build_change_screening_registry
@@ -1284,8 +1285,15 @@ async def _run_update_analysis(
             )
 
             # Read the stored report first: the build below overwrites it (#1221).
+            # Exact-version match first; fall back to same-month same-installed-version
+            # report so that a patch bump (e.g. .1 → .2) reuses screening + BC verdicts
+            # from the previous patch and only screens the new sections.
             _prev_rpt = load_stored_core_report(
                 _report_path, update.latest_version, update.installed_version or ""
+            ) or load_stored_core_report_any_patch(
+                _get_dirs().state_dir / "update_reports",
+                update.latest_version,
+                update.installed_version or "",
             )
 
             # Step 1: build report (deterministic)
@@ -2317,8 +2325,7 @@ async def _poll_core_version(
             if not isinstance(info.get("version"), str):
                 log.error("ha_core_info_schema_unexpected", keys=list(info.keys()))
             current = info.get("version", "")
-            update_available = info.get("update_available", True)
-            if current == target_version or not update_available:
+            if current == target_version:
                 return True
         except Exception as exc:
             log.warning("poll_core_version_error", error=str(exc))
@@ -2622,7 +2629,9 @@ async def execute_core_update(
 
     _emit_step("Backup ready — sending Core update command…")
     update_stderr = await _send_update_command(
-        ssh_client, "ha core update --no-progress", "core"
+        ssh_client,
+        f"ha core update --version {update.latest_version} --no-progress",
+        "core",
     )
     if update_stderr:
         log.warning("core_update_stderr", stderr=update_stderr[:200])
@@ -2746,7 +2755,11 @@ async def execute_os_update(
     log.info("os_update_backup_complete", slug=backup_slug)
 
     _emit_step("Backup ready — sending OS update command…")
-    await _send_update_command(ssh_client, "ha os update --no-progress", "os")
+    await _send_update_command(
+        ssh_client,
+        f"ha os update --version {update.latest_version} --no-progress",
+        "os",
+    )
 
     host = ha_host or HA_HOST
     port = ha_port or HA_API_PORT
@@ -2866,6 +2879,34 @@ async def execute_addon_update(
             from utils.ha.ha_rest_client import HARestClient
 
             rest = HARestClient(HA_HOST, HA_API_PORT, HA_API_TOKEN, timeout=30.0)
+
+        # Guard: re-read the live entity to confirm the target version hasn't moved
+        # since analysis. Add-ons have no --version pin, so executing the wrong
+        # version would skip the analysis.
+        try:
+            _live_updates = await get_update_status(rest)
+            _live = next(
+                (u for u in _live_updates if u.entity_id == update.entity_id), None
+            )
+            if _live is not None and _live.latest_version != update.latest_version:
+                log.warning(
+                    "addon_update_version_mismatch",
+                    slug=update.component,
+                    card_version=update.latest_version,
+                    live_version=_live.latest_version,
+                )
+                await notifier.send(
+                    subject=f"Update target moved: {update.component}",
+                    body=(
+                        f"The card was analysed for {update.latest_version} but HA now "
+                        f"offers {_live.latest_version}. Re-analysis will run on the "
+                        f"next update check."
+                    ),
+                    payload={},
+                )
+                return False
+        except Exception as exc:  # nosec B110
+            log.warning("addon_update_version_check_failed", error=str(exc)[:200])
 
         try:
             await rest.call_service(

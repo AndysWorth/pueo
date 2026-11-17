@@ -5840,13 +5840,14 @@ class TestPollCoreVersion:
         )
         assert result is False
 
-    def test_returns_true_when_update_available_false(self):
+    def test_returns_true_only_on_exact_version_match(self):
+        # update_available=False alone is not success; only current==target is (#1251).
         from agents.ha_update_manager import _poll_core_version
         import json
         from utils.ha.ssh_client import FakeSSHClient
 
         payload = json.dumps(
-            {"data": {"version": "2026.6.0", "update_available": False}}
+            {"data": {"version": "2026.7.0", "update_available": False}}
         )
         ssh = FakeSSHClient(command_results={"ha core info": (0, payload, "")})
         result = asyncio.run(
