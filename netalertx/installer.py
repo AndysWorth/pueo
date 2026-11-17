@@ -1143,6 +1143,55 @@ async def run_steps_5_to_8(
     return current_state
 
 
+async def _send_install_blocked_card(
+    notifier: "NotifierProtocol",
+    db_path: str,
+    available_gb: float,
+    required_gb: float,
+) -> None:
+    """Send one advise-only card when disk space blocks the install; suppressed if already pending."""
+    import sqlite3 as _sqlite3
+
+    from utils.hitl.card_types import CARD_TYPE_NETALERTX_INSTALL_BLOCKED
+    from utils.hitl.hitl_tracker import mark_card_sent, should_send_card, stable_nid
+
+    _key = "netalertx:install_blocked"
+    try:
+        with _sqlite3.connect(db_path, timeout=5) as _conn:
+            if not should_send_card(_conn, _key):
+                return
+            nid = stable_nid(_key)
+            mark_card_sent(
+                _conn,
+                _key,
+                CARD_TYPE_NETALERTX_INSTALL_BLOCKED,
+                "NetAlertX install blocked: disk too low",
+            )
+    except Exception:  # nosec B110 — never block the install path
+        return
+    await notifier.send(
+        subject="NetAlertX install blocked: disk space too low",
+        body=(
+            f"HA has only {available_gb:.1f} GB free — "
+            f"{required_gb:.1f} GB required. "
+            "Free up disk space on HA; Pueo will retry the install automatically."
+        ),
+        payload={
+            "notification_id": nid,
+            "suppression_key": _key,
+            "card_type": CARD_TYPE_NETALERTX_INSTALL_BLOCKED,
+            "available_gb": available_gb,
+            "required_gb": required_gb,
+            "informational": True,
+        },
+    )
+    log.info(
+        "netalertx_install_blocked_card_sent",
+        available_gb=available_gb,
+        required_gb=required_gb,
+    )
+
+
 async def run_steps_1_to_4(
     ssh_client: "SSHClientProtocol",
     gate: "AutonomyGate",
@@ -1181,14 +1230,8 @@ async def run_steps_1_to_4(
                 required_gb=exc.min_gb,
                 correlation_id=cid,
             )
-            await notifier.send(
-                subject="NetAlertX install aborted: HA disk space too low",
-                body=(
-                    f"HA has only {exc.available_gb:.1f} GB free — "
-                    f"{exc.min_gb:.1f} GB required. "
-                    "Free disk space on HA before retrying the NetAlertX install."
-                ),
-                payload={"type": "installer_error", "severity": "ERROR"},
+            await _send_install_blocked_card(
+                notifier, db_path, exc.available_gb, exc.min_gb
             )
             return current_state
         except Exception as _disk_exc:  # nosec B110 — df failure is non-fatal

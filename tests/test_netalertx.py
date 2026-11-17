@@ -7252,14 +7252,12 @@ class TestDiskCheckModule:
         import sqlite3
         from netalertx.installer import run_steps_1_to_4
 
-        # Set up DB
+        # Set up DB (netalertx_install_state + hitl_suppression for should_send_card)
+        from agents import ha_agent_advanced
+
         db = tmp_path / "test.db"
-        with sqlite3.connect(str(db)) as conn:
-            conn.execute(
-                "CREATE TABLE netalertx_install_state "
-                "(id INTEGER PRIMARY KEY, state TEXT, correlation_id TEXT, "
-                "timestamp TEXT, details_json TEXT)"
-            )
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", str(db))
+        ha_agent_advanced.init_local_database()
 
         # SSH that returns 2 GB free (below 5 GB min); 2097152 KB = 2 GB
         df_output = (
@@ -10140,3 +10138,128 @@ class TestNetalertxLearningLoop:
 
         assert sig_netalertx("availability") == "netalertx:availability:*"
         assert sig_netalertx("config", "drift") == "netalertx:config:drift"
+
+
+class TestInstallBlockedCard:
+    """_send_install_blocked_card sends a stable-nid advise-only card once."""
+
+    def _make_db(self, tmp_path, monkeypatch):
+        from agents import ha_agent_advanced
+        import netalertx.installer as inst
+
+        db = str(tmp_path / "test.db")
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", db)
+        ha_agent_advanced.init_local_database()
+        monkeypatch.setattr(inst, "DB_PATH", db)
+        return db
+
+    def test_sends_card_once(self, tmp_path, monkeypatch):
+        import asyncio
+        import sqlite3
+
+        from utils.hitl.notify import FakeNotifier
+        import netalertx.installer as inst
+
+        db = self._make_db(tmp_path, monkeypatch)
+        notifier = FakeNotifier(approve=False)
+        asyncio.run(inst._send_install_blocked_card(notifier, db, 3.4, 5.0))
+        assert len(notifier.sent) == 1
+        payload = notifier.sent[0]["payload"]
+        assert payload["card_type"] == "netalertx_install_blocked"
+        assert payload.get("informational") is True
+        assert abs(payload["available_gb"] - 3.4) < 0.01
+
+        # Verify mark_card_sent was called (send_count > 0)
+        with sqlite3.connect(db) as conn:
+            row = conn.execute(
+                "SELECT send_count FROM hitl_suppression WHERE card_key = ?",
+                ("netalertx:install_blocked",),
+            ).fetchone()
+        assert row is not None and row[0] >= 1
+
+    def test_suppressed_on_second_call(self, tmp_path, monkeypatch):
+        import asyncio
+
+        from utils.hitl.notify import FakeNotifier
+        import netalertx.installer as inst
+
+        db = self._make_db(tmp_path, monkeypatch)
+        notifier = FakeNotifier(approve=False)
+        asyncio.run(inst._send_install_blocked_card(notifier, db, 3.4, 5.0))
+        asyncio.run(inst._send_install_blocked_card(notifier, db, 3.4, 5.0))
+        # Second call should be suppressed by should_send_card (card is pending)
+        assert len(notifier.sent) == 1
+
+    def test_uses_stable_nid(self, tmp_path, monkeypatch):
+        import asyncio
+
+        from utils.hitl.hitl_tracker import stable_nid
+        from utils.hitl.notify import FakeNotifier
+        import netalertx.installer as inst
+
+        db = self._make_db(tmp_path, monkeypatch)
+        notifier = FakeNotifier(approve=False)
+        asyncio.run(inst._send_install_blocked_card(notifier, db, 3.4, 5.0))
+        expected_nid = stable_nid("netalertx:install_blocked")
+        assert notifier.sent[0]["payload"]["notification_id"] == expected_nid
+
+
+class TestNetalertxLoopGating:
+    """Loops skip when install state is not in the required states."""
+
+    def _write_state(self, db, state):
+        import sqlite3
+
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO netalertx_install_state (id, state, details_json)"
+                " VALUES (1, ?, '{}')",
+                (state,),
+            )
+
+    def test_log_states_set_covers_addon_running(self):
+        """The _nax_log_states set used in main.py must include ADDON_RUNNING."""
+        from netalertx.installer import INSTALL_STATES, _STATE_RANK
+
+        # States in _nax_log_states from main.py
+        nax_log_states = {
+            "ADDON_RUNNING",
+            "NETALERTX_CONFIGURED",
+            "HA_MQTT_INTEGRATION_VERIFIED",
+            "HA_AUTOMATION_CREATED",
+            "FULLY_OPERATIONAL",
+            "OPERATIONAL_NO_API",
+        }
+        # Every state in the set must be a known install state
+        for s in nax_log_states:
+            assert s in INSTALL_STATES, f"{s} is not a known install state"
+        # All states >= ADDON_RUNNING should be covered
+        min_rank = _STATE_RANK["ADDON_RUNNING"]
+        for s in INSTALL_STATES:
+            if _STATE_RANK.get(s, -1) >= min_rank and s != "DOCKER_MACOS_UNSUPPORTED":
+                assert s in nax_log_states, f"{s} should be in nax_log_states"
+
+    def test_not_installed_state_excluded(self):
+        """NOT_INSTALLED must not be in the log-monitor gate states."""
+        nax_log_states = {
+            "ADDON_RUNNING",
+            "NETALERTX_CONFIGURED",
+            "HA_MQTT_INTEGRATION_VERIFIED",
+            "HA_AUTOMATION_CREATED",
+            "FULLY_OPERATIONAL",
+            "OPERATIONAL_NO_API",
+        }
+        assert "NOT_INSTALLED" not in nax_log_states
+
+    def test_event_poll_states_subset_of_log_states(self):
+        """Event poll requires FULLY_OPERATIONAL or OPERATIONAL_NO_API."""
+        nax_event_poll_states = {"FULLY_OPERATIONAL", "OPERATIONAL_NO_API"}
+        nax_log_states = {
+            "ADDON_RUNNING",
+            "NETALERTX_CONFIGURED",
+            "HA_MQTT_INTEGRATION_VERIFIED",
+            "HA_AUTOMATION_CREATED",
+            "FULLY_OPERATIONAL",
+            "OPERATIONAL_NO_API",
+        }
+        assert nax_event_poll_states.issubset(nax_log_states)

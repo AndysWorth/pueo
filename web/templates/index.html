@@ -549,6 +549,15 @@ trigger: {{ r.payload.get("trigger", []) | tojson(indent=2) }}
         {% endif %}
       </div>
       {% endif %}
+      {% if ct == "netalertx_install_blocked" %}
+      <div style="margin:0.75rem 0;">
+        <p style="margin:0 0 0.4rem;font-size:0.88rem;">
+          HA has only <strong>{{ r.payload.get("available_gb", "?") }} GB</strong> free —
+          {{ r.payload.get("required_gb", "?") }} GB required to install NetAlertX.
+          Free up disk space on HA; Pueo will retry the install automatically when space is available.
+        </p>
+      </div>
+      {% endif %}
       {% if ct == "disk_recovery" %}
       <div style="margin:0.75rem 0;">
         {% set da = r.payload.get("disk_analysis", {}) %}

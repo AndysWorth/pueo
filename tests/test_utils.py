@@ -13769,3 +13769,125 @@ class TestAgentLoopUnregisteredTool:
             or "unregistered" in r.message
             for r in caplog.records
         )
+
+
+class TestConceptDocPaths:
+    """Verify that the _CONCEPT_DOCS URL table contains no known-stale paths."""
+
+    def test_no_stale_automation_templating_path(self):
+        """automation_templating was removed because the HA upstream page no longer exists;
+        its content is covered by the existing 'templating' entry."""
+        from utils.knowledge.ha_concepts_scraper import _CONCEPT_DOCS
+
+        doc_ids = {doc_id for doc_id, _ in _CONCEPT_DOCS}
+        assert (
+            "automation_templating" not in doc_ids
+        ), "automation_templating was removed; HA automation/templating.md no longer exists"
+
+    def test_no_stale_scripts_path(self):
+        from utils.knowledge.ha_concepts_scraper import _CONCEPT_DOCS
+
+        path_map = {doc_id: path for doc_id, path in _CONCEPT_DOCS}
+        assert (
+            path_map["scripts"] == "_docs/script"
+        ), "_docs/scripts path was removed upstream; use _docs/script (singular)"
+
+
+class TestResourcePollerNaxWake:
+    """_wake_netalertx_on_disk_recovery wakes netalertx_setup when disk recovers."""
+
+    def _make_poller(self, tmp_path):
+        from utils.disk.resource import ResourcePoller
+        from utils.ha.ssh_client import FakeSSHClient
+
+        return ResourcePoller(
+            ssh_client=FakeSSHClient(),
+            notifier=None,
+            interval_seconds=300,
+            disk_warn_gb=5.0,
+            disk_critical_gb=2.0,
+            mem_warn_mb=256.0,
+            db_path=str(tmp_path / "test.db"),
+        )
+
+    def test_wakes_setup_loop_when_disk_ok_and_not_installed(
+        self, tmp_path, monkeypatch
+    ):
+        import asyncio
+
+        from agents import ha_agent_advanced
+        import utils.agent.supervisor as _sv_mod
+
+        db = str(tmp_path / "test.db")
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", db)
+        ha_agent_advanced.init_local_database()
+
+        woken = []
+
+        class _FakeSupervisor:
+            def wake(self, name):
+                woken.append(name)
+
+        monkeypatch.setattr(
+            _sv_mod, "get_supervisor_instance", lambda: _FakeSupervisor()
+        )
+
+        import config as _cfg
+
+        monkeypatch.setattr(_cfg, "NETALERTX_SETUP_DESIRED", True)
+        monkeypatch.setattr(_cfg, "NETALERTX_DOCKER_MIN_DISK_GB", 5.0)
+        monkeypatch.setattr(_cfg, "DB_PATH", db)
+
+        import netalertx.installer as _inst
+
+        monkeypatch.setattr(_inst, "DB_PATH", db)
+
+        poller = self._make_poller(tmp_path)
+        asyncio.run(poller._wake_netalertx_on_disk_recovery(disk_free_gb=6.0))
+        assert "netalertx_setup" in woken
+
+    def test_no_wake_when_disk_still_low(self, tmp_path, monkeypatch):
+        import asyncio
+
+        import config as _cfg
+        import utils.agent.supervisor as _sv_mod
+
+        monkeypatch.setattr(_cfg, "NETALERTX_SETUP_DESIRED", True)
+        monkeypatch.setattr(_cfg, "NETALERTX_DOCKER_MIN_DISK_GB", 5.0)
+
+        woken = []
+
+        class _FakeSupervisor:
+            def wake(self, name):
+                woken.append(name)
+
+        monkeypatch.setattr(
+            _sv_mod, "get_supervisor_instance", lambda: _FakeSupervisor()
+        )
+
+        poller = self._make_poller(tmp_path)
+        asyncio.run(poller._wake_netalertx_on_disk_recovery(disk_free_gb=3.0))
+        assert woken == []
+
+    def test_no_wake_when_setup_not_desired(self, tmp_path, monkeypatch):
+        import asyncio
+
+        import config as _cfg
+        import utils.agent.supervisor as _sv_mod
+
+        monkeypatch.setattr(_cfg, "NETALERTX_SETUP_DESIRED", False)
+        monkeypatch.setattr(_cfg, "NETALERTX_DOCKER_MIN_DISK_GB", 5.0)
+
+        woken = []
+
+        class _FakeSupervisor:
+            def wake(self, name):
+                woken.append(name)
+
+        monkeypatch.setattr(
+            _sv_mod, "get_supervisor_instance", lambda: _FakeSupervisor()
+        )
+
+        poller = self._make_poller(tmp_path)
+        asyncio.run(poller._wake_netalertx_on_disk_recovery(disk_free_gb=6.0))
+        assert woken == []

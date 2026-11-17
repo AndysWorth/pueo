@@ -2986,11 +2986,17 @@ class TestSupervisorMain:
         assert "netalertx" not in started
 
     def test_netalertx_loop_starts_when_enabled(self, monkeypatch, tmp_path):
-        """netalertx loop starts when netalertx.enabled is true."""
+        """netalertx loop starts when netalertx.enabled is true and addon is installed."""
         config_path = self._make_config(
             tmp_path, netalertx_host="ha.local", netalertx_enabled=True
         )
         started = self._patch_all(monkeypatch, config_path)
+
+        import netalertx.installer as _nax_inst
+
+        monkeypatch.setattr(
+            _nax_inst, "get_install_state", lambda *a, **kw: "FULLY_OPERATIONAL"
+        )
 
         import main as m
 
@@ -3000,7 +3006,7 @@ class TestSupervisorMain:
     def test_netalertx_event_poll_loop_starts_when_enabled_with_token(
         self, monkeypatch, tmp_path
     ):
-        """netalertx_event_poll loop starts when enabled + host + token are all set."""
+        """netalertx_event_poll loop starts when enabled + host + token + FULLY_OPERATIONAL."""
         cfg_data = {
             "home_assistant": {"host": "ha.local"},
             "netalertx": {
@@ -3014,6 +3020,19 @@ class TestSupervisorMain:
         config_path.write_text(yaml.dump(cfg_data))
         (tmp_path / "hitl").mkdir(exist_ok=True)
         started = self._patch_all(monkeypatch, config_path)
+
+        import netalertx.installer as _nax_inst
+        import netalertx.reconcile as _nax_reconcile_mod
+
+        monkeypatch.setattr(
+            _nax_inst, "get_install_state", lambda *a, **kw: "FULLY_OPERATIONAL"
+        )
+        # Prevent the reconcile block (also gated on FULLY_OPERATIONAL) from making real SSH calls.
+        monkeypatch.setattr(
+            _nax_reconcile_mod,
+            "reconcile_existing_install",
+            lambda *a, **kw: (lambda: None)(),
+        )
 
         import netalertx.api_client as _nax_api_mod
         import netalertx.event_poll as _ep_mod

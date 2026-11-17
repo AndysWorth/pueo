@@ -613,12 +613,7 @@ async def _rag_refresh_loop(knowledge_store: Any, interval_hours: int) -> None:
         _log.info(
             "rag_refresh_start", reason="collections_empty", empty=empty_bootstrap
         )
-        write_timeline_event(
-            "INFO",
-            "rag_refresh",
-            "RAG refresh started (bootstrap collections empty)",
-            {"reason": "collections_empty", "empty": empty_bootstrap},
-        )
+        # run_rag_refresh writes its own "RAG refresh started" timeline row; no duplicate here.
         # Pause agent-spawning loops while KB is empty so they don't run with
         # an empty knowledge base. ha_log_monitor is NOT paused — we must not
         # miss critical errors during startup.
@@ -1736,49 +1731,67 @@ async def supervisor_main(config_path: Path) -> None:
         interval_seconds=3600,
     )
 
-    # NetAlertX log monitor (only if user opted in via netalertx.enabled)
+    # NetAlertX log monitor — only when addon is actually running (>= ADDON_RUNNING state).
+    # Skipping when NOT_INSTALLED prevents crash-loops while the install is blocked.
+    _nax_log_states = {
+        "ADDON_RUNNING",
+        "NETALERTX_CONFIGURED",
+        "HA_MQTT_INTEGRATION_VERIFIED",
+        "HA_AUTOMATION_CREATED",
+        "FULLY_OPERATIONAL",
+        "OPERATIONAL_NO_API",
+    }
     if cfg.NETALERTX_ENABLED:
-        from netalertx.log_monitor import tail_netalertx_log_stream
+        import netalertx.installer as _nax_installer_log
 
-        supervisor.start(
-            "netalertx",
-            lambda: tail_netalertx_log_stream(notifier=notifier),
-        )
+        if _nax_installer_log.get_install_state(cfg.DB_PATH) in _nax_log_states:
+            from netalertx.log_monitor import tail_netalertx_log_stream
 
-    # NetAlertX REST event poll (enabled + host configured; poll_once skips gracefully when
-    # no token is set yet and waits for on_token_confirmed to promote the install state).
+            supervisor.start(
+                "netalertx",
+                lambda: tail_netalertx_log_stream(notifier=notifier),
+            )
+
+    # NetAlertX REST event poll (enabled + host configured + addon fully operational).
+    _nax_event_poll_states = {"FULLY_OPERATIONAL", "OPERATIONAL_NO_API"}
     if cfg.NETALERTX_ENABLED and _nax_api is not None:
-        from netalertx.event_poll import run_event_poll
-        from netalertx.event_router import NetAlertXEventRouter
+        import netalertx.installer as _nax_installer_ep
 
-        _nax_router = NetAlertXEventRouter(
-            notifier=notifier,
-            gate=AutonomyGate(cfg.AUTONOMY_LEVEL),
-            db_path=cfg.DB_PATH,
-            api_client=_nax_api,
-        )
-        _nax_poll_interval = cfg.NETALERTX_EVENT_POLL_INTERVAL_MINUTES
-        _nax_fail_threshold = cfg.NETALERTX_EVENT_POLL_FAILURE_THRESHOLD
-        _nax_poll_slug = cfg.NETALERTX_ADDON_SLUG
-        _nax_poll_ha_ssh = AsyncSSHClient(cfg.HA_HOST, cfg.HA_USER, cfg.SSH_KEY_PATH)
-        _nax_poll_notifier = notifier
-        _nax_poll_gate = AutonomyGate(cfg.AUTONOMY_LEVEL)
-        _nax_poll_ks = knowledge_store
-        supervisor.start(
-            "netalertx_event_poll",
-            lambda: run_event_poll(
-                _nax_api,
-                _nax_router,
-                cfg.DB_PATH,
-                _nax_poll_interval,
-                failure_threshold=_nax_fail_threshold,
-                notifier=_nax_poll_notifier,
-                ha_ssh_client=_nax_poll_ha_ssh,
-                gate=_nax_poll_gate,
-                knowledge_store=_nax_poll_ks,
-                slug=_nax_poll_slug,
-            ),
-        )
+        _nax_ep_state = _nax_installer_ep.get_install_state(cfg.DB_PATH)
+        if _nax_ep_state in _nax_event_poll_states:
+            from netalertx.event_poll import run_event_poll
+            from netalertx.event_router import NetAlertXEventRouter
+
+            _nax_router = NetAlertXEventRouter(
+                notifier=notifier,
+                gate=AutonomyGate(cfg.AUTONOMY_LEVEL),
+                db_path=cfg.DB_PATH,
+                api_client=_nax_api,
+            )
+            _nax_poll_interval = cfg.NETALERTX_EVENT_POLL_INTERVAL_MINUTES
+            _nax_fail_threshold = cfg.NETALERTX_EVENT_POLL_FAILURE_THRESHOLD
+            _nax_poll_slug = cfg.NETALERTX_ADDON_SLUG
+            _nax_poll_ha_ssh = AsyncSSHClient(
+                cfg.HA_HOST, cfg.HA_USER, cfg.SSH_KEY_PATH
+            )
+            _nax_poll_notifier = notifier
+            _nax_poll_gate = AutonomyGate(cfg.AUTONOMY_LEVEL)
+            _nax_poll_ks = knowledge_store
+            supervisor.start(
+                "netalertx_event_poll",
+                lambda: run_event_poll(
+                    _nax_api,
+                    _nax_router,
+                    cfg.DB_PATH,
+                    _nax_poll_interval,
+                    failure_threshold=_nax_fail_threshold,
+                    notifier=_nax_poll_notifier,
+                    ha_ssh_client=_nax_poll_ha_ssh,
+                    gate=_nax_poll_gate,
+                    knowledge_store=_nax_poll_ks,
+                    slug=_nax_poll_slug,
+                ),
+            )
 
     # NetAlertX deferred setup: if the user requested setup and it isn't done yet,
     # run the installer as a supervised one-shot loop so approval cards reach the dashboard.
