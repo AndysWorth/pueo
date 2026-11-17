@@ -50,8 +50,7 @@ _CONCEPT_DOCS: list[tuple[str, str]] = [
     ("automation_condition", "_docs/automation/condition"),
     ("automation_action", "_docs/automation/action"),
     ("automation_yaml", "_docs/automation/yaml"),
-    ("automation_templating", "_docs/automation/templating"),
-    ("scripts", "_docs/scripts"),
+    ("scripts", "_docs/script"),
     # ── Blueprints ───────────────────────────────────────────────────────────
     ("blueprint_overview", "_docs/blueprint"),
     # ── Templates ────────────────────────────────────────────────────────────

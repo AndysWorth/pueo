@@ -349,6 +349,7 @@ class ResourcePoller:
                 )
                 await self._check_and_alert(status)
                 await self._check_host_health(status)
+                await self._wake_netalertx_on_disk_recovery(status.disk_free_gb)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -1115,6 +1116,27 @@ class ResourcePoller:
         except Exception:  # nosec B110 — table may not exist yet
             pass
         return uuids
+
+    async def _wake_netalertx_on_disk_recovery(self, disk_free_gb: float) -> None:
+        """Wake netalertx_setup when disk recovers above the install threshold."""
+        try:
+            import config as _cfg_nax
+            from netalertx.installer import get_install_state as _gis_nax
+            from utils.agent.supervisor import get_supervisor_instance as _gsi_nax
+
+            if not getattr(_cfg_nax, "NETALERTX_SETUP_DESIRED", False):
+                return
+            _min_gb = getattr(_cfg_nax, "NETALERTX_DOCKER_MIN_DISK_GB", 5.0)
+            if disk_free_gb < _min_gb:
+                return
+            _db = self._db_path or _cfg_nax.DB_PATH
+            if _gis_nax(_db) != "NOT_INSTALLED":
+                return
+            _sv = _gsi_nax()
+            if _sv is not None:
+                _sv.wake("netalertx_setup")
+        except Exception:  # nosec B110 — never block disk alerts
+            pass
 
     @staticmethod
     def _insert_resource_sample(
