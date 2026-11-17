@@ -1331,7 +1331,7 @@ def load_stored_core_report_any_patch(
             stored = CoreReleaseReport.model_validate_json(
                 path.read_text(encoding="utf-8")
             )
-        except Exception:  # nosec B110
+        except Exception:  # nosec B112
             continue
         if stored.installed_version != installed_version:
             continue
