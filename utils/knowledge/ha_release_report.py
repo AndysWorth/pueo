@@ -1300,6 +1300,54 @@ def load_stored_core_report(
     return stored
 
 
+def load_stored_core_report_any_patch(
+    report_dir: Path,
+    version: str,
+    installed_version: str,
+) -> Optional["CoreReleaseReport"]:
+    """Return the newest same-month report that shares *installed_version*.
+
+    When an exact ``core_<version>.json`` is absent (e.g. HA moved from .1 to
+    .2 before the user approved), scan *report_dir* for ``core_<YYYY.MM.*>.json``
+    files with the same ``installed_version``.  Returns the most recently
+    modified file that parses successfully, or None.  Used as a fallback after
+    ``load_stored_core_report`` so the caller gets per-batch screening reuse
+    and carried BC verdicts across a patch bump.
+    """
+    try:
+        month_prefix = ".".join(version.split(".")[:2])  # "2026.11"
+    except Exception:  # nosec B110
+        return None
+    try:
+        candidates = sorted(
+            report_dir.glob(f"core_{month_prefix}.*.json"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+    except Exception:  # nosec B110
+        return None
+    for path in candidates:
+        try:
+            stored = CoreReleaseReport.model_validate_json(
+                path.read_text(encoding="utf-8")
+            )
+        except Exception:  # nosec B110
+            continue
+        if stored.installed_version != installed_version:
+            continue
+        if stored.version == version:
+            # Exact match — the main loader should have caught this.
+            continue
+        log.info(
+            "core_release_report_cross_patch_reuse",
+            stored_version=stored.version,
+            target_version=version,
+            installed_version=installed_version,
+        )
+        return stored
+    return None
+
+
 def carry_over_screening(prev: "CoreReleaseReport", new: "CoreReleaseReport") -> bool:
     """Copy *prev*'s screening results into *new* on a per-batch basis.
 

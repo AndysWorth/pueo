@@ -260,6 +260,91 @@ def _update_resolve_card(suppression_key: str) -> None:
         )
 
 
+def _supersede_stale_update_card(
+    suppression_key: str, new_version: str, watch_dir: str
+) -> bool:
+    """Resolve a pending update card whose target version has since moved on.
+
+    Called when HA reports ``new_version`` for an entity that already has a
+    pending card (the suppression row has send_count > 0, last_action IS NULL,
+    resolved_at IS NULL).  If the card's ``latest_version`` payload differs from
+    ``new_version`` **and** the entity is not mid-install, the card is resolved
+    and a timeline row is written so the caller can fall through to re-analysis.
+
+    Returns True when the card was superseded (and must be re-analysed), False
+    when the card is current, absent, or the entity is executing.
+    """
+    from utils.hitl.hitl_tracker import mark_card_resolved, resolve_card, stable_nid
+
+    entity_id = suppression_key.removeprefix("update:")
+    try:
+        from agents.ha_update_manager import is_entity_executing_update
+
+        if is_entity_executing_update(entity_id):
+            return False
+    except Exception:  # nosec B110
+        pass
+
+    nid = stable_nid(suppression_key)
+    card_path = Path(watch_dir) / f"{nid}.json"
+    if not card_path.exists():
+        return False
+
+    try:
+        data = json.loads(card_path.read_text())
+        old_version = data.get("payload", data).get("latest_version", "")
+    except Exception:  # nosec B110
+        return False
+
+    if not old_version or old_version == new_version:
+        return False
+
+    with sqlite3.connect(_config.DB_PATH) as _conn:
+        row = _conn.execute(
+            "SELECT send_count, last_action, resolved_at"
+            " FROM hitl_suppression WHERE card_key = ?",
+            (suppression_key,),
+        ).fetchone()
+    if row is None or row[0] == 0 or row[1] is not None or row[2] is not None:
+        return False
+
+    # Supersede: resolve the pending card and clear any backoff so analysis re-runs.
+    resolve_card(
+        watch_dir,
+        nid,
+        db_path=str(_config.DB_PATH),
+        card_key=suppression_key,
+    )
+    with sqlite3.connect(_config.DB_PATH) as _conn:
+        _conn.execute(
+            "UPDATE hitl_suppression SET resolved_at = ?"
+            " WHERE card_key = ? AND resolved_at IS NULL",
+            (time.time(), f"update_analysis_backoff:{entity_id}"),
+        )
+    log.info(
+        "update_card_superseded",
+        entity_id=entity_id,
+        old_version=old_version,
+        new_version=new_version,
+    )
+    try:
+        from utils.core.timeline import write_timeline_event
+
+        write_timeline_event(
+            "INFO",
+            "update_check",
+            f"Update card superseded: {old_version} → {new_version}",
+            {
+                "component": entity_id.split(".")[0] if "." in entity_id else entity_id,
+                "old_version": old_version,
+                "new_version": new_version,
+            },
+        )
+    except Exception:  # nosec B110
+        pass
+    return True
+
+
 def _close_installed_update_card(suppression_key: str, watch_dir: str) -> bool:
     """Write .approved for an approved card whose update is now gone but has no sentinel.
 
@@ -2055,6 +2140,15 @@ async def poll_for_updates(
                         version=u.latest_version,
                     )
                     continue
+
+                # Supersede a pending card whose version has drifted: resolve it so
+                # the _should_send check below returns True and analysis re-runs.
+                await asyncio.to_thread(
+                    _supersede_stale_update_card,
+                    suppression_key,
+                    u.latest_version,
+                    NOTIFY_WATCH_DIR,
+                )
 
                 _should_send = await asyncio.to_thread(
                     _update_check_should_send, suppression_key

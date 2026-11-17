@@ -12338,3 +12338,613 @@ class TestBreaksPueoSafetyVerdict:
 
         payload = notifier.send.call_args.kwargs["payload"]
         assert any("lovelace" in r for r in payload["pueo_command_risks"])
+
+
+# ---------------------------------------------------------------------------
+# _supersede_stale_update_card  (#1251)
+# ---------------------------------------------------------------------------
+
+
+class TestSupersedeStaleUpdateCard:
+    """_supersede_stale_update_card resolves a pending card whose version has drifted."""
+
+    def _setup_db(self, tmp_path):
+        """Create a minimal hitl_suppression table and return the DB path."""
+        import sqlite3
+
+        db = tmp_path / "state.db"
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                """CREATE TABLE hitl_suppression (
+                    card_key TEXT PRIMARY KEY,
+                    card_type TEXT,
+                    description TEXT,
+                    send_count INTEGER DEFAULT 0,
+                    last_action TEXT,
+                    created_at REAL,
+                    resolved_at REAL,
+                    known_issue INTEGER DEFAULT 0
+                )"""
+            )
+        return db
+
+    def _write_card(self, watch_dir, nid, latest_version):
+        import json
+
+        (watch_dir / f"{nid}.json").write_text(
+            json.dumps({"payload": {"latest_version": latest_version}})
+        )
+
+    def _write_pending_row(self, db, card_key):
+        import sqlite3
+        import time
+
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO hitl_suppression"
+                " (card_key, card_type, send_count, last_action, created_at)"
+                " VALUES (?, ?, 1, NULL, ?)",
+                (card_key, "update", time.time()),
+            )
+
+    def test_supersedes_when_version_drifted(self, tmp_path, pueo_dirs, monkeypatch):
+        import sqlite3
+        from unittest.mock import patch
+
+        import config as _cfg
+
+        db = self._setup_db(tmp_path)
+        monkeypatch.setattr(_cfg, "DB_PATH", str(db))
+        watch = tmp_path / "watch"
+        watch.mkdir()
+
+        from utils.hitl.hitl_tracker import stable_nid
+
+        key = "update.home_assistant_core_update"
+        sup_key = f"update:{key}"
+        nid = stable_nid(sup_key)
+        self._write_card(watch, nid, "2026.11.1")  # card says .1
+        self._write_pending_row(db, sup_key)
+
+        with (
+            patch("agents.ha_log_monitor._config", _cfg),
+            patch(
+                "agents.ha_update_manager.is_entity_executing_update",
+                return_value=False,
+            ),
+            patch("utils.core.timeline.write_timeline_event"),
+        ):
+            from agents.ha_log_monitor import _supersede_stale_update_card
+
+            result = _supersede_stale_update_card(sup_key, "2026.11.2", str(watch))
+
+        assert result is True
+        assert (watch / f"{nid}.resolved").exists()
+        with sqlite3.connect(db) as conn:
+            row = conn.execute(
+                "SELECT resolved_at FROM hitl_suppression WHERE card_key = ?",
+                (sup_key,),
+            ).fetchone()
+        assert row is not None and row[0] is not None
+
+    def test_no_supersede_when_version_matches(self, tmp_path, pueo_dirs, monkeypatch):
+        import config as _cfg
+        from unittest.mock import patch
+
+        db = self._setup_db(tmp_path)
+        monkeypatch.setattr(_cfg, "DB_PATH", str(db))
+        watch = tmp_path / "watch"
+        watch.mkdir()
+
+        from utils.hitl.hitl_tracker import stable_nid
+
+        sup_key = "update:update.home_assistant_core_update"
+        nid = stable_nid(sup_key)
+        self._write_card(watch, nid, "2026.11.2")  # same as new_version
+        self._write_pending_row(db, sup_key)
+
+        with patch("agents.ha_log_monitor._config", _cfg):
+            from agents.ha_log_monitor import _supersede_stale_update_card
+
+            result = _supersede_stale_update_card(sup_key, "2026.11.2", str(watch))
+
+        assert result is False
+
+    def test_no_supersede_while_entity_executing(
+        self, tmp_path, pueo_dirs, monkeypatch
+    ):
+        import config as _cfg
+        from unittest.mock import patch
+
+        db = self._setup_db(tmp_path)
+        monkeypatch.setattr(_cfg, "DB_PATH", str(db))
+        watch = tmp_path / "watch"
+        watch.mkdir()
+
+        from utils.hitl.hitl_tracker import stable_nid
+
+        sup_key = "update:update.home_assistant_core_update"
+        nid = stable_nid(sup_key)
+        self._write_card(watch, nid, "2026.11.1")
+        self._write_pending_row(db, sup_key)
+
+        with (
+            patch("agents.ha_log_monitor._config", _cfg),
+            patch(
+                "agents.ha_update_manager.is_entity_executing_update", return_value=True
+            ),
+        ):
+            from agents.ha_log_monitor import _supersede_stale_update_card
+
+            result = _supersede_stale_update_card(sup_key, "2026.11.2", str(watch))
+
+        assert result is False
+        # Card must remain open
+        assert not (watch / f"{nid}.resolved").exists()
+
+    def test_no_supersede_when_no_card_file(self, tmp_path, pueo_dirs, monkeypatch):
+        import config as _cfg
+        from unittest.mock import patch
+
+        db = self._setup_db(tmp_path)
+        monkeypatch.setattr(_cfg, "DB_PATH", str(db))
+        watch = tmp_path / "watch"
+        watch.mkdir()
+
+        with patch("agents.ha_log_monitor._config", _cfg):
+            from agents.ha_log_monitor import _supersede_stale_update_card
+
+            result = _supersede_stale_update_card(
+                "update:update.some_missing", "2026.11.2", str(watch)
+            )
+
+        assert result is False
+
+
+# ---------------------------------------------------------------------------
+# execute_core_update — --version pin  (#1251)
+# ---------------------------------------------------------------------------
+
+
+class TestCoreUpdateCommandPin:
+    """execute_core_update sends ha core update --version <ver>."""
+
+    def test_command_includes_version(self, tmp_path, pueo_dirs):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from utils.ha.ssh_client import FakeSSHClient
+
+        version = "2026.11.2"
+        commands_sent = []
+
+        orig_send = __import__(
+            "agents.ha_update_manager", fromlist=["_send_update_command"]
+        )._send_update_command
+
+        async def _capture(ssh_client, command, kind):
+            commands_sent.append(command)
+            return ""
+
+        update = MagicMock()
+        update.component = "core"
+        update.entity_id = "update.home_assistant_core_update"
+        update.latest_version = version
+        update.installed_version = "2026.10.4"
+
+        with (
+            patch(
+                "agents.ha_update_manager._send_update_command", side_effect=_capture
+            ),
+            patch(
+                "agents.ha_agent_advanced.execute_remote_backup",
+                AsyncMock(return_value="slug"),
+            ),
+            patch("agents.ha_agent_advanced.record_backup_slug"),
+            patch("agents.ha_agent_advanced.offload_backup_to_local", AsyncMock()),
+            patch("agents.ha_update_manager._send_post_update_card", AsyncMock()),
+            patch(
+                "agents.ha_update_manager.run_pueo_self_check",
+                AsyncMock(return_value=None),
+            ),
+            patch(
+                "agents.ha_log_monitor.analyze_log_line_with_ai",
+                AsyncMock(
+                    return_value=(
+                        MagicMock(is_actionable=False, confidence_score=0.0),
+                        None,
+                    )
+                ),
+            ),
+        ):
+            asyncio.run(
+                __import__(
+                    "agents.ha_update_manager", fromlist=["execute_core_update"]
+                ).execute_core_update(
+                    update=update,
+                    ssh_client=MagicMock(),
+                    notifier=MagicMock(send=AsyncMock()),
+                    gate=MagicMock(),
+                    _poll=AsyncMock(return_value=True),
+                )
+            )
+
+        assert any(
+            f"--version {version}" in cmd for cmd in commands_sent
+        ), f"Expected --version {version} in one of {commands_sent}"
+
+
+# ---------------------------------------------------------------------------
+# execute_os_update — --version pin  (#1251)
+# ---------------------------------------------------------------------------
+
+
+class TestOsUpdateCommandPin:
+    """execute_os_update sends ha os update --version <ver>."""
+
+    def test_command_includes_version(self, tmp_path, pueo_dirs):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        version = "18.5"
+        commands_sent = []
+
+        async def _capture(ssh_client, command, kind):
+            commands_sent.append(command)
+            return ""
+
+        update = MagicMock()
+        update.component = "os"
+        update.entity_id = "update.home_assistant_operating_system_update"
+        update.latest_version = version
+        update.installed_version = "18.4"
+
+        with (
+            patch(
+                "agents.ha_update_manager._send_update_command", side_effect=_capture
+            ),
+            patch(
+                "agents.ha_agent_advanced.execute_remote_backup",
+                AsyncMock(return_value="slug"),
+            ),
+            patch("agents.ha_agent_advanced.record_backup_slug"),
+            patch("agents.ha_agent_advanced.offload_backup_to_local", AsyncMock()),
+            patch("agents.ha_update_manager._send_post_update_card", AsyncMock()),
+            patch("agents.ha_update_manager._pause_loops_for_reboot"),
+            patch("agents.ha_update_manager._resume_loops_after_reboot"),
+            patch("agents.ha_update_manager.set_reboot_pending_after_update"),
+            patch("agents.ha_update_manager.set_post_update_pending"),
+            patch("agents.ha_update_manager._post_update_repair_scan", AsyncMock()),
+            patch("asyncio.create_task"),
+        ):
+            asyncio.run(
+                __import__(
+                    "agents.ha_update_manager", fromlist=["execute_os_update"]
+                ).execute_os_update(
+                    update=update,
+                    ssh_client=MagicMock(),
+                    notifier=MagicMock(send=AsyncMock()),
+                    gate=MagicMock(),
+                    _poll=AsyncMock(return_value=True),
+                    _api_poll=AsyncMock(return_value=True),
+                )
+            )
+
+        assert any(
+            f"--version {version}" in cmd for cmd in commands_sent
+        ), f"Expected --version {version} in one of {commands_sent}"
+
+
+# ---------------------------------------------------------------------------
+# execute_addon_update — version mismatch guard  (#1251)
+# ---------------------------------------------------------------------------
+
+
+class TestAddonUpdateVersionMismatch:
+    """execute_addon_update refuses when the live entity's version has moved."""
+
+    def _make_update(self, version="1.0.1"):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            entity_id="update.test_addon_update",
+            component="test_addon",
+            installed_version="1.0.0",
+            latest_version=version,
+            update_available=True,
+            in_progress=False,
+            release_url=None,
+            release_summary=None,
+            entity_picture="/api/hassio/addons/test_addon/icon",
+        )
+
+    def _make_live_update(self, version):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            entity_id="update.test_addon_update",
+            component="test_addon",
+            installed_version="1.0.0",
+            latest_version=version,
+            update_available=True,
+            in_progress=False,
+        )
+
+    def test_refuses_when_version_moved(self, tmp_path, pueo_dirs):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        fake_notifier = MagicMock()
+        fake_notifier.send = AsyncMock()
+        fake_rest = MagicMock()
+        fake_rest.call_service = AsyncMock()
+
+        async def _fake_backup(**kwargs):
+            return "slug"
+
+        async def _fake_get_update_status(rest):
+            return [self._make_live_update("1.0.2")]  # moved from .1 to .2
+
+        with (
+            patch(
+                "agents.ha_agent_advanced.execute_remote_backup",
+                side_effect=_fake_backup,
+            ),
+            patch("agents.ha_agent_advanced.record_backup_slug"),
+            patch("agents.ha_agent_advanced.offload_backup_to_local", AsyncMock()),
+            patch(
+                "agents.ha_update_manager.get_update_status",
+                side_effect=_fake_get_update_status,
+            ),
+            patch("agents.ha_update_manager._send_post_update_card", AsyncMock()),
+        ):
+            result = asyncio.run(
+                __import__(
+                    "agents.ha_update_manager", fromlist=["execute_addon_update"]
+                ).execute_addon_update(
+                    self._make_update("1.0.1"),
+                    ssh_client=MagicMock(),
+                    notifier=fake_notifier,
+                    gate=MagicMock(),
+                    ha_rest_client=fake_rest,
+                )
+            )
+
+        assert result is False
+        fake_notifier.send.assert_called_once()
+        body = fake_notifier.send.call_args.kwargs["body"]
+        assert "1.0.2" in body
+
+    def test_proceeds_when_version_matches(self, tmp_path, pueo_dirs):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        fake_notifier = MagicMock()
+        fake_notifier.send = AsyncMock()
+        fake_rest = MagicMock()
+        fake_rest.call_service = AsyncMock()
+
+        async def _fake_backup(**kwargs):
+            return "slug"
+
+        async def _fake_get_update_status(rest):
+            return [self._make_live_update("1.0.1")]  # same version
+
+        with (
+            patch(
+                "agents.ha_agent_advanced.execute_remote_backup",
+                side_effect=_fake_backup,
+            ),
+            patch("agents.ha_agent_advanced.record_backup_slug"),
+            patch("agents.ha_agent_advanced.offload_backup_to_local", AsyncMock()),
+            patch(
+                "agents.ha_update_manager.get_update_status",
+                side_effect=_fake_get_update_status,
+            ),
+            patch("agents.ha_update_manager._send_post_update_card", AsyncMock()),
+            patch(
+                "agents.ha_update_manager._poll_addon_update_via_rest",
+                AsyncMock(return_value=True),
+            ),
+        ):
+            result = asyncio.run(
+                __import__(
+                    "agents.ha_update_manager", fromlist=["execute_addon_update"]
+                ).execute_addon_update(
+                    self._make_update("1.0.1"),
+                    ssh_client=MagicMock(),
+                    notifier=fake_notifier,
+                    gate=MagicMock(),
+                    ha_rest_client=fake_rest,
+                )
+            )
+
+        assert result is True
+
+
+# ---------------------------------------------------------------------------
+# _poll_core_version — only succeeds on exact version match  (#1251)
+# ---------------------------------------------------------------------------
+
+
+class TestPollCoreVersionExact:
+    """_poll_core_version returns True only when current == target."""
+
+    def _run(self, ha_core_info_responses, target="2026.11.2"):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+
+        responses = iter(ha_core_info_responses)
+
+        async def _fake_run(cmd, check=False):
+            import json
+
+            info = next(responses)
+            return (0, json.dumps({"data": info}), "")
+
+        ssh = MagicMock()
+        ssh.run = _fake_run
+
+        sleep_calls = []
+
+        async def _fake_sleep(n):
+            sleep_calls.append(n)
+            if len(sleep_calls) >= 10:
+                raise RuntimeError("too many polls")
+
+        from agents.ha_update_manager import _poll_core_version
+
+        return asyncio.run(
+            _poll_core_version(
+                target,
+                ssh,
+                timeout_seconds=100,
+                interval=10,
+                _sleep=_fake_sleep,
+            )
+        )
+
+    def test_returns_true_on_exact_match(self):
+        result = self._run([{"version": "2026.11.1"}, {"version": "2026.11.2"}])
+        assert result is True
+
+    def test_returns_false_when_update_available_still_true(self):
+        """update_available=False must NOT be treated as success (F1 regression)."""
+        import asyncio
+        from unittest.mock import MagicMock
+
+        # Previously `not update_available` returned True even when version was wrong.
+        # Use only 3 polls (timeout=30, interval=10) to avoid running out of responses.
+        responses = iter([{"version": "2026.11.1", "update_available": False}] * 3)
+
+        async def _fake_run(cmd, check=False):
+            import json
+
+            info = next(responses)
+            return (0, json.dumps({"data": info}), "")
+
+        ssh = MagicMock()
+        ssh.run = _fake_run
+
+        async def _fake_sleep(n):
+            pass
+
+        from agents.ha_update_manager import _poll_core_version
+
+        result = asyncio.run(
+            _poll_core_version(
+                "2026.11.2",
+                ssh,
+                timeout_seconds=30,
+                interval=10,
+                _sleep=_fake_sleep,
+            )
+        )
+        assert result is False
+
+    def test_times_out_when_version_never_matches(self):
+        from agents.ha_update_manager import _poll_core_version
+        import asyncio
+        from unittest.mock import MagicMock
+
+        async def _fake_run(cmd, check=False):
+            import json
+
+            return (0, json.dumps({"data": {"version": "2026.11.1"}}), "")
+
+        async def _fake_sleep(n):
+            pass  # instant
+
+        ssh = MagicMock()
+        ssh.run = _fake_run
+
+        result = asyncio.run(
+            _poll_core_version(
+                "2026.11.2", ssh, timeout_seconds=30, interval=10, _sleep=_fake_sleep
+            )
+        )
+        assert result is False
+
+
+# ---------------------------------------------------------------------------
+# load_stored_core_report_any_patch  (#1251)
+# ---------------------------------------------------------------------------
+
+
+class TestLoadStoredCoreReportAnyPatch:
+    """Cross-version same-month report fallback."""
+
+    @staticmethod
+    def _make_report(version, installed_version, **kwargs):
+        from utils.knowledge.ha_release_report import CoreReleaseReport
+
+        return CoreReleaseReport(
+            version=version,
+            installed_version=installed_version,
+            completeness="complete",
+            **kwargs,
+        )
+
+    def test_returns_same_month_report(self, tmp_path):
+        from utils.knowledge.ha_release_report import load_stored_core_report_any_patch
+
+        rpt = self._make_report("2026.11.1", "2026.10.4")
+        (tmp_path / "core_2026.11.1.json").write_text(
+            rpt.model_dump_json(), encoding="utf-8"
+        )
+
+        loaded = load_stored_core_report_any_patch(tmp_path, "2026.11.2", "2026.10.4")
+        assert loaded is not None
+        assert loaded.version == "2026.11.1"
+
+    def test_returns_none_when_exact_version_matches(self, tmp_path):
+        """Exact-version reports should be handled by load_stored_core_report."""
+        from utils.knowledge.ha_release_report import load_stored_core_report_any_patch
+
+        rpt = self._make_report("2026.11.2", "2026.10.4")
+        (tmp_path / "core_2026.11.2.json").write_text(
+            rpt.model_dump_json(), encoding="utf-8"
+        )
+
+        loaded = load_stored_core_report_any_patch(tmp_path, "2026.11.2", "2026.10.4")
+        assert loaded is None
+
+    def test_returns_none_when_installed_version_differs(self, tmp_path):
+        from utils.knowledge.ha_release_report import load_stored_core_report_any_patch
+
+        rpt = self._make_report("2026.11.1", "2026.10.3")  # different installed_version
+        (tmp_path / "core_2026.11.1.json").write_text(
+            rpt.model_dump_json(), encoding="utf-8"
+        )
+
+        loaded = load_stored_core_report_any_patch(tmp_path, "2026.11.2", "2026.10.4")
+        assert loaded is None
+
+    def test_returns_none_when_different_month(self, tmp_path):
+        from utils.knowledge.ha_release_report import load_stored_core_report_any_patch
+
+        rpt = self._make_report("2026.10.4", "2026.9.0")
+        (tmp_path / "core_2026.10.4.json").write_text(
+            rpt.model_dump_json(), encoding="utf-8"
+        )
+
+        loaded = load_stored_core_report_any_patch(tmp_path, "2026.11.2", "2026.10.4")
+        assert loaded is None
+
+    def test_returns_none_when_no_files(self, tmp_path):
+        from utils.knowledge.ha_release_report import load_stored_core_report_any_patch
+
+        loaded = load_stored_core_report_any_patch(tmp_path, "2026.11.2", "2026.10.4")
+        assert loaded is None
+
+    def test_json_roundtrip(self, tmp_path):
+        from utils.knowledge.ha_release_report import load_stored_core_report_any_patch
+
+        rpt = self._make_report("2026.11.1", "2026.10.4")
+        path = tmp_path / "core_2026.11.1.json"
+        path.write_text(rpt.model_dump_json(), encoding="utf-8")
+
+        loaded = load_stored_core_report_any_patch(tmp_path, "2026.11.2", "2026.10.4")
+        assert loaded is not None
+        # Confirm Pydantic round-trip is lossless on the core fields
+        assert loaded.model_dump_json() == rpt.model_dump_json()
