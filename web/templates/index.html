@@ -664,6 +664,12 @@ trigger: {{ r.payload.get("trigger", []) | tojson(indent=2) }}
         {% endif %}
       </div>
       {% endif %}
+      {% if r.fix_error %}
+      <div style="margin:0.6rem 0;padding:0.5rem 0.7rem;background:#fff3cd;border:1px solid #ffc107;border-radius:4px;font-size:0.82rem;color:#856404;">
+        <strong>⚠ Last attempt failed:</strong> {{ r.fix_error }}
+        {% if r.payload.get("card_type") == "update" %}— resolve the issue in HA, then press Approve to retry.{% endif %}
+      </div>
+      {% endif %}
       {% if is_actionable %}
         {% if ct == "repair" or has_fix %}
           {% set hint_approve = "Create HA backup → sandbox-test the proposed fix → atomically swap into production if sandbox passes" %}

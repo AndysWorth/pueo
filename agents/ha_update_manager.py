@@ -9,7 +9,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Literal, Optional
 
 import asyncssh
 import httpx
@@ -651,6 +651,27 @@ class UpdatePreflight:
     disk_ok: bool  # True when disk_after_gb >= HA_DISK_WARN_GB + 1.5
     supervisor_status: str  # "current" | "update_available" | "unknown"
     problems: list = field(default_factory=list)
+
+
+@dataclass
+class UpdateExecResult:
+    """Typed result from execute_update / execute_addon_update.
+
+    stage values:
+      "precondition"   — a pre-install check failed (e.g. Marketplace warning not accepted);
+                         retryable once the user resolves the condition.
+      "service_error"  — update.install returned a non-200 / non-timeout error;
+                         retryable if the user resolves the HA-side issue.
+      "install_timeout"— the poll timed out; update may be in-progress; ambiguous.
+      "installed"      — update confirmed installed successfully.
+      "regression"     — installed but post-install checks found a regression.
+    """
+
+    success: bool
+    stage: Literal[
+        "precondition", "service_error", "install_timeout", "installed", "regression"
+    ]
+    error: str = ""
 
 
 # Extra disk headroom required beyond HA_DISK_WARN_GB before an update is considered safe.
@@ -2103,7 +2124,7 @@ async def _run_update_analysis(
                 )
                 _entities_executing_update.add(update.entity_id)
                 try:
-                    _update_ok = await execute_update(update, _ssh, _notifier, gate)
+                    _exec_result = await execute_update(update, _ssh, _notifier, gate)
                     from agents.ha_log_monitor import _update_mark_auto_applied
                     from utils.hitl.card_types import CARD_TYPE_UPDATE
 
@@ -2114,17 +2135,26 @@ async def _run_update_analysis(
                         CARD_TYPE_UPDATE,
                         f"Auto-applied: {update.component} {update.latest_version}",
                     )
-                    # Verify the analysis session outcome by install result.
+                    # Verify the analysis session outcome only when the result is
+                    # conclusive (installed = success; regression = failure).
+                    # Install-mechanism failures (service_error, precondition,
+                    # install_timeout) are not evidence the analysis was wrong.
                     try:
                         from agents.ha_agent_advanced import resolve_session_outcome
 
-                        _verif = "success" if _update_ok else "failure"
-                        await asyncio.to_thread(
-                            resolve_session_outcome,
-                            update.entity_id,
-                            _verif,
-                            "system",
-                        )
+                        if _exec_result.stage == "installed":
+                            _verif: Optional[str] = "success"
+                        elif _exec_result.stage == "regression":
+                            _verif = "failure"
+                        else:
+                            _verif = None
+                        if _verif is not None:
+                            await asyncio.to_thread(
+                                resolve_session_outcome,
+                                update.entity_id,
+                                _verif,
+                                "system",
+                            )
                         if _verif == "success":
                             await _enqueue_distillation_for_subject(
                                 update.entity_id, "success"
@@ -2540,6 +2570,8 @@ async def _send_post_update_card(
     notification_id: Optional[str] = None,
     self_check: Optional["PueoSelfCheckResult"] = None,
     advisor_regressions: Optional[list] = None,
+    stage: str = "",
+    error: str = "",
 ) -> None:
     """Send an informational result card after an update attempt."""
     nid = notification_id or str(uuid.uuid4())
@@ -2550,13 +2582,24 @@ async def _send_post_update_card(
         subject = "HA host rebooted" if success else "Reboot failed — check HA UI"
         outcome = "rebooted" if success else "did not come back online"
     else:
-        outcome = "succeeded" if success else "timed out — check HA UI"
+        if success:
+            outcome = "succeeded"
+        elif stage == "service_error":
+            outcome = "failed — service error"
+        elif stage == "precondition":
+            outcome = "blocked — precondition not met"
+        elif stage == "regression":
+            outcome = "installed but regression detected"
+        else:
+            outcome = "timed out — check HA UI"
         subject = f"Update {outcome}: {update.component} → {update.latest_version}"
     body_lines = [
         f"Component: {update.component}",
         f"Version: {update.installed_version} → {update.latest_version}",
         f"Outcome: {outcome}",
     ]
+    if error:
+        body_lines.append(f"HA error: {error[:300]}")
     if config_check_output:
         body_lines.append(f"Config check: {config_check_output[:200]}")
     if log_triage_summary:
@@ -2581,9 +2624,12 @@ async def _send_post_update_card(
         "installed_version": update.installed_version,
         "latest_version": update.latest_version,
         "success": success,
+        "stage": stage or ("installed" if success else "install_timeout"),
         "config_check_output": config_check_output,
         "log_triage_summary": log_triage_summary,
     }
+    if error:
+        payload["ha_error"] = error
     if self_check is not None:
         payload["self_check"] = {
             "core_check_ok": self_check.core_check_ok,
@@ -2626,6 +2672,41 @@ async def _send_update_command(
             error=str(exc),
         )
         return ""
+
+
+async def _extract_service_error_detail(
+    response_text: str,
+    entity_id: str,
+    ssh_client: SSHClientProtocol,
+) -> str:
+    """Return the most useful error message from a failed update.install call.
+
+    Tries the HTTP response body first; if it is generic ("500 Internal Server
+    Error" or empty), falls back to scanning the last 200 HA log lines for the
+    matching ``Error during service call to update.install:`` entry.
+    """
+    text = response_text.strip()
+    is_generic = not text or "Internal Server Error" in text
+    if not is_generic:
+        try:
+            parsed = json.loads(text)
+            msg = parsed.get("message") or parsed.get("error") or ""
+            if msg:
+                return str(msg)[:500]
+        except (json.JSONDecodeError, TypeError, AttributeError):
+            pass
+        return text[:500]
+    # Generic body — read HA logs for the specific error message.
+    try:
+        _, stdout, _ = await ssh_client.run("ha core logs --lines 200", check=False)
+        for line in reversed(stdout.splitlines()):
+            if "Error during service call" in line and "update.install" in line:
+                idx = line.find("Error during service call")
+                if idx >= 0:
+                    return line[idx : idx + 400].strip()
+    except Exception:  # nosec B110
+        pass
+    return text or "Service call failed with a non-200 response"
 
 
 async def execute_core_update(
@@ -2837,7 +2918,7 @@ async def execute_addon_update(
     gate: "AutonomyGate | FakeAutonomyGate",
     _poll: Optional[Callable] = None,
     ha_rest_client: Optional[HARestClientProtocol] = None,
-) -> bool:
+) -> UpdateExecResult:
     """Execute add-on update: backup → update.install REST service → poll → result card."""
     global _ssh_transport_update_in_progress
     from .ha_agent_advanced import (
@@ -2930,7 +3011,11 @@ async def execute_addon_update(
                     ),
                     payload={},
                 )
-                return False
+                return UpdateExecResult(
+                    success=False,
+                    stage="precondition",
+                    error=f"Target version moved: card={update.latest_version}, live={_live.latest_version}",
+                )
         except Exception as exc:  # nosec B110
             log.warning("addon_update_version_check_failed", error=str(exc)[:200])
 
@@ -2953,11 +3038,45 @@ async def execute_addon_update(
                 entity_id=update.entity_id,
                 detail="service call timed out; update may be in progress — proceeding to poll",
             )
-        except Exception as exc:
+        except httpx.HTTPStatusError as exc:
+            _err_detail = await _extract_service_error_detail(
+                exc.response.text, update.entity_id, ssh_client
+            )
             log.warning(
                 "addon_update_service_failed",
                 slug=update.component,
-                error=str(exc)[:200] or repr(exc),
+                status_code=exc.response.status_code,
+                error=_err_detail[:200],
+            )
+            await asyncio.to_thread(
+                _tl,
+                "WARNING",
+                f"{update.component}: update service call failed ({exc.response.status_code})",
+                {
+                    "component": update.component,
+                    "version": update.latest_version,
+                    "step": "install_result",
+                    "success": False,
+                },
+            )
+            await _send_post_update_card(
+                update,
+                notifier,
+                False,
+                "",
+                "",
+                stage="service_error",
+                error=_err_detail,
+            )
+            return UpdateExecResult(
+                success=False, stage="service_error", error=_err_detail
+            )
+        except Exception as exc:
+            _err_detail = str(exc)[:200] or repr(exc)
+            log.warning(
+                "addon_update_service_failed",
+                slug=update.component,
+                error=_err_detail,
             )
             await asyncio.to_thread(
                 _tl,
@@ -2970,8 +3089,18 @@ async def execute_addon_update(
                     "success": False,
                 },
             )
-            await _send_post_update_card(update, notifier, False, "", "")
-            return False
+            await _send_post_update_card(
+                update,
+                notifier,
+                False,
+                "",
+                "",
+                stage="service_error",
+                error=_err_detail,
+            )
+            return UpdateExecResult(
+                success=False, stage="service_error", error=_err_detail
+            )
 
         if _poll is not None:
             success = await _poll(
@@ -3022,7 +3151,10 @@ async def execute_addon_update(
                     "success": True,
                 },
             )
-            await _send_post_update_card(update, notifier, True, "", _restart_note)
+            await _send_post_update_card(
+                update, notifier, True, "", _restart_note, stage="installed"
+            )
+            return UpdateExecResult(success=True, stage="installed")
         else:
             await asyncio.to_thread(
                 _tl,
@@ -3035,14 +3167,16 @@ async def execute_addon_update(
                     "success": False,
                 },
             )
-            await _send_post_update_card(update, notifier, False, "", "")
+            await _send_post_update_card(
+                update, notifier, False, "", "", stage="install_timeout"
+            )
             log.warning(
                 "addon_update_timed_out",
                 slug=update.component,
                 version=update.latest_version,
                 detail="Add-on may still be updating — check HA UI",
             )
-        return success
+            return UpdateExecResult(success=False, stage="install_timeout")
     finally:
         if _is_transport:
             _ssh_transport_update_in_progress = False
@@ -3310,7 +3444,7 @@ async def execute_update(
     gate: "AutonomyGate | FakeAutonomyGate",
     llm_client: Optional[LLMClientProtocol] = None,
     ha_rest_client: Optional[HARestClientProtocol] = None,
-) -> bool:
+) -> UpdateExecResult:
     """Dispatch update execution by component type."""
     from .ha_agent_advanced import is_reboot_required_active
 
@@ -3324,7 +3458,11 @@ async def execute_update(
             ),
             payload={},
         )
-        return False
+        return UpdateExecResult(
+            success=False,
+            stage="precondition",
+            error="HA requires a reboot before this update can proceed.",
+        )
 
     # Guard: prevent poll_for_updates from closing the card mid-execution.
     # Only register if the entity isn't already tracked (the auto-apply path manages its
@@ -3334,7 +3472,7 @@ async def execute_update(
         _entities_executing_update.add(update.entity_id)
     try:
         if update.component == "core":
-            return await execute_core_update(
+            _core_ok = await execute_core_update(
                 update,
                 ssh_client,
                 notifier,
@@ -3342,8 +3480,16 @@ async def execute_update(
                 llm_client,
                 ha_rest_client=ha_rest_client,
             )
+            return UpdateExecResult(
+                success=_core_ok,
+                stage="installed" if _core_ok else "install_timeout",
+            )
         if update.component == "os":
-            return await execute_os_update(update, ssh_client, notifier, gate)
+            _os_ok = await execute_os_update(update, ssh_client, notifier, gate)
+            return UpdateExecResult(
+                success=_os_ok,
+                stage="installed" if _os_ok else "install_timeout",
+            )
         return await execute_addon_update(
             update, ssh_client, notifier, gate, ha_rest_client=ha_rest_client
         )

@@ -3204,10 +3204,11 @@ class TestExecuteQueuedUpdate:
         return json_path
 
     def test_success_path_writes_approved_and_fix_applied(self, tmp_path, monkeypatch):
-        """execute_update returns True → .approved created, fix_applied=True in JSON."""
+        """execute_update returns installed → .approved created, fix_applied=True in JSON."""
         import json as _json
         import web.dashboard as dashboard
         from agents import ha_update_manager
+        from agents.ha_update_manager import UpdateExecResult
         import utils.ha.ssh_client as ssh_mod
         import utils.agent.autonomy as autonomy_mod
         import utils.hitl.notify as notify_mod
@@ -3223,7 +3224,9 @@ class TestExecuteQueuedUpdate:
         fake_notifier = notify_mod.FakeNotifier(approve=True)
         monkeypatch.setattr(notify_mod, "get_notifier", lambda *a, **kw: fake_notifier)
         monkeypatch.setattr(
-            ha_update_manager, "execute_update", _make_async_return(True)
+            ha_update_manager,
+            "execute_update",
+            _make_async_return(UpdateExecResult(success=True, stage="installed")),
         )
 
         data = _json.loads(json_path.read_text())
@@ -3236,10 +3239,11 @@ class TestExecuteQueuedUpdate:
         assert saved["fix_applied"] is True
 
     def test_failure_path_writes_rejected_and_fix_error(self, tmp_path, monkeypatch):
-        """execute_update returns False → .rejected created, fix_error in JSON."""
+        """execute_update returns install_timeout → .rejected created, fix_error in JSON."""
         import json as _json
         import web.dashboard as dashboard
         from agents import ha_update_manager
+        from agents.ha_update_manager import UpdateExecResult
         import utils.ha.ssh_client as ssh_mod
         import utils.agent.autonomy as autonomy_mod
         import utils.hitl.notify as notify_mod
@@ -3258,7 +3262,11 @@ class TestExecuteQueuedUpdate:
             lambda *a, **kw: notify_mod.FakeNotifier(approve=False),
         )
         monkeypatch.setattr(
-            ha_update_manager, "execute_update", _make_async_return(False)
+            ha_update_manager,
+            "execute_update",
+            _make_async_return(
+                UpdateExecResult(success=False, stage="install_timeout")
+            ),
         )
 
         data = _json.loads(json_path.read_text())
@@ -3312,6 +3320,7 @@ class TestExecuteQueuedUpdate:
         import json as _json
         import web.dashboard as dashboard
         from agents import ha_update_manager
+        from agents.ha_update_manager import UpdateExecResult
         import utils.ha.ssh_client as ssh_mod
         import utils.agent.autonomy as autonomy_mod
         import utils.hitl.notify as notify_mod
@@ -3330,7 +3339,9 @@ class TestExecuteQueuedUpdate:
             lambda *a, **kw: notify_mod.FakeNotifier(approve=True),
         )
         monkeypatch.setattr(
-            ha_update_manager, "execute_update", _make_async_return(True)
+            ha_update_manager,
+            "execute_update",
+            _make_async_return(UpdateExecResult(success=True, stage="installed")),
         )
 
         data = _json.loads(json_path.read_text())
@@ -3401,6 +3412,157 @@ class TestExecuteQueuedUpdate:
         html = client.get("/queue").text
         assert "Approve" in html
         assert "Action in progress" not in html
+
+
+# ── _execute_queued_update — stage-aware behaviour (S1 / #1261) ───────────────
+
+
+class TestExecuteQueuedUpdateStageAware:
+    """Stage-aware card/verification behaviour introduced in S1."""
+
+    def _write_update_card(
+        self, watch_dir: Path, nid: str, component: str = "noaa_it_all"
+    ) -> Path:
+        import json as _json
+        import time as _time
+
+        data = {
+            "notification_id": nid,
+            "subject": f"Update available: {component}",
+            "body": f"{component} update",
+            "payload": {
+                "card_type": "update",
+                "component": component,
+                "installed_version": "0.11.1",
+                "latest_version": "0.12.0",
+            },
+            "sent_at": int(_time.time()) - 30,
+        }
+        json_path = watch_dir / f"{nid}.json"
+        json_path.write_text(_json.dumps(data))
+        return json_path
+
+    def _run_with_result(self, tmp_path, monkeypatch, result_obj):
+        import json as _json
+        import web.dashboard as dashboard
+        from agents import ha_update_manager
+        import utils.ha.ssh_client as ssh_mod
+        import utils.agent.autonomy as autonomy_mod
+        import utils.hitl.notify as notify_mod
+        from utils.ha.ssh_client import FakeSSHClient
+
+        nid = "s1-test"
+        json_path = self._write_update_card(tmp_path, nid)
+
+        monkeypatch.setattr(ssh_mod, "AsyncSSHClient", lambda: FakeSSHClient())
+        monkeypatch.setattr(
+            autonomy_mod, "AutonomyGate", lambda level: autonomy_mod.FakeAutonomyGate()
+        )
+        monkeypatch.setattr(
+            notify_mod, "get_notifier", lambda *a, **kw: notify_mod.FakeNotifier()
+        )
+        monkeypatch.setattr(
+            ha_update_manager, "execute_update", _make_async_return(result_obj)
+        )
+        monkeypatch.setattr(
+            "utils.core.timeline.write_timeline_event", lambda *a, **kw: None
+        )
+        data = _json.loads(json_path.read_text())
+        asyncio.run(dashboard._execute_queued_update(nid, data, json_path, tmp_path))
+        return nid, json_path
+
+    def test_service_error_leaves_card_pending_no_rejected(self, tmp_path, monkeypatch):
+        """service_error: no .rejected file, card stays PENDING so Approve works again."""
+        from agents.ha_update_manager import UpdateExecResult
+
+        nid, json_path = self._run_with_result(
+            tmp_path,
+            monkeypatch,
+            UpdateExecResult(
+                success=False,
+                stage="service_error",
+                error="Open the Marketplace and read the warning first",
+            ),
+        )
+
+        assert not (
+            tmp_path / f"{nid}.rejected"
+        ).exists(), ".rejected must NOT be created"
+        assert not (tmp_path / f"{nid}.approved").exists()
+
+    def test_service_error_writes_fix_error(self, tmp_path, monkeypatch):
+        """service_error: fix_error field written to JSON with the HA error message."""
+        import json as _json
+        from agents.ha_update_manager import UpdateExecResult
+
+        _err = "Open the Marketplace and read the warning first"
+        nid, json_path = self._run_with_result(
+            tmp_path,
+            monkeypatch,
+            UpdateExecResult(success=False, stage="service_error", error=_err),
+        )
+
+        saved = _json.loads(json_path.read_text())
+        assert "fix_error" in saved
+        assert "Marketplace" in saved["fix_error"]
+        assert "fix_error_at" in saved
+        assert saved["fix_error_at"] > 0
+
+    def test_precondition_leaves_card_pending(self, tmp_path, monkeypatch):
+        """precondition: no .rejected file created."""
+        from agents.ha_update_manager import UpdateExecResult
+
+        nid, json_path = self._run_with_result(
+            tmp_path,
+            monkeypatch,
+            UpdateExecResult(
+                success=False,
+                stage="precondition",
+                error="HA requires a reboot first",
+            ),
+        )
+        assert not (tmp_path / f"{nid}.rejected").exists()
+
+    def test_install_timeout_writes_rejected(self, tmp_path, monkeypatch):
+        """install_timeout: .rejected IS created (ambiguous, not retryable)."""
+        from agents.ha_update_manager import UpdateExecResult
+
+        nid, json_path = self._run_with_result(
+            tmp_path,
+            monkeypatch,
+            UpdateExecResult(success=False, stage="install_timeout"),
+        )
+        assert (tmp_path / f"{nid}.rejected").exists()
+
+    def test_fix_error_banner_rendered_on_pending_card(self, tmp_path, monkeypatch):
+        """A PENDING update card with fix_error shows an error banner in the template."""
+        import json as _json
+        import time as _time
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        nid = "s1-banner"
+        (tmp_path / f"{nid}.json").write_text(
+            _json.dumps(
+                {
+                    "notification_id": nid,
+                    "subject": "Update: noaa_it_all",
+                    "body": "noaa_it_all update available",
+                    "payload": {"card_type": "update", "component": "noaa_it_all"},
+                    "sent_at": int(_time.time()) - 10,
+                    "fix_error": "Open the Marketplace and read the warning first",
+                    "fix_error_at": int(_time.time()) - 5,
+                }
+            )
+        )
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/queue").text
+        assert "Last attempt failed" in html
+        assert "Marketplace" in html
+        # Card stays PENDING — Approve button still present
+        assert "Approve" in html
 
 
 # ── _execute_netalertx_heal (item 58) ─────────────────────────────────────────
@@ -9445,7 +9607,7 @@ class TestVerifyCardExecution:
         )
         assert calls == [("ep-fix", "success")]
 
-    def _run_update(self, tmp_path, monkeypatch, ok: bool) -> list:
+    def _run_update(self, tmp_path, monkeypatch, result_obj) -> list:
         import json as _json
         import web.dashboard as dashboard
         from agents import ha_update_manager
@@ -9462,7 +9624,9 @@ class TestVerifyCardExecution:
         monkeypatch.setattr(
             notify_mod, "get_notifier", lambda *a, **kw: notify_mod.FakeNotifier()
         )
-        monkeypatch.setattr(ha_update_manager, "execute_update", _make_async_return(ok))
+        monkeypatch.setattr(
+            ha_update_manager, "execute_update", _make_async_return(result_obj)
+        )
         monkeypatch.setattr(
             "utils.core.timeline.write_timeline_event", lambda *a, **kw: None
         )
@@ -9475,10 +9639,53 @@ class TestVerifyCardExecution:
         return calls
 
     def test_manual_update_success_verifies_success(self, tmp_path, monkeypatch):
-        assert self._run_update(tmp_path, monkeypatch, True) == [("ep-upd", "success")]
+        from agents.ha_update_manager import UpdateExecResult
 
-    def test_manual_update_failure_verifies_failure(self, tmp_path, monkeypatch):
-        assert self._run_update(tmp_path, monkeypatch, False) == [("ep-upd", "failure")]
+        assert self._run_update(
+            tmp_path, monkeypatch, UpdateExecResult(success=True, stage="installed")
+        ) == [("ep-upd", "success")]
+
+    def test_manual_update_install_timeout_skips_verification(
+        self, tmp_path, monkeypatch
+    ):
+        """install_timeout is not evidence the analysis was wrong; skip verification."""
+        from agents.ha_update_manager import UpdateExecResult
+
+        assert (
+            self._run_update(
+                tmp_path,
+                monkeypatch,
+                UpdateExecResult(success=False, stage="install_timeout"),
+            )
+            == []
+        )
+
+    def test_manual_update_service_error_skips_verification(
+        self, tmp_path, monkeypatch
+    ):
+        """service_error is not evidence the analysis was wrong; skip verification."""
+        from agents.ha_update_manager import UpdateExecResult
+
+        assert (
+            self._run_update(
+                tmp_path,
+                monkeypatch,
+                UpdateExecResult(
+                    success=False,
+                    stage="service_error",
+                    error="Marketplace not accepted",
+                ),
+            )
+            == []
+        )
+
+    def test_manual_update_regression_verifies_failure(self, tmp_path, monkeypatch):
+        """regression stage verifies analysis as failure."""
+        from agents.ha_update_manager import UpdateExecResult
+
+        assert self._run_update(
+            tmp_path, monkeypatch, UpdateExecResult(success=False, stage="regression")
+        ) == [("ep-upd", "failure")]
 
 
 class TestPueoWasRightButton:

@@ -392,6 +392,8 @@ class HITLRequest(BaseModel):
     status: str
     elapsed_seconds: int
     in_progress: bool = False
+    fix_error: str = ""
+    fix_error_at: int = 0
 
     @field_validator("status")
     @classmethod
@@ -448,6 +450,8 @@ def _load_requests(watch_dir: Path) -> list[HITLRequest]:
                     status=status,
                     elapsed_seconds=now - sent_at,
                     in_progress=(watch_dir / f"{nid}.in_progress").exists(),
+                    fix_error=str(data.get("fix_error", "")),
+                    fix_error_at=int(data.get("fix_error_at", 0)),
                 )
             )
         except Exception:  # nosec B112 — intentionally skip malformed JSON
@@ -905,11 +909,20 @@ async def _execute_queued_update(
         ha_rest = HARestClient(
             _config.HA_HOST, _config.HA_API_PORT, _config.HA_API_TOKEN
         )
-        success = await execute_update(
+        result = await execute_update(
             update, ssh, notifier, gate, ha_rest_client=ha_rest
         )
-        await _verify_card_execution(payload, "success" if success else "failure")
-        if success:
+        # Verify only when the result is conclusive:
+        #   installed → success, regression → failure.
+        # Install-mechanism failures (service_error, precondition, install_timeout)
+        # are not evidence the analysis was wrong; skip verification for those.
+        if result.stage == "installed":
+            await _verify_card_execution(payload, "success")
+        elif result.stage == "regression":
+            await _verify_card_execution(payload, "failure")
+        # else: skip verification
+
+        if result.success:
             data["fix_applied"] = True
             json_path.write_text(json.dumps(data, indent=2))
             (watch_dir / f"{nid}.approved").touch()
@@ -925,10 +938,38 @@ async def _execute_queued_update(
                 )
             except Exception:  # nosec B110  # pragma: no cover
                 pass
+        elif result.stage in ("service_error", "precondition"):
+            # Retryable: leave the card PENDING so the user can approve again once
+            # the HA-side condition is resolved. Do not write .rejected.
+            _err_msg = result.error or (
+                f"Update of {component} to {latest_version} could not proceed"
+            )
+            data["fix_error"] = _err_msg
+            data["fix_error_at"] = int(time.time())
+            json_path.write_text(json.dumps(data, indent=2))
+            try:
+                from utils.core.timeline import write_timeline_event
+
+                await asyncio.to_thread(
+                    write_timeline_event,
+                    "WARNING",
+                    "update_executor",
+                    f"Update blocked ({result.stage}): {component} — {_err_msg[:120]}",
+                    {
+                        "component": component,
+                        "latest_version": latest_version,
+                        "stage": result.stage,
+                    },
+                )
+            except Exception:  # nosec B110  # pragma: no cover
+                pass
         else:
-            data["fix_error"] = (
+            # install_timeout or regression: not retryable; mark as rejected.
+            _err_msg = result.error or (
                 f"Update of {component} to {latest_version} did not complete successfully"
             )
+            data["fix_error"] = _err_msg
+            data["fix_error_at"] = int(time.time())
             json_path.write_text(json.dumps(data, indent=2))
             (watch_dir / f"{nid}.rejected").touch()
             try:
@@ -938,13 +979,18 @@ async def _execute_queued_update(
                     write_timeline_event,
                     "ERROR",
                     "update_executor",
-                    f"Update failed: {component} → {latest_version}",
-                    {"component": component, "latest_version": latest_version},
+                    f"Update failed ({result.stage}): {component} → {latest_version}",
+                    {
+                        "component": component,
+                        "latest_version": latest_version,
+                        "stage": result.stage,
+                    },
                 )
             except Exception:  # nosec B110  # pragma: no cover
                 pass
     except Exception as exc:
         data["fix_error"] = str(exc)
+        data["fix_error_at"] = int(time.time())
         json_path.write_text(json.dumps(data, indent=2))
         (watch_dir / f"{nid}.rejected").touch()
         try:

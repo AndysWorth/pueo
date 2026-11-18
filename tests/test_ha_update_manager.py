@@ -4262,14 +4262,14 @@ class TestHacsInstallSshFallback:
         """REST poll times out, SSH finds hacs/restart_required → success=True."""
         stdout = '{"data": {"issues": [{"domain": "hacs", "issue_id": "restart_required_0.8.0"}]}}'
         result, set_calls = self._run(stdout, pueo_dirs)
-        assert result is True
+        assert result.success is True
         assert True in set_calls  # set_restart_pending_after_update(True) called
 
     def test_hacs_ssh_fallback_no_issue_found(self, pueo_dirs):
         """REST poll times out, SSH finds no hacs restart_required → success=False."""
         stdout = '{"data": {"issues": []}}'
         result, set_calls = self._run(stdout, pueo_dirs)
-        assert result is False
+        assert result.success is False
         assert (
             True not in set_calls
         )  # set_restart_pending_after_update NOT called with True
@@ -4277,7 +4277,7 @@ class TestHacsInstallSshFallback:
     def test_hacs_ssh_fallback_invalid_json(self, pueo_dirs):
         """SSH returns invalid JSON → fallback returns False → overall failure."""
         result, _ = self._run("not json", pueo_dirs)
-        assert result is False
+        assert result.success is False
 
 
 # ---------------------------------------------------------------------------
@@ -7784,7 +7784,9 @@ class TestAddonUpdateRestartNote:
         fake_rest = MagicMock()
         fake_rest.call_service = AsyncMock()
 
-        async def _capture_card(update, notifier, success, detail, restart_note):
+        async def _capture_card(
+            update, notifier, success, detail, restart_note, **kwargs
+        ):
             sent_cards.append(restart_note)
 
         update = SimpleNamespace(
@@ -12715,7 +12717,8 @@ class TestAddonUpdateVersionMismatch:
                 )
             )
 
-        assert result is False
+        assert result.success is False
+        assert result.stage == "precondition"
         fake_notifier.send.assert_called_once()
         body = fake_notifier.send.call_args.kwargs["body"]
         assert "1.0.2" in body
@@ -12764,7 +12767,7 @@ class TestAddonUpdateVersionMismatch:
                 )
             )
 
-        assert result is True
+        assert result.success is True
 
 
 # ---------------------------------------------------------------------------
@@ -13137,3 +13140,436 @@ class TestMatchBlogSectionsToInstalled:
         blog_text = "## Some Random Section\n\nContent.\n"
         items = self._call([("blog:2026.11", blog_text)], ["mqtt", "zha"])
         assert items == []
+
+
+# ---------------------------------------------------------------------------
+# UpdateExecResult — dataclass
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateExecResult:
+    """UpdateExecResult carries success, stage, and error."""
+
+    def test_valid_construction(self):
+        from agents.ha_update_manager import UpdateExecResult
+
+        r = UpdateExecResult(success=True, stage="installed")
+        assert r.success is True
+        assert r.stage == "installed"
+        assert r.error == ""
+
+    def test_all_stage_values(self):
+        from agents.ha_update_manager import UpdateExecResult
+
+        for stage in (
+            "precondition",
+            "service_error",
+            "install_timeout",
+            "installed",
+            "regression",
+        ):
+            r = UpdateExecResult(success=False, stage=stage, error="x")
+            assert r.stage == stage
+
+    def test_error_field(self):
+        from agents.ha_update_manager import UpdateExecResult
+
+        r = UpdateExecResult(
+            success=False, stage="service_error", error="Open the Marketplace first"
+        )
+        assert "Marketplace" in r.error
+
+
+# ---------------------------------------------------------------------------
+# execute_addon_update — service error returns UpdateExecResult
+# ---------------------------------------------------------------------------
+
+
+class TestExecuteAddonUpdateServiceError:
+    """execute_addon_update: HTTPStatusError → UpdateExecResult(stage='service_error')."""
+
+    def _make_update(self):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            entity_id="update.noaa_it_all_update",
+            component="noaa_it_all",
+            installed_version="0.11.1",
+            latest_version="0.12.0",
+            update_available=True,
+            in_progress=False,
+            release_url=None,
+            release_summary=None,
+            entity_picture="https://brands.home-assistant.io/noaa_it_all/icon.png",
+        )
+
+    def test_http_status_error_returns_service_error_stage(self, pueo_dirs):
+        """An HTTPStatusError from call_service returns stage='service_error', no .rejected."""
+        import asyncio
+        import httpx
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from agents.ha_update_manager import UpdateExecResult
+
+        async def _fake_backup(**kwargs):
+            return "slug123"
+
+        async def _raise_http(*args, **kwargs):
+            raise httpx.HTTPStatusError(
+                message="500 Internal Server Error",
+                request=httpx.Request("POST", "http://ha/api/services/update/install"),
+                response=httpx.Response(
+                    500,
+                    text='{"message": "Open the Marketplace and read the warning first"}',
+                ),
+            )
+
+        fake_notifier = MagicMock()
+        fake_notifier.send = AsyncMock()
+        fake_rest = MagicMock()
+        fake_rest.call_service = _raise_http
+        fake_rest.get_states = AsyncMock(
+            return_value=[]
+        )  # version guard: no entities → no mismatch
+
+        with (
+            patch(
+                "agents.ha_agent_advanced.execute_remote_backup",
+                side_effect=_fake_backup,
+            ),
+            patch("agents.ha_agent_advanced.record_backup_slug"),
+            patch("agents.ha_agent_advanced.offload_backup_to_local", AsyncMock()),
+            patch(
+                "agents.ha_update_manager._send_post_update_card", AsyncMock()
+            ) as mock_card,
+            patch(
+                "agents.ha_update_manager._extract_service_error_detail",
+                AsyncMock(return_value="Open the Marketplace first"),
+            ),
+        ):
+            result = asyncio.run(
+                __import__(
+                    "agents.ha_update_manager", fromlist=["execute_addon_update"]
+                ).execute_addon_update(
+                    self._make_update(),
+                    ssh_client=MagicMock(),
+                    notifier=fake_notifier,
+                    gate=MagicMock(),
+                    ha_rest_client=fake_rest,
+                )
+            )
+
+        assert isinstance(result, UpdateExecResult)
+        assert result.success is False
+        assert result.stage == "service_error"
+        assert result.error == "Open the Marketplace first"
+        # _send_post_update_card called with stage="service_error"
+        call_kwargs = mock_card.call_args.kwargs
+        assert call_kwargs.get("stage") == "service_error"
+
+    def test_install_timeout_returns_install_timeout_stage(self, pueo_dirs):
+        """Poll returning False → stage='install_timeout'."""
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from agents.ha_update_manager import UpdateExecResult
+
+        async def _fake_backup(**kwargs):
+            return "slug123"
+
+        async def _fake_poll_false(*args, **kwargs):
+            return False
+
+        fake_rest = MagicMock()
+        fake_rest.call_service = AsyncMock()
+        fake_rest.get_states = AsyncMock(return_value=[])
+
+        with (
+            patch(
+                "agents.ha_agent_advanced.execute_remote_backup",
+                side_effect=_fake_backup,
+            ),
+            patch("agents.ha_agent_advanced.record_backup_slug"),
+            patch("agents.ha_agent_advanced.offload_backup_to_local", AsyncMock()),
+            patch(
+                "agents.ha_update_manager._poll_addon_update_via_rest",
+                side_effect=_fake_poll_false,
+            ),
+            patch("agents.ha_update_manager._send_post_update_card", AsyncMock()),
+        ):
+            result = asyncio.run(
+                __import__(
+                    "agents.ha_update_manager", fromlist=["execute_addon_update"]
+                ).execute_addon_update(
+                    self._make_update(),
+                    ssh_client=MagicMock(),
+                    notifier=MagicMock(send=AsyncMock()),
+                    gate=MagicMock(),
+                    ha_rest_client=fake_rest,
+                )
+            )
+
+        assert isinstance(result, UpdateExecResult)
+        assert result.success is False
+        assert result.stage == "install_timeout"
+
+    def test_success_returns_installed_stage(self, pueo_dirs):
+        """Poll returning True → stage='installed'."""
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from agents.ha_update_manager import UpdateExecResult
+
+        async def _fake_backup(**kwargs):
+            return "slug123"
+
+        async def _fake_poll_true(*args, **kwargs):
+            return True
+
+        fake_rest = MagicMock()
+        fake_rest.call_service = AsyncMock()
+        fake_rest.get_states = AsyncMock(return_value=[])
+
+        with (
+            patch(
+                "agents.ha_agent_advanced.execute_remote_backup",
+                side_effect=_fake_backup,
+            ),
+            patch("agents.ha_agent_advanced.record_backup_slug"),
+            patch("agents.ha_agent_advanced.offload_backup_to_local", AsyncMock()),
+            patch(
+                "agents.ha_update_manager._poll_addon_update_via_rest",
+                side_effect=_fake_poll_true,
+            ),
+            patch("agents.ha_update_manager._send_post_update_card", AsyncMock()),
+            patch("agents.ha_update_manager.set_restart_pending_after_update"),
+            patch("agents.ha_update_manager._post_update_repair_scan", AsyncMock()),
+            patch("asyncio.create_task"),
+        ):
+            result = asyncio.run(
+                __import__(
+                    "agents.ha_update_manager", fromlist=["execute_addon_update"]
+                ).execute_addon_update(
+                    self._make_update(),
+                    ssh_client=MagicMock(),
+                    notifier=MagicMock(send=AsyncMock()),
+                    gate=MagicMock(),
+                    ha_rest_client=fake_rest,
+                )
+            )
+
+        assert isinstance(result, UpdateExecResult)
+        assert result.success is True
+        assert result.stage == "installed"
+
+    def test_version_mismatch_returns_precondition_stage(self, pueo_dirs):
+        """Version mismatch guard → stage='precondition'."""
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from agents.ha_update_manager import UpdateExecResult
+
+        async def _fake_backup(**kwargs):
+            return "slug123"
+
+        # Return a live entity with a different latest_version
+        fake_live_state = {
+            "entity_id": "update.noaa_it_all_update",
+            "state": "on",
+            "attributes": {
+                "installed_version": "0.11.1",
+                "latest_version": "0.13.0",  # different from card's 0.12.0
+                "title": "noaa_it_all",
+                "entity_picture": "https://brands.home-assistant.io/noaa_it_all/icon.png",
+                "release_url": None,
+                "release_summary": None,
+                "skipped_version": None,
+                "in_progress": False,
+                "auto_update": False,
+            },
+        }
+        fake_rest = MagicMock()
+        fake_rest.get_states = AsyncMock(return_value=[fake_live_state])
+
+        with (
+            patch(
+                "agents.ha_agent_advanced.execute_remote_backup",
+                side_effect=_fake_backup,
+            ),
+            patch("agents.ha_agent_advanced.record_backup_slug"),
+            patch("agents.ha_agent_advanced.offload_backup_to_local", AsyncMock()),
+        ):
+            result = asyncio.run(
+                __import__(
+                    "agents.ha_update_manager", fromlist=["execute_addon_update"]
+                ).execute_addon_update(
+                    self._make_update(),
+                    ssh_client=MagicMock(),
+                    notifier=MagicMock(send=AsyncMock()),
+                    gate=MagicMock(),
+                    ha_rest_client=fake_rest,
+                )
+            )
+
+        assert isinstance(result, UpdateExecResult)
+        assert result.success is False
+        assert result.stage == "precondition"
+
+
+# ---------------------------------------------------------------------------
+# execute_update — wraps bool-returning core/os paths into UpdateExecResult
+# ---------------------------------------------------------------------------
+
+
+class TestExecuteUpdateWrapping:
+    """execute_update wraps core and os bool results into UpdateExecResult."""
+
+    def _make_update(self, component: str):
+        from utils.ha.ha_rest_client import UpdateStatus
+
+        return UpdateStatus(
+            component=component,
+            entity_id=f"update.{component}",
+            installed_version="1.0",
+            latest_version="1.1",
+            update_available=True,
+            in_progress=False,
+            release_url=None,
+            release_summary=None,
+        )
+
+    def test_core_success_wrapped(self):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from agents.ha_update_manager import UpdateExecResult
+
+        with (
+            patch(
+                "agents.ha_update_manager.execute_core_update",
+                AsyncMock(return_value=True),
+            ),
+            patch(
+                "agents.ha_agent_advanced.is_reboot_required_active", return_value=False
+            ),
+        ):
+            result = asyncio.run(
+                __import__(
+                    "agents.ha_update_manager", fromlist=["execute_update"]
+                ).execute_update(
+                    self._make_update("core"),
+                    ssh_client=MagicMock(),
+                    notifier=MagicMock(send=AsyncMock()),
+                    gate=MagicMock(),
+                )
+            )
+        assert isinstance(result, UpdateExecResult)
+        assert result.success is True
+        assert result.stage == "installed"
+
+    def test_core_failure_wrapped(self):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from agents.ha_update_manager import UpdateExecResult
+
+        with (
+            patch(
+                "agents.ha_update_manager.execute_core_update",
+                AsyncMock(return_value=False),
+            ),
+            patch(
+                "agents.ha_agent_advanced.is_reboot_required_active", return_value=False
+            ),
+        ):
+            result = asyncio.run(
+                __import__(
+                    "agents.ha_update_manager", fromlist=["execute_update"]
+                ).execute_update(
+                    self._make_update("core"),
+                    ssh_client=MagicMock(),
+                    notifier=MagicMock(send=AsyncMock()),
+                    gate=MagicMock(),
+                )
+            )
+        assert isinstance(result, UpdateExecResult)
+        assert result.success is False
+        assert result.stage == "install_timeout"
+
+    def test_reboot_required_returns_precondition(self):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from agents.ha_update_manager import UpdateExecResult
+
+        with patch(
+            "agents.ha_agent_advanced.is_reboot_required_active", return_value=True
+        ):
+            result = asyncio.run(
+                __import__(
+                    "agents.ha_update_manager", fromlist=["execute_update"]
+                ).execute_update(
+                    self._make_update("core"),
+                    ssh_client=MagicMock(),
+                    notifier=MagicMock(send=AsyncMock()),
+                    gate=MagicMock(),
+                )
+            )
+        assert isinstance(result, UpdateExecResult)
+        assert result.success is False
+        assert result.stage == "precondition"
+
+
+# ---------------------------------------------------------------------------
+# _extract_service_error_detail — error message extraction
+# ---------------------------------------------------------------------------
+
+
+class TestExtractServiceErrorDetail:
+    """_extract_service_error_detail returns useful error text."""
+
+    def test_json_message_extracted(self):
+        import asyncio
+        from unittest.mock import MagicMock
+        from agents.ha_update_manager import _extract_service_error_detail
+
+        ssh = MagicMock()
+        result = asyncio.run(
+            _extract_service_error_detail(
+                '{"message": "Open the Marketplace and read the warning first"}',
+                "update.noaa_it_all_update",
+                ssh,
+            )
+        )
+        assert "Marketplace" in result
+
+    def test_plain_text_returned_directly(self):
+        import asyncio
+        from unittest.mock import MagicMock
+        from agents.ha_update_manager import _extract_service_error_detail
+
+        ssh = MagicMock()
+        result = asyncio.run(
+            _extract_service_error_detail(
+                "Some specific error from HA",
+                "update.foo",
+                ssh,
+            )
+        )
+        assert "specific error" in result
+
+    def test_generic_body_falls_back_to_ssh_log(self):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from agents.ha_update_manager import _extract_service_error_detail
+
+        fake_ssh = MagicMock()
+        fake_ssh.run = AsyncMock(
+            return_value=(
+                0,
+                "2026-11-18 14:09:00 ERROR ... Error during service call to update.install: Precondition failed",
+                "",
+            )
+        )
+        result = asyncio.run(
+            _extract_service_error_detail(
+                "500 Internal Server Error",
+                "update.foo_update",
+                fake_ssh,
+            )
+        )
+        assert "Error during service call" in result
+        assert "Precondition" in result
