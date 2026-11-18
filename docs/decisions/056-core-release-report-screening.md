@@ -428,7 +428,43 @@ none of a part's tokens (same `_bc_rejection_note` path as the proof-line check,
 #1223), giving the model one retry.  `seed_update_bc.md` documents the multi-part
 rule.
 
-**Amendment S6 (#1259) — Heads-up tier.**
+## Amendment — S5: OS applicability (#1257, 2026-11-17)
+
+Addresses finding F4: OS 18.5 is an RPi/Yellow-only kernel CVE fix but the card said
+`instance_impact: none` and asked the user whether this is a Pi, despite `ha host info`
+already showing `cpe …:yellow` and `kernel 6.18.39-haos-raspi`.
+
+**Changes:**
+
+`utils/ha/os_applicability.py` (new):
+- `fetch_os_board_context(ssh)` → `{board, kernel, raw_cpe}` via `ha os info --raw-json`
+  (board field) + `ha host info --raw-json` (kernel field); best-effort, None on failure.
+- `os_release_applicability(notes, board)` pure function: parses `##`/`###` headings for
+  board-specific sections using `_BOARD_PATTERNS` alias table (yellow, green, rpi3/4/5,
+  odroid-n2/m1, generic-x86-64). Returns `{applies: yes|no|unknown, reason, board_sections,
+  other_board_sections}`. "No board sections" → `yes` (all boards). "Other board only" → `no`.
+
+`agents/ha_update_manager.py`:
+- For OS updates: calls `fetch_os_board_context(_ssh)` after `sanitize_update_context`,
+  injects "Board: yellow · kernel 6.18.39-haos-raspi" into `initial_context`, and calls
+  `executor.set_os_board_context(ctx)`.
+
+`utils/agent/tool_executor.py`:
+- `ToolExecutor._os_board_ctx`: stores board context dict.
+- `set_os_board_context(ctx)`: setter.
+- `_derive_os_applicability()`: called by `_finish_update_analysis`; uses `_session_outputs`
+  to find `get_update_release_notes` / `fetch_url` text, runs `os_release_applicability`, adds
+  `board` and `kernel` keys; returns `{}` when no board context.
+- `_finish_update_analysis` payload gains `os_applicability` field.
+
+`prompts/seed_update_os.md`:
+- Added: "do not call `ha host info` to re-derive facts already in context";
+  board applicability rules (other-board-only → `instance_impact=none`);
+  `verification_question` about facts already in context is an error.
+- Removed: firmware step (step 3, `ha os boards rpi firmware`); board-confirmation step.
+
+## Amendment — S6: Heads-up tier (#1259, 2026-11-17)
+
 `CoreReleaseReport.heads_up_items` (new field): list of `{heading, note, source, matched_domain}` dicts populated by `match_blog_sections_to_installed()` during report build.  The function scans `##`/`###` headings in blog texts (source="blog:YYYY.M"), skips non-feature sections (Breaking Changes, Farewell, Integrations, etc.), and matches each heading against the installed domain set using the existing `_resolve_domain` and `_find_domain_in_heading` helpers.  HACS/Marketplace special case: any heading containing "marketplace", "community store", or "hacs" matches when "hacs" is installed.  One item per domain (first heading wins).
 
 `finish_bc_assessment` gains a `heads_up` verdict: visible-but-harmless change the user will notice (dashboard labels, automatic migration).  It is accepted without a proof-line check and without `user_question`.  `_derive_instance_impact` and `_derive_recommendation` treat it the same as `no_action`.
