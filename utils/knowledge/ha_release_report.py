@@ -170,6 +170,10 @@ class CoreReleaseReport(BaseModel):
     # Each entry: {dependency: str, verdict: "breaks_pueo"|"no_impact"|"dev_check",
     #              quote: str, reason: str}
     pueo_verdicts: list[dict] = []
+    # Blog sections that name an installed integration or HACS/Marketplace (#1259).
+    # Visible-but-harmless changes the user will notice. Each entry:
+    # {heading, note, source, matched_domain}
+    heads_up_items: list[dict] = []
     # Deterministic report status (blog + changelog parsed).  Screening status is
     # tracked separately in screening_complete / screening_batches_* (#1148).
     completeness: str = "incomplete"
@@ -554,6 +558,103 @@ def find_pueo_dependency_hits(
     return hits
 
 
+# ── Blog section heads-up matching ────────────────────────────────────────────
+
+# Section headings to skip — not feature-announcement sections.
+_SKIP_BLOG_HEADING_RE = re.compile(
+    r"^(?:backward[- ]incompatible|breaking\s+changes?|changelogs?|farewell|"
+    r"deprecations?|noteworthy\s+platforms?|credits?|releases?|documentation|"
+    r"all\s+changes|integrations?|new\s+integrations?|integration\s+changes?|"
+    r"notable\s+changes?|what['']?s\s+(?:new|changed)|highlighted|thanks?|"
+    r"contributors?|sponsors?|home\s+assistant\s+(?:core|os|\d)|"
+    r"highlights?|overview)\s*$",
+    re.IGNORECASE,
+)
+# Terms in a heading that signal a HACS/Marketplace-related section.
+_HACS_HEADING_TERMS = frozenset({"marketplace", "community store", "hacs"})
+# Markdown links, bold/italic/code markers, and inline images.
+_MD_INLINE_RE = re.compile(r"!\[[^\]]*\]\([^)]+\)|\[([^\]]+)\]\([^)]+\)|[*_`#>]")
+
+
+def _strip_md_inline(text: str) -> str:
+    """Strip markdown inline formatting, keeping link text."""
+    return _MD_INLINE_RE.sub(lambda m: m.group(1) or "", text).strip()
+
+
+def _extract_first_paragraph(text: str) -> str:
+    """Return the first non-empty prose paragraph from text, ≤300 chars."""
+    for para in re.split(r"\n\s*\n", text.strip()):
+        line = para.split("\n")[0]
+        clean = _strip_md_inline(line).strip()
+        if clean and not clean.startswith(("!", "-", "*", "|", "[")):
+            return clean[:300]
+    return ""
+
+
+def match_blog_sections_to_installed(
+    scan_texts: list[tuple[str, str]],
+    installed_set: set[str],
+    name_to_domain: Optional[dict[str, str]] = None,
+) -> list[dict]:
+    """Return heads_up items from blog sections mentioning installed integrations.
+
+    Scans ## and ### headings in blog texts (source="blog:YYYY.M"). Skips
+    known non-feature headings. Each item: {heading, note, source, matched_domain}.
+    One item per matched domain (first heading wins).
+    """
+    results: list[dict] = []
+    seen_domains: set[str] = set()
+    hacs_present = "hacs" in installed_set
+    ntd = name_to_domain or {}
+
+    for source, text in scan_texts:
+        if not source.startswith("blog:"):
+            continue
+        for m in re.finditer(r"(?m)^(#{2,3})\s+(.+)$", text):
+            heading_raw = m.group(2).strip()
+            heading = _strip_md_inline(heading_raw)
+            if _SKIP_BLOG_HEADING_RE.match(heading):
+                continue
+            # Body: text until the next heading at the same or higher level.
+            level = len(m.group(1))
+            next_m = re.search(r"(?m)^#{1,%d}\s" % level, text[m.end() :])
+            body = text[m.end() : m.end() + next_m.start() if next_m else len(text)]
+
+            matched_domain: Optional[str] = None
+            heading_lower = heading.lower()
+            if hacs_present and any(t in heading_lower for t in _HACS_HEADING_TERMS):
+                matched_domain = "hacs"
+            else:
+                matched_domain = _resolve_domain(heading, installed_set, ntd)
+                if matched_domain is None:
+                    matched_domain = _find_domain_in_heading(heading, installed_set)
+
+            if matched_domain is None or matched_domain in seen_domains:
+                continue
+            seen_domains.add(matched_domain)
+            results.append(
+                {
+                    "heading": heading,
+                    "note": _extract_first_paragraph(body),
+                    "source": source,
+                    "matched_domain": matched_domain,
+                }
+            )
+    return results
+
+
+def _find_domain_in_heading(heading: str, installed_set: set[str]) -> Optional[str]:
+    """Return an installed domain whose name matches the heading, or None."""
+    norm = _normalize_name(heading)
+    if norm in installed_set:
+        return norm
+    bare = norm.replace("_", "")
+    for d in installed_set:
+        if d.replace("_", "") == bare:
+            return d
+    return None
+
+
 async def build_core_release_report(
     version: str,
     installed_integrations: list[str],
@@ -805,6 +906,18 @@ async def build_core_release_report(
         hits=len(report.pueo_dependency_hits),
         dependencies=sorted({h.dependency for h in report.pueo_dependency_hits}),
     )
+
+    # ── 5.5. Blog section heads-up items (#1259) ─────────────────────────
+    report.heads_up_items = match_blog_sections_to_installed(
+        scan_texts, installed_set, name_to_domain
+    )
+    if report.heads_up_items:
+        log.info(
+            "heads_up_items_matched",
+            version=version,
+            count=len(report.heads_up_items),
+            domains=[it["matched_domain"] for it in report.heads_up_items],
+        )
 
     # ── 6. Completeness ───────────────────────────────────────────────────
     if months:

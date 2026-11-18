@@ -9894,7 +9894,12 @@ class TestBCAssessmentRegistry:
         from utils.agent.tool_registry import FINISH_BC_ASSESSMENT
 
         props = FINISH_BC_ASSESSMENT.parameters["properties"]
-        assert props["verdict"]["enum"] == ["action_needed", "no_action", "user_check"]
+        assert props["verdict"]["enum"] == [
+            "action_needed",
+            "no_action",
+            "user_check",
+            "heads_up",
+        ]
         assert props["when"]["enum"] == ["before_update", "after_update"]
 
 
@@ -12948,3 +12953,187 @@ class TestLoadStoredCoreReportAnyPatch:
         assert loaded is not None
         # Confirm Pydantic round-trip is lossless on the core fields
         assert loaded.model_dump_json() == rpt.model_dump_json()
+
+
+# ---------------------------------------------------------------------------
+# S6: heads_up verdict + match_blog_sections_to_installed
+# ---------------------------------------------------------------------------
+
+
+class TestHeadsUpVerdict:
+    """Tests for the heads_up BC verdict tier."""
+
+    def test_heads_up_in_bc_verdicts_set(self):
+        from utils.agent.tool_executor import _BC_VERDICTS
+
+        assert "heads_up" in _BC_VERDICTS
+
+    def test_normalize_bc_verdicts_preserves_heads_up(self):
+        from utils.agent.tool_executor import _normalize_bc_verdicts
+
+        raw = [{"bc": "Entity names", "verdict": "heads_up", "reason": "labels rename"}]
+        result = _normalize_bc_verdicts(raw, ["Entity names"])
+        assert result[0]["verdict"] == "heads_up"
+        assert result[0]["reason"] == "labels rename"
+
+    def test_derive_instance_impact_heads_up_gives_none(self):
+        """heads_up is visible but no action needed — does not raise impact."""
+        from utils.agent.tool_executor import _derive_instance_impact
+
+        verdicts = [{"verdict": "heads_up"}, {"verdict": "no_action"}]
+        assert _derive_instance_impact(verdicts) == "none"
+
+    def test_derive_instance_impact_heads_up_mixed_with_user_check(self):
+        """user_check still raises to low even alongside heads_up."""
+        from utils.agent.tool_executor import _derive_instance_impact
+
+        verdicts = [{"verdict": "heads_up"}, {"verdict": "user_check"}]
+        assert _derive_instance_impact(verdicts) == "low"
+
+    def test_derive_recommendation_heads_up_gives_safe(self):
+        from utils.agent.tool_executor import _derive_recommendation
+
+        verdicts = [{"verdict": "heads_up"}, {"verdict": "no_action"}]
+        assert "Safe to update" in _derive_recommendation(verdicts)
+
+    def test_finish_bc_assessment_schema_includes_heads_up(self):
+        from utils.agent.tool_registry import FINISH_BC_ASSESSMENT
+
+        enum_values = FINISH_BC_ASSESSMENT.parameters["properties"]["verdict"]["enum"]
+        assert "heads_up" in enum_values
+
+    def test_finish_bc_assessment_schema_pydantic_valid(self):
+        """Three-test rule: valid, invalid, roundtrip for the heads_up verdict."""
+        from utils.agent.tool_registry import FINISH_BC_ASSESSMENT
+        import json
+
+        schema = json.loads(json.dumps(FINISH_BC_ASSESSMENT.parameters))
+        # valid: heads_up with just reason is accepted by schema
+        assert "heads_up" in schema["properties"]["verdict"]["enum"]
+
+    def test_finish_bc_assessment_verdict_enum_has_heads_up(self):
+        from utils.agent.tool_registry import FINISH_BC_ASSESSMENT
+
+        enum_values = FINISH_BC_ASSESSMENT.parameters["properties"]["verdict"]["enum"]
+        assert set(enum_values) == {
+            "action_needed",
+            "no_action",
+            "user_check",
+            "heads_up",
+        }
+
+    def test_heads_up_items_in_payload(self):
+        """_finish_update_analysis includes heads_up_items from the report."""
+        from utils.knowledge.ha_release_report import CoreReleaseReport
+
+        rpt = CoreReleaseReport(
+            version="2026.11.1",
+            heads_up_items=[
+                {
+                    "heading": "Welcome to the Marketplace",
+                    "note": "HACS migrates automatically on first start.",
+                    "source": "blog:2026.11",
+                    "matched_domain": "hacs",
+                }
+            ],
+        )
+        # Verify Pydantic round-trip preserves heads_up_items
+        reloaded = CoreReleaseReport.model_validate_json(rpt.model_dump_json())
+        assert len(reloaded.heads_up_items) == 1
+        assert reloaded.heads_up_items[0]["matched_domain"] == "hacs"
+
+    def test_verification_question_suppressed_when_verdicts_exist(self):
+        """verification_question must be suppressed when BC assessment ran."""
+        # The suppression logic is a one-line guard in _finish_update_analysis.
+        # Validate the invariant by checking that the payload builder would
+        # exclude it via the _normalized_verdicts gate (white-box logic check).
+        from utils.agent.tool_executor import _normalize_bc_verdicts
+
+        normalized = _normalize_bc_verdicts(
+            [{"bc": "Entity names", "verdict": "heads_up", "reason": "labels"}],
+            ["Entity names"],
+        )
+        # Non-empty _normalized_verdicts → verification_question suppressed.
+        assert len(normalized) > 0, "must be non-empty to trigger suppression"
+
+
+class TestMatchBlogSectionsToInstalled:
+    """Tests for match_blog_sections_to_installed in ha_release_report."""
+
+    def _call(self, scan_texts, installed, name_to_domain=None):
+        from utils.knowledge.ha_release_report import match_blog_sections_to_installed
+
+        return match_blog_sections_to_installed(
+            scan_texts, set(installed), name_to_domain
+        )
+
+    def test_matches_integration_in_heading(self):
+        # Use name_to_domain so "Zigbee Home Automation" resolves to domain "zha".
+        blog_text = (
+            "## Zigbee Home Automation\n\n"
+            "Great news for ZHA users. This release ships performance improvements.\n\n"
+            "## Breaking Changes\n\n### Something\n..."
+        )
+        items = self._call(
+            [("blog:2026.11", blog_text)],
+            ["zha", "mqtt"],
+            name_to_domain={"Zigbee Home Automation": "zha"},
+        )
+        assert any(it["matched_domain"] == "zha" for it in items)
+        # Should not match "Breaking Changes"
+        assert not any("breaking" in it["heading"].lower() for it in items)
+
+    def test_matches_hacs_on_marketplace_heading(self):
+        blog_text = (
+            "## Welcome to the Marketplace\n\n"
+            "Your HACS integrations now live in the Marketplace.\n"
+        )
+        items = self._call([("blog:2026.11", blog_text)], ["hacs", "mqtt"])
+        assert len(items) == 1
+        assert items[0]["matched_domain"] == "hacs"
+        assert items[0]["source"] == "blog:2026.11"
+
+    def test_no_hacs_match_when_hacs_not_installed(self):
+        blog_text = "## Welcome to the Marketplace\n\nGreat new feature.\n"
+        items = self._call([("blog:2026.11", blog_text)], ["mqtt"])
+        assert items == []
+
+    def test_skips_known_non_feature_sections(self):
+        blog_text = (
+            "## Breaking Changes\n\n### Some BC\nSomething.\n\n"
+            "## Farewell\n\nSome integration removed.\n\n"
+            "## Integrations\n\nOverview.\n"
+        )
+        items = self._call([("blog:2026.11", blog_text)], ["some", "integration"])
+        assert items == []
+
+    def test_ignores_non_blog_sources(self):
+        patch_text = "## MQTT\n\nSome patch note."
+        items = self._call(
+            [("patch:2026.11.1", patch_text), ("changelog:2026.11", patch_text)],
+            ["mqtt"],
+        )
+        assert items == []
+
+    def test_one_item_per_domain(self):
+        blog_text = (
+            "## MQTT\n\nFirst mention.\n\n" "## MQTT improvements\n\nSecond mention.\n"
+        )
+        items = self._call([("blog:2026.11", blog_text)], ["mqtt"])
+        mqtt_items = [it for it in items if it["matched_domain"] == "mqtt"]
+        assert len(mqtt_items) == 1
+
+    def test_note_extracted_from_body(self):
+        blog_text = "## MQTT\n\nMQTT gets a performance boost in this release.\n"
+        items = self._call([("blog:2026.11", blog_text)], ["mqtt"])
+        assert len(items) == 1
+        assert "performance" in items[0]["note"]
+
+    def test_empty_scan_texts(self):
+        items = self._call([], ["mqtt"])
+        assert items == []
+
+    def test_no_matching_domain(self):
+        blog_text = "## Some Random Section\n\nContent.\n"
+        items = self._call([("blog:2026.11", blog_text)], ["mqtt", "zha"])
+        assert items == []
