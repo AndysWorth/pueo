@@ -438,6 +438,18 @@ def record_ha_start(db_path: str, ts: float) -> None:
         log.warning("ha_start_record_failed", error=str(e))
 
 
+def ha_recently_started(db_path: str, window_s: float) -> bool:
+    """Return True if HA started within the last ``window_s`` seconds."""
+    try:
+        with sqlite3.connect(db_path) as conn:
+            ts = load_ha_start_ts(conn)
+            if ts is not None:
+                return time.time() - ts < window_s
+    except Exception:  # nosec B110
+        pass
+    return False
+
+
 async def confirm_ha_restart(
     rest_client: "Optional[Any]",
     db_path: str,

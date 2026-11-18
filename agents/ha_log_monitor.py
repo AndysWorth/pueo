@@ -1911,6 +1911,11 @@ def _external_update_message(
     return f"{component} update cleared outside Pueo"
 
 
+# Minimum elapsed absence before an update entity is treated as externally resolved.
+# 15 min covers the ~90 s HACS→Marketplace entity swap that happens during a Core
+# update restart, so a brief disappearance never triggers a false external resolution.
+UPDATE_GONE_MIN_SECONDS = 900.0
+
 # How long after Pueo auto-applies an update a sibling entity's disappearance is
 # attributed to Pueo rather than to an external action.  Two full fallback poll
 # intervals (2 × 60 min) gives comfortable headroom for the two-poll confirmation
@@ -1944,14 +1949,36 @@ def _find_recent_pueo_auto_apply(component: str) -> Optional[str]:
     return None
 
 
+def _ha_recently_started(window_s: float) -> bool:
+    """Return True if HA started within the last ``window_s`` seconds.
+
+    Delegates to the shared helper in device_availability which reads
+    ``ha:last_start_ts`` from the user_prefs table.
+    """
+    try:
+        from utils.ha.device_availability import ha_recently_started
+
+        return ha_recently_started(DB_PATH, window_s)
+    except Exception:  # nosec B110
+        return False
+
+
 def _resolve_externally_applied_update(
-    suppression_key: str, watch_dir: str, update: Optional[UpdateStatus] = None
+    suppression_key: str,
+    watch_dir: str,
+    update: Optional[UpdateStatus] = None,
+    absent: bool = False,
 ) -> None:
     """Retire a pending update approval card that HA resolved without Pueo's involvement.
 
     Details come from the approval-card JSON when present; otherwise from the
     current poll's UpdateStatus, then the entity id, so the message never shows
     "unknown" (#843).
+
+    If ``absent`` is True the entity has disappeared entirely from the HA response
+    (not just flipped to state=off).  In that case ``to_version`` is not read from
+    the card's ``latest_version`` — we have no live evidence of what was installed.
+    The timeline message reports the disappearance rather than a version transition.
 
     If Pueo recently auto-applied an update for a related component (a sibling
     entity cleared within ``_SIBLING_AUTO_APPLY_WINDOW_SECONDS``), the resolution
@@ -1991,7 +2018,11 @@ def _resolve_externally_applied_update(
             payload = data.get("payload", data)
             component = payload.get("component")
             from_version = payload.get("installed_version")
-            to_version = payload.get("latest_version")
+            if not absent:
+                # Only use the card's latest_version as to_version when the entity
+                # is present but not updating — it's weaker evidence for absent entities
+                # since we can't confirm the version was actually installed.
+                to_version = payload.get("latest_version")
     except Exception:  # nosec B110
         pass
 
@@ -2037,6 +2068,18 @@ def _resolve_externally_applied_update(
                     "to_version": to_version,
                     "resolution": "pueo_sibling",
                     "sibling_key": _sibling_key,
+                },
+            )
+        elif absent:
+            write_timeline_event(
+                "INFO",
+                "update_check",
+                f"{component} update entity disappeared"
+                " — may have been renamed or removed",
+                {
+                    "component": component,
+                    "from_version": from_version,
+                    "resolution": "absent",
                 },
             )
         else:
@@ -2269,7 +2312,11 @@ async def poll_for_updates(
                             "update_gone_first_detection",
                             suppression_key=suppression_key,
                         )
-                    else:
+                    elif time.monotonic() - _update_gone[
+                        suppression_key
+                    ] >= UPDATE_GONE_MIN_SECONDS and not await asyncio.to_thread(
+                        _ha_recently_started, UPDATE_GONE_MIN_SECONDS
+                    ):
                         await asyncio.to_thread(
                             _resolve_externally_applied_update,
                             suppression_key,
@@ -2277,6 +2324,14 @@ async def poll_for_updates(
                             u,
                         )
                         _update_gone.pop(suppression_key, None)
+                    else:
+                        log.debug(
+                            "update_gone_wait",
+                            suppression_key=suppression_key,
+                            elapsed_s=round(
+                                time.monotonic() - _update_gone[suppression_key], 1
+                            ),
+                        )
 
         _n_avail = sum(1 for u in updates if u.update_available)
         _update_outcome = (
@@ -2292,11 +2347,26 @@ async def poll_for_updates(
                 continue  # handled in per-entity loop above
             if _abs_key not in _update_gone:
                 _update_gone[_abs_key] = time.monotonic()
-            else:
+                log.info("update_gone_first_detection", suppression_key=_abs_key)
+            elif time.monotonic() - _update_gone[
+                _abs_key
+            ] >= UPDATE_GONE_MIN_SECONDS and not await asyncio.to_thread(
+                _ha_recently_started, UPDATE_GONE_MIN_SECONDS
+            ):
                 await asyncio.to_thread(
-                    _resolve_externally_applied_update, _abs_key, NOTIFY_WATCH_DIR
+                    _resolve_externally_applied_update,
+                    _abs_key,
+                    NOTIFY_WATCH_DIR,
+                    None,
+                    True,  # absent=True: entity not in HA response
                 )
                 _update_gone.pop(_abs_key, None)
+            else:
+                log.debug(
+                    "update_gone_wait",
+                    suppression_key=_abs_key,
+                    elapsed_s=round(time.monotonic() - _update_gone[_abs_key], 1),
+                )
 
         try:
             from utils.agent.supervisor import get_supervisor_instance as _get_sv

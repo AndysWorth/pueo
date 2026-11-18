@@ -17661,6 +17661,11 @@ class TestExternalUpdateResolution:
         monkeypatch.setattr(
             "agents.ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", False
         )
+        # Allow immediate resolution without waiting 15 min (unit test: not testing timing)
+        monkeypatch.setattr("agents.ha_log_monitor.UPDATE_GONE_MIN_SECONDS", 0.0)
+        monkeypatch.setattr(
+            "agents.ha_log_monitor._ha_recently_started", lambda w: False
+        )
 
         with pytest.raises(asyncio.CancelledError):
             asyncio.run(poll_for_updates(ha_rest_client=client))
@@ -17675,7 +17680,8 @@ class TestExternalUpdateResolution:
             c for c in timeline_calls if c["source"] == "update_check"
         ]
         assert len(update_check_calls) == 1
-        assert "outside Pueo" in update_check_calls[0]["message"]
+        # Absent entities report "disappeared", not "outside Pueo" (#1265)
+        assert "disappeared" in update_check_calls[0]["message"]
 
     def test_pending_update_approved_sidecar_written_on_resolution(
         self, monkeypatch, tmp_path
@@ -17705,6 +17711,10 @@ class TestExternalUpdateResolution:
         monkeypatch.setattr(asyncio_mod, "sleep", self._n_shot_sleep(3))
         monkeypatch.setattr(
             "agents.ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", False
+        )
+        monkeypatch.setattr("agents.ha_log_monitor.UPDATE_GONE_MIN_SECONDS", 0.0)
+        monkeypatch.setattr(
+            "agents.ha_log_monitor._ha_recently_started", lambda w: False
         )
 
         with pytest.raises(asyncio.CancelledError):
@@ -17744,6 +17754,10 @@ class TestExternalUpdateResolution:
         monkeypatch.setattr(asyncio_mod, "sleep", self._n_shot_sleep(3))
         monkeypatch.setattr(
             "agents.ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", False
+        )
+        monkeypatch.setattr("agents.ha_log_monitor.UPDATE_GONE_MIN_SECONDS", 0.0)
+        monkeypatch.setattr(
+            "agents.ha_log_monitor._ha_recently_started", lambda w: False
         )
 
         with pytest.raises(asyncio.CancelledError):
@@ -17856,7 +17870,7 @@ class TestExternalUpdateResolution:
         assert row is not None and row[0] is not None
 
     def test_resolution_reads_version_from_card_json(self, monkeypatch, tmp_path):
-        """Timeline event detail contains exact version strings read from card JSON."""
+        """Timeline event detail for per-entity path uses version strings from card JSON."""
         import asyncio as asyncio_mod
 
         from agents.ha_log_monitor import poll_for_updates
@@ -17889,10 +17903,27 @@ class TestExternalUpdateResolution:
             "utils.core.timeline.write_timeline_event", fake_write_timeline
         )
         monkeypatch.setattr("agents.ha_log_monitor.NOTIFY_WATCH_DIR", str(tmp_path))
-        client = FakeHARestClient(states=[])
+        # Entity is present but update_available=False (per-entity path, not absent sweep)
+        # so to_version is correctly read from the card JSON (#1265).
+        entity = {
+            "entity_id": "update.matter_server_update",
+            "state": "off",
+            "attributes": {
+                "installed_version": "9.2.0",
+                "latest_version": "9.2.0",
+                "release_url": None,
+                "release_summary": None,
+                "in_progress": False,
+            },
+        }
+        client = FakeHARestClient(states=[entity])
         monkeypatch.setattr(asyncio_mod, "sleep", self._n_shot_sleep(3))
         monkeypatch.setattr(
             "agents.ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", False
+        )
+        monkeypatch.setattr("agents.ha_log_monitor.UPDATE_GONE_MIN_SECONDS", 0.0)
+        monkeypatch.setattr(
+            "agents.ha_log_monitor._ha_recently_started", lambda w: False
         )
 
         with pytest.raises(asyncio.CancelledError):
@@ -18178,6 +18209,10 @@ class TestExternalUpdateResolution:
         monkeypatch.setattr(asyncio_mod, "sleep", self._n_shot_sleep(3))
         monkeypatch.setattr(
             "agents.ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", False
+        )
+        monkeypatch.setattr("agents.ha_log_monitor.UPDATE_GONE_MIN_SECONDS", 0.0)
+        monkeypatch.setattr(
+            "agents.ha_log_monitor._ha_recently_started", lambda w: False
         )
 
         with pytest.raises(asyncio.CancelledError):
