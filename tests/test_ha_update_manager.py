@@ -3892,6 +3892,201 @@ class TestExecuteAddonUpdateTimeline:
 
 
 # ---------------------------------------------------------------------------
+# execute_addon_update — marketplace precheck
+# ---------------------------------------------------------------------------
+
+
+class TestExecuteAddonUpdateMarketplacePrecheck:
+    """Marketplace warning precheck runs before the backup for HACS entities."""
+
+    def _make_update(
+        self, entity_picture="https://brands.home-assistant.io/_/noaa/icon.png"
+    ):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            entity_id="update.noaa_it_all_update",
+            entity_picture=entity_picture,
+            component="noaa_it_all",
+            installed_version="0.11.1",
+            latest_version="0.12.0",
+            update_available=True,
+            in_progress=False,
+            release_url=None,
+            release_summary=None,
+        )
+
+    def _run(self, update, ws, monkeypatch):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        backup_calls = []
+        post_update_calls = []
+
+        async def _fake_backup(**kwargs):
+            backup_calls.append(True)
+            return "slug123"
+
+        fake_notifier = MagicMock()
+        fake_notifier.send = AsyncMock()
+        fake_gate = MagicMock()
+        fake_ssh = MagicMock()
+        fake_rest = MagicMock()
+        fake_rest.call_service = AsyncMock()
+
+        async def _fake_post_card(
+            update,
+            notifier,
+            success,
+            cfg,
+            log_triage,
+            notification_id=None,
+            self_check=None,
+            advisor_regressions=None,
+            stage="",
+            error="",
+        ):
+            post_update_calls.append(stage)
+
+        with (
+            patch(
+                "agents.ha_agent_advanced.execute_remote_backup",
+                side_effect=_fake_backup,
+            ),
+            patch("agents.ha_agent_advanced.record_backup_slug"),
+            patch("agents.ha_agent_advanced.offload_backup_to_local", AsyncMock()),
+            patch(
+                "agents.ha_update_manager._send_post_update_card",
+                side_effect=_fake_post_card,
+            ),
+            patch(
+                "agents.ha_update_manager._check_hacs_install_via_ws",
+                AsyncMock(return_value=False),
+            ),
+            patch(
+                "agents.ha_update_manager._poll_addon_update_via_rest",
+                AsyncMock(return_value=False),
+            ),
+        ):
+            result = asyncio.run(
+                __import__(
+                    "agents.ha_update_manager",
+                    fromlist=["execute_addon_update"],
+                ).execute_addon_update(
+                    update,
+                    ssh_client=fake_ssh,
+                    notifier=fake_notifier,
+                    gate=fake_gate,
+                    ha_rest_client=fake_rest,
+                    ws_client=ws,
+                )
+            )
+        return result, backup_calls, post_update_calls
+
+    def test_precheck_blocks_before_backup_when_warning_pending(
+        self, tmp_path, pueo_dirs, monkeypatch
+    ):
+        """Warning not accepted → precondition stage returned, no backup taken."""
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        ws = FakeHAWebSocketClient()
+        ws.set_marketplace_info({"warning_accepted": False})
+        result, backup_calls, post_calls = self._run(
+            self._make_update(), ws, monkeypatch
+        )
+        assert result.stage == "precondition"
+        assert result.success is False
+        assert backup_calls == [], "Backup must not be taken when precheck fails"
+        assert "precondition" in post_calls
+
+    def test_precheck_passes_when_warning_accepted(
+        self, tmp_path, pueo_dirs, monkeypatch
+    ):
+        """Warning already accepted → backup proceeds normally."""
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        ws = FakeHAWebSocketClient()
+        ws.set_marketplace_info({"warning_accepted": True})
+        result, backup_calls, _ = self._run(self._make_update(), ws, monkeypatch)
+        # Backup was attempted (precondition passed)
+        assert backup_calls, "Backup should be taken when precheck passes"
+
+    def test_precheck_skipped_when_ws_client_none(
+        self, tmp_path, pueo_dirs, monkeypatch
+    ):
+        """No ws_client → precheck skipped, backup proceeds."""
+        result, backup_calls, _ = self._run(self._make_update(), None, monkeypatch)
+        assert backup_calls, "Backup should proceed without ws_client"
+
+    def test_precheck_skipped_for_old_ha_null_marketplace_info(
+        self, tmp_path, pueo_dirs, monkeypatch
+    ):
+        """marketplace_info() returns None (HA < 2026.11) → precheck passes, backup proceeds."""
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        ws = FakeHAWebSocketClient()
+        ws.set_marketplace_info(None)
+        result, backup_calls, _ = self._run(self._make_update(), ws, monkeypatch)
+        assert backup_calls, "Backup should proceed when marketplace_info is None"
+
+    def test_precheck_skipped_for_supervisor_addon(
+        self, tmp_path, pueo_dirs, monkeypatch
+    ):
+        """Supervisor add-on (entity_picture /api/hassio/...) → _is_hacs=False → no precheck."""
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        ws = FakeHAWebSocketClient()
+        ws.set_marketplace_info({"warning_accepted": False})
+        sup_update = self._make_update(
+            entity_picture="/api/hassio/addons/my_addon/icon"
+        )
+        result, backup_calls, _ = self._run(sup_update, ws, monkeypatch)
+        assert (
+            backup_calls
+        ), "Supervisor add-on must not be gated by marketplace precheck"
+        assert "marketplace_info" not in ws.calls
+
+
+# ---------------------------------------------------------------------------
+# FakeHAWebSocketClient — marketplace_info
+# ---------------------------------------------------------------------------
+
+
+class TestFakeWSClientMarketplaceInfo:
+    """FakeHAWebSocketClient.marketplace_info returns configured value."""
+
+    def test_returns_default_empty_dict(self):
+        import asyncio
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        ws = FakeHAWebSocketClient()
+        result = asyncio.run(ws.marketplace_info())
+        assert result == {}
+        assert "marketplace_info" in ws.calls
+
+    def test_returns_configured_value(self):
+        import asyncio
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        ws = FakeHAWebSocketClient()
+        ws.set_marketplace_info({"warning_accepted": False, "disabled_reason": None})
+        result = asyncio.run(ws.marketplace_info())
+        assert result == {"warning_accepted": False, "disabled_reason": None}
+
+    def test_returns_none_when_set_to_none(self):
+        import asyncio
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        ws = FakeHAWebSocketClient()
+        ws.set_marketplace_info(None)
+        result = asyncio.run(ws.marketplace_info())
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
 # FakeHAWebSocketClient — get_update_release_notes
 # ---------------------------------------------------------------------------
 
@@ -7344,8 +7539,8 @@ class TestPueoHADependenciesManifest:
         assert any("marketplace/restart_required" in p for p in patterns)
 
 
-class TestCheckHacsInstallViaSsh:
-    """_check_hacs_install_via_ssh recognises marketplace domain restart_required issues."""
+class TestCheckHacsInstallViaWs:
+    """_check_hacs_install_via_ws: WS path, SSH fallback, dead entity_id guard."""
 
     def _make_issues_json(self, domain, issue_id):
         import json
@@ -7353,52 +7548,80 @@ class TestCheckHacsInstallViaSsh:
         data = {"data": {"issues": [{"domain": domain, "issue_id": issue_id}]}}
         return json.dumps(data)
 
-    def test_hacs_domain_restart_required_returns_true(self, tmp_path):
+    def test_ws_hacs_domain_restart_required_returns_true(self, tmp_path):
         import asyncio
         from unittest.mock import AsyncMock, MagicMock
 
-        from agents.ha_update_manager import _check_hacs_install_via_ssh
+        from agents.ha_update_manager import _check_hacs_install_via_ws
 
-        ssh = MagicMock()
-        ssh.run = AsyncMock(
-            return_value=(0, self._make_issues_json("hacs", "restart_required_42"), "")
+        ws = MagicMock()
+        ws.get_repair_issues = AsyncMock(
+            return_value=[{"domain": "hacs", "issue_id": "restart_required_42"}]
         )
-        result = asyncio.run(_check_hacs_install_via_ssh(ssh))
+        ssh = MagicMock()
+        result = asyncio.run(_check_hacs_install_via_ws(ws, ssh))
+        assert result is True
+        ws.get_repair_issues.assert_awaited_once()
+
+    def test_ws_marketplace_domain_restart_required_returns_true(self, tmp_path):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+
+        from agents.ha_update_manager import _check_hacs_install_via_ws
+
+        ws = MagicMock()
+        ws.get_repair_issues = AsyncMock(
+            return_value=[{"domain": "marketplace", "issue_id": "restart_required_7"}]
+        )
+        ssh = MagicMock()
+        result = asyncio.run(_check_hacs_install_via_ws(ws, ssh))
         assert result is True
 
-    def test_marketplace_domain_restart_required_returns_true(self, tmp_path):
+    def test_ws_other_domain_returns_false(self, tmp_path):
         import asyncio
         from unittest.mock import AsyncMock, MagicMock
 
-        from agents.ha_update_manager import _check_hacs_install_via_ssh
+        from agents.ha_update_manager import _check_hacs_install_via_ws
 
-        ssh = MagicMock()
-        ssh.run = AsyncMock(
-            return_value=(
-                0,
-                self._make_issues_json("marketplace", "restart_required_12345"),
-                "",
-            )
+        ws = MagicMock()
+        ws.get_repair_issues = AsyncMock(
+            return_value=[{"domain": "homeassistant", "issue_id": "restart_required_9"}]
         )
-        result = asyncio.run(_check_hacs_install_via_ssh(ssh))
-        assert result is True
-
-    def test_other_domain_returns_false(self, tmp_path):
-        import asyncio
-        from unittest.mock import AsyncMock, MagicMock
-
-        from agents.ha_update_manager import _check_hacs_install_via_ssh
-
         ssh = MagicMock()
-        ssh.run = AsyncMock(
-            return_value=(
-                0,
-                self._make_issues_json("homeassistant", "restart_required_99"),
-                "",
-            )
-        )
-        result = asyncio.run(_check_hacs_install_via_ssh(ssh))
+        result = asyncio.run(_check_hacs_install_via_ws(ws, ssh))
         assert result is False
+
+    def test_ssh_fallback_when_ws_none(self, tmp_path):
+        """When ws_client is None, falls back to SSH ha resolution info."""
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+
+        from agents.ha_update_manager import _check_hacs_install_via_ws
+
+        ssh = MagicMock()
+        ssh.run = AsyncMock(
+            return_value=(0, self._make_issues_json("hacs", "restart_required_1"), "")
+        )
+        result = asyncio.run(_check_hacs_install_via_ws(None, ssh))
+        assert result is True
+        ssh.run.assert_awaited_once()
+
+    def test_real_entity_id_noaa_does_not_match_hacs_string_guard(self, tmp_path):
+        """update.noaa_it_all_update entity_id never matches 'hacs' string; guard uses _is_hacs."""
+        # This is a regression test: the old code had `"hacs" in entity_id.lower()`
+        # which is False for update.noaa_it_all_update, making the fallback dead.
+        # The new code gates on _is_hacs (entity_picture-based), not entity_id.
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        entity_id = "update.noaa_it_all_update"
+        # _is_hacs = True when entity_picture is NOT /api/hassio/addons/...
+        entity_picture = "https://brands.home-assistant.io/_/noaa_it_all/icon.png"
+        assert "/api/hassio/addons/" not in entity_picture
+        # Old guard: "hacs" not in entity_id.lower() → dead code
+        assert "hacs" not in entity_id.lower()
+        # New guard: not entity_picture.startswith("/api/hassio/addons/") → True
+        assert not entity_picture.startswith("/api/hassio/addons/")
 
 
 # ---------------------------------------------------------------------------

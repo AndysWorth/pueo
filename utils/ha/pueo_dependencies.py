@@ -53,6 +53,11 @@ PUEO_HA_DEPENDENCIES: dict[str, list[dict[str, Any]]] = {
     ],
     "websocket_commands": [
         {
+            "cmd": "marketplace/info",
+            "feature": "Marketplace warning-accepted precheck before HACS/Marketplace update install (HA 2026.11+)",
+            "note": "Returns None on unknown_command (HA <2026.11); precheck skipped when None",
+        },
+        {
             "cmd": "marketplace/repositories/list",
             "feature": "Marketplace integration discovery and companion provisioning (HA 2026.11+)",
             "note": "Falls back to hacs/repositories/list on older HA versions",

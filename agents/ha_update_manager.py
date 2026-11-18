@@ -32,7 +32,12 @@ from config import (
     SSH_KEY_PATH,
     HA_USER,
 )
-from interfaces import HARestClientProtocol, LLMClientProtocol, SSHClientProtocol
+from interfaces import (
+    HARestClientProtocol,
+    HAWebSocketClientProtocol,
+    LLMClientProtocol,
+    SSHClientProtocol,
+)
 from utils.agent.autonomy import RiskLevel
 from utils.ha.ha_rest_client import HARestClient, UpdateStatus, get_update_status
 from utils.ha.pueo_dependencies import (  # noqa: F401 — re-exported for callers
@@ -2536,15 +2541,28 @@ async def _poll_addon_update_via_rest(
     return False
 
 
-async def _check_hacs_install_via_ssh(
+async def _check_hacs_install_via_ws(
+    ws_client: Optional[HAWebSocketClientProtocol],
     ssh_client: "SSHClientProtocol",
 ) -> bool:
-    """Return True if ha resolution info shows a hacs/restart_required issue.
+    """Return True if repairs/list_issues shows a hacs or marketplace restart_required.
 
-    HACS downloads complete in seconds but leave a restart_required repair
-    instead of flipping the update entity to "off". This is the reliable
-    install-success signal when the REST poll times out.
+    HACS/Marketplace downloads leave a restart_required repair instead of
+    flipping the update entity to "off". This is the reliable install-success
+    signal when the REST poll times out.  Tries WS first; falls back to SSH
+    ha resolution info if ws_client is not available.
     """
+    if ws_client is not None:
+        try:
+            issues = await ws_client.get_repair_issues()
+            return any(
+                issue.get("domain") in {"hacs", "marketplace"}
+                and "restart_required" in (issue.get("issue_id") or "")
+                for issue in issues
+            )
+        except Exception as exc:
+            log.warning("hacs_install_ws_check_failed", error=str(exc)[:200])
+    # SSH fallback for callers without a ws_client.
     try:
         _, stdout, _ = await ssh_client.run(
             "ha resolution info --raw-json", check=False
@@ -2918,6 +2936,7 @@ async def execute_addon_update(
     gate: "AutonomyGate | FakeAutonomyGate",
     _poll: Optional[Callable] = None,
     ha_rest_client: Optional[HARestClientProtocol] = None,
+    ws_client: Optional[HAWebSocketClientProtocol] = None,
 ) -> UpdateExecResult:
     """Execute add-on update: backup → update.install REST service → poll → result card."""
     global _ssh_transport_update_in_progress
@@ -2952,6 +2971,38 @@ async def execute_addon_update(
                 write_timeline_event(level, "update_check", msg, extra)
             except Exception:  # nosec B110
                 pass
+
+        # Marketplace precheck (HA 2026.11+): the user must accept the Marketplace
+        # notice before update.install works.  Check this BEFORE the backup so we
+        # never take a backup for a precondition failure (safety-invariant rule).
+        if _is_hacs and ws_client is not None:
+            try:
+                _mp = await ws_client.marketplace_info()
+                if _mp is not None and not _mp.get("warning_accepted", True):
+                    _reason = (
+                        "Open Settings → Marketplace in HA, accept the notice, "
+                        "then press Approve again."
+                    )
+                    log.warning(
+                        "addon_update_marketplace_warning_pending",
+                        slug=update.component,
+                    )
+                    await _send_post_update_card(
+                        update,
+                        notifier,
+                        False,
+                        "",
+                        "",
+                        stage="precondition",
+                        error=_reason,
+                    )
+                    return UpdateExecResult(
+                        success=False, stage="precondition", error=_reason
+                    )
+            except Exception as exc:  # nosec B110
+                log.warning(
+                    "addon_update_marketplace_precheck_failed", error=str(exc)[:200]
+                )
 
         backup_slug = await execute_remote_backup(ssh_client=ssh_client)
         record_backup_slug(backup_slug)
@@ -3116,15 +3167,14 @@ async def execute_addon_update(
                 timeout_seconds=_ADDON_UPDATE_TIMEOUT,
             )
 
-        # HACS-specific fallback: a successful HACS download produces a
+        # HACS/Marketplace fallback: a successful download produces a
         # hacs/restart_required_* repair within seconds instead of flipping the
-        # update entity to "off". The REST poll always times out in this case;
-        # check ha resolution info over SSH as the true install-success signal.
-        if not success and "hacs" in update.entity_id.lower() and _poll is None:
-            success = await _check_hacs_install_via_ssh(ssh_client)
+        # update entity to "off". Detect this via WS repairs/list_issues.
+        if not success and _is_hacs and _poll is None:
+            success = await _check_hacs_install_via_ws(ws_client, ssh_client)
             if success:
                 log.info(
-                    "hacs_install_success_via_ssh_fallback",
+                    "hacs_install_success_via_ws_fallback",
                     slug=update.component,
                     version=update.latest_version,
                 )
@@ -3444,6 +3494,7 @@ async def execute_update(
     gate: "AutonomyGate | FakeAutonomyGate",
     llm_client: Optional[LLMClientProtocol] = None,
     ha_rest_client: Optional[HARestClientProtocol] = None,
+    ws_client: Optional[HAWebSocketClientProtocol] = None,
 ) -> UpdateExecResult:
     """Dispatch update execution by component type."""
     from .ha_agent_advanced import is_reboot_required_active
@@ -3491,7 +3542,12 @@ async def execute_update(
                 stage="installed" if _os_ok else "install_timeout",
             )
         return await execute_addon_update(
-            update, ssh_client, notifier, gate, ha_rest_client=ha_rest_client
+            update,
+            ssh_client,
+            notifier,
+            gate,
+            ha_rest_client=ha_rest_client,
+            ws_client=ws_client,
         )
     finally:
         if _added_to_executing:

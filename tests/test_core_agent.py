@@ -7617,7 +7617,9 @@ class TestExecuteUpdate:
         notifier = FakeNotifier()
         called = []
 
-        async def fake_addon(update, ssh, notifier, gate, ha_rest_client=None):
+        async def fake_addon(
+            update, ssh, notifier, gate, ha_rest_client=None, ws_client=None
+        ):
             called.append("addon")
             return True
 

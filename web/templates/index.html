@@ -68,6 +68,11 @@
       {% if r.payload.get("step") %} &nbsp;·&nbsp; Step: <strong>{{ r.payload.step }}</strong>{% endif %}
     </p>
     {% endif %}
+    {% if r.payload.get("marketplace_notice_pending") %}
+    <p class="meta" style="color:var(--orange);">
+      ⚠ Marketplace notice pending — open <strong>Settings → Marketplace</strong> in HA and accept the notice before approving.
+    </p>
+    {% endif %}
     {% if r.payload.get("disk_free_gb") is not none %}
     <p class="meta">
       Disk free: <strong {% if r.payload.get("disk_critical") %}style="color:var(--red)"{% elif r.payload.get("disk_warn") %}style="color:var(--orange)"{% endif %}>{{ "%.1f"|format(r.payload.disk_free_gb) }} GB</strong>
