@@ -18,6 +18,12 @@ Call `finish_bc_assessment` with one of:
 - **`user_check`**: whether the BC applies depends on something outside Home
   Assistant's configuration that only the user knows.  Set `user_question` — a
   concrete yes/no question the user can answer.
+- **`heads_up`**: confirmed not affected (no action needed) but the BC causes a
+  **visible change the user will notice** after the update — dashboard labels
+  renamed, an automatic migration runs, an icon set changes.  The user will see
+  a difference even though nothing on their part is required.  Use `heads_up`
+  instead of `no_action` when you would say "no action needed, but they'll see X
+  change."
 
 **`not_assessed` is set by code, never by you.**
 

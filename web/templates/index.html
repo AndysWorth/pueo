@@ -99,6 +99,8 @@
       {% set _check_vds  = r.payload.bc_verdicts | selectattr("verdict", "eq", "user_check") | list %}
       {% set _na_vds     = r.payload.bc_verdicts | selectattr("verdict", "eq", "not_assessed") | list %}
       {% set _no_vds     = r.payload.bc_verdicts | selectattr("verdict", "eq", "no_action") | list %}
+      {% set _hu_vds     = r.payload.bc_verdicts | selectattr("verdict", "eq", "heads_up") | list %}
+      {% set _hu_items   = r.payload.get("heads_up_items", []) %}
       {% if _before_vds %}
       <p style="font-weight:600;color:var(--red,#b91c1c);margin:0.4rem 0 0.3rem;">🚫 Do before updating</p>
       <ul style="margin:0 0 0.5rem 1.25rem;">{% for v in _before_vds %}<li style="margin-bottom:0.2rem;"><strong>{{ v.bc }}</strong>{% if v.action %} — {{ v.action }}{% elif v.reason %} — {{ v.reason }}{% endif %}</li>{% endfor %}</ul>
@@ -126,6 +128,15 @@
       <details style="margin-top:0.3rem;">
         <summary style="font-size:0.82rem;color:#555;cursor:pointer;">Not affected ({{ _no_vds | length }})</summary>
         <ul style="margin:0.3rem 0 0 1.25rem;">{% for v in _no_vds %}<li style="font-size:0.82rem;color:#555;margin-bottom:0.1rem;">{{ v.bc }}{% if v.reason %} — {{ v.reason }}{% endif %}</li>{% endfor %}</ul>
+      </details>
+      {% endif %}
+      {% if _hu_vds or _hu_items %}
+      <details style="margin-top:0.3rem;">
+        <summary style="font-size:0.82rem;color:#6b7280;cursor:pointer;">👁 What you'll notice ({{ (_hu_vds | length) + (_hu_items | length) }})</summary>
+        <ul style="margin:0.3rem 0 0 1.25rem;">
+          {% for v in _hu_vds %}<li style="font-size:0.82rem;color:#6b7280;margin-bottom:0.1rem;"><strong>{{ v.bc }}</strong>{% if v.reason %} — {{ v.reason }}{% endif %}</li>{% endfor %}
+          {% for item in _hu_items %}<li style="font-size:0.82rem;color:#6b7280;margin-bottom:0.1rem;"><strong>{{ item.heading }}</strong>{% if item.note %} — {{ item.note }}{% endif %}</li>{% endfor %}
+        </ul>
       </details>
       {% endif %}
       {% else %}

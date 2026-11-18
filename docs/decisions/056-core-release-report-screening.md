@@ -427,3 +427,12 @@ tokens extracted per part (`_part_key_tokens()`), stored in
 none of a part's tokens (same `_bc_rejection_note` path as the proof-line check,
 #1223), giving the model one retry.  `seed_update_bc.md` documents the multi-part
 rule.
+
+**Amendment S6 (#1259) — Heads-up tier.**
+`CoreReleaseReport.heads_up_items` (new field): list of `{heading, note, source, matched_domain}` dicts populated by `match_blog_sections_to_installed()` during report build.  The function scans `##`/`###` headings in blog texts (source="blog:YYYY.M"), skips non-feature sections (Breaking Changes, Farewell, Integrations, etc.), and matches each heading against the installed domain set using the existing `_resolve_domain` and `_find_domain_in_heading` helpers.  HACS/Marketplace special case: any heading containing "marketplace", "community store", or "hacs" matches when "hacs" is installed.  One item per domain (first heading wins).
+
+`finish_bc_assessment` gains a `heads_up` verdict: visible-but-harmless change the user will notice (dashboard labels, automatic migration).  It is accepted without a proof-line check and without `user_question`.  `_derive_instance_impact` and `_derive_recommendation` treat it the same as `no_action`.
+
+`_finish_update_analysis`: `heads_up_items` from the report is included in the card payload.  `verification_question` is suppressed when BC assessment verdicts exist — each `user_check` BC has its own `user_question`, making a top-level digest question redundant filler.
+
+`index.html`: collapsed "👁 What you'll notice" group renders `heads_up` BC verdicts and `heads_up_items` together.

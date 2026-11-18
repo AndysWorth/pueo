@@ -2715,13 +2715,17 @@ FINISH_BC_ASSESSMENT = ToolDefinition(
             },
             "verdict": {
                 "type": "string",
-                "enum": ["action_needed", "no_action", "user_check"],
+                "enum": ["action_needed", "no_action", "user_check", "heads_up"],
                 "description": (
                     "'action_needed' when a concrete change is required (config edit, "
                     "preparation step, or post-update task) — set 'when' and 'action'. "
                     "'no_action' when confirmed not affected and nothing needs doing. "
                     "'user_check' when only the user can verify (browser, remote access, "
-                    "device firmware, cloud account) — set 'user_question'."
+                    "device firmware, cloud account) — set 'user_question'. "
+                    "'heads_up' when no action is required but the BC causes a visible "
+                    "change the user will notice (dashboard labels change, automatic "
+                    "migration runs). Use instead of no_action when the user WILL see "
+                    "a difference after the update."
                 ),
             },
             "action": {

@@ -377,7 +377,7 @@ _AFFECTS_TO_VERDICT = {
 }
 
 # Verdicts the model may return from finish_bc_assessment (not_assessed is code-only).
-_BC_VERDICTS = frozenset({"action_needed", "no_action", "user_check"})
+_BC_VERDICTS = frozenset({"action_needed", "no_action", "user_check", "heads_up"})
 
 
 def _normalize_bc_verdicts(
@@ -516,11 +516,12 @@ def _derive_instance_impact(
 
     Flags are informational only and never raise impact (ADR 056 S3).
 
-    New verdict semantics (S3):
+    New verdict semantics (S3/S6):
     - action_needed + before_update (or no when) → high
     - action_needed + after_update only → low
     - user_check or not_assessed only → low
-    - all no_action → none
+    - all no_action/heads_up → none
+    - heads_up: visible change but no action required → treated as no_action for impact
 
     Old verdict semantics (backward compat via affects field):
     - yes → high, unknown → low, no → none
@@ -538,6 +539,7 @@ def _derive_instance_impact(
                 has_before = True  # before_update or unspecified — conservative
         elif verdict in ("user_check", "not_assessed"):
             has_user_check = True
+        # heads_up: visible but no action — no impact raise
     if has_before:
         return "high"
     if has_after_only:
@@ -6559,6 +6561,7 @@ class ToolExecutor:
         # action_needed needs a proof line (seed_update_bc.md rule 2).  When the
         # evidence has none, the verdict is not stored: a blocker nobody can
         # point to evidence for must not reach the card (#1223).
+        # heads_up does not require a proof line: visible but harmless change.
         if str(verdict) == "action_needed" and self._current_bc_evidence is not None:
             from utils.knowledge.ha_release_report import evidence_proof_lines
 
@@ -7736,6 +7739,7 @@ class ToolExecutor:
             "bc_verdicts": _normalized_verdicts,
             "flag_verdicts": list(_rpt.flag_verdicts) if _rpt else [],
             "pueo_verdicts": _pueo_verdicts_list,
+            "heads_up_items": list(_rpt.heads_up_items) if _rpt else [],
             # High/medium screening flags for informational collapsed display on the card.
             # Developer flags (audience=="developer") are shown only when scan found a hit.
             "screening_flags": [
@@ -7754,8 +7758,10 @@ class ToolExecutor:
         }
         # Verification comes from the post-update result card (run_pueo_self_check /
         # add-on version poll), not from a pre-analysis digest question.  Accept an
-        # explicitly LLM-provided question, but don't generate a meaningless default.
-        if verification_question:
+        # explicitly LLM-provided question, but suppress it when the BC assessment
+        # pass ran — each user_check BC has its own user_question, so a top-level
+        # question would be redundant filler (#1259).
+        if verification_question and not _normalized_verdicts:
             payload["verification_question"] = verification_question
         payload["signature"] = self._session_signature
         await asyncio.to_thread(
