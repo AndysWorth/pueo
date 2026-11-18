@@ -7259,7 +7259,7 @@ class TestExecuteAddonUpdate:
                 )
             )
 
-        assert result is True
+        assert result.success is True
         assert rest.service_calls == [
             ("update", "install", {"entity_id": "update.my_addon_update"})
         ]
@@ -7292,7 +7292,7 @@ class TestExecuteAddonUpdate:
                 )
             )
 
-        assert result is False
+        assert result.success is False
         assert notifier.sent[0]["payload"]["success"] is False
 
     def test_rest_service_uses_entity_id(self):
@@ -7369,7 +7369,7 @@ class TestExecuteAddonUpdate:
                 )
             )
 
-        assert result is False
+        assert result.success is False
         assert poll_called == [], "poll must not be called when REST trigger fails"
         assert notifier.sent[0]["payload"]["success"] is False
 
@@ -7409,7 +7409,7 @@ class TestExecuteAddonUpdate:
             )
 
         assert (
-            result is True
+            result.success is True
         ), "poll result must propagate even when service call timed out"
         assert poll_called == ["file_editor"], "poll must be called after timeout"
         assert notifier.sent[0]["payload"]["success"] is True
@@ -7447,7 +7447,7 @@ class TestExecuteAddonUpdate:
                 )
             )
 
-        assert result is False
+        assert result.success is False
         assert poll_called == [], "poll must not be called on non-timeout error"
         assert notifier.sent[0]["payload"]["success"] is False
 
@@ -7494,7 +7494,7 @@ class TestExecuteAddonUpdate:
                 )
             )
 
-        assert result is True
+        assert result.success is True
         assert is_restart_pending_after_update() is True
         set_restart_pending_after_update(False)  # cleanup
 
@@ -7531,7 +7531,7 @@ class TestExecuteAddonUpdate:
                 )
             )
 
-        assert result is False
+        assert result.success is False
         assert is_restart_pending_after_update() is False
 
 
@@ -15991,7 +15991,7 @@ class TestExecuteUpdatePreflight:
                 execute_update(self._make_update("core"), ssh, notifier, gate)
             )
 
-        assert result is False
+        assert result.success is False
         mock_exec.assert_not_called()
         assert len(notifier.sent) == 1
         assert "reboot" in notifier.sent[0]["body"].lower()
