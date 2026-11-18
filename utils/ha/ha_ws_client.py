@@ -312,6 +312,35 @@ class HAWebSocketClient:  # pragma: no cover
         agents = result if isinstance(result, list) else result.get("agents", [])
         return [a for a in agents if a.get("id") != "conversation.home_assistant"]
 
+    async def marketplace_info(self) -> dict | None:
+        """Return Marketplace info dict, or None when HA < 2026.11 (unknown_command).
+
+        Relevant fields: warning_accepted (bool), disabled_reason (str | None).
+        """
+        import asyncio as _asyncio
+
+        return await _asyncio.to_thread(self._marketplace_info_sync)
+
+    def _marketplace_info_sync(self) -> dict | None:  # pragma: no cover
+        from websockets.sync.client import connect as ws_connect
+
+        uri = f"ws://{self._host}:{self._port}/api/websocket"
+        with ws_connect(uri, max_size=None) as ws:
+            msg = json.loads(ws.recv())
+            if msg.get("type") != "auth_required":
+                return None
+            ws.send(json.dumps({"type": "auth", "access_token": self._token}))
+            msg = json.loads(ws.recv())
+            if msg.get("type") != "auth_ok":
+                return None
+            ws.send(json.dumps({"id": 1, "type": "marketplace/info"}))
+            msg = json.loads(ws.recv())
+            if not msg.get("success"):
+                if (msg.get("error") or {}).get("code") == "unknown_command":
+                    return None
+                return None
+            return msg.get("result") or {}
+
     async def hacs_list_repositories(self) -> list[dict]:
         """List HACS repositories via hacs/repositories/list.
 
@@ -606,6 +635,7 @@ class FakeHAWebSocketClient:
         self.disable_entry_calls: list[tuple[str, str | None]] = []
         self.ignored_repairs: list[tuple[str, str, bool]] = []
         self._raise_marketplace_warning: bool = False
+        self._marketplace_info: dict | None = {}
 
     async def get_device_registry(self) -> list[dict]:
         self.calls.append("get_device_registry")
@@ -745,6 +775,14 @@ class FakeHAWebSocketClient:
     def set_raise_marketplace_warning(self, raise_it: bool = True) -> None:
         """Configure hacs_download to raise MarketplaceWarningNotAcceptedError."""
         self._raise_marketplace_warning = raise_it
+
+    async def marketplace_info(self) -> dict | None:
+        self.calls.append("marketplace_info")
+        return self._marketplace_info
+
+    def set_marketplace_info(self, info: dict | None) -> None:
+        """Set the marketplace_info return value. None simulates HA < 2026.11."""
+        self._marketplace_info = info
 
     async def list_config_flows_in_progress(self) -> list[dict]:
         self.calls.append("list_config_flows_in_progress")

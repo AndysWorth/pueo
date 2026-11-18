@@ -7739,6 +7739,19 @@ class ToolExecutor:
             f"Update available: {update.component} "
             f"{update.installed_version} → {update.latest_version}"
         )
+        # Marketplace pre-notice check: probe marketplace/info so the card can warn
+        # the user to accept the notice before approving.  Deterministic — no LLM.
+        _ep = getattr(update, "entity_picture", None) or ""
+        _is_hacs_update = not _ep.startswith("/api/hassio/addons/")
+        _marketplace_notice_pending = False
+        if _is_hacs_update and self._ws_client is not None:
+            try:
+                _mp = await self._ws_client.marketplace_info()
+                if _mp is not None and not _mp.get("warning_accepted", True):
+                    _marketplace_notice_pending = True
+            except Exception:  # nosec B110
+                pass
+
         payload: dict = {
             "notification_id": stable_nid(suppression_key),
             "card_type": CARD_TYPE_UPDATE,
@@ -7761,6 +7774,7 @@ class ToolExecutor:
             "instance_impact_summary": recommendation,
             "proposed_config_fixes": proposed_config_fixes,
             "disk_headroom_warning": disk_headroom_warning,
+            "marketplace_notice_pending": _marketplace_notice_pending,
             "prerequisites": prerequisites or [],
             "deprecations": deprecations or [],
             "new_features": new_features or [],

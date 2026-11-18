@@ -886,6 +886,7 @@ async def _execute_queued_update(
     from utils.ha.ha_rest_client import HARestClient, UpdateStatus
     from utils.hitl.notify import get_notifier
     from utils.ha.ssh_client import AsyncSSHClient
+    from utils.ha.ha_ws_client import HAWebSocketClient
 
     try:
         payload = data.get("payload", {})
@@ -909,8 +910,11 @@ async def _execute_queued_update(
         ha_rest = HARestClient(
             _config.HA_HOST, _config.HA_API_PORT, _config.HA_API_TOKEN
         )
+        ws = HAWebSocketClient(
+            _config.HA_HOST, _config.HA_API_PORT, _config.HA_API_TOKEN
+        )
         result = await execute_update(
-            update, ssh, notifier, gate, ha_rest_client=ha_rest
+            update, ssh, notifier, gate, ha_rest_client=ha_rest, ws_client=ws
         )
         # Verify only when the result is conclusive:
         #   installed → success, regression → failure.
