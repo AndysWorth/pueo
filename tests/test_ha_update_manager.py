@@ -14243,3 +14243,117 @@ class TestHaRecentlyStarted:
 
         db_path = self._make_db(tmp_path)
         assert ha_recently_started(db_path, 300) is False
+
+
+# ---------------------------------------------------------------------------
+# _wake_profile_refresh — wake after Core/OS update (Closes #1267)
+# ---------------------------------------------------------------------------
+
+
+class TestWakeProfileRefreshAfterUpdate:
+    """execute_update wakes the profile_refresh loop after a successful Core or OS update."""
+
+    def _make_update(self, component: str):
+        from agents.ha_update_manager import UpdateStatus
+
+        return UpdateStatus(
+            component=component,
+            entity_id=f"update.home_assistant_{component}_update",
+            installed_version="2026.10.0",
+            latest_version="2026.11.2",
+            update_available=True,
+            release_url=None,
+            release_summary=None,
+            in_progress=False,
+        )
+
+    def _run_execute_update(self, component: str, monkeypatch, pueo_dirs):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+
+        import agents.ha_update_manager as _um
+
+        woken: list[str] = []
+
+        class _FakeSupervisor:
+            def wake(self, name: str) -> None:
+                woken.append(name)
+
+        import utils.agent.supervisor as _sv_mod
+
+        monkeypatch.setattr(
+            _sv_mod, "get_supervisor_instance", lambda: _FakeSupervisor()
+        )
+
+        async def _always_success(*_a, **_kw):
+            return True
+
+        if component == "core":
+            monkeypatch.setattr(
+                _um, "execute_core_update", AsyncMock(return_value=True)
+            )
+        else:
+            monkeypatch.setattr(_um, "execute_os_update", AsyncMock(return_value=True))
+
+        # Prevent the reboot_required check from blocking
+        monkeypatch.setattr(
+            "agents.ha_agent_advanced.is_reboot_required_active", lambda: False
+        )
+
+        result = asyncio.run(
+            _um.execute_update(
+                update=self._make_update(component),
+                ssh_client=FakeSSHClient(),
+                notifier=FakeNotifier(),
+                gate=MagicMock(),
+            )
+        )
+        return result, woken
+
+    def test_core_success_wakes_profile_refresh(self, monkeypatch, pueo_dirs):
+        result, woken = self._run_execute_update("core", monkeypatch, pueo_dirs)
+        assert result.success is True
+        assert "profile_refresh" in woken
+
+    def test_os_success_wakes_profile_refresh(self, monkeypatch, pueo_dirs):
+        result, woken = self._run_execute_update("os", monkeypatch, pueo_dirs)
+        assert result.success is True
+        assert "profile_refresh" in woken
+
+    def test_core_failure_does_not_wake(self, monkeypatch, pueo_dirs):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+
+        import agents.ha_update_manager as _um
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+
+        woken: list[str] = []
+
+        class _FakeSupervisor:
+            def wake(self, name: str) -> None:
+                woken.append(name)
+
+        import utils.agent.supervisor as _sv_mod
+
+        monkeypatch.setattr(
+            _sv_mod, "get_supervisor_instance", lambda: _FakeSupervisor()
+        )
+        monkeypatch.setattr(_um, "execute_core_update", AsyncMock(return_value=False))
+        monkeypatch.setattr(
+            "agents.ha_agent_advanced.is_reboot_required_active", lambda: False
+        )
+
+        result = asyncio.run(
+            _um.execute_update(
+                update=self._make_update("core"),
+                ssh_client=FakeSSHClient(),
+                notifier=FakeNotifier(),
+                gate=MagicMock(),
+            )
+        )
+        assert result.success is False
+        assert "profile_refresh" not in woken

@@ -164,6 +164,20 @@ async def _post_update_repair_scan(settle_seconds: int = 5) -> None:
         log.warning("post_update_repair_scan_failed", error=str(exc))
 
 
+def _wake_profile_refresh() -> None:
+    """Wake the profile_refresh loop so the next update analysis sees a fresh
+    HA version and HACS→Marketplace state after a Core or OS update."""
+    try:
+        from utils.agent.supervisor import get_supervisor_instance
+
+        sv = get_supervisor_instance()
+        if sv is not None:
+            sv.wake("profile_refresh")
+            log.info("profile_refresh_woken_after_update")
+    except Exception as exc:  # nosec B110 — best-effort; loop runs on its own schedule
+        log.warning("profile_refresh_wake_failed", error=str(exc))
+
+
 # ── Auto-restart flag ─────────────────────────────────────────────────────────
 # Set after an integration/add-on update succeeds so the next `restart_required`
 # repair issue auto-executes ha core restart without a second approval card (the
@@ -3531,12 +3545,16 @@ async def execute_update(
                 llm_client,
                 ha_rest_client=ha_rest_client,
             )
+            if _core_ok:
+                _wake_profile_refresh()
             return UpdateExecResult(
                 success=_core_ok,
                 stage="installed" if _core_ok else "install_timeout",
             )
         if update.component == "os":
             _os_ok = await execute_os_update(update, ssh_client, notifier, gate)
+            if _os_ok:
+                _wake_profile_refresh()
             return UpdateExecResult(
                 success=_os_ok,
                 stage="installed" if _os_ok else "install_timeout",

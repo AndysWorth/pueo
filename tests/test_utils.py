@@ -3497,6 +3497,29 @@ class TestDiscoverHacsWsFiltering:
         )
         assert _discover_via_hacs_ws("http://ha:8123", "tok") == []
 
+    def test_excludes_hacs_integration_manager(self, monkeypatch):
+        """The HACS manager repo (hacs/integration) is excluded from results."""
+        from utils.knowledge.hacs_scraper import _discover_via_hacs_ws
+
+        payload = [
+            {
+                "slug": "integration",
+                "installed": True,
+                "category": "integration",
+                "full_name": "hacs/integration",
+            },
+            {
+                "slug": "noaa_it_all",
+                "installed": True,
+                "category": "integration",
+                "full_name": "someorg/noaa_it_all",
+            },
+        ]
+        self._mock_ws(payload, monkeypatch)
+        result = _discover_via_hacs_ws("http://ha:8123", "tok")
+        slugs = [s for s, _, _, _ in result]
+        assert slugs == ["noaa_it_all"], "hacs/integration should be excluded"
+
     def test_has_docstring(self):
         from utils.knowledge.hacs_scraper import _discover_via_hacs_ws
 
