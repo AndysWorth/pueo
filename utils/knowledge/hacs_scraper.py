@@ -136,6 +136,8 @@ def _discover_via_hacs_ws(  # pragma: no cover
         full_name: str = repo.get("full_name", "")
         if not full_name or "/" not in full_name:
             continue
+        if full_name == "hacs/integration":
+            continue
         # Marketplace responses have no "slug" field; derive it from full_name
         slug: str = repo.get("slug", "") or full_name.split("/")[1]
         if not slug:
