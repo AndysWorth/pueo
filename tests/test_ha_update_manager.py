@@ -13796,3 +13796,450 @@ class TestExtractServiceErrorDetail:
         )
         assert "Error during service call" in result
         assert "Precondition" in result
+
+
+# ---------------------------------------------------------------------------
+# S3: No false "updated outside Pueo" across HA restarts
+# ---------------------------------------------------------------------------
+
+
+def _make_update_gone_db(tmp_path):
+    """Minimal DB with hitl_suppression + user_prefs tables and one pending card."""
+    import sqlite3
+
+    db_path = str(tmp_path / "state.db")
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS hitl_suppression (
+                card_key TEXT PRIMARY KEY, card_type TEXT, description TEXT,
+                first_sent_at REAL, last_sent_at REAL,
+                send_count INTEGER DEFAULT 0,
+                last_action TEXT, last_action_at REAL, resolved_at REAL,
+                next_allowed_at REAL, known_issue INTEGER DEFAULT 0,
+                known_issue_note TEXT)"""
+        )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS user_prefs (key TEXT PRIMARY KEY, value TEXT)"""
+        )
+        conn.execute(
+            "INSERT INTO hitl_suppression"
+            " (card_key, card_type, description, first_sent_at, last_sent_at, send_count)"
+            " VALUES ('update:update.noaa_it_all_update', 'update', 'noaa', 1.0, 1.0, 1)"
+        )
+    return db_path
+
+
+class TestUpdateGoneMinimumElapsed:
+    """poll_for_updates must wait UPDATE_GONE_MIN_SECONDS before resolving an absent entity."""
+
+    def _run_poll(
+        self,
+        *,
+        absent_key,
+        resolve_calls,
+        monotonic_values,
+        ha_recently,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Run one iteration of poll_for_updates and collect _resolve calls."""
+        import asyncio
+        from unittest.mock import AsyncMock, patch
+
+        db_path = _make_update_gone_db(tmp_path)
+        monkeypatch.setattr("agents.ha_log_monitor.DB_PATH", db_path)
+
+        _mono_iter = iter(monotonic_values)
+
+        def _mono():
+            try:
+                return next(_mono_iter)
+            except StopIteration:
+                return monotonic_values[-1]
+
+        async def _coro():
+            with (
+                patch("time.monotonic", side_effect=_mono),
+                patch(
+                    "agents.ha_log_monitor.get_update_status",
+                    AsyncMock(return_value=[]),
+                ),
+                patch(
+                    "agents.ha_log_monitor._update_sweep_absent_pending",
+                    return_value=[(absent_key,)],
+                ),
+                patch(
+                    "agents.ha_log_monitor._resolve_externally_applied_update",
+                    side_effect=lambda *a, **kw: resolve_calls.append((a, kw)),
+                ),
+                patch(
+                    "agents.ha_update_manager.reconcile_stale_approved_cards",
+                    return_value=0,
+                ),
+                patch(
+                    "agents.ha_log_monitor._ha_recently_started",
+                    return_value=ha_recently,
+                ),
+                patch(
+                    "utils.agent.supervisor.supervised_sleep",
+                    side_effect=asyncio.CancelledError,
+                ),
+            ):
+                from agents.ha_log_monitor import poll_for_updates
+
+                try:
+                    await poll_for_updates()
+                except asyncio.CancelledError:
+                    pass
+
+        asyncio.run(_coro())
+
+    def test_short_absence_does_not_resolve(self, tmp_path, pueo_dirs, monkeypatch):
+        """Two polls 42s apart must not resolve (< UPDATE_GONE_MIN_SECONDS = 900s)."""
+        import asyncio
+        from unittest.mock import AsyncMock, patch
+
+        from agents.ha_log_monitor import UPDATE_GONE_MIN_SECONDS
+
+        absent_key = "update:update.noaa_it_all_update"
+        db_path = _make_update_gone_db(tmp_path)
+        monkeypatch.setattr("agents.ha_log_monitor.DB_PATH", db_path)
+
+        # Simulate: first poll at t=0, second poll at t=42 (monotonic values issued in order)
+        _times = [0.0, 0.0, 0.0, 42.0, 42.0, 42.0, 42.0]
+        _iter = iter(_times)
+
+        def _mono():
+            try:
+                return next(_iter)
+            except StopIteration:
+                return 42.0
+
+        resolve_calls = []
+        loop_count = []
+
+        async def _coro():
+            async def _fake_sleep(*a, **kw):
+                loop_count.append(1)
+                if len(loop_count) >= 2:
+                    raise asyncio.CancelledError
+
+            with (
+                patch("time.monotonic", side_effect=_mono),
+                patch(
+                    "agents.ha_log_monitor.get_update_status",
+                    AsyncMock(return_value=[]),
+                ),
+                patch(
+                    "agents.ha_log_monitor._update_sweep_absent_pending",
+                    return_value=[(absent_key,)],
+                ),
+                patch(
+                    "agents.ha_log_monitor._resolve_externally_applied_update",
+                    side_effect=lambda *a, **kw: resolve_calls.append(a),
+                ),
+                patch(
+                    "agents.ha_update_manager.reconcile_stale_approved_cards",
+                    return_value=0,
+                ),
+                patch("agents.ha_log_monitor._ha_recently_started", return_value=False),
+                patch(
+                    "utils.agent.supervisor.supervised_sleep", side_effect=_fake_sleep
+                ),
+            ):
+                from agents.ha_log_monitor import poll_for_updates
+
+                try:
+                    await poll_for_updates()
+                except asyncio.CancelledError:
+                    pass
+
+        asyncio.run(_coro())
+        assert len(loop_count) == 2, "Expected exactly 2 iterations"
+        assert len(resolve_calls) == 0, "Must not resolve after only 42s absence"
+
+    def test_absence_past_minimum_resolves(self, tmp_path, pueo_dirs, monkeypatch):
+        """Absence past UPDATE_GONE_MIN_SECONDS triggers resolution with absent=True."""
+        import asyncio
+        from unittest.mock import AsyncMock, patch
+
+        from agents.ha_log_monitor import UPDATE_GONE_MIN_SECONDS
+
+        absent_key = "update:update.noaa_it_all_update"
+        db_path = _make_update_gone_db(tmp_path)
+        monkeypatch.setattr("agents.ha_log_monitor.DB_PATH", db_path)
+
+        # First poll at t=0, second poll at t=1000 (> 900s)
+        _times = [0.0, 0.0, 1000.0, 1000.0, 1000.0, 1000.0]
+        _iter = iter(_times)
+
+        def _mono():
+            try:
+                return next(_iter)
+            except StopIteration:
+                return 1000.0
+
+        resolve_calls = []
+        loop_count = []
+
+        async def _coro():
+            async def _fake_sleep(*a, **kw):
+                loop_count.append(1)
+                if len(loop_count) >= 2:
+                    raise asyncio.CancelledError
+
+            with (
+                patch("time.monotonic", side_effect=_mono),
+                patch(
+                    "agents.ha_log_monitor.get_update_status",
+                    AsyncMock(return_value=[]),
+                ),
+                patch(
+                    "agents.ha_log_monitor._update_sweep_absent_pending",
+                    return_value=[(absent_key,)],
+                ),
+                patch(
+                    "agents.ha_log_monitor._resolve_externally_applied_update",
+                    side_effect=lambda *a, **kw: resolve_calls.append(a),
+                ),
+                patch(
+                    "agents.ha_update_manager.reconcile_stale_approved_cards",
+                    return_value=0,
+                ),
+                patch("agents.ha_log_monitor._ha_recently_started", return_value=False),
+                patch(
+                    "utils.agent.supervisor.supervised_sleep", side_effect=_fake_sleep
+                ),
+            ):
+                from agents.ha_log_monitor import poll_for_updates
+
+                try:
+                    await poll_for_updates()
+                except asyncio.CancelledError:
+                    pass
+
+        asyncio.run(_coro())
+        assert (
+            len(resolve_calls) == 1
+        ), "Must resolve after absence past UPDATE_GONE_MIN_SECONDS"
+        # The absent=True positional arg is the 4th argument (suppression_key, watch_dir, None, True)
+        args = resolve_calls[0]
+        assert args[3] is True, "absent flag must be True for the absent-sweep path"
+
+    def test_ha_settle_window_blocks_resolution(self, tmp_path, pueo_dirs, monkeypatch):
+        """Even after UPDATE_GONE_MIN_SECONDS, resolution is blocked inside the HA settle window."""
+        import asyncio
+        from unittest.mock import AsyncMock, patch
+
+        absent_key = "update:update.noaa_it_all_update"
+        db_path = _make_update_gone_db(tmp_path)
+        monkeypatch.setattr("agents.ha_log_monitor.DB_PATH", db_path)
+
+        # Time well past minimum, but HA just restarted
+        _times = [0.0, 0.0, 1000.0, 1000.0, 1000.0, 1000.0]
+        _iter = iter(_times)
+
+        def _mono():
+            try:
+                return next(_iter)
+            except StopIteration:
+                return 1000.0
+
+        resolve_calls = []
+        loop_count = []
+
+        async def _coro():
+            async def _fake_sleep(*a, **kw):
+                loop_count.append(1)
+                if len(loop_count) >= 2:
+                    raise asyncio.CancelledError
+
+            with (
+                patch("time.monotonic", side_effect=_mono),
+                patch(
+                    "agents.ha_log_monitor.get_update_status",
+                    AsyncMock(return_value=[]),
+                ),
+                patch(
+                    "agents.ha_log_monitor._update_sweep_absent_pending",
+                    return_value=[(absent_key,)],
+                ),
+                patch(
+                    "agents.ha_log_monitor._resolve_externally_applied_update",
+                    side_effect=lambda *a, **kw: resolve_calls.append(a),
+                ),
+                patch(
+                    "agents.ha_update_manager.reconcile_stale_approved_cards",
+                    return_value=0,
+                ),
+                patch("agents.ha_log_monitor._ha_recently_started", return_value=True),
+                patch(
+                    "utils.agent.supervisor.supervised_sleep", side_effect=_fake_sleep
+                ),
+            ):
+                from agents.ha_log_monitor import poll_for_updates
+
+                try:
+                    await poll_for_updates()
+                except asyncio.CancelledError:
+                    pass
+
+        asyncio.run(_coro())
+        assert len(resolve_calls) == 0, "Must not resolve inside HA settle window"
+
+
+class TestAbsentSweepTimelineMessage:
+    """_resolve_externally_applied_update with absent=True must not fabricate to_version."""
+
+    def _setup_db(self, tmp_path):
+        import sqlite3
+
+        db_path = str(tmp_path / "state.db")
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS hitl_suppression (
+                    card_key TEXT PRIMARY KEY, card_type TEXT, description TEXT,
+                    first_sent_at REAL, last_sent_at REAL,
+                    send_count INTEGER DEFAULT 0, last_action TEXT,
+                    last_action_at REAL, resolved_at REAL,
+                    next_allowed_at REAL, known_issue INTEGER DEFAULT 0,
+                    known_issue_note TEXT)"""
+            )
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS user_prefs (key TEXT PRIMARY KEY, value TEXT)"""
+            )
+        return db_path
+
+    def test_absent_flag_suppresses_latest_version_in_timeline(
+        self, tmp_path, pueo_dirs, monkeypatch
+    ):
+        """absent=True must not use card's latest_version as to_version in the timeline."""
+        import json
+        import sqlite3
+        from unittest.mock import patch
+
+        from agents.ha_log_monitor import _resolve_externally_applied_update
+
+        db_path = self._setup_db(tmp_path)
+        monkeypatch.setattr("agents.ha_log_monitor.DB_PATH", db_path)
+        watch_dir = str(tmp_path / "hitl")
+        (tmp_path / "hitl").mkdir()
+
+        # Card JSON contains a latest_version that must NOT appear in the absent timeline
+        from utils.hitl.hitl_tracker import stable_nid
+
+        nid = stable_nid("update:update.noaa_it_all_update")
+        card_data = {
+            "payload": {
+                "component": "noaa_it_all",
+                "installed_version": "0.11.1",
+                "latest_version": "0.12.0",  # must NOT appear in absent timeline
+            }
+        }
+        (tmp_path / "hitl" / f"{nid}.json").write_text(json.dumps(card_data))
+
+        timeline_calls = []
+        with patch(
+            "utils.core.timeline.write_timeline_event",
+            side_effect=lambda *a, **kw: timeline_calls.append((a, kw)),
+        ):
+            _resolve_externally_applied_update(
+                "update:update.noaa_it_all_update",
+                watch_dir,
+                absent=True,
+            )
+
+        assert len(timeline_calls) == 1
+        tl_args, tl_kw = timeline_calls[0]
+        tl_detail = tl_args[3] if len(tl_args) > 3 else {}
+        assert tl_detail.get("resolution") == "absent", "Resolution must be 'absent'"
+        assert (
+            "to_version" not in tl_detail
+        ), "to_version must not appear for absent entities"
+        assert (
+            "0.12.0" not in tl_args[2]
+        ), "latest_version must not appear in timeline message"
+
+    def test_non_absent_external_still_includes_to_version(
+        self, tmp_path, pueo_dirs, monkeypatch
+    ):
+        """absent=False (default) must still use card's latest_version as to_version."""
+        import json
+        import sqlite3
+        from unittest.mock import patch
+
+        from agents.ha_log_monitor import _resolve_externally_applied_update
+
+        db_path = self._setup_db(tmp_path)
+        monkeypatch.setattr("agents.ha_log_monitor.DB_PATH", db_path)
+        watch_dir = str(tmp_path / "hitl")
+        (tmp_path / "hitl").mkdir()
+
+        from utils.hitl.hitl_tracker import stable_nid
+
+        nid = stable_nid("update:update.noaa_it_all_update")
+        card_data = {
+            "payload": {
+                "component": "noaa_it_all",
+                "installed_version": "0.11.1",
+                "latest_version": "0.12.0",
+            }
+        }
+        (tmp_path / "hitl" / f"{nid}.json").write_text(json.dumps(card_data))
+
+        timeline_calls = []
+        with patch(
+            "utils.core.timeline.write_timeline_event",
+            side_effect=lambda *a, **kw: timeline_calls.append((a, kw)),
+        ):
+            _resolve_externally_applied_update(
+                "update:update.noaa_it_all_update",
+                watch_dir,
+            )
+
+        assert len(timeline_calls) == 1
+        tl_args, tl_kw = timeline_calls[0]
+        tl_detail = tl_args[3] if len(tl_args) > 3 else {}
+        assert tl_detail.get("resolution") == "external"
+        assert tl_detail.get("to_version") == "0.12.0"
+
+
+class TestHaRecentlyStarted:
+    """`ha_recently_started` reads ha:last_start_ts and compares to window."""
+
+    def _make_db(self, tmp_path, ha_start_ts=None):
+        import sqlite3
+
+        db_path = str(tmp_path / "state.db")
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS user_prefs (key TEXT PRIMARY KEY, value TEXT)"
+            )
+            if ha_start_ts is not None:
+                conn.execute(
+                    "INSERT INTO user_prefs (key, value) VALUES ('ha:last_start_ts', ?)",
+                    (str(ha_start_ts),),
+                )
+        return db_path
+
+    def test_true_when_ha_started_recently(self, tmp_path):
+        import time
+
+        from utils.ha.device_availability import ha_recently_started
+
+        db_path = self._make_db(tmp_path, ha_start_ts=time.time() - 30)
+        assert ha_recently_started(db_path, 300) is True
+
+    def test_false_when_ha_started_long_ago(self, tmp_path):
+        import time
+
+        from utils.ha.device_availability import ha_recently_started
+
+        db_path = self._make_db(tmp_path, ha_start_ts=time.time() - 7200)
+        assert ha_recently_started(db_path, 300) is False
+
+    def test_false_when_no_record(self, tmp_path):
+        from utils.ha.device_availability import ha_recently_started
+
+        db_path = self._make_db(tmp_path)
+        assert ha_recently_started(db_path, 300) is False
