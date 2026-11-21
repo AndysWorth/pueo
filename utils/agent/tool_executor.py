@@ -6117,6 +6117,12 @@ class ToolExecutor:
     ) -> ToolResult:
         """Create a HITL card for the pending repair issue, or auto-execute reboot."""
         if not requires_hitl:
+            issue = self._pending_repair_issue
+            if issue is not None:
+                from agents.ha_agent_advanced import mark_repair_concluded
+                from utils.ha.ha_rest_client import repair_issue_fingerprint
+
+                mark_repair_concluded(issue.issue_key, repair_issue_fingerprint(issue))
             return ToolResult(
                 tool_name="finish_repair_issue",
                 success=True,
@@ -6228,8 +6234,16 @@ class ToolExecutor:
         from utils.hitl.hitl_tracker import stable_nid
         from agents.ha_agent_advanced import mark_repair_hitl_sent
 
+        # For UUID issue_ids (HA assigns new UUIDs after restart), key on
+        # translation_key so the same logical issue doesn't produce a duplicate card.
+        # For stable non-UUID issue_ids (domain/translation_key style), key on
+        # issue_key so two distinct issues sharing a tkey each get their own card.
+        _issue_id_part = issue.issue_key.split("/", 1)[-1]
+        _tkey = getattr(issue, "translation_key", None)
         _repair_sup_key = (
-            f"ha_repair:{getattr(issue, 'translation_key', None) or issue.issue_key}"
+            f"ha_repair:{_tkey}"
+            if _tkey and _UUID_RE.match(_issue_id_part)
+            else f"ha_repair:{issue.issue_key}"
         )
         title = f"HA repair: {issue.domain}/{issue.issue_id}"
         body_parts = [

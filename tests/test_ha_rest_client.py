@@ -65,3 +65,85 @@ class TestDeleteAutomation:
         assert len(fake.deleted) == 2
         assert "pueo_auto_id_one_aaaaaaaa" in fake.deleted[0]
         assert "pueo_auto_id_two_bbbbbbbb" in fake.deleted[1]
+
+
+class TestRepairIssueFingerprint:
+    """repair_issue_fingerprint produces stable, change-sensitive hashes."""
+
+    def _make_issue(self, **kwargs):
+        from utils.ha.ha_rest_client import HARepairIssue
+
+        defaults = {
+            "domain": "sensor",
+            "issue_id": "state_class_removed_foo",
+            "severity": "warning",
+            "issue_key": "sensor/state_class_removed_foo",
+            "breaks_in_ha_version": None,
+            "translation_key": "state_class_removed",
+            "data": {"translation_placeholders": {"statistic_id": "sensor.foo"}},
+        }
+        defaults.update(kwargs)
+        return HARepairIssue(**defaults)
+
+    def test_fingerprint_is_16_hex_chars(self):
+        from utils.ha.ha_rest_client import repair_issue_fingerprint
+
+        fp = repair_issue_fingerprint(self._make_issue())
+        assert len(fp) == 16
+        assert all(c in "0123456789abcdef" for c in fp)
+
+    def test_fingerprint_is_stable(self):
+        from utils.ha.ha_rest_client import repair_issue_fingerprint
+
+        issue = self._make_issue()
+        assert repair_issue_fingerprint(issue) == repair_issue_fingerprint(issue)
+
+    def test_fingerprint_changes_with_severity(self):
+        from utils.ha.ha_rest_client import repair_issue_fingerprint
+
+        fp1 = repair_issue_fingerprint(self._make_issue(severity="warning"))
+        fp2 = repair_issue_fingerprint(self._make_issue(severity="critical"))
+        assert fp1 != fp2
+
+    def test_fingerprint_changes_with_placeholders(self):
+        from utils.ha.ha_rest_client import repair_issue_fingerprint
+
+        fp1 = repair_issue_fingerprint(
+            self._make_issue(
+                data={"translation_placeholders": {"statistic_id": "sensor.foo"}}
+            )
+        )
+        fp2 = repair_issue_fingerprint(
+            self._make_issue(
+                data={"translation_placeholders": {"statistic_id": "sensor.bar"}}
+            )
+        )
+        assert fp1 != fp2
+
+    def test_fingerprint_stable_across_sorted_placeholder_order(self):
+        """Placeholder dict order must not affect the fingerprint."""
+        from utils.ha.ha_rest_client import repair_issue_fingerprint
+
+        fp1 = repair_issue_fingerprint(
+            self._make_issue(data={"translation_placeholders": {"a": "1", "b": "2"}})
+        )
+        fp2 = repair_issue_fingerprint(
+            self._make_issue(data={"translation_placeholders": {"b": "2", "a": "1"}})
+        )
+        assert fp1 == fp2
+
+    def test_fingerprint_changes_with_breaks_in_ha_version(self):
+        from utils.ha.ha_rest_client import repair_issue_fingerprint
+
+        fp1 = repair_issue_fingerprint(self._make_issue(breaks_in_ha_version=None))
+        fp2 = repair_issue_fingerprint(
+            self._make_issue(breaks_in_ha_version="2026.12.0")
+        )
+        assert fp1 != fp2
+
+    def test_fingerprint_stable_without_placeholders(self):
+        """Issues with no translation_placeholders produce a valid fingerprint."""
+        from utils.ha.ha_rest_client import repair_issue_fingerprint
+
+        fp = repair_issue_fingerprint(self._make_issue(data={}))
+        assert len(fp) == 16

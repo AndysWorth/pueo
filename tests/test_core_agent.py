@@ -970,7 +970,7 @@ class TestAdvancedDB:
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 45
+        assert version == 46
 
     def test_version_unchanged_on_second_init(self, db_path):
         from agents import ha_agent_advanced
@@ -980,7 +980,7 @@ class TestAdvancedDB:
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute("SELECT version FROM schema_version").fetchall()
         assert len(rows) == 1
-        assert rows[0][0] == 45
+        assert rows[0][0] == 46
 
     def test_pre_migration_database_upgraded(self, db_path):
         from agents import ha_agent_advanced
@@ -1009,7 +1009,7 @@ class TestAdvancedDB:
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 45
+        assert version == 46
 
     def test_migration_v2_adds_correlation_id_column(self, db_path):
         from agents import ha_agent_advanced
@@ -1975,7 +1975,7 @@ class TestSandboxDB:
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 45
+        assert version == 46
 
     def test_version_unchanged_on_second_init(self, db_path):
         from agents import ha_agent_sandbox_engine
@@ -1985,7 +1985,7 @@ class TestSandboxDB:
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute("SELECT version FROM schema_version").fetchall()
         assert len(rows) == 1
-        assert rows[0][0] == 45
+        assert rows[0][0] == 46
 
     def test_pre_migration_database_upgraded(self, db_path):
         from agents import ha_agent_sandbox_engine
@@ -2013,7 +2013,7 @@ class TestSandboxDB:
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 45
+        assert version == 46
 
     def test_migration_v24_creates_agent_strategies(self, db_path):
         from agents import ha_agent_sandbox_engine
@@ -15591,6 +15591,41 @@ class TestHARepairDB:
         )
         mark_repair_hitl_sent("homeassistant/abc456")
         assert is_reboot_required_active() is False
+
+    def test_mark_repair_concluded_sets_fp(self, db_path):
+        """mark_repair_concluded writes concluded_fp to the row."""
+        import sqlite3
+
+        from agents.ha_agent_advanced import mark_repair_concluded, record_repair_seen
+
+        record_repair_seen("sensor/state_class_removed_foo")
+        mark_repair_concluded("sensor/state_class_removed_foo", "abc123")
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT concluded_fp FROM ha_repair_history"
+                " WHERE issue_key='sensor/state_class_removed_foo'"
+            ).fetchone()
+        assert row is not None and row[0] == "abc123"
+
+    def test_mark_repair_resolved_clears_concluded_fp(self, db_path):
+        """mark_repair_resolved clears concluded_fp so a returning issue is re-investigated."""
+        import sqlite3
+
+        from agents.ha_agent_advanced import (
+            mark_repair_concluded,
+            mark_repair_resolved,
+            record_repair_seen,
+        )
+
+        record_repair_seen("sensor/state_class_removed_foo")
+        mark_repair_concluded("sensor/state_class_removed_foo", "abc123")
+        mark_repair_resolved("sensor/state_class_removed_foo")
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT concluded_fp FROM ha_repair_history"
+                " WHERE issue_key='sensor/state_class_removed_foo'"
+            ).fetchone()
+        assert row is not None and row[0] is None
 
 
 class TestLogTriageDB:
