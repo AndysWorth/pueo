@@ -304,6 +304,7 @@ ACTIONABLE_CARD_TYPES: frozenset[str] = frozenset(
         "automation_create",
         "companion_setup",
         "device_recurring",
+        "sensor_stats",
     }
 )
 

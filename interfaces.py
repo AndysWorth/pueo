@@ -126,6 +126,9 @@ class HAWebSocketClientProtocol(Protocol):
     async def ignore_repair_issue(
         self, domain: str, issue_id: str, ignore: bool = True
     ) -> None: ...
+    async def get_statistics_metadata(
+        self, statistic_ids: list[str]
+    ) -> dict[str, dict]: ...
 
 
 class HAEventSubscriberProtocol(Protocol):

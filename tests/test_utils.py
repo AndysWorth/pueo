@@ -8405,6 +8405,7 @@ class TestSeedRegistry:
             sig_repair("zha", "integration_disabled"),
             sig_repair("homeassistant", "breaking_change"),
             sig_repair("spook", "dead_entity"),
+            sig_repair("sensor", "statistics"),
             sig_notification("http-login"),
             sig_notification("ip-ban"),
             sig_update(hacs_type, "noaa_it_all"),

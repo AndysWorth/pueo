@@ -185,6 +185,11 @@ PUEO_HA_DEPENDENCIES: dict[str, list[dict[str, Any]]] = {
             "terms": ["statistics_during_period"],
         },
         {
+            "cmd": "recorder/list_statistic_ids",
+            "feature": "statistics metadata (sensor stats repair grouping)",
+            "terms": ["list_statistic_ids"],
+        },
+        {
             "cmd": "lovelace/dashboards/list",
             "feature": "dashboard listing (lovelace monitor)",
         },

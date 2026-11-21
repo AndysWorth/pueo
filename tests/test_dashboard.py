@@ -12361,3 +12361,112 @@ class TestUpdateReportRoute:
         assert "Rename your Tuya entities" in html
         assert "Check Yourself" in html
         assert "Entity names" in html
+
+
+# ── /sensor-stats/{nid}/ignore-all route ─────────────────────────────────────
+
+
+class TestSensorStatsIgnoreAll:
+    """Dashboard /sensor-stats/{nid}/ignore-all queues work and handles errors."""
+
+    @pytest.fixture()
+    def watch_dir(self, tmp_path):
+        d = tmp_path / "hitl"
+        d.mkdir()
+        return d
+
+    def _write_sensor_stats_card(self, watch_dir, nid, entities=None):
+        import time
+
+        entities = entities or [
+            {
+                "entity_id": "sensor.steps",
+                "translation_key": "state_class_removed",
+                "issue_id": "stats-steps-001",
+                "issue_key": "sensor/stats-steps-001",
+                "severity": "warning",
+                "domain": "sensor",
+                "placeholders": {"statistic_id": "sensor.steps"},
+            },
+        ]
+        card = {
+            "notification_id": nid,
+            "subject": "Sensor statistics issues",
+            "body": "1 affected sensor",
+            "payload": {
+                "card_type": "sensor_stats",
+                "group_key": "sensor/stats:dev-iphone",
+                "suppression_key": "sensor_stats:sensor/stats:dev-iphone",
+                "root_cause": "Companion App re-registration",
+                "explanation": "Steps sensor lost state_class after iOS update.",
+                "options": [
+                    {"label": "Fix at source", "instructions": "Update iOS app."}
+                ],
+                "entities": entities,
+            },
+            "sent_at": int(time.time()),
+        }
+        (watch_dir / f"{nid}.json").write_text(json.dumps(card))
+
+    def test_ignore_all_queues_work_item(self, tmp_path, monkeypatch, watch_dir):
+        """POST /sensor-stats/{nid}/ignore-all queues a WorkItem and redirects."""
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+        import utils.agent.work_queue as wq_mod
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+        self._write_sensor_stats_card(watch_dir, "ss1")
+        queued = []
+
+        class FakeQueue:
+            async def submit(self, item):
+                queued.append(item)
+                return True
+
+        monkeypatch.setattr(wq_mod, "_work_queue", FakeQueue())
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.post("/sensor-stats/ss1/ignore-all", follow_redirects=False)
+        assert resp.status_code == 303
+        assert len(queued) == 1
+        assert "sensor stats ignore all" in queued[0].description
+
+    def test_ignore_all_404s_on_missing_card(self, tmp_path, monkeypatch, watch_dir):
+        """POST for a non-existent card redirects without error."""
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+        import utils.agent.work_queue as wq_mod
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+        monkeypatch.setattr(wq_mod, "_work_queue", None)
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.post(
+            "/sensor-stats/nonexistent/ignore-all", follow_redirects=False
+        )
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/queue"
+
+    def test_ignore_all_rejects_wrong_card_type(self, tmp_path, monkeypatch, watch_dir):
+        """POST for a card with wrong card_type is silently ignored."""
+        import time
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+        import utils.agent.work_queue as wq_mod
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+        monkeypatch.setattr(wq_mod, "_work_queue", None)
+
+        wrong_card = {
+            "notification_id": "ss2",
+            "subject": "Other",
+            "body": "Other",
+            "payload": {"card_type": "repair_issue"},
+            "sent_at": int(time.time()),
+        }
+        (watch_dir / "ss2.json").write_text(json.dumps(wrong_card))
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.post("/sensor-stats/ss2/ignore-all", follow_redirects=False)
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/queue"

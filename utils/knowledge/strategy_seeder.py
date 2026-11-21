@@ -95,6 +95,11 @@ _SEED_PROMPTS: list[tuple[str, str, str]] = [
         "lovelace entity not in registry, unregistered entity, dashboard entity has state but no unique_id, sub-platform entity, not-loaded config entry",
     ),
     (
+        "seed_repair_sensor_statistics.md",
+        "Sensor statistics repair group — state_class_removed and related",
+        "state_class_removed repair, units_changed statistics, sensor statistics stopped, entity re-registered, Companion App statistics, mean_type_changed repair",
+    ),
+    (
         "seed_repair_issue.md",
         "HA repair issue investigation — method",
         "HA repair panel issue, unknown repair type, novel translation_key",

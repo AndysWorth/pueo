@@ -50,6 +50,7 @@ from utils.hitl.card_types import (
     CARD_TYPE_OPEN_PR,
     CARD_TYPE_REPAIR,
     CARD_TYPE_RESOURCE_ACTION,
+    CARD_TYPE_SENSOR_STATS,
     CARD_TYPE_SPOOK_DIGEST,
     CARD_TYPE_UNREGISTERED_ENTITY,
     CARD_TYPE_SERVICE_CALL,
@@ -3205,6 +3206,120 @@ async def spook_ignore_item(nid: str, issue_id: str) -> RedirectResponse:
     else:
         asyncio.create_task(
             _execute_spook_item(nid, _action, _iid, data, json_path, watch_dir)
+        )
+    return RedirectResponse(url="/queue", status_code=303)
+
+
+async def _execute_sensor_stats_ignore_all(
+    nid: str,
+    data: dict,
+    json_path: Path,
+    watch_dir: Path,
+) -> None:
+    """Ignore all repair issues in a CARD_TYPE_SENSOR_STATS card via WS repairs/ignore_issue."""
+    import config as _config
+    from agents.ha_agent_advanced import mark_repair_resolved
+    from utils.ha.ha_rest_client import get_ha_repair_issues
+    from utils.ha.ha_ws_client import HAWebSocketClient
+
+    payload = data.get("payload", {})
+    group_key = payload.get("group_key", "")
+    entities = payload.get("entities", [])
+
+    (watch_dir / f"{nid}.in_progress").touch()
+    try:
+        ws = HAWebSocketClient(
+            _config.HA_HOST, _config.HA_API_PORT, _config.HA_API_TOKEN
+        )
+        live_issues = await get_ha_repair_issues(ws)
+        live_ids = {i.issue_id for i in live_issues}
+
+        errors: list[str] = []
+        for ent in entities:
+            domain = ent.get("domain", "sensor")
+            issue_id = ent.get("issue_id", "")
+            issue_key = ent.get("issue_key", "")
+            if not issue_id:
+                continue
+            if issue_id not in live_ids:
+                await asyncio.to_thread(mark_repair_resolved, issue_key)
+                continue
+            try:
+                await ws.ignore_repair_issue(domain, issue_id, ignore=True)
+                await asyncio.to_thread(mark_repair_resolved, issue_key)
+            except Exception as exc:
+                errors.append(f"{issue_id}: {exc}")
+                log.warning(
+                    "sensor_stats_ignore_failed",
+                    nid=nid,
+                    issue_id=issue_id,
+                    error=str(exc),
+                )
+
+        if errors:
+            payload["_errors"] = errors
+            data["payload"] = payload
+            json_path.write_text(json.dumps(data, indent=2))
+            return
+
+        # All ignored — resolve the group and close the card.
+        if group_key:
+            await asyncio.to_thread(mark_repair_resolved, group_key)
+        json_path.unlink(missing_ok=True)
+        (watch_dir / f"{nid}.rejected").unlink(missing_ok=True)
+        try:
+            from utils.core.timeline import write_timeline_event
+
+            await asyncio.to_thread(
+                write_timeline_event,
+                "INFO",
+                "sensor_stats",
+                f"Sensor stats ignored: {len(entities)} issue(s) on {group_key}",
+                {"group_key": group_key, "nid": nid},
+            )
+        except Exception:  # nosec B110
+            pass
+    except Exception as exc:  # nosec B110
+        log.error("sensor_stats_ignore_all_failed", nid=nid, error=str(exc))
+    finally:
+        (watch_dir / f"{nid}.in_progress").unlink(missing_ok=True)
+
+
+@app.post("/sensor-stats/{nid}/ignore-all")
+async def sensor_stats_ignore_all(nid: str) -> RedirectResponse:
+    """Ignore all repair issues in a CARD_TYPE_SENSOR_STATS card."""
+    from utils.agent.work_queue import PRIORITY_HIGH, WorkItem, get_work_queue_or_none
+
+    watch_dir = Path(NOTIFY_WATCH_DIR)
+    json_path = watch_dir / f"{nid}.json"
+    if not (json_path.exists() and _status(nid, watch_dir) == "PENDING"):
+        return RedirectResponse(url="/queue", status_code=303)
+
+    data = json.loads(json_path.read_text())
+    payload = data.get("payload", {})
+    if payload.get("card_type") != CARD_TYPE_SENSOR_STATS:
+        return RedirectResponse(url="/queue", status_code=303)
+
+    if (watch_dir / f"{nid}.in_progress").exists():
+        return RedirectResponse(url="/queue?busy=1", status_code=303)
+
+    _wq = get_work_queue_or_none()
+    if _wq is not None:
+        await _wq.submit(
+            WorkItem(
+                priority=PRIORITY_HIGH,
+                activity_type="card_execution",
+                description=f"Card {nid}: sensor stats ignore all",
+                dedup_key=f"card_{nid}",
+                suppress_while_running=frozenset(),
+                coro_factory=lambda: _execute_sensor_stats_ignore_all(
+                    nid, data, json_path, watch_dir
+                ),
+            )
+        )
+    else:
+        asyncio.create_task(
+            _execute_sensor_stats_ignore_all(nid, data, json_path, watch_dir)
         )
     return RedirectResponse(url="/queue", status_code=303)
 
