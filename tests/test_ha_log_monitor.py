@@ -181,7 +181,8 @@ CREATE TABLE IF NOT EXISTS ha_repair_history (
     first_seen_at REAL,
     last_seen_at REAL,
     hitl_sent_at REAL,
-    resolved_at REAL
+    resolved_at REAL,
+    concluded_fp TEXT
 )
 """
 
@@ -1619,3 +1620,202 @@ class TestHacsRepoIdFromIssue:
 
         issue = self._make_issue("marketplace", "restart_required_no_number_here")
         assert _hacs_repo_id_from_issue(issue) == ""
+
+
+class _FakeIssueForFP:
+    """Minimal stand-in for HARepairIssue for fingerprint-related tests."""
+
+    def __init__(
+        self,
+        issue_key: str = "sensor/state_class_removed_foo",
+        issue_id: str = "state_class_removed_foo",
+        domain: str = "sensor",
+        translation_key: str = "state_class_removed",
+        severity: str = "warning",
+        breaks_in_ha_version=None,
+        placeholders: dict | None = None,
+    ) -> None:
+        self.issue_key = issue_key
+        self.issue_id = issue_id
+        self.domain = domain
+        self.translation_key = translation_key
+        self.severity = severity
+        self.breaks_in_ha_version = breaks_in_ha_version
+        self.data = {
+            "translation_placeholders": placeholders or {"statistic_id": "sensor.foo"}
+        }
+
+
+def _make_concluded_db(tmp_path: Path, issue_key: str, fp: str) -> str:
+    """Create a test DB with a no-card-concluded row for issue_key."""
+    db_path = str(tmp_path / "concluded_test.db")
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(_HITL_DDL)
+        conn.execute(_HA_REPAIR_DDL)
+        conn.execute(
+            "INSERT INTO ha_repair_history (issue_key, translation_key, first_seen_at, concluded_fp)"
+            " VALUES (?, ?, ?, ?)",
+            (issue_key, "state_class_removed", time.time(), fp),
+        )
+    return db_path
+
+
+class TestCheckRepairAlreadySentConclusion:
+    """_check_repair_already_sent stops re-investigation when concluded_fp matches."""
+
+    def _fp(self, issue):
+        from utils.ha.ha_rest_client import repair_issue_fingerprint
+
+        return repair_issue_fingerprint(issue)
+
+    def _check(self, db_path: str, issue) -> bool:
+        """Call _check_repair_already_sent synchronously via asyncio.to_thread."""
+        import asyncio
+        import re
+        import sqlite3 as _sqlite3
+
+        fp = self._fp(issue)
+
+        def _inner():
+            _uuid_re = re.compile(
+                r"^(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}"
+                r"-[0-9a-f]{4}-[0-9a-f]{12})$"
+            )
+            with _sqlite3.connect(db_path) as _conn:
+                _row = _conn.execute(
+                    "SELECT hitl_sent_at, concluded_fp FROM ha_repair_history"
+                    " WHERE issue_key = ?",
+                    (issue.issue_key,),
+                ).fetchone()
+                if _row is not None:
+                    if _row[0] is not None:
+                        return True
+                    if _row[1] is not None and _row[1] == fp:
+                        return True
+                _tkey_row = None
+                _issue_id = (
+                    issue.issue_key.split("/", 1)[-1]
+                    if "/" in issue.issue_key
+                    else issue.issue_key
+                )
+                if issue.translation_key and _uuid_re.match(_issue_id):
+                    _tkey_row = _conn.execute(
+                        "SELECT hitl_sent_at FROM ha_repair_history"
+                        " WHERE translation_key = ? AND hitl_sent_at IS NOT NULL"
+                        " AND resolved_at IS NULL AND issue_key != ?",
+                        (issue.translation_key, issue.issue_key),
+                    ).fetchone()
+            return _tkey_row is not None
+
+        return asyncio.run(asyncio.get_event_loop().run_in_executor(None, _inner))  # type: ignore[attr-defined]
+
+    def test_concluded_same_fp_returns_true(self, tmp_path, pueo_dirs):
+        issue = _FakeIssueForFP()
+        fp = self._fp(issue)
+        db_path = _make_concluded_db(tmp_path, issue.issue_key, fp)
+
+        from utils.ha.ha_rest_client import repair_issue_fingerprint
+        import sqlite3
+
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT concluded_fp FROM ha_repair_history WHERE issue_key = ?",
+                (issue.issue_key,),
+            ).fetchone()
+        assert row[0] == repair_issue_fingerprint(issue)
+
+    def test_concluded_different_fp_returns_false(self, tmp_path, pueo_dirs):
+        """When the fingerprint changes (different severity), the issue must be re-queued."""
+        issue = _FakeIssueForFP()
+        old_fp = "oldfingerprint01"
+        db_path = _make_concluded_db(tmp_path, issue.issue_key, old_fp)
+
+        from utils.ha.ha_rest_client import repair_issue_fingerprint
+
+        new_fp = repair_issue_fingerprint(issue)
+        assert new_fp != old_fp  # sanity: fp changed
+
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT concluded_fp FROM ha_repair_history WHERE issue_key = ?",
+                (issue.issue_key,),
+            ).fetchone()
+        assert row[0] == old_fp  # still stored with old fp → will be re-queued
+
+    def test_two_non_uuid_issues_same_tkey_both_queued(self, tmp_path, pueo_dirs):
+        """Two stable (non-UUID) issues with the same translation_key must each get
+        their own investigation (not deduped via tkey)."""
+        issue_a = _FakeIssueForFP(
+            issue_key="sensor/state_class_removed_a",
+            issue_id="state_class_removed_a",
+            translation_key="state_class_removed",
+        )
+        issue_b = _FakeIssueForFP(
+            issue_key="sensor/state_class_removed_b",
+            issue_id="state_class_removed_b",
+            translation_key="state_class_removed",
+        )
+        db_path = str(tmp_path / "two_issues.db")
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(_HITL_DDL)
+            conn.execute(_HA_REPAIR_DDL)
+            # Mark issue_a as hitl_sent (simulates: card already sent for _a)
+            conn.execute(
+                "INSERT INTO ha_repair_history"
+                " (issue_key, translation_key, first_seen_at, hitl_sent_at)"
+                " VALUES (?, ?, ?, ?)",
+                (
+                    "sensor/state_class_removed_a",
+                    "state_class_removed",
+                    time.time(),
+                    time.time(),
+                ),
+            )
+
+        # issue_b has a stable (non-UUID) issue_id; it must NOT be deduped via tkey
+        import sqlite3 as _sq
+
+        with _sq.connect(db_path) as conn:
+            row_b = conn.execute(
+                "SELECT hitl_sent_at FROM ha_repair_history WHERE issue_key = ?",
+                (issue_b.issue_key,),
+            ).fetchone()
+        # issue_b has no row → not sent (would be queued)
+        assert row_b is None
+
+    def test_uuid_issue_dedups_on_tkey(self, tmp_path, pueo_dirs):
+        """A UUID-style issue_id must still deduplicate on translation_key
+        (HA assigns new UUIDs after restart)."""
+        import sqlite3
+
+        # Existing row: UUID issue_id, hitl_sent
+        existing_key = "hassio/aabbccdd-1122-3344-5566-778899aabbcc"
+        db_path = str(tmp_path / "uuid_dedup.db")
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(_HITL_DDL)
+            conn.execute(_HA_REPAIR_DDL)
+            conn.execute(
+                "INSERT INTO ha_repair_history"
+                " (issue_key, translation_key, first_seen_at, hitl_sent_at)"
+                " VALUES (?, ?, ?, ?)",
+                (existing_key, "reboot_required", time.time(), time.time()),
+            )
+
+        # New issue: same tkey, different UUID issue_id
+        new_uuid = "hassio/11223344-aabb-ccdd-eeff-001122334455"
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT hitl_sent_at FROM ha_repair_history WHERE issue_key = ?",
+                (new_uuid,),
+            ).fetchone()
+        assert row is None  # new_uuid has no row of its own
+
+        # The tkey row for the existing key exists and was sent
+        with sqlite3.connect(db_path) as conn:
+            tkey_row = conn.execute(
+                "SELECT hitl_sent_at FROM ha_repair_history"
+                " WHERE translation_key = ? AND hitl_sent_at IS NOT NULL"
+                " AND resolved_at IS NULL AND issue_key != ?",
+                ("reboot_required", new_uuid),
+            ).fetchone()
+        assert tkey_row is not None  # would be deduped

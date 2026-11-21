@@ -1,6 +1,8 @@
 """HA REST API client, update entity polling, and FakeHARestClient test double."""
 
 import datetime
+import hashlib
+import json
 from dataclasses import dataclass, field
 from typing import Optional
 from urllib.parse import urlencode
@@ -344,6 +346,26 @@ class HARepairIssue:
     breaks_in_ha_version: Optional[str]
     translation_key: Optional[str] = None
     data: dict = field(default_factory=dict)
+
+
+def repair_issue_fingerprint(issue: "HARepairIssue") -> str:
+    """Stable sha256 over the issue's identity fields.
+
+    Changes when placeholders, severity, is_fixable, or breaks_in_ha_version
+    change — meaning the underlying problem has shifted and re-investigation is
+    warranted.  Stays stable across HA restarts (which reassign issue_id UUIDs).
+    """
+    placeholders = issue.data.get("translation_placeholders") or {}
+    payload = {
+        "domain": issue.domain,
+        "translation_key": issue.translation_key or "",
+        "placeholders": json.dumps(sorted(placeholders.items())),
+        "severity": issue.severity,
+        "is_fixable": str(issue.data.get("is_fixable")),
+        "breaks_in_ha_version": issue.breaks_in_ha_version or "",
+    }
+    raw = json.dumps(payload, sort_keys=True).encode()
+    return hashlib.sha256(raw).hexdigest()[:16]
 
 
 async def get_ha_repair_issues(

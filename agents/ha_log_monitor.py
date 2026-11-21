@@ -2612,31 +2612,51 @@ async def poll_for_repairs(
             record_repair_seen(issue.issue_key, translation_key=issue.translation_key)
             import sqlite3 as _sqlite3
 
-            def _check_repair_already_sent(_key: str, _tkey: str) -> bool:
+            def _check_repair_already_sent(_key: str, _tkey: str, _fp: str) -> bool:
+                import re as _re
+
+                _uuid_re = _re.compile(
+                    r"^(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}"
+                    r"-[0-9a-f]{4}-[0-9a-f]{12})$"
+                )
                 with _sqlite3.connect(db_path) as _conn:
                     _row = _conn.execute(
-                        "SELECT hitl_sent_at FROM ha_repair_history WHERE issue_key = ?",
+                        "SELECT hitl_sent_at, concluded_fp FROM ha_repair_history"
+                        " WHERE issue_key = ?",
                         (_key,),
                     ).fetchone()
-                    # Also check by translation_key: HA assigns new UUIDs after restart, so
-                    # the same logical repair issue (e.g. "reboot_required") would bypass
-                    # the issue_key check and generate a duplicate card.
+                    if _row is not None:
+                        if _row[0] is not None:
+                            return True
+                        # No-card conclusion: skip only when the fingerprint matches,
+                        # so a changed severity/placeholders re-triggers investigation.
+                        if _row[1] is not None and _row[1] == _fp:
+                            return True
+                    # Also check by translation_key, but only for UUID issue_ids:
+                    # HA assigns new UUIDs after restart, so the same logical repair
+                    # issue (e.g. "reboot_required") would bypass the issue_key check
+                    # and generate a duplicate card.  Non-UUID issue_ids are stable
+                    # (domain/translation_key style) — dedupe on issue_key only so
+                    # two distinct non-UUID issues sharing a tkey are both investigated.
                     _tkey_row = None
-                    if _tkey:
+                    _issue_id = _key.split("/", 1)[-1] if "/" in _key else _key
+                    if _tkey and _uuid_re.match(_issue_id):
                         _tkey_row = _conn.execute(
                             "SELECT hitl_sent_at FROM ha_repair_history"
                             " WHERE translation_key = ? AND hitl_sent_at IS NOT NULL"
                             " AND resolved_at IS NULL AND issue_key != ?",
                             (_tkey, _key),
                         ).fetchone()
-                return (
-                    _row is not None and _row[0] is not None
-                ) or _tkey_row is not None
+                return _tkey_row is not None
 
+            from utils.ha.ha_rest_client import repair_issue_fingerprint as _rif
+
+            _issue_fp = _rif(issue)
             already_sent = await asyncio.to_thread(
                 _check_repair_already_sent,
                 issue.issue_key,
                 issue.translation_key or "",
+                _issue_fp,
             )
 
             if not already_sent:

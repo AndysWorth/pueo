@@ -603,6 +603,26 @@ def _migrate_v45(cursor: sqlite3.Cursor) -> None:
     )
 
 
+def _migrate_v46(cursor: sqlite3.Cursor) -> None:
+    # S1 fix: record no-card conclusions so poll_for_repairs skips already-investigated
+    # issues.  concluded_fp holds the fingerprint at the time of the last no-card
+    # conclusion; mark_repair_resolved clears it so the issue is re-investigated if it
+    # resolves and returns.  conclusion_key on session_outcomes is used by S3 to dedupe
+    # auto-verification.  Both columns are additive — rollback = revert commit.
+    existing_repair = {
+        row[1]
+        for row in cursor.execute("PRAGMA table_info(ha_repair_history)").fetchall()
+    }
+    if "concluded_fp" not in existing_repair:
+        cursor.execute("ALTER TABLE ha_repair_history ADD COLUMN concluded_fp TEXT")
+    existing_outcomes = {
+        row[1]
+        for row in cursor.execute("PRAGMA table_info(session_outcomes)").fetchall()
+    }
+    if "conclusion_key" not in existing_outcomes:
+        cursor.execute("ALTER TABLE session_outcomes ADD COLUMN conclusion_key TEXT")
+
+
 _MIGRATIONS: list[tuple[int, object]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
@@ -649,6 +669,7 @@ _MIGRATIONS: list[tuple[int, object]] = [
     (43, _migrate_v43),
     (44, _migrate_v44),
     (45, _migrate_v45),
+    (46, _migrate_v46),
 ]
 
 
@@ -831,8 +852,24 @@ def mark_repair_hitl_sent(issue_key: str) -> None:
 def mark_repair_resolved(issue_key: str) -> None:
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
-            "UPDATE ha_repair_history SET resolved_at = ? WHERE issue_key = ?",
+            "UPDATE ha_repair_history SET resolved_at = ?, concluded_fp = NULL"
+            " WHERE issue_key = ?",
             (time.time(), issue_key),
+        )
+        conn.commit()
+
+
+def mark_repair_concluded(issue_key: str, fp: str) -> None:
+    """Record a no-card conclusion fingerprint so poll_for_repairs stays quiet.
+
+    When the issue's fingerprint changes (new severity, placeholders, etc.) the
+    next poll sees a different fp and re-queues the investigation.  When the issue
+    resolves and comes back, mark_repair_resolved clears concluded_fp.
+    """
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "UPDATE ha_repair_history SET concluded_fp = ? WHERE issue_key = ?",
+            (fp, issue_key),
         )
         conn.commit()
 

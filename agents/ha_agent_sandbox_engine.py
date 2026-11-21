@@ -619,6 +619,22 @@ def _migrate_v45(cursor: sqlite3.Cursor) -> None:
     )
 
 
+def _migrate_v46(cursor: sqlite3.Cursor) -> None:
+    # Mirrors ha_agent_advanced._migrate_v46 — keep both in sync.
+    existing_repair = {
+        row[1]
+        for row in cursor.execute("PRAGMA table_info(ha_repair_history)").fetchall()
+    }
+    if "concluded_fp" not in existing_repair:
+        cursor.execute("ALTER TABLE ha_repair_history ADD COLUMN concluded_fp TEXT")
+    existing_outcomes = {
+        row[1]
+        for row in cursor.execute("PRAGMA table_info(session_outcomes)").fetchall()
+    }
+    if "conclusion_key" not in existing_outcomes:
+        cursor.execute("ALTER TABLE session_outcomes ADD COLUMN conclusion_key TEXT")
+
+
 _MIGRATIONS: list[tuple[int, object]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
@@ -665,6 +681,7 @@ _MIGRATIONS: list[tuple[int, object]] = [
     (43, _migrate_v43),
     (44, _migrate_v44),
     (45, _migrate_v45),
+    (46, _migrate_v46),
 ]
 
 
