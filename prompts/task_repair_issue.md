@@ -7,3 +7,6 @@ Set action to "reboot" if a full host reboot is needed, "restart" if only HA Cor
 is needed, "dismiss" for informational or already-resolved issues.
 
 Set requires_hitl=false for benign issues that need no user action.
+
+If retrieved knowledge contains past conclusions for similar issues, treat them as
+background context only — always verify against current live HA state before concluding.

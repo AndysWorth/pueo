@@ -20,6 +20,7 @@ from utils.knowledge.runbook_distiller import (
     _grounded_facts,
     _is_alpha_hyphenated,
     _is_pueo_mechanics,
+    _is_self_referential_rule,
     _mark_distilled,
     _pitfall_step_valid,
     _read_distillation_payload,
@@ -2433,6 +2434,53 @@ class TestIsPueoMechanics:
 
     def test_case_insensitive_phrase(self):
         assert _is_pueo_mechanics("THE AUTONOMY GATE blocks repairs") is True
+
+
+# ---------------------------------------------------------------------------
+# TestIsSelfReferentialRule
+# ---------------------------------------------------------------------------
+
+
+class TestIsSelfReferentialRule:
+    def test_verification_status_phrase_rejected(self):
+        assert (
+            _is_self_referential_rule(
+                "When query_knowledge returns past repair episodes"
+                " with verification status 'success', conclude benign"
+            )
+            is True
+        )
+
+    def test_prior_session_phrase_rejected(self):
+        assert (
+            _is_self_referential_rule("prior sessions confirmed this is benign") is True
+        )
+
+    def test_past_episode_phrase_rejected(self):
+        assert (
+            _is_self_referential_rule("past episodes show the sensor is fine") is True
+        )
+
+    def test_previously_verified_phrase_rejected(self):
+        assert _is_self_referential_rule("previously verified as resolved") is True
+
+    def test_query_knowledge_returns_rejected(self):
+        assert (
+            _is_self_referential_rule("query_knowledge returns context from past runs")
+            is True
+        )
+
+    def test_normal_rule_passes(self):
+        assert (
+            _is_self_referential_rule(
+                "When state_class is absent and entity was re-created recently,"
+                " the source app re-registered the sensor"
+            )
+            is False
+        )
+
+    def test_case_insensitive(self):
+        assert _is_self_referential_rule("PAST SESSIONS confirm the fix") is True
 
 
 # ---------------------------------------------------------------------------

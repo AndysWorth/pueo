@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import sqlite3
 import time
@@ -38,10 +39,24 @@ def embed_repair_episodes(store: "KnowledgeStoreClientProtocol", db_path: str) -
     ids: list[str] = []
     documents: list[str] = []
     metadatas: list[dict] = []
+    # S3: skip duplicate conclusions — same (signature, subject_key, text hash).
+    # Still mark embedded_at so they are never re-queued on the next RAG refresh.
+    # Both the first (embedded) and subsequent (skipped) ids go into embedded_ids.
+    _seen_conclusion_keys: set[tuple[str, str, str]] = set()
+    all_ids: list[str] = []
+    skipped = 0
 
-    for ep, correction in episodes:
+    for ep, correction, sig, subj in episodes:
         text = format_episode_for_embedding(ep, correction=correction)
-        ids.append(f"episode_{ep.id}")
+        ep_id = f"episode_{ep.id}"
+        all_ids.append(ep.id)
+        text_hash = hashlib.sha256(text.encode()).hexdigest()[:16]
+        dedup_key = (sig or ep.trigger, subj or "", text_hash)
+        if dedup_key in _seen_conclusion_keys:
+            skipped += 1
+            continue
+        _seen_conclusion_keys.add(dedup_key)
+        ids.append(ep_id)
         documents.append(text)
         metadatas.append(
             {
@@ -53,21 +68,25 @@ def embed_repair_episodes(store: "KnowledgeStoreClientProtocol", db_path: str) -
             }
         )
 
-    try:
-        store.upsert("repair_history", ids, documents, metadatas)
-    except Exception as exc:
-        _log.warning("repair_episode_upsert_failed", extra={"error": str(exc)})
-        return 0
+    if ids:
+        try:
+            store.upsert("repair_history", ids, documents, metadatas)
+        except Exception as exc:
+            _log.warning("repair_episode_upsert_failed", extra={"error": str(exc)})
+            return 0
 
     now = time.time()
-    embedded_ids = [ep.id for ep, _ in episodes]
     try:
-        _mark_episodes_embedded(db_path, embedded_ids, now)
+        _mark_episodes_embedded(db_path, all_ids, now)
     except Exception as exc:
         _log.warning("repair_episode_mark_embedded_failed", extra={"error": str(exc)})
 
-    _log.info("repair_episodes_embedded", extra={"count": len(episodes)})
-    return len(episodes)
+    embedded = len(ids)
+    _log.info(
+        "repair_episodes_embedded",
+        extra={"count": embedded, "skipped_duplicates": skipped},
+    )
+    return embedded
 
 
 def _load_unembedded_episodes(db_path: str) -> list:
@@ -78,7 +97,8 @@ def _load_unembedded_episodes(db_path: str) -> list:
     Pre-S2 episodes that have no session_outcomes row at all are embedded as
     before (left-join NULL rows pass through).
 
-    Returns a list of (RepairEpisode, correction: str | None) tuples.
+    Returns a list of (RepairEpisode, correction: str | None, signature: str, subject_key: str)
+    tuples.  signature and subject_key come from session_outcomes (empty for legacy episodes).
     """
     import json
 
@@ -93,7 +113,8 @@ def _load_unembedded_episodes(db_path: str) -> list:
         # must not be embedded — they would embed unverified conclusions.
         _V39_EPOCH = 1760572800.0  # 2026-10-16T00:00:00 UTC
         rows = conn.execute(
-            "SELECT r.*, s.correction"
+            "SELECT r.*, s.correction, s.signature AS so_signature,"
+            "       s.subject_key AS so_subject_key"
             " FROM repair_episodes r"
             " LEFT JOIN session_outcomes s ON r.id = s.episode_id"
             " WHERE r.embedded_at IS NULL"
@@ -134,7 +155,9 @@ def _load_unembedded_episodes(db_path: str) -> list:
             activity_type=(row["activity_type"] if "activity_type" in keys else None),
         )
         correction = row["correction"] if "correction" in keys else None
-        episodes.append((ep, correction))
+        sig = row["so_signature"] if "so_signature" in keys else None
+        subj = row["so_subject_key"] if "so_subject_key" in keys else None
+        episodes.append((ep, correction, sig or "", subj or ""))
     return episodes
 
 

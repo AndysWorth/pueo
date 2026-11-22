@@ -1279,6 +1279,7 @@ async def _run_sensor_stats_investigation(
             knowledge_query="sensor statistics state_class_removed units_changed repair issue",
             signature=sig_repair("sensor", "statistics"),
             subject_key=group_key,
+            conclusion_key=f"{group_key}#{group_fp}",
         )
         publish_activity_done("repair_issue", result.outcome)
         if result.outcome != "success":
@@ -1399,6 +1400,7 @@ async def _run_repair_issue_investigation(
         capture_llm=True,
     )
     from utils.knowledge.runbook_signature import sig_repair
+    from utils.ha.ha_rest_client import repair_issue_fingerprint as _rif
 
     increment_active_agent()
     try:
@@ -1407,6 +1409,7 @@ async def _run_repair_issue_investigation(
             knowledge_query=_repair_issue_knowledge_query(issue),
             signature=sig_repair(issue.domain, issue.translation_key or ""),
             subject_key=issue.issue_key,
+            conclusion_key=f"{issue.issue_key}#{_rif(issue)}",
         )
         publish_activity_done("repair_issue", result.outcome)
         if result.outcome != "success":
