@@ -882,6 +882,7 @@ def write_session_outcome(
     conclusion_json: str,
     distill_payload_json: str,
     card_id: Optional[str] = None,
+    conclusion_key: str = "",
 ) -> None:
     """Persist a session_outcomes row with verification='pending'.
 
@@ -889,6 +890,8 @@ def write_session_outcome(
     Subject_key is the domain-specific identifier used by system verifiers (e.g. the
     issue_key for repairs, the entity_id for updates).  card_id is the nid of the
     HITL card the session sent, if any; the sweep holds the row while it is open.
+    conclusion_key is an opaque string (e.g. "{issue_key}#{fp}") used by S3 to suppress
+    repeat auto-verify for sessions that reached the same conclusion (ADR S3).
 
     A card re-sent under the same nid now carries this session's episode_id, so
     older pending rows for that card can never be answered: they are marked
@@ -931,8 +934,8 @@ def write_session_outcome(
                 "INSERT OR IGNORE INTO session_outcomes"
                 " (episode_id, signature, session_type, subject_key,"
                 "  conclusion_json, distill_payload_json, created_at, verification,"
-                "  card_id)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
+                "  card_id, conclusion_key)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
                 (
                     episode_id,
                     signature,
@@ -942,11 +945,34 @@ def write_session_outcome(
                     distill_payload_json,
                     now,
                     card_id,
+                    conclusion_key or None,
                 ),
             )
             conn.commit()
     except Exception:  # nosec B110
         pass
+
+
+def is_conclusion_already_verified(signature: str, conclusion_key: str) -> bool:
+    """Return True when a session with this (signature, conclusion_key) is verified.
+
+    Used by AgentLoop to suppress repeat auto-verify for sessions that reached
+    the same conclusion on the same subject (S3).
+    """
+    if not conclusion_key:
+        return False
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            row = conn.execute(
+                "SELECT 1 FROM session_outcomes"
+                " WHERE signature = ? AND conclusion_key = ?"
+                "   AND verification IN ('success', 'failure')"
+                " LIMIT 1",
+                (signature, conclusion_key),
+            ).fetchone()
+            return row is not None
+    except Exception:  # nosec B110
+        return False
 
 
 def resolve_session_outcome(

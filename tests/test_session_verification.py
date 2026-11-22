@@ -43,7 +43,8 @@ def _make_db(tmp_path: Path) -> str:
             " signature TEXT, session_type TEXT, subject_key TEXT,"
             " conclusion_json TEXT, distill_payload_json TEXT, created_at TEXT,"
             " verification TEXT, verified_at TEXT, verified_by TEXT,"
-            " correction TEXT, distilled_at TEXT, card_id TEXT)"
+            " correction TEXT, distilled_at TEXT, card_id TEXT,"
+            " conclusion_key TEXT)"
         )
         conn.execute(
             "CREATE TABLE runbook_usage (id INTEGER PRIMARY KEY, strategy_id TEXT,"

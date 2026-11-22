@@ -1118,6 +1118,16 @@ async def _distill_verified(
                         text=text[:200],
                     )
                     continue
+                # Self-referential gate: reject rules that use Pueo's history as evidence.
+                if _is_self_referential_rule(text):
+                    log.info(
+                        "distillation_entry_rejected",
+                        signature=signature,
+                        kind=kind,
+                        reason="self_referential",
+                        text=text[:200],
+                    )
+                    continue
                 # Pitfall gate: evidence_step must point to a failed/empty/corrected step.
                 if kind == "pitfall" and not _pitfall_step_valid(
                     item, steps, correction
@@ -1430,6 +1440,23 @@ _PUEO_MECHANICS_PHRASES = frozenset(
 )
 _FINISH_TOOL_RE = re.compile(r"\bfinish_\w+\b")
 
+_SELF_REFERENTIAL_PHRASES = frozenset(
+    {
+        "verification status",
+        "past repair episode",
+        "prior repair episode",
+        "past session",
+        "prior session",
+        "previously verified",
+        "past episode",
+        "prior episode",
+        "verified as success",
+        "verified as failure",
+        "already verified",
+        "query_knowledge return",  # "query_knowledge returns past ..."
+    }
+)
+
 
 def _is_pueo_mechanics(text: str) -> bool:
     """Return True when *text* is about Pueo's own internal machinery.
@@ -1442,6 +1469,22 @@ def _is_pueo_mechanics(text: str) -> bool:
         if phrase in low:
             return True
     return bool(_FINISH_TOOL_RE.search(text))
+
+
+def _is_self_referential_rule(text: str) -> bool:
+    """Return True when *text* uses Pueo's own history as evidence (S3).
+
+    Rejects decision rules that cite past sessions, verification status, or
+    query_knowledge results as proof — e.g. "query_knowledge returns past repair
+    episodes with verification status 'success' → conclude benign".  These rules
+    create a feedback loop: the more times Pueo runs the same no-action session,
+    the stronger the circular evidence becomes.
+    """
+    low = text.lower()
+    for phrase in _SELF_REFERENTIAL_PHRASES:
+        if phrase in low:
+            return True
+    return False
 
 
 def _pitfall_step_valid(

@@ -70,7 +70,8 @@ def _create_db(path: str) -> None:
                 verification TEXT,
                 verified_at TEXT,
                 verified_by TEXT,
-                correction TEXT
+                correction TEXT,
+                conclusion_key TEXT
             )
             """
         )
@@ -360,3 +361,140 @@ class TestRepairHistoryInCollections:
         chunks = store.query("recorder db growing", top_k=5)
         collections = {c.collection for c in chunks}
         assert "repair_history" in collections
+
+
+# ---------------------------------------------------------------------------
+# S3: embedder deduplication
+# ---------------------------------------------------------------------------
+
+
+def _insert_episode_with_sig(
+    db_path: str,
+    episode: RepairEpisode,
+    *,
+    verification: str = "success",
+    signature: str = "repair:sensor:state_class_removed",
+    subject_key: str = "sensor/abc",
+) -> None:
+    """Insert an episode and a matching session_outcomes row with signature+subject_key."""
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO repair_episodes
+                (id, timestamp, trigger, symptoms, tool_sequence, hypothesis_chain,
+                 fix_applied, verification_result, model_used, escalated,
+                 duration_seconds, submitted_at, pr_url, embedded_at,
+                 initial_context, activity_type)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL)
+            """,
+            (
+                episode.id,
+                episode.timestamp,
+                episode.trigger,
+                json.dumps(episode.symptoms),
+                json.dumps(
+                    [
+                        {"name": tc.name, "arguments": tc.arguments}
+                        for tc in episode.tool_sequence
+                    ]
+                ),
+                json.dumps(episode.hypothesis_chain),
+                episode.fix_applied,
+                int(episode.verification_result),
+                episode.model_used,
+                int(episode.escalated),
+                episode.duration_seconds,
+            ),
+        )
+        if verification is not None:
+            conn.execute(
+                "INSERT INTO session_outcomes (episode_id, verification, signature, subject_key)"
+                " VALUES (?, ?, ?, ?)",
+                (episode.id, verification, signature, subject_key),
+            )
+        conn.commit()
+
+
+class TestEmbedderDeduplication:
+    """S3: duplicate episodes (same sig/subj/text) are marked but not re-embedded."""
+
+    def test_first_episode_is_embedded(self, tmp_path):
+        db = str(tmp_path / "state.db")
+        _create_db(db)
+        ep = _make_episode()
+        _insert_episode_with_sig(db, ep)
+
+        store = FakeKnowledgeStore()
+        count = embed_repair_episodes(store, db)
+
+        assert count == 1
+        assert store.collection_count("repair_history") == 1
+
+    def test_duplicate_episode_marked_not_embedded(self, tmp_path):
+        """Two episodes with identical content (same sig+subj+text) — only 1 embedded."""
+        db = str(tmp_path / "state.db")
+        _create_db(db)
+        ep1 = _make_episode()
+        # ep2 has the same trigger/symptoms/fix/verification → same embedding text.
+        ep2 = _make_episode()
+        # Give ep2 a different id by overriding the uuid.
+        import uuid as _uuid
+
+        ep2 = ep2.model_copy(update={"id": str(_uuid.uuid4())})
+        _insert_episode_with_sig(
+            db, ep1, signature="repair:sensor:x", subject_key="s/1"
+        )
+        _insert_episode_with_sig(
+            db, ep2, signature="repair:sensor:x", subject_key="s/1"
+        )
+
+        store = FakeKnowledgeStore()
+        count = embed_repair_episodes(store, db)
+
+        # Only 1 embedded into Chroma; the duplicate is skipped.
+        assert count == 1
+        assert store.collection_count("repair_history") == 1
+
+    def test_duplicate_episode_still_gets_embedded_at(self, tmp_path):
+        """Skipped duplicates still receive embedded_at so they are not re-queued."""
+        db = str(tmp_path / "state.db")
+        _create_db(db)
+        ep1 = _make_episode()
+        import uuid as _uuid
+
+        ep2 = ep1.model_copy(update={"id": str(_uuid.uuid4())})
+        _insert_episode_with_sig(
+            db, ep1, signature="repair:sensor:x", subject_key="s/1"
+        )
+        _insert_episode_with_sig(
+            db, ep2, signature="repair:sensor:x", subject_key="s/1"
+        )
+
+        store = FakeKnowledgeStore()
+        embed_repair_episodes(store, db)
+
+        with sqlite3.connect(db) as conn:
+            rows = conn.execute("SELECT embedded_at FROM repair_episodes").fetchall()
+        # Both episodes must have embedded_at set.
+        assert all(r[0] is not None for r in rows)
+
+    def test_different_subject_key_both_embedded(self, tmp_path):
+        """Same text but different subject_key → both are embedded (not duplicates)."""
+        db = str(tmp_path / "state.db")
+        _create_db(db)
+        ep1 = _make_episode()
+        import uuid as _uuid
+
+        ep2 = ep1.model_copy(update={"id": str(_uuid.uuid4())})
+        _insert_episode_with_sig(
+            db, ep1, signature="repair:sensor:x", subject_key="s/1"
+        )
+        _insert_episode_with_sig(
+            db, ep2, signature="repair:sensor:x", subject_key="s/2"
+        )
+
+        store = FakeKnowledgeStore()
+        count = embed_repair_episodes(store, db)
+
+        assert count == 2
+        assert store.collection_count("repair_history") == 2

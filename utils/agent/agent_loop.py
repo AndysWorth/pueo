@@ -812,6 +812,9 @@ class AgentLoop:
         self._subject_key: str = (
             ""  # set at start of run() from the subject_key= argument
         )
+        self._conclusion_key: str = (
+            ""  # set at start of run(); opaque dedup key for auto-verify (S3)
+        )
         self._fact_subject_keys: list[str] = (
             []  # set at start of run(); used to fetch [INSTANCE FACT] by subject
         )
@@ -1214,6 +1217,7 @@ class AgentLoop:
         signature: str = "",
         subject_key: str = "",
         prior_subject_keys: Optional[list[str]] = None,
+        conclusion_key: str = "",
     ) -> AgentLoopResult:
         """Run the agent loop and return a result describing what happened.
 
@@ -1238,6 +1242,11 @@ class AgentLoop:
         prior_subject_keys:
             Subject keys whose recent sessions are pre-injected as
             [PREVIOUS INVESTIGATION] lines.  Defaults to ``[subject_key]``.
+        conclusion_key:
+            Opaque dedup key for the auto-verify path.  When non-empty, a
+            repeat success session with the same (signature, conclusion_key)
+            skips auto-verify and distillation enqueuing (S3).  Defaults to
+            ``subject_key`` when empty.
         """
         self._executor.reset()
         self._llm_captures = []
@@ -1251,6 +1260,7 @@ class AgentLoop:
             self._executor.set_signature(self._signature)
             self._executor.set_subject_key(subject_key)
         self._subject_key = subject_key
+        self._conclusion_key = conclusion_key or subject_key
         # Collect all subject keys relevant to this session for memory-fact lookup.
         # Includes prior_subject_keys when provided (sweep passes per-device ids).
         _all_subj = [subject_key] if subject_key else []
@@ -1581,6 +1591,7 @@ class AgentLoop:
                     _conclusion,
                     _payload,
                     getattr(self._executor, "_hitl_card_id", None),
+                    conclusion_key=getattr(self, "_conclusion_key", ""),
                 )
             except Exception as exc:  # nosec B110
                 log.warning("session_outcome_write_failed", error=str(exc))
@@ -1662,42 +1673,64 @@ class AgentLoop:
                 # the action's executor verifies them (ADR 046).
                 _hitl_queued = getattr(self._executor, "_hitl_card_queued", False)
                 if not _hitl_queued and _ep and _db and _store:
-                    try:
-                        from agents.ha_agent_advanced import (
-                            resolve_session_outcome_by_episode_id,
-                        )
-                        from utils.knowledge.runbook_distiller import (
-                            enqueue_distillation_after_verification,
-                        )
+                    # S3: skip repeat auto-verify for the same (signature, conclusion_key).
+                    _ckey = getattr(self, "_conclusion_key", "") or ""
+                    _already_verified = False
+                    if _ckey:
+                        try:
+                            from agents.ha_agent_advanced import (
+                                is_conclusion_already_verified,
+                            )
 
-                        await asyncio.to_thread(
-                            resolve_session_outcome_by_episode_id,
-                            _ep,
-                            "success",
-                            "system",
-                            None,
-                            _store,
-                        )
-                        submitted = await enqueue_distillation_after_verification(
-                            episode_id=_ep,
-                            verification="success",
-                            correction=None,
-                            db_path=_db,
-                            knowledge_store=_store,
-                            model=_model,
-                            llm_client=_llm,
-                        )
+                            _already_verified = await asyncio.to_thread(
+                                is_conclusion_already_verified, sig, _ckey
+                            )
+                        except Exception:  # nosec B110
+                            pass
+                    if _already_verified:
                         log.info(
-                            "distillation_auto_verified",
+                            "distillation_auto_verify_skipped",
                             signature=sig,
                             episode_id=_ep,
-                            submitted=submitted,
+                            reason="repeat_conclusion",
                         )
-                    except Exception as _ae:  # nosec B110
-                        log.warning(
-                            "distillation_auto_verify_failed",
-                            error=str(_ae),
-                        )
+                    else:
+                        try:
+                            from agents.ha_agent_advanced import (
+                                resolve_session_outcome_by_episode_id,
+                            )
+                            from utils.knowledge.runbook_distiller import (
+                                enqueue_distillation_after_verification,
+                            )
+
+                            await asyncio.to_thread(
+                                resolve_session_outcome_by_episode_id,
+                                _ep,
+                                "success",
+                                "system",
+                                None,
+                                _store,
+                            )
+                            submitted = await enqueue_distillation_after_verification(
+                                episode_id=_ep,
+                                verification="success",
+                                correction=None,
+                                db_path=_db,
+                                knowledge_store=_store,
+                                model=_model,
+                                llm_client=_llm,
+                            )
+                            log.info(
+                                "distillation_auto_verified",
+                                signature=sig,
+                                episode_id=_ep,
+                                submitted=submitted,
+                            )
+                        except Exception as _ae:  # nosec B110
+                            log.warning(
+                                "distillation_auto_verify_failed",
+                                error=str(_ae),
+                            )
                 else:
                     log.debug(
                         "distillation_deferred_pending_verification",

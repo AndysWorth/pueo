@@ -5164,7 +5164,8 @@ class TestRunbookUsageTracking:
                 "episode_id TEXT PRIMARY KEY, signature TEXT, session_type TEXT,"
                 " subject_key TEXT, conclusion_json TEXT, distill_payload_json TEXT,"
                 " created_at TEXT, verification TEXT, verified_at TEXT,"
-                " verified_by TEXT, correction TEXT, distilled_at TEXT, card_id TEXT)"
+                " verified_by TEXT, correction TEXT, distilled_at TEXT, card_id TEXT,"
+                " conclusion_key TEXT)"
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_session_outcomes_subject_key"
@@ -6498,6 +6499,133 @@ class TestSessionOutcomeCardId:
                 " WHERE episode_id = 'ep_card'"
             ).fetchone()
         assert row == ("nid_update_1", "pending")
+
+
+# ---------------------------------------------------------------------------
+# S3: auto-verify once per conclusion_key
+# ---------------------------------------------------------------------------
+
+
+class TestAutoVerifyOncePerConclusion:
+    """Auto-verify runs once per (signature, conclusion_key); a repeat is skipped (S3)."""
+
+    class _FakeQueue:
+        async def submit(self, item):
+            return True
+
+    def _make_loop(self, tmp_path, monkeypatch, conclusion_key=""):
+        from types import SimpleNamespace
+
+        import agents.ha_agent_advanced as adv
+        from utils.agent.agent_loop import AgentLoop
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        db_path = str(tmp_path / "state.db")
+        monkeypatch.setattr(adv, "DB_PATH", db_path)
+        adv.init_local_database()
+        # Use a real queue-like object so the supervisor path is taken.
+        monkeypatch.setattr(
+            "utils.agent.work_queue.get_work_queue_or_none",
+            lambda: self._FakeQueue(),
+        )
+
+        verified_eps: list = []
+
+        def _fake_resolve(ep, verification, by, correction, store):
+            verified_eps.append(ep)
+
+        monkeypatch.setattr(
+            "agents.ha_agent_advanced.resolve_session_outcome_by_episode_id",
+            _fake_resolve,
+        )
+
+        enqueued: list = []
+
+        async def _fake_enqueue(**kw):
+            enqueued.append(kw)
+            return True
+
+        monkeypatch.setattr(
+            "utils.knowledge.runbook_distiller.enqueue_distillation_after_verification",
+            _fake_enqueue,
+        )
+
+        executor = SimpleNamespace(_hitl_card_id=None, _hitl_card_queued=False)
+        loop = AgentLoop(
+            llm_client=None,  # type: ignore[arg-type]
+            tool_executor=executor,  # type: ignore[arg-type]
+            tool_registry=None,  # type: ignore[arg-type]
+            model="m",
+            system_prompt="s",
+            activity_type="repair_issue",
+            db_path=db_path,
+            knowledge_store=FakeKnowledgeStore(),
+        )
+        loop._episode_id = "ep1"
+        loop._signature = "repair:sensor:state_class_removed"
+        loop._conclusion_key = conclusion_key
+        return loop, verified_eps, enqueued, db_path, adv
+
+    def test_first_session_auto_verifies(self, tmp_path, monkeypatch):
+        import asyncio
+
+        loop, verified_eps, enqueued, db_path, adv = self._make_loop(
+            tmp_path,
+            monkeypatch,
+            conclusion_key="issue/abc#fp1",
+        )
+        asyncio.run(loop._enqueue_distillation("success", [], {"summary": "ok"}))
+        assert "ep1" in verified_eps
+
+    def test_repeat_conclusion_key_skips_auto_verify(self, tmp_path, monkeypatch):
+        import asyncio
+        import sqlite3
+
+        loop, verified_eps, enqueued, db_path, adv = self._make_loop(
+            tmp_path,
+            monkeypatch,
+            conclusion_key="issue/abc#fp1",
+        )
+        # Pre-populate a verified row with the same (signature, conclusion_key).
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO session_outcomes"
+                " (episode_id, signature, session_type, subject_key,"
+                "  conclusion_json, distill_payload_json, created_at,"
+                "  verification, conclusion_key)"
+                " VALUES ('prev_ep', 'repair:sensor:state_class_removed', 'repair_issue',"
+                "  'issue/abc', '{}', '{}', '2026-01-01T00:00:00Z',"
+                "  'success', 'issue/abc#fp1')",
+            )
+        loop._episode_id = "ep2"
+        asyncio.run(loop._enqueue_distillation("success", [], {"summary": "ok"}))
+        # Auto-verify must NOT have fired for ep2.
+        assert "ep2" not in verified_eps
+
+    def test_different_conclusion_key_still_verifies(self, tmp_path, monkeypatch):
+        import asyncio
+        import sqlite3
+
+        loop, verified_eps, enqueued, db_path, adv = self._make_loop(
+            tmp_path,
+            monkeypatch,
+            conclusion_key="issue/abc#fp2",
+        )
+        # Row for a different fp should not block this session.
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO session_outcomes"
+                " (episode_id, signature, session_type, subject_key,"
+                "  conclusion_json, distill_payload_json, created_at,"
+                "  verification, conclusion_key)"
+                " VALUES ('prev_ep', 'repair:sensor:state_class_removed', 'repair_issue',"
+                "  'issue/abc', '{}', '{}', '2026-01-01T00:00:00Z',"
+                "  'success', 'issue/abc#fp1')",
+            )
+        loop._episode_id = "ep3"
+        loop._conclusion_key = "issue/abc#fp2"
+        asyncio.run(loop._enqueue_distillation("success", [], {"summary": "ok"}))
+        assert "ep3" in verified_eps
 
 
 # ---------------------------------------------------------------------------
