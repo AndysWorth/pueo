@@ -531,6 +531,25 @@ class HAWebSocketClient:  # pragma: no cover
             ignore=ignore,
         )
 
+    async def get_statistics_metadata(
+        self, statistic_ids: list[str]
+    ) -> dict[str, dict]:
+        """Fetch statistics metadata via recorder/list_statistic_ids.
+
+        Returns a dict mapping statistic_id → metadata dict with keys:
+        ``statistic_id``, ``source``, ``unit_of_measurement``, ``has_mean``,
+        ``has_sum``.  Filters the full list to the requested IDs.
+        """
+        result = await self._call("recorder/list_statistic_ids")
+        wanted = set(statistic_ids)
+        out: dict[str, dict] = {}
+        if isinstance(result, list):
+            for entry in result:
+                sid = entry.get("statistic_id", "")
+                if sid in wanted:
+                    out[sid] = entry
+        return out
+
     async def get_lovelace_dashboards(self) -> list[dict]:
         """List all named dashboards via lovelace/dashboards/list."""
         ws = await self._connect_and_auth()
@@ -620,6 +639,8 @@ class FakeHAWebSocketClient:
         self._update_release_notes: dict[str, str | None] = update_release_notes or {}
         # statistics: statistic_id → list of buckets (keyed by the joined statistic_ids)
         self._statistics: dict = {}
+        # statistics_metadata: statistic_id → metadata dict (has_mean, has_sum, unit…)
+        self._statistics_metadata: dict[str, dict] = {}
         self.calls: list[str] = []
         # validate_automation_config: pre-loaded validation result per call index
         self._validate_automation_result: dict = {}
@@ -807,3 +828,14 @@ class FakeHAWebSocketClient:
     ) -> None:
         self.calls.append(f"ignore_repair_issue:{domain}/{issue_id}:ignore={ignore}")
         self.ignored_repairs.append((domain, issue_id, ignore))
+
+    async def get_statistics_metadata(
+        self, statistic_ids: list[str]
+    ) -> dict[str, dict]:
+        self.calls.append(f"get_statistics_metadata:{','.join(sorted(statistic_ids))}")
+        wanted = set(statistic_ids)
+        return {k: v for k, v in self._statistics_metadata.items() if k in wanted}
+
+    def set_statistics_metadata(self, data: dict[str, dict]) -> None:
+        """Pre-load statistics metadata for tests."""
+        self._statistics_metadata = data

@@ -22363,3 +22363,497 @@ class TestScreeningBatchRetry:
         # After the retry loop, incomplete batches are logged via screening_batch_incomplete
         assert "screening_batch_incomplete" in src
         assert "_all_complete = False" in src
+
+
+# ── Sensor statistics evidence helpers ───────────────────────────────────────
+
+
+class TestSensorStatsGroupFp:
+    """sensor_stats_group_fp produces a stable, order-independent fingerprint."""
+
+    def test_deterministic(self):
+        from utils.ha.sensor_stats_evidence import sensor_stats_group_fp
+
+        fps = ["fp_a", "fp_b", "fp_c"]
+        assert sensor_stats_group_fp(fps) == sensor_stats_group_fp(fps)
+
+    def test_order_independent(self):
+        from utils.ha.sensor_stats_evidence import sensor_stats_group_fp
+
+        fps = ["fp_a", "fp_b", "fp_c"]
+        assert sensor_stats_group_fp(fps) == sensor_stats_group_fp(fps[::-1])
+
+    def test_different_members_differ(self):
+        from utils.ha.sensor_stats_evidence import sensor_stats_group_fp
+
+        assert sensor_stats_group_fp(["a", "b"]) != sensor_stats_group_fp(["a", "c"])
+
+    def test_returns_16_chars(self):
+        from utils.ha.sensor_stats_evidence import sensor_stats_group_fp
+
+        result = sensor_stats_group_fp(["fp_x"])
+        assert len(result) == 16
+        assert all(c in "0123456789abcdef" for c in result)
+
+
+class TestDeviceIdForIssue:
+    """device_id_for_issue looks up device_id via entity registry statistic_id."""
+
+    def _make_issue(self, statistic_id: str) -> object:
+        from utils.ha.ha_rest_client import HARepairIssue
+
+        return HARepairIssue(
+            domain="sensor",
+            issue_id=f"stats-{statistic_id}",
+            severity="warning",
+            issue_key=f"sensor/stats-{statistic_id}",
+            breaks_in_ha_version=None,
+            translation_key="state_class_removed",
+            data={
+                "translation_placeholders": {"statistic_id": statistic_id},
+            },
+        )
+
+    def test_finds_device_id_when_entity_present(self):
+        from utils.ha.sensor_stats_evidence import device_id_for_issue
+
+        issue = self._make_issue("sensor.steps")
+        entity_reg = [{"entity_id": "sensor.steps", "device_id": "dev-123"}]
+        assert device_id_for_issue(issue, entity_reg) == "dev-123"
+
+    def test_returns_none_when_entity_absent(self):
+        from utils.ha.sensor_stats_evidence import device_id_for_issue
+
+        issue = self._make_issue("sensor.steps")
+        assert device_id_for_issue(issue, []) is None
+
+    def test_returns_none_when_no_device_id(self):
+        from utils.ha.sensor_stats_evidence import device_id_for_issue
+
+        issue = self._make_issue("sensor.steps")
+        entity_reg = [{"entity_id": "sensor.steps", "device_id": None}]
+        assert device_id_for_issue(issue, entity_reg) is None
+
+    def test_returns_none_when_no_statistic_id_placeholder(self):
+        from utils.ha.ha_rest_client import HARepairIssue
+        from utils.ha.sensor_stats_evidence import device_id_for_issue
+
+        issue = HARepairIssue(
+            domain="sensor",
+            issue_id="stats-noplac",
+            severity="warning",
+            issue_key="sensor/stats-noplac",
+            breaks_in_ha_version=None,
+            translation_key="state_class_removed",
+            data={},
+        )
+        entity_reg = [{"entity_id": "sensor.steps", "device_id": "dev-123"}]
+        assert device_id_for_issue(issue, entity_reg) is None
+
+
+class TestBuildSensorStatsEvidence:
+    """build_sensor_stats_evidence constructs a human-readable evidence block."""
+
+    def _make_issue(self, sid: str, tkey: str = "state_class_removed") -> object:
+        from utils.ha.ha_rest_client import HARepairIssue
+
+        return HARepairIssue(
+            domain="sensor",
+            issue_id=f"iss-{sid}",
+            severity="warning",
+            issue_key=f"sensor/iss-{sid}",
+            breaks_in_ha_version=None,
+            translation_key=tkey,
+            data={
+                "translation_placeholders": {"statistic_id": sid},
+                "created": "2026-11-17T10:00:00+00:00",
+            },
+        )
+
+    def test_includes_group_key_and_issue_count(self):
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+        from utils.ha.sensor_stats_evidence import build_sensor_stats_evidence
+
+        issues = [self._make_issue("sensor.steps"), self._make_issue("sensor.flights")]
+        ws = FakeHAWebSocketClient()
+        result = asyncio.run(
+            build_sensor_stats_evidence("sensor/stats:dev-123", issues, ws)
+        )
+        assert "sensor/stats:dev-123" in result
+        assert "Issue count: 2" in result
+
+    def test_includes_entity_registry_info(self):
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+        from utils.ha.sensor_stats_evidence import build_sensor_stats_evidence
+
+        issues = [self._make_issue("sensor.steps")]
+        ws = FakeHAWebSocketClient(
+            entity_registry=[
+                {
+                    "entity_id": "sensor.steps",
+                    "device_id": "dev-123",
+                    "platform": "mobile_app",
+                    "created_at": "2026-11-17T09:30:00",
+                }
+            ],
+            devices=[
+                {
+                    "id": "dev-123",
+                    "name": "My iPhone",
+                    "model": "iPhone 16",
+                    "sw_version": "18.1",
+                    "created_at": "2026-11-17T09:30:00",
+                }
+            ],
+        )
+        result = asyncio.run(
+            build_sensor_stats_evidence("sensor/stats:dev-123", issues, ws)
+        )
+        assert "mobile_app" in result
+        assert "My iPhone" in result
+        assert "iPhone 16" in result
+
+    def test_includes_statistics_metadata(self):
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+        from utils.ha.sensor_stats_evidence import build_sensor_stats_evidence
+
+        issues = [self._make_issue("sensor.steps")]
+        ws = FakeHAWebSocketClient()
+        ws.set_statistics_metadata(
+            {
+                "sensor.steps": {
+                    "statistic_id": "sensor.steps",
+                    "unit_of_measurement": "steps",
+                    "has_mean": False,
+                    "has_sum": True,
+                }
+            }
+        )
+        result = asyncio.run(
+            build_sensor_stats_evidence("sensor/stats:dev-123", issues, ws)
+        )
+        assert "steps" in result
+        assert "has_sum" in result
+
+    def test_graceful_on_ws_error(self):
+        """Evidence builder returns usable text even when WS calls raise."""
+        from utils.ha.sensor_stats_evidence import build_sensor_stats_evidence
+        from interfaces import HAWebSocketClientProtocol
+
+        class BrokenWS:
+            async def get_entity_registry(self):
+                raise RuntimeError("ws broken")
+
+            async def get_device_registry(self):
+                raise RuntimeError("ws broken")
+
+            async def get_statistics_metadata(self, ids):
+                raise RuntimeError("ws broken")
+
+            async def get_statistics(self, *a, **kw):
+                raise RuntimeError("ws broken")
+
+        issues = [self._make_issue("sensor.steps")]
+        result = asyncio.run(
+            build_sensor_stats_evidence("sensor/stats:dev-123", issues, BrokenWS())
+        )
+        # Should still return a string with basic issue info
+        assert "sensor/stats:dev-123" in result
+        assert "Issue count: 1" in result
+
+
+# ── Sensor statistics routing in poll_for_repairs ────────────────────────────
+
+
+class TestSensorStatsRouting:
+    """poll_for_repairs groups sensor statistics issues by device into one investigation."""
+
+    @pytest.fixture
+    def db_path(self, tmp_path, monkeypatch):
+        from agents import ha_agent_advanced
+
+        path = str(tmp_path / "test.db")
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
+        ha_agent_advanced.init_local_database()
+        return path
+
+    def _stats_issue(
+        self, issue_id: str, sid: str, tkey: str = "state_class_removed"
+    ) -> dict:
+        # translation_placeholders at top level: get_ha_repair_issues sets
+        # data=item (the whole raw dict), so issue.data.get("translation_placeholders")
+        # reads the top-level key, not a nested "data" key.
+        return {
+            "domain": "sensor",
+            "issue_id": issue_id,
+            "severity": "warning",
+            "translation_key": tkey,
+            "translation_placeholders": {"statistic_id": sid},
+        }
+
+    def _run_one_poll(self, db_path, monkeypatch, issues, entity_registry=None):
+        """Run one poll iteration with sensor stats investigation patched.
+
+        Returns list of group_keys dispatched to _run_sensor_stats_investigation.
+        """
+        import asyncio as asyncio_mod
+        import agents.ha_log_monitor as lm
+        from agents.ha_log_monitor import poll_for_repairs
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        dispatched_groups: list[str] = []
+
+        async def fake_stats_investigation(group_key="", **kw):
+            dispatched_groups.append(group_key)
+
+        async def fake_spook(**kw):
+            pass
+
+        async def fake_repair(issue, **kw):
+            pass
+
+        monkeypatch.setattr(
+            lm, "_run_sensor_stats_investigation", fake_stats_investigation
+        )
+        monkeypatch.setattr(lm, "_run_spook_digest_investigation", fake_spook)
+        monkeypatch.setattr(lm, "_run_repair_issue_investigation", fake_repair)
+
+        iteration = [0]
+
+        async def one_shot_sleep(_seconds):
+            iteration[0] += 1
+            if iteration[0] >= 2:
+                raise asyncio.CancelledError()
+
+        monkeypatch.setattr(asyncio_mod, "sleep", one_shot_sleep)
+        monkeypatch.setattr(
+            "utils.core.timeline.write_timeline_event", lambda *a, **kw: None
+        )
+
+        ws = FakeHAWebSocketClient(
+            repair_issues=issues,
+            entity_registry=entity_registry or [],
+        )
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(
+                poll_for_repairs(
+                    ha_ws_client=ws,
+                    notifier=FakeNotifier(),
+                    db_path=db_path,
+                )
+            )
+        return dispatched_groups
+
+    def test_multiple_issues_same_device_produce_one_investigation(
+        self, db_path, monkeypatch
+    ):
+        """5 sensor stats issues on one device → exactly 1 investigation."""
+        entity_registry = [
+            {"entity_id": f"sensor.iphone_sensor_{i}", "device_id": "dev-iphone"}
+            for i in range(5)
+        ]
+        issues = [
+            self._stats_issue(f"iss-{i}", f"sensor.iphone_sensor_{i}") for i in range(5)
+        ]
+        groups = self._run_one_poll(db_path, monkeypatch, issues, entity_registry)
+        assert groups == ["sensor/stats:dev-iphone"]
+
+    def test_issues_on_different_devices_produce_separate_investigations(
+        self, db_path, monkeypatch
+    ):
+        """Issues on two devices → 2 separate investigations."""
+        entity_registry = [
+            {"entity_id": "sensor.a", "device_id": "dev-A"},
+            {"entity_id": "sensor.b", "device_id": "dev-B"},
+        ]
+        issues = [
+            self._stats_issue("iss-a", "sensor.a"),
+            self._stats_issue("iss-b", "sensor.b"),
+        ]
+        groups = self._run_one_poll(db_path, monkeypatch, issues, entity_registry)
+        assert sorted(groups) == ["sensor/stats:dev-A", "sensor/stats:dev-B"]
+
+    def test_fallback_key_when_no_device_id(self, db_path, monkeypatch):
+        """Entity with no linked device uses statistic_id as the group key."""
+        # No entity registry entry — device_id_for_issue returns None
+        issues = [self._stats_issue("iss-x", "sensor.orphan")]
+        groups = self._run_one_poll(db_path, monkeypatch, issues, entity_registry=[])
+        assert groups == ["sensor/stats:sensor.orphan"]
+
+    def test_non_statistics_sensor_issues_not_diverted(self, db_path, monkeypatch):
+        """Sensor issues with unknown translation_key are not diverted to stats group."""
+        issues = [
+            {
+                "domain": "sensor",
+                "issue_id": "iss-unknown",
+                "severity": "warning",
+                "translation_key": "some_other_repair",
+            }
+        ]
+        dispatched_groups = self._run_one_poll(
+            db_path, monkeypatch, issues, entity_registry=[]
+        )
+        # Should not appear in stats groups
+        assert dispatched_groups == []
+
+
+# ── finish_sensor_stats tool dispatch ────────────────────────────────────────
+
+
+class TestFinishSensorStats:
+    """_finish_sensor_stats sends a card or records conclusion depending on requires_hitl."""
+
+    def _make_issue(self, sid: str) -> object:
+        from utils.ha.ha_rest_client import HARepairIssue
+
+        return HARepairIssue(
+            domain="sensor",
+            issue_id=f"iss-{sid}",
+            severity="warning",
+            issue_key=f"sensor/{sid}",
+            breaks_in_ha_version=None,
+            translation_key="state_class_removed",
+            data={"translation_placeholders": {"statistic_id": sid}},
+        )
+
+    def _make_executor(self, notifier=None):
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_executor import ToolExecutor
+
+        return ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(auto_execute_result=True, approval_result=True),
+            notifier=notifier or FakeNotifier(),
+        )
+
+    def test_requires_hitl_true_sends_card(self, monkeypatch):
+        """requires_hitl=True must send CARD_TYPE_SENSOR_STATS via notifier."""
+        from utils.hitl.notify import FakeNotifier
+
+        monkeypatch.setattr(
+            "agents.ha_agent_advanced.mark_repair_hitl_sent", lambda key: None
+        )
+        notifier = FakeNotifier()
+        executor = self._make_executor(notifier=notifier)
+        issue = self._make_issue("sensor.steps")
+        executor.set_pending_sensor_stats("sensor/stats:dev-123", [issue])
+
+        result = asyncio.run(
+            executor._finish_sensor_stats(
+                explanation="Steps sensor lost its state_class after app update.",
+                root_cause="iOS Companion App re-registered the entity without state_class.",
+                options=[
+                    {"label": "Fix at source", "instructions": "Update the iOS app."}
+                ],
+                requires_hitl=True,
+            )
+        )
+
+        assert result.success is True
+        assert len(notifier.sent) == 1
+        payload = notifier.sent[0]["payload"]
+        assert payload["card_type"] == "sensor_stats"
+        assert payload["group_key"] == "sensor/stats:dev-123"
+        assert len(payload["entities"]) == 1
+        assert payload["entities"][0]["entity_id"] == "sensor.steps"
+
+    def test_requires_hitl_false_records_conclusion(self, monkeypatch):
+        """requires_hitl=False must call mark_repair_concluded and not send a card."""
+        from utils.hitl.notify import FakeNotifier
+
+        concluded: list[str] = []
+
+        def fake_concluded(key, fp):
+            concluded.append(key)
+
+        monkeypatch.setattr(
+            "agents.ha_agent_advanced.mark_repair_concluded", fake_concluded
+        )
+        notifier = FakeNotifier()
+        executor = self._make_executor(notifier=notifier)
+        issue = self._make_issue("sensor.steps")
+        executor.set_pending_sensor_stats("sensor/stats:dev-123", [issue])
+
+        result = asyncio.run(
+            executor._finish_sensor_stats(
+                explanation="No action required.",
+                root_cause="Statistics already clean.",
+                options=[],
+                requires_hitl=False,
+            )
+        )
+
+        assert result.success is True
+        assert len(notifier.sent) == 0
+        assert concluded == ["sensor/stats:dev-123"]
+
+    def test_dispatch_via_execute(self, monkeypatch):
+        """finish_sensor_stats dispatches correctly through executor.execute()."""
+        from utils.agent.tool_executor import ToolCall
+        from utils.hitl.notify import FakeNotifier
+
+        monkeypatch.setattr(
+            "agents.ha_agent_advanced.mark_repair_hitl_sent", lambda key: None
+        )
+        notifier = FakeNotifier()
+        executor = self._make_executor(notifier=notifier)
+        issue = self._make_issue("sensor.steps")
+        executor.set_pending_sensor_stats("sensor/stats:dev-123", [issue])
+
+        tc = ToolCall(
+            tool_call_id="tc-01",
+            name="finish_sensor_stats",
+            arguments={
+                "explanation": "Steps sensor lost state_class.",
+                "root_cause": "Re-registration.",
+                "options": [
+                    {"label": "Update app", "instructions": "Open TestFlight."}
+                ],
+                "requires_hitl": True,
+            },
+        )
+        result = asyncio.run(executor.execute(tc))
+        assert result.success is True
+        assert len(notifier.sent) == 1
+
+    def test_missing_group_key_returns_error(self):
+        """finish_sensor_stats with no group key stored returns failure."""
+        from utils.hitl.notify import FakeNotifier
+
+        executor = self._make_executor(notifier=FakeNotifier())
+        # Do NOT call set_pending_sensor_stats
+
+        result = asyncio.run(
+            executor._finish_sensor_stats(
+                explanation="...",
+                root_cause="...",
+                options=[],
+                requires_hitl=True,
+            )
+        )
+        assert result.success is False
+        assert "No pending sensor stats group" in result.error
+
+
+class TestSensorStatsSeedRegistered:
+    """seed_repair_sensor_statistics.md must be registered in strategy_seeder."""
+
+    def test_seed_in_registry(self):
+        import inspect
+
+        import utils.knowledge.strategy_seeder as seeder
+
+        src = inspect.getsource(seeder)
+        assert "seed_repair_sensor_statistics.md" in src
+
+    def test_seed_signature_family_resolves_to_repair(self):
+        """repair:sensor:statistics signature → family 'repair' via strategy_family."""
+        from utils.knowledge.strategy_seeder import strategy_family
+
+        # Signed seeds derive family from signature first segment, not SEED_FAMILIES.
+        result = strategy_family({"signature": "repair:sensor:statistics"})
+        assert result == "repair"

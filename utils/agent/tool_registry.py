@@ -2339,6 +2339,53 @@ FINISH_LOG_INVESTIGATION = ToolDefinition(
     },
 )
 
+FINISH_SENSOR_STATS = ToolDefinition(
+    name="finish_sensor_stats",
+    description=(
+        "Report findings for a sensor statistics repair group and close the session. "
+        "Always set requires_hitl=true — statistics issues are never benign. "
+        "The card will show affected entities and an 'Ignore all in HA' action."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "explanation": {
+                "type": "string",
+                "description": "Plain-English explanation of what caused these statistics issues (2–4 sentences). Include the root cause and date if known.",
+            },
+            "root_cause": {
+                "type": "string",
+                "description": "One-sentence root cause.",
+            },
+            "options": {
+                "type": "array",
+                "description": "Ordered list of options the user can take. Each option has a label and instructions.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "label": {"type": "string"},
+                        "instructions": {"type": "string"},
+                    },
+                    "required": ["label", "instructions"],
+                },
+            },
+            "requires_hitl": {
+                "type": "boolean",
+                "description": "Must be true — sensor statistics issues always need user attention.",
+            },
+            "summary": {
+                "type": "string",
+                "description": "One-sentence conclusion.",
+            },
+            "runbook_followed": {
+                "type": "string",
+                "description": "strategy_id ([id=…]) of the runbook you followed, or 'none'.",
+            },
+        },
+        "required": ["explanation", "root_cause", "options", "requires_hitl"],
+    },
+)
+
 GET_DEVICE_INFO = ToolDefinition(
     name="get_device_info",
     description=(
@@ -3227,6 +3274,7 @@ def build_ha_tool_registry() -> ToolRegistry:
         VERIFY_FIX,
         FINISH_REPAIR,
         FINISH_REPAIR_ISSUE,
+        FINISH_SENSOR_STATS,
         FINISH_LOG_INVESTIGATION,
         QUERY_KNOWLEDGE,
         READ_SOURCE,

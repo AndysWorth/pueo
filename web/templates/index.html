@@ -286,7 +286,7 @@
       {% else %}
       {% set ct = r.payload.get("card_type", "") %}
       {% set has_fix = r.payload.get("pending_fix_yaml") %}
-      {% set is_actionable = ct in ("repair", "update", "netalertx_heal", "netalertx_setup", "netalertx_uninstall", "netalertx_migrate", "netalertx_switch", "resource_action", "disk_recovery", "code_proposal", "open_pr", "ha_repair", "cloud_escalation", "dashboard_entity", "unregistered_entity", "config_entry_reload", "ha_command", "service_call", "automation_create", "companion_setup", "device_recurring") or (ct == "host_health" and not r.payload.get("informational")) or (ct == "device_offline" and r.payload.get("has_fix")) or (ct == "integration_setup" and not r.payload.get("informational") and r.payload.get("outcome") == "plan_ready" and not r.payload.get("needs_user_input")) or has_fix %}
+      {% set is_actionable = ct in ("repair", "update", "netalertx_heal", "netalertx_setup", "netalertx_uninstall", "netalertx_migrate", "netalertx_switch", "resource_action", "disk_recovery", "code_proposal", "open_pr", "ha_repair", "cloud_escalation", "dashboard_entity", "unregistered_entity", "config_entry_reload", "ha_command", "service_call", "automation_create", "companion_setup", "device_recurring", "sensor_stats") or (ct == "host_health" and not r.payload.get("informational")) or (ct == "device_offline" and r.payload.get("has_fix")) or (ct == "integration_setup" and not r.payload.get("informational") and r.payload.get("outcome") == "plan_ready" and not r.payload.get("needs_user_input")) or has_fix %}
       {% if r.payload.get("prediction_text") %}
       <p style="font-size:0.8rem;color:#555;margin:0 0 0.5rem;">Pueo predicts this will <strong>{{ r.payload.get("prediction_text") }}</strong> and will check that itself.</p>
       {% endif %}
@@ -484,6 +484,40 @@ trigger: {{ r.payload.get("trigger", []) | tojson(indent=2) }}
         {% if _ip %}<p style="margin:0 0 0.3rem;"><strong>IP:</strong> {{ _ip }}</p>{% endif %}
         {% if _vendor %}<p style="margin:0 0 0.3rem;"><strong>Vendor:</strong> {{ _vendor }}</p>{% endif %}
         {% if _name %}<p style="margin:0 0 0.3rem;"><strong>Name:</strong> {{ _name }}</p>{% endif %}
+      </div>
+      {% endif %}
+      {% if ct == "sensor_stats" and r.payload.get("entities") %}
+      {% set _ss_errors = r.payload.get("_errors", []) %}
+      <div style="margin:0.75rem 0;">
+        <p style="margin:0 0 0.4rem;font-size:0.88rem;"><strong>{{ r.payload.get("root_cause", "") }}</strong></p>
+        {% if r.payload.get("options") %}
+        <ol style="font-size:0.88rem;margin:0.4rem 0 0.5rem 1.2rem;padding:0;">
+          {% for opt in r.payload["options"] %}
+          <li style="margin-bottom:0.3rem;"><strong>{{ opt.get("label", "") }}</strong>{% if opt.get("instructions") %} — {{ opt["instructions"] }}{% endif %}</li>
+          {% endfor %}
+        </ol>
+        {% endif %}
+        <table style="border-collapse:collapse;width:100%;font-size:0.88rem;margin-top:0.5rem;">
+          {% for ent in r.payload["entities"] %}
+          <tr style="border-bottom:1px solid #eee;">
+            <td style="padding:0.3rem 0.5rem 0.3rem 0;"><code style="font-size:0.82rem;">{{ ent.get("entity_id", ent.get("issue_id", "")) }}</code></td>
+            <td style="padding:0.3rem 0;font-size:0.82rem;color:#555;">{{ ent.get("translation_key", "") }}</td>
+          </tr>
+          {% endfor %}
+        </table>
+        {% if _ss_errors %}
+        <div style="font-size:0.78rem;color:#c62828;margin-top:0.4rem;">
+          Errors: {% for e in _ss_errors %}{{ e }}{% if not loop.last %}, {% endif %}{% endfor %}
+        </div>
+        {% endif %}
+        <div style="margin-top:0.75rem;">
+          <form method="POST" action="/sensor-stats/{{ r.notification_id }}/ignore-all" style="display:inline;">
+            <button type="submit" style="background:#ef6c00;color:#fff;border:none;padding:0.35rem 0.9rem;border-radius:4px;cursor:pointer;font-size:0.88rem;">Ignore all in HA</button>
+          </form>
+        </div>
+        <p style="font-size:0.78rem;color:#666;margin:0.5rem 0 0;">
+          <strong>Ignore all in HA</strong> — tell HA to suppress all {{ r.payload["entities"]|length }} statistics issue(s) for this device; no config change
+        </p>
       </div>
       {% endif %}
       {% if ct == "spook_digest" and r.payload.get("items") %}
@@ -775,6 +809,9 @@ trigger: {{ r.payload.get("trigger", []) | tojson(indent=2) }}
         {% elif ct == "device_offline" %}
           {% set hint_approve = "Reload the integration config entry via HA REST API to recover the offline device" %}
           {% set hint_reject = "Discard; integration stays in its current state" %}
+        {% elif ct == "sensor_stats" %}
+          {% set hint_approve = "Ignore all statistics issues in HA for this device (no config change)" %}
+          {% set hint_reject = "Dismiss this card; statistics issues remain open in HA" %}
         {% elif ct == "device_recurring" %}
           {% set hint_approve = "Mark as expected — suppress future investigations; Pueo will log each occurrence but not investigate" %}
           {% set hint_reject = "Keep watching — re-ask after 30 days" %}

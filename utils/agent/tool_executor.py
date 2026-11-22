@@ -665,6 +665,9 @@ class ToolExecutor:
         self._ha_profile: Optional["HAEnvironmentProfile"] = None
         self._pending_repair_issue = pending_repair_issue
         self._pending_notification = pending_notification
+        # Sensor statistics repair group; read by _finish_sensor_stats.
+        self._pending_sensor_stats_issues: list[Any] = []
+        self._pending_sensor_stats_group_key: str = ""
         # Recurring log error under investigation (#1132); read by finish_log_investigation.
         self._pending_log_error: Optional[dict] = None
         self._pending_update_status: Optional[Any] = None
@@ -866,6 +869,11 @@ class ToolExecutor:
         """Store entity IDs under investigation so _finish_lovelace_investigation can
         write benign suppression records when findings is empty."""
         self._lovelace_suspicious = list(entity_ids)
+
+    def set_pending_sensor_stats(self, group_key: str, issues: list) -> None:
+        """Store the sensor stats group so _finish_sensor_stats can build the card."""
+        self._pending_sensor_stats_group_key = group_key
+        self._pending_sensor_stats_issues = list(issues)
 
     def set_pending_log_error(self, error: dict) -> None:
         """Store the recurring log error so finish_log_investigation can build the card.
@@ -1189,6 +1197,14 @@ class ToolExecutor:
                     action=args.get("action", "dismiss"),
                     verification_question=args.get("verification_question"),
                     fact_if_yes=args.get("fact_if_yes"),
+                )
+            if name == "finish_sensor_stats":
+                self._capture_declared_runbook(args)
+                return await self._finish_sensor_stats(
+                    explanation=args.get("explanation", ""),
+                    root_cause=args.get("root_cause", ""),
+                    options=args.get("options") or [],
+                    requires_hitl=bool(args.get("requires_hitl", True)),
                 )
             if name == "finish_notification_investigation":
                 self._capture_declared_runbook(args)
@@ -6298,6 +6314,101 @@ class ToolExecutor:
             tool_name="finish_repair_issue",
             success=True,
             output=f"Repair issue card sent for {issue.domain}/{issue.issue_id}",
+        )
+
+    async def _finish_sensor_stats(
+        self,
+        explanation: str,
+        root_cause: str,
+        options: list,
+        requires_hitl: bool,
+    ) -> ToolResult:
+        """Create a CARD_TYPE_SENSOR_STATS card for the sensor statistics repair group."""
+        from utils.hitl.card_types import CARD_TYPE_SENSOR_STATS
+        from utils.hitl.hitl_tracker import stable_nid
+        from agents.ha_agent_advanced import (
+            mark_repair_hitl_sent,
+            mark_repair_concluded,
+        )
+        from utils.ha.sensor_stats_evidence import sensor_stats_group_fp
+        from utils.ha.ha_rest_client import repair_issue_fingerprint
+
+        group_key = self._pending_sensor_stats_group_key
+        issues = self._pending_sensor_stats_issues
+
+        if not requires_hitl:
+            if group_key:
+                member_fps = [repair_issue_fingerprint(iss) for iss in issues]
+                fp = sensor_stats_group_fp(member_fps)
+                await asyncio.to_thread(mark_repair_concluded, group_key, fp)
+            return ToolResult(
+                tool_name="finish_sensor_stats",
+                success=True,
+                output="Sensor statistics investigation complete. No user action required.",
+            )
+
+        if not group_key:
+            return ToolResult(
+                tool_name="finish_sensor_stats",
+                success=False,
+                output="",
+                error="No pending sensor stats group stored on executor",
+            )
+
+        suppression_key = f"sensor_stats:{group_key}"
+        nid = stable_nid(suppression_key)
+
+        entity_list = []
+        for iss in issues:
+            placeholders = iss.data.get("translation_placeholders", {})
+            sid = placeholders.get("statistic_id", iss.issue_id)
+            entity_list.append(
+                {
+                    "entity_id": sid,
+                    "translation_key": iss.translation_key,
+                    "issue_id": iss.issue_id,
+                    "issue_key": iss.issue_key,
+                    "severity": iss.severity,
+                    "domain": iss.domain,
+                    "placeholders": placeholders,
+                }
+            )
+
+        body = f"{root_cause}\n\n{explanation}"
+        if options:
+            opts_text = "\n".join(
+                f"  {i + 1}. {o.get('label', '')}: {o.get('instructions', '')}"
+                for i, o in enumerate(options)
+            )
+            body += f"\n\nOptions:\n{opts_text}"
+
+        payload: dict = {
+            "notification_id": nid,
+            "card_type": CARD_TYPE_SENSOR_STATS,
+            "suppression_key": suppression_key,
+            "group_key": group_key,
+            "explanation": explanation,
+            "root_cause": root_cause,
+            "options": options,
+            "entities": entity_list,
+            "severity": max((iss.severity for iss in issues), default="warning"),
+            "title": f"Sensor statistics issues — {len(issues)} affected sensor(s)",
+            "body": body,
+            "episode_id": self._episode_id,
+        }
+
+        await asyncio.to_thread(mark_repair_hitl_sent, group_key)
+        await self._notifier.send(subject=payload["title"], body=body, payload=payload)
+        self._mark_card_queued(nid)
+        log.info(
+            "sensor_stats_card_sent",
+            group_key=group_key,
+            issue_count=len(issues),
+        )
+        return ToolResult(
+            tool_name="finish_sensor_stats",
+            success=True,
+            output=f"Sensor statistics card sent for group {group_key} ({len(issues)} issues)",
         )
 
     async def _finish_notification_investigation(

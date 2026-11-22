@@ -1167,6 +1167,138 @@ async def _run_spook_digest_investigation(
         decrement_active_agent()
 
 
+async def _run_sensor_stats_investigation(
+    group_key: str,
+    group_fp: str,
+    issues: "list[HARepairIssue]",
+    notifier: NotifierProtocol,
+    db_path: str,
+    llm_client: Optional[LLMClientProtocol] = None,
+    knowledge_store: Optional[Any] = None,
+    ha_rest_client: Optional[HARestClientProtocol] = None,
+    ha_ws_client: Optional[HAWebSocketClientProtocol] = None,
+    event_subscriber: Optional[HAEventSubscriberProtocol] = None,
+) -> None:
+    """Run an AgentLoop to investigate a sensor statistics repair group.
+
+    Groups up to N issues on the same device into a single session so the model
+    can reason about the shared root cause (ADR 058).  Uses ReadOnlySSHClient and
+    real AutonomyGate.  Terminal tool is ``finish_sensor_stats``.
+    """
+    from utils.agent.agent_loop import AgentLoop
+    from utils.agent.tool_executor import ToolExecutor
+    from utils.agent.tool_registry import build_ha_tool_registry
+    from utils.ha.read_only_ssh import ReadOnlySSHClient
+    from utils.llm.llm_factory import make_llm_client
+    from utils.core.prompts import load_agent_prompt
+    from utils.ha.sensor_stats_evidence import build_sensor_stats_evidence
+    from utils.core.context import truncate_to_budget
+
+    llm = llm_client or make_llm_client()  # pragma: no cover
+    gate = AutonomyGate(AUTONOMY_LEVEL)
+    ssh = AsyncSSHClient(HA_HOST, HA_USER, SSH_KEY_PATH)  # pragma: no cover
+
+    executor = ToolExecutor(
+        ha_ssh_client=ReadOnlySSHClient(ssh),
+        gate=gate,
+        notifier=notifier,
+        ha_rest_client=ha_rest_client,
+        ha_ws_client=ha_ws_client,
+        knowledge_store=knowledge_store,
+        db_path=db_path,
+        post_update_ssh_client=ssh,
+    )
+    executor.set_pending_sensor_stats(group_key, issues)
+    if event_subscriber is not None:
+        executor.set_event_subscriber(event_subscriber)
+    try:
+        from utils.ha.ha_environment import load_environment_profile as _lep
+
+        _prof = await asyncio.to_thread(_lep, db_path)
+        if _prof is not None:
+            executor.set_ha_profile(_prof)
+    except Exception:  # nosec B110
+        pass
+
+    registry = build_ha_tool_registry()
+    system_prompt = load_agent_prompt("repair_issue", "finish_sensor_stats")
+
+    # Pre-build the evidence block so the model starts with the key facts.
+    try:
+        evidence = (
+            await build_sensor_stats_evidence(
+                group_key, issues, ha_ws_client, ha_rest_client  # type: ignore[arg-type]
+            )
+            if ha_ws_client
+            else ""
+        )
+    except Exception:  # nosec B110
+        evidence = ""
+
+    initial_context = truncate_to_budget(
+        evidence
+        or (
+            f"Sensor statistics repair group: {group_key}\n"
+            f"Issue count: {len(issues)}\n"
+            + "\n".join(
+                f"  - {iss.translation_key or iss.issue_id}: {iss.issue_key}"
+                for iss in issues
+            )
+        ),
+        max_tokens=1500,
+    )
+
+    from utils.agent.supervisor import (
+        decrement_active_agent,
+        increment_active_agent,
+        make_activity_timeline_callback,
+        publish_activity_done,
+    )
+
+    loop = AgentLoop(
+        llm_client=llm,
+        tool_executor=executor,
+        tool_registry=registry,
+        system_prompt=system_prompt,
+        terminal_tool_name="finish_sensor_stats",
+        trigger="repair_poll",
+        activity_type="repair_issue",
+        db_path=db_path,
+        knowledge_store=knowledge_store,
+        timeline_callback=make_activity_timeline_callback(
+            "repair_issue", trigger=f"Sensor stats: {group_key}"
+        ),
+        capture_llm=True,
+    )
+    from utils.knowledge.runbook_signature import sig_repair
+
+    increment_active_agent()
+    try:
+        result = await loop.run(
+            initial_context=initial_context,
+            knowledge_query="sensor statistics state_class_removed units_changed repair issue",
+            signature=sig_repair("sensor", "statistics"),
+            subject_key=group_key,
+        )
+        publish_activity_done("repair_issue", result.outcome)
+        if result.outcome != "success":
+            import sqlite3 as _sqlite3_ss
+
+            from utils.hitl.hitl_tracker import mark_investigation_backoff
+
+            with _sqlite3_ss.connect(db_path) as _conn_ss:
+                mark_investigation_backoff(
+                    _conn_ss, f"repair_issue_backoff:{group_key}"
+                )
+            log.warning(
+                "sensor_stats_stuck_backoff",
+                group_key=group_key,
+                outcome=result.outcome,
+            )
+    finally:
+        decrement_active_agent()
+
+
 async def _run_repair_issue_investigation(
     issue: HARepairIssue,
     notifier: NotifierProtocol,
@@ -2542,6 +2674,18 @@ async def poll_for_notifications(
 
 _HACS_RESTART_REQUIRED_RE = re.compile(r"(?:hacs|marketplace)/restart_required_(\d+)")
 
+# Sensor statistics repair translation_keys grouped by device (ADR 058).
+_STATISTICS_TRANSLATION_KEYS: frozenset[str] = frozenset(
+    {
+        "state_class_removed",
+        "units_changed",
+        "mean_type_changed",
+        "entity_no_longer_recorded",
+        "entity_not_recorded",
+        "unsupported_state_class",
+    }
+)
+
 
 def _hacs_repo_id_from_issue(issue: HARepairIssue) -> str:
     """Extract the numeric repo id from a hacs/restart_required_<id> or marketplace/restart_required_<id> issue key."""
@@ -2605,6 +2749,11 @@ async def poll_for_repairs(
         # the reconcile falsely marks a digest resolved on every poll after the
         # first dispatch, because _spook_unsent_by_tkey is empty once sent.
         _live_spook_tkeys: set[str] = set()
+        # Sensor statistics issues grouped by device (ADR 058).
+        # Key: group_key (sensor/stats:<device_id> or sensor/stats:<statistic_id>)
+        _stats_groups: dict[str, list] = {}
+        # Entity registry is fetched once per poll cycle, lazily, when stats issues are seen.
+        _entity_reg_cache: Optional[list] = None
         for issue in issues:
             active_keys.add(issue.issue_key)
             if issue.domain == "spook":
@@ -2660,6 +2809,33 @@ async def poll_for_repairs(
             )
 
             if not already_sent:
+                # ── Sensor statistics digest routing (ADR 058) ───────────────
+                # Divert sensor statistics issues into a per-device group
+                # dispatched after the main loop; one investigation per device.
+                if (
+                    issue.domain == "sensor"
+                    and (issue.translation_key or "") in _STATISTICS_TRANSLATION_KEYS
+                ):
+                    if _entity_reg_cache is None:
+                        try:
+                            _entity_reg_cache = await _client.get_entity_registry()
+                        except Exception:
+                            _entity_reg_cache = []
+                    from utils.ha.sensor_stats_evidence import device_id_for_issue
+
+                    _dev_id = device_id_for_issue(issue, _entity_reg_cache)
+                    placeholders = issue.data.get("translation_placeholders", {})
+                    _sid = placeholders.get("statistic_id", issue.issue_id)
+                    _gk = (
+                        f"sensor/stats:{_dev_id}" if _dev_id else f"sensor/stats:{_sid}"
+                    )
+                    _stats_groups.setdefault(_gk, []).append(issue)
+                    # Add individual issue_key to active_keys so reconcile
+                    # doesn't falsely resolve individual rows.
+                    active_keys.add(issue.issue_key)
+                    continue
+                # ── end sensor statistics digest routing ─────────────────────
+
                 # ── Spook digest routing ──────────────────────────────────────
                 # Divert all new Spook issues into a per-translation_key digest
                 # dispatched after the main loop; one investigation per tkey.
@@ -2920,6 +3096,107 @@ async def poll_for_repairs(
                     )
                 else:
                     await _run_investigation()
+
+        # ── Sensor statistics group dispatch (ADR 058) ───────────────────────
+        for _gk_s, _gk_issues in _stats_groups.items():
+            # Group key stays in active_keys regardless of sent/concluded state.
+            active_keys.add(_gk_s)
+
+            from utils.ha.sensor_stats_evidence import sensor_stats_group_fp
+            from utils.ha.ha_rest_client import repair_issue_fingerprint as _rif_s
+
+            _member_fps = [_rif_s(iss) for iss in _gk_issues]
+            _group_fp = sensor_stats_group_fp(_member_fps)
+
+            def _check_group_sent(_gk: str = _gk_s, _gfp: str = _group_fp) -> bool:
+                with sqlite3.connect(db_path) as _conn:
+                    _row = _conn.execute(
+                        "SELECT hitl_sent_at, concluded_fp FROM ha_repair_history"
+                        " WHERE issue_key = ?",
+                        (_gk,),
+                    ).fetchone()
+                    if _row is None:
+                        return False
+                    if _row[0] is not None:
+                        return True
+                    if _row[1] is not None and _row[1] == _gfp:
+                        return True
+                    return False
+
+            if await asyncio.to_thread(_check_group_sent):
+                continue
+
+            from utils.hitl.hitl_tracker import should_send_card as _ssc_s
+
+            with sqlite3.connect(db_path) as _conn_s:
+                if not _ssc_s(_conn_s, f"repair_issue_backoff:{_gk_s}"):
+                    continue
+
+            await asyncio.to_thread(record_repair_seen, _gk_s, translation_key=None)
+
+            _gk_snap = _gk_s
+            _gfp_snap = _group_fp
+            _gi_snap = list(_gk_issues)
+            _notifier_snap_s = _notifier
+            _llm_snap_s = llm_client
+            _db_snap_s = db_path
+            _rest_snap_s = _rest
+            _ws_snap_s = _client
+            _sub_snap_s = event_subscriber
+
+            async def _run_stats_coro(
+                _gk: str = _gk_snap,
+                _gfp: str = _gfp_snap,
+                _issues: "list[HARepairIssue]" = _gi_snap,
+                _n: NotifierProtocol = _notifier_snap_s,
+                _l: Optional[LLMClientProtocol] = _llm_snap_s,
+                _db: str = _db_snap_s,
+                _r: HARestClientProtocol = _rest_snap_s,
+                _ws: Optional[HAWebSocketClientProtocol] = _ws_snap_s,
+                _sub: Optional[HAEventSubscriberProtocol] = _sub_snap_s,
+            ) -> None:
+                await _run_sensor_stats_investigation(
+                    group_key=_gk,
+                    group_fp=_gfp,
+                    issues=_issues,
+                    notifier=_n,
+                    db_path=_db,
+                    llm_client=_l,
+                    knowledge_store=knowledge_store,
+                    ha_rest_client=_r,
+                    ha_ws_client=_ws,
+                    event_subscriber=_sub,
+                )
+
+            from utils.agent.work_queue import (
+                PRIORITY_NORMAL as _PRIO_S,
+                WorkItem as _WI_S,
+                get_work_queue_or_none as _gwq_s,
+            )
+
+            _wq_s = _gwq_s()
+            log.info(
+                "sensor_stats_group_dispatched",
+                group_key=_gk_s,
+                issue_count=len(_gk_issues),
+            )
+            if _wq_s is not None:
+                await _wq_s.submit(
+                    _WI_S(
+                        priority=_PRIO_S,
+                        activity_type="repair_issue",
+                        description=(
+                            f"Sensor stats group: {_gk_s}"
+                            f" ({len(_gk_issues)} issue(s))"
+                        ),
+                        dedup_key=f"repair_issue:{_gk_s}",
+                        suppress_while_running=frozenset(),
+                        coro_factory=_run_stats_coro,
+                    )
+                )
+            else:
+                await _run_stats_coro()
+        # ── end sensor statistics group dispatch ──────────────────────────────
 
         # ── Spook digest dispatch ─────────────────────────────────────────────
         # Pre-populate active_keys for every live Spook tkey so the reconcile
