@@ -307,6 +307,75 @@ def _parse_slug_from_store(store_output: str, repository_url: str) -> str:
     return ""
 
 
+def _parse_installed_fa_slug(apps_out: str) -> tuple[str, str] | None:
+    """Parse `ha apps` (or `ha apps info <slug>`) output for a running FA add-on.
+
+    Returns ``(slug, state)`` if a slug containing ``netalertx_fa`` is found,
+    or ``None`` if absent.  ``state`` is the raw supervisor string, e.g. "started".
+    """
+    lines = apps_out.splitlines()
+    for i, line in enumerate(lines):
+        m = re.search(r"slug:\s*(\S*netalertx_fa\S*)", line, re.IGNORECASE)
+        if not m:
+            continue
+        slug = m.group(1)
+        # Look for a nearby state: field (within 10 lines either side)
+        for ctx_line in lines[max(0, i - 10) : i + 11]:
+            sm = re.search(r"state:\s*(\S+)", ctx_line, re.IGNORECASE)
+            if sm:
+                return slug, sm.group(1)
+        # Slug found but no state: return the slug with an empty state string
+        return slug, ""
+    return None
+
+
+async def _detect_existing_addon(
+    ssh_client: "SSHClientProtocol",
+    cid: str,
+) -> tuple[str, str] | None:
+    """Probe HA for an already-installed NetAlertX FA add-on.
+
+    Returns ``(slug, state)`` or ``None`` on SSH error or if no addon is found.
+    Runs ``ha apps info <slug>`` when the slug is configured, otherwise
+    ``ha apps``.  Never raises.
+    """
+    try:
+        import config as _cfg
+
+        slug = getattr(_cfg, "NETALERTX_ADDON_SLUG", "")
+        cmd = f"ha apps info {slug}" if slug else "ha apps"
+        _, stdout, _ = await ssh_client.run(cmd)
+        return _parse_installed_fa_slug(stdout)
+    except Exception:  # nosec B110 — fail open to normal install path
+        log.debug("installer_addon_detect_error", correlation_id=cid)
+        return None
+
+
+def _resolve_install_blocked_card(db_path: str) -> None:
+    """Touch the .resolved sentinel and clear the DB row for the blocked card."""
+    import sqlite3 as _sqlite3
+
+    from utils.hitl.hitl_tracker import mark_card_resolved, resolve_card, stable_nid
+
+    _key = "netalertx:install_blocked"
+    _nid = stable_nid(_key)
+
+    # Update the DB row first (always possible even when the hitl dir is absent).
+    try:
+        with _sqlite3.connect(db_path, timeout=5) as _conn:
+            mark_card_resolved(_conn, _key)
+    except Exception:  # nosec B110
+        pass
+
+    # Touch the .resolved sentinel so the dashboard stops showing the card.
+    try:
+        import config as _cfg
+
+        resolve_card(str(_cfg.NOTIFY_WATCH_DIR), _nid)
+    except Exception:  # nosec B110
+        pass
+
+
 # ── steps 1–4 ────────────────────────────────────────────────────────────────
 
 
@@ -829,6 +898,17 @@ async def _step6_configure_app_conf(
 
     slug = NETALERTX_ADDON_SLUG or details.get("addon_slug", "")
 
+    # Adopted installs: leave the user's app.conf untouched.  Subnet drift is
+    # corrected later by reconcile.py once the token is confirmed (step 8).
+    if details.get("adopted"):
+        import config as _cfg_dyn
+
+        if getattr(_cfg_dyn, "NETALERTX_SIDEBAR", NETALERTX_SIDEBAR):
+            await _apply_sidebar(ssh_client, slug, cid, enable=True)
+        _write_install_state(db_path, "NETALERTX_CONFIGURED", details, cid)
+        log.info("step6_adopted_skip", slug=slug, correlation_id=cid)
+        return True
+
     # Locate the add-on data directory — probe the live mount point first so
     # the correct root (/app_configs or /addon_configs) is used.  If the probe
     # returns empty, fall back to /addon_configs (older HA or unexpected layout);
@@ -1174,7 +1254,8 @@ async def _send_install_blocked_card(
         body=(
             f"HA has only {available_gb:.1f} GB free — "
             f"{required_gb:.1f} GB required. "
-            "Free up disk space on HA; Pueo will retry the install automatically."
+            "Free up disk space on HA; Pueo will retry the install automatically. "
+            "If NetAlertX is already installed, restart Pueo to adopt it."
         ),
         payload={
             "notification_id": nid,
@@ -1218,28 +1299,53 @@ async def run_steps_1_to_4(
     # Disk-space preflight — only when starting fresh (resuming is fine).
     # Best-effort: SSH/parse failures are logged but do not abort the install.
     if current_state == "NOT_INSTALLED":
-        try:
-            import config as _cfg
+        # Adopt an existing add-on before the disk preflight so a low-disk
+        # environment never blocks an install that is already complete.
+        _existing = await _detect_existing_addon(ssh_client, cid)
+        if _existing is not None:
+            _ex_slug, _ex_state = _existing
+            _adopted_state = (
+                "ADDON_RUNNING" if _ex_state.lower() == "started" else "ADDON_INSTALLED"
+            )
+            _adopted_details: dict = {
+                "mode": "addon",
+                "addon_slug": _ex_slug,
+                "adopted": True,
+            }
+            _write_install_state(db_path, _adopted_state, _adopted_details, cid)
+            log.info(
+                "installer_adopted_existing_addon",
+                slug=_ex_slug,
+                addon_state_=_ex_state,
+                new_install_state=_adopted_state,
+                correlation_id=cid,
+            )
+            _write_addon_slug_to_config(_ex_slug)
+            _resolve_install_blocked_card(db_path)
+            current_state = _adopted_state
+        else:
+            try:
+                import config as _cfg
 
-            min_gb = getattr(_cfg, "NETALERTX_DOCKER_MIN_DISK_GB", 5.0)
-            await check_target_disk_space(ssh_client, "/", min_gb)
-        except DiskSpaceTooLowError as exc:
-            log.error(
-                "installer_disk_too_low",
-                available_gb=exc.available_gb,
-                required_gb=exc.min_gb,
-                correlation_id=cid,
-            )
-            await _send_install_blocked_card(
-                notifier, db_path, exc.available_gb, exc.min_gb
-            )
-            return current_state
-        except Exception as _disk_exc:  # nosec B110 — df failure is non-fatal
-            log.warning(
-                "installer_disk_check_failed",
-                error=str(_disk_exc),
-                correlation_id=cid,
-            )
+                min_gb = getattr(_cfg, "NETALERTX_DOCKER_MIN_DISK_GB", 5.0)
+                await check_target_disk_space(ssh_client, "/", min_gb)
+            except DiskSpaceTooLowError as exc:
+                log.error(
+                    "installer_disk_too_low",
+                    available_gb=exc.available_gb,
+                    required_gb=exc.min_gb,
+                    correlation_id=cid,
+                )
+                await _send_install_blocked_card(
+                    notifier, db_path, exc.available_gb, exc.min_gb
+                )
+                return current_state
+            except Exception as _disk_exc:  # nosec B110 — df failure is non-fatal
+                log.warning(
+                    "installer_disk_check_failed",
+                    error=str(_disk_exc),
+                    correlation_id=cid,
+                )
 
     # Step 1: NOT_INSTALLED → MQTT_INSTALLED
     if _STATE_RANK[current_state] < _STATE_RANK["MQTT_INSTALLED"]:
