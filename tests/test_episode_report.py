@@ -477,6 +477,41 @@ class TestBuildEpisodeViewV2:
 # ---------------------------------------------------------------------------
 
 
+class TestRenderEpisodeTimes:
+    """Episode detail times render in the viewer's zone via <time> markup (#1278)."""
+
+    def test_v2_header_times_are_utc_instants(self):
+        page = render_episode_html(build_episode_view(_v2_episode()))
+        assert 'datetime="2026-11-02T15:00:00Z"' in page
+        assert '<th>Started</th><td><time class="pueo-ts"' in page
+
+    def test_v1_naive_timestamp_is_server_local(self):
+        from datetime import datetime, timezone
+
+        page = render_episode_html(build_episode_view(_v1_episode()))
+        local = datetime.fromisoformat("2026-10-30 00:05:12").astimezone()
+        iso = local.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        assert f'datetime="{iso}"' in page
+
+    def test_ts_helper_branches(self):
+        from utils.debug.episode_report import _ts
+
+        assert _ts("not a date", naive_local=True) == "not a date"
+        assert 'datetime="2026-11-02T15:00:00Z"' in _ts(
+            "2026-11-02T15:00:00+00:00", naive_local=True
+        )
+        assert _ts(None) == ""
+
+    def test_missing_helper_script_omits_inline_script(self, monkeypatch):
+        import utils.debug.episode_report as er
+
+        def _boom(self, *a, **k):
+            raise OSError("gone")
+
+        monkeypatch.setattr(er.Path, "read_text", _boom)
+        assert er._time_script() == ""
+
+
 class TestRenderEpisodeHtml:
     def test_full_long_output_and_no_details(self):
         data = _v1_episode()
@@ -485,7 +520,8 @@ class TestRenderEpisodeHtml:
         assert "TAIL_MARKER" in page
         assert "L" * 20000 in page
         assert "<details" not in page
-        assert "<script" not in page
+        assert page.count("<script") == 1  # only the inline local-time helper
+        assert "pueoLocalizeTimes" in page
 
     def test_sections_in_reading_order(self):
         page = render_episode_html(build_episode_view(_v2_episode()))
@@ -529,7 +565,7 @@ class TestRenderEpisodeHtml:
         data["signature"] = evil
         data["llm_calls"][0]["thinking_native"] = evil
         page = render_episode_html(build_episode_view(data))
-        assert "<script>" not in page
+        assert "<script>alert(1)" not in page
         assert "&lt;script&gt;alert(1)&lt;/script&gt;" in page
 
     def test_extras_sections_rendered(self):
@@ -540,7 +576,11 @@ class TestRenderEpisodeHtml:
                 "card_id": "card1",
                 "conclusion_json": json.dumps({"outcome": "success"}),
             },
-            "card": {"subject": "Restart HA?", "status": "APPROVED", "sent_at": 0},
+            "card": {
+                "subject": "Restart HA?",
+                "status": "APPROVED",
+                "sent_at": 1753123200,
+            },
             "runbook_usage": [{"strategy_id": "seed:seed_x.md", "outcome": "success"}],
             "learned_entries": [
                 {
@@ -564,7 +604,12 @@ class TestRenderEpisodeHtml:
                 },
             ],
             "facts": [
-                {"key": "zha_quirk", "content": "FACT TEXT", "source": "agent", "ts": 0}
+                {
+                    "key": "zha_quirk",
+                    "content": "FACT TEXT",
+                    "source": "agent",
+                    "ts": 1753123260,
+                }
             ],
             "llm_calls": [],
         }
@@ -577,7 +622,8 @@ class TestRenderEpisodeHtml:
             "LEARNED TEXT",
             "promoted to repair:*",
             "FACT TEXT",
-            "1970-01-01 00:00:00Z",
+            'datetime="2025-07-21T18:40:00Z"',
+            'datetime="2025-07-21T18:41:00Z"',
             "&quot;outcome&quot;: &quot;success&quot;",
         ):
             assert text in page, text

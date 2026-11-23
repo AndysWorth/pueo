@@ -73,8 +73,8 @@
         <td>{{ s.entries }}{% if s.retired_entries %} ({{ s.retired_entries }} retired){% endif %}</td>
         <td>{{ s.procedure_notes }}</td>
         <td>{{ s.instance_facts }}</td>
-        <td>{{ s.last_session_at[:10] if s.last_session_at else "—" }}</td>
-        <td>{{ s.last_used_at[:10] if s.last_used_at else "—" }}</td>
+        <td>{{ s.last_session_at | localtime("date") if s.last_session_at else "—" }}</td>
+        <td>{{ s.last_used_at | localtime("date") if s.last_used_at else "—" }}</td>
       </tr>
     {% endfor %}
     </tbody>
@@ -99,7 +99,7 @@
         <td>{{ q.detail }}</td>
         <td>{{ q.count }}</td>
         <td style="font-family:monospace;">{{ q.signatures | join(", ") }}</td>
-        <td>{{ q.last_seen[:10] if q.last_seen else "—" }}</td>
+        <td>{{ q.last_seen | localtime("date") if q.last_seen else "—" }}</td>
       </tr>
     {% endfor %}
     </tbody>
@@ -122,7 +122,7 @@
         <td>{% if q.kind == "empty" %}returned no results{% else %}{{ q.detail }}{% endif %}</td>
         <td>{{ q.count }}</td>
         <td style="font-family:monospace;">{{ q.signatures | join(", ") }}</td>
-        <td>{{ q.last_seen[:10] if q.last_seen else "—" }}</td>
+        <td>{{ q.last_seen | localtime("date") if q.last_seen else "—" }}</td>
       </tr>
     {% endfor %}
     </tbody>
@@ -181,8 +181,8 @@
     </div>
     {% if rb.signature %}<div class="rb-sig">{{ rb.signature }}</div>{% endif %}
     <div class="rb-meta">
-      Created: {{ rb.created_at[:10] }}
-      {% if rb.reviewed_at %}&nbsp;·&nbsp; Reviewed: {{ rb.reviewed_at[:10] }}{% endif %}
+      Created: {{ rb.created_at | localtime("date") }}
+      {% if rb.reviewed_at %}&nbsp;·&nbsp; Reviewed: {{ rb.reviewed_at | localtime("date") }}{% endif %}
       {% if rb.contributed_at and not rb.kb_pr_url %}&nbsp;·&nbsp; <span style="color:#0d6efd;">Queued for contribution</span>{% endif %}
       {% if rb.kb_pr_url %}&nbsp;·&nbsp; <a class="kb-pr-link" href="{{ rb.kb_pr_url.split('|')[-1] if '|' in rb.kb_pr_url else rb.kb_pr_url }}" target="_blank" rel="noopener">PR submitted ↗</a>{% endif %}
     </div>
@@ -227,8 +227,8 @@
     </div>
     {% if rb.signature %}<div class="rb-sig">{{ rb.signature }}</div>{% endif %}
     <div class="rb-meta">
-      Created: {{ rb.created_at[:10] }}
-      {% if rb.reviewed_at %}&nbsp;·&nbsp; Reviewed: {{ rb.reviewed_at[:10] }}{% endif %}
+      Created: {{ rb.created_at | localtime("date") }}
+      {% if rb.reviewed_at %}&nbsp;·&nbsp; Reviewed: {{ rb.reviewed_at | localtime("date") }}{% endif %}
     </div>
     {% if rb.usage_count > 0 %}
     <div class="rb-usage {% if rb.success_rate is not none %}{% if rb.success_rate >= 0.8 %}rb-usage-good{% elif rb.success_rate < 0.5 %}rb-usage-bad{% else %}rb-usage-none{% endif %}{% else %}rb-usage-none{% endif %}">
@@ -269,8 +269,8 @@
         <span class="subject">{{ rb.title }}</span>
       </div>
       <div class="rb-meta">
-        Created: {{ rb.created_at[:10] }}
-        {% if rb.reviewed_at %}&nbsp;·&nbsp; Reviewed: {{ rb.reviewed_at[:10] }}{% endif %}
+        Created: {{ rb.created_at | localtime("date") }}
+        {% if rb.reviewed_at %}&nbsp;·&nbsp; Reviewed: {{ rb.reviewed_at | localtime("date") }}{% endif %}
       </div>
       <details style="margin-top:0.4rem;">
         <summary>What was tried</summary>
@@ -294,8 +294,8 @@
         <span class="subject">{{ rb.title }}</span>
       </div>
       <div class="rb-meta">
-        Created: {{ rb.created_at[:10] }}
-        {% if rb.reviewed_at %}&nbsp;·&nbsp; Reviewed: {{ rb.reviewed_at[:10] }}{% endif %}
+        Created: {{ rb.created_at | localtime("date") }}
+        {% if rb.reviewed_at %}&nbsp;·&nbsp; Reviewed: {{ rb.reviewed_at | localtime("date") }}{% endif %}
       </div>
       <details style="margin-top:0.4rem;">
         <summary>What was tried</summary>

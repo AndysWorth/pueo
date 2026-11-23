@@ -82,3 +82,14 @@ class TestTemplatesUseLocaltime:
         pat = re.compile(r"toLocale(Date|Time)?String")
         hits = [p.name for p in _TEMPLATES.glob("*.html") if pat.search(p.read_text())]
         assert hits == []
+
+    def test_no_sliced_or_literal_utc_times(self):
+        """No ``*_at[:N]`` / ``last_seen[:N]`` slices and no literal " UTC" (#1278)."""
+        slice_pat = re.compile(r"\b(\w+_at|last_seen)\[:\d+\]")
+        utc_pat = re.compile(r"\}\}\s*UTC\b")
+        hits = [
+            p.name
+            for p in _TEMPLATES.glob("*.html")
+            if slice_pat.search(p.read_text()) or utc_pat.search(p.read_text())
+        ]
+        assert hits == []

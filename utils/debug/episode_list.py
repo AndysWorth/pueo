@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -205,9 +205,8 @@ def outcome_options(rows: list[EpisodeRow]) -> list[str]:
 
 
 def format_started(row: EpisodeRow) -> str:
-    """``YYYY-MM-DD HH:MM UTC`` for display, or the raw value."""
-    if not row.sort_ts:
-        return row.started_at or "—"
-    return datetime.fromtimestamp(row.sort_ts, tz=timezone.utc).strftime(
-        "%Y-%m-%d %H:%M UTC"
-    )
+    """Display text for a row whose start time did not parse (no ``sort_ts``).
+
+    Rows with a ``sort_ts`` render through the ``| localtime`` filter instead.
+    """
+    return row.started_at or "—"

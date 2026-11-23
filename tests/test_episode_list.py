@@ -73,7 +73,8 @@ class TestSummarizeEpisode:
         assert row.outcome == "stuck"
         assert row.llm_calls == 2 and row.tool_calls == 1
         assert row.duration_seconds == 12.5
-        assert format_started(row) == "2026-11-02 10:00 UTC"
+        assert row.sort_ts == 1793613600.0  # 2026-11-02T10:00:00Z
+        assert format_started(row) == row.started_at
 
     def test_v1_defaults(self):
         row = summarize_episode(

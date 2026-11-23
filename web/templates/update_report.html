@@ -53,7 +53,7 @@
     <a href="/">← Dashboard</a>
   </div>
   {% if report.built_at %}
-  <p class="rpt-meta">Report built: {{ report.built_at[:19].replace("T"," ") }} UTC</p>
+  <p class="rpt-meta">Report built: {{ report.built_at | localtime }}</p>
   {% endif %}
 </div>
 

@@ -3,7 +3,8 @@
 ``build_episode_view`` turns an ``episode_data.json`` dict (schema v1 or v2)
 plus optional post-session DB extras into an :class:`EpisodeView`.
 ``render_episode_html`` renders that view as one self-contained page: no
-``<details>``, no side pages, no JavaScript, nothing truncated.
+``<details>``, no side pages, nothing truncated. The only script is an inline
+copy of ``web/static/pueo_time.js`` that shows times in the viewer's zone.
 
 Both functions are pure, so the static ``index.html`` (``extras=None``) and the
 live ``/episodes/{id}`` route share one renderer.
@@ -21,8 +22,11 @@ import html
 import json
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
+from pathlib import Path
 from typing import Any
+
+from utils.core.timefmt import time_markup
 
 # Top-level labelled blocks of the first user message (AgentLoop pre-inject).
 _CONTEXT_BLOCK_RE = re.compile(r"<([a-z_]+)>\n?(.*?)\n?</\1>", re.DOTALL)
@@ -469,8 +473,14 @@ def _pretty(value: Any) -> str:
     return _pre(s)
 
 
+class _Html(str):
+    """Already-escaped HTML that ``_cell`` passes through unchanged."""
+
+
 def _cell(value: Any) -> str:
     """Key/value cell: plain text for scalars, a <pre> for structures/long text."""
+    if isinstance(value, _Html):
+        return value
     if isinstance(value, (dict, list)):
         return _pretty(value)
     text = _text(value)
@@ -495,13 +505,30 @@ def _fmt_ms(ms: Any) -> str:
     return f"{ms / 1000:.1f} s" if ms >= 1000 else f"{ms:.0f} ms"
 
 
-def _fmt_epoch(ts: Any) -> str:
+def _ts(value: Any, naive_local: bool = False) -> _Html:
+    """A ``<time class="pueo-ts">`` cell the inline script renders in local time.
+
+    Naive strings are UTC (DB ``datetime('now')`` / ``utcnow()`` writers),
+    except v1 episode ``timestamp`` values, which are naive server-local time
+    (*naive_local*).
+    """
+    if naive_local and isinstance(value, str):
+        try:
+            dt = datetime.fromisoformat(value.strip())
+        except ValueError:
+            dt = None
+        if dt is not None and dt.tzinfo is None:
+            return _Html(time_markup(dt.astimezone()))
+    return _Html(time_markup(value))
+
+
+def _time_script() -> str:
+    """Inline copy of ``web/static/pueo_time.js`` for this standalone page."""
+    js = Path(__file__).resolve().parents[2] / "web" / "static" / "pueo_time.js"
     try:
-        return datetime.fromtimestamp(float(ts), tz=timezone.utc).strftime(
-            "%Y-%m-%d %H:%M:%SZ"
-        )
-    except (TypeError, ValueError, OSError):
-        return _text(ts)
+        return f"<script>{js.read_text(encoding='utf-8')}</script>"
+    except OSError:
+        return ""
 
 
 def _header(v: EpisodeView) -> str:
@@ -520,8 +547,8 @@ def _header(v: EpisodeView) -> str:
         ("Subject key", v.subject_key),
         ("Top retrieved signature", v.top_retrieved_signature),
         ("Model", f"{v.model} ({v.provider})" if v.provider else v.model),
-        ("Started", v.started_at),
-        ("Ended", v.ended_at),
+        ("Started", _ts(v.started_at, naive_local=v.schema_version == 1)),
+        ("Ended", _ts(v.ended_at)),
         ("Duration", duration),
         ("LLM calls", str(v.llm_call_count)),
         ("Tool calls", str(v.tool_call_count)),
@@ -559,11 +586,11 @@ def _after_session(extras: dict[str, Any] | None) -> str:
                 [
                     ("Verification", so.get("verification")),
                     ("Verified by", so.get("verified_by")),
-                    ("Verified at", so.get("verified_at")),
+                    ("Verified at", _ts(so.get("verified_at"))),
                     ("Correction", so.get("correction")),
-                    ("Distilled at", so.get("distilled_at")),
+                    ("Distilled at", _ts(so.get("distilled_at"))),
                     ("Card id", so.get("card_id")),
-                    ("Recorded", so.get("created_at")),
+                    ("Recorded", _ts(so.get("created_at"))),
                     ("Stored conclusion", conclusion),
                 ]
             )
@@ -579,8 +606,8 @@ def _after_session(extras: dict[str, Any] | None) -> str:
                     ("Title", card.get("subject")),
                     ("Status", card.get("status")),
                     ("Resolution", card.get("resolution")),
-                    ("Resolved at", _fmt_epoch(card.get("resolved_at"))),
-                    ("Sent at", _fmt_epoch(card.get("sent_at"))),
+                    ("Resolved at", _ts(card.get("resolved_at"))),
+                    ("Sent at", _ts(card.get("sent_at"))),
                     ("Body", card.get("body")),
                 ]
             )
@@ -595,7 +622,7 @@ def _after_session(extras: dict[str, Any] | None) -> str:
                         ("Runbook", u.get("strategy_id")),
                         ("Outcome", u.get("outcome")),
                         ("Verification", u.get("verification")),
-                        ("Verified at", u.get("verified_at")),
+                        ("Verified at", _ts(u.get("verified_at"))),
                     ]
                 )
             )
@@ -621,7 +648,7 @@ def _after_session(extras: dict[str, Any] | None) -> str:
         for f in facts:
             parts.append(
                 f"<div class='card'><b>{_esc(f.get('key'))}</b> <span class='muted'>"
-                f"{_esc(f.get('source'))} · {_esc(_fmt_epoch(f.get('ts')))}</span>"
+                f"{_esc(f.get('source'))} · {_ts(f.get('ts'))}</span>"
                 f"<div class='resp'>{_esc(f.get('content'))}</div></div>"
             )
     return "<h2 id='after'>After the session</h2>" + "".join(parts)
@@ -758,5 +785,5 @@ def render_episode_html(view: EpisodeView) -> str:
 {_pre(tools) if tools else "<p class='note'>(not recorded)</p>"}
 <h3>System prompt</h3>
 {_pre(view.system_prompt) if view.system_prompt else "<p class='note'>(not recorded)</p>"}
-</div></body></html>
+</div>{_time_script()}</body></html>
 """
