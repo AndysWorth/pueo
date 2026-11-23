@@ -7078,6 +7078,166 @@ class TestDockerInstallerStateMachine:
     def _notifier(self, approve=True):
         return self._FakeNotifier(approve=approve)
 
+    # ── adopt existing container ──────────────────────────────────────────────
+
+    def test_detect_existing_container_running_healthy(self):
+        """_detect_existing_container returns (True, True) for a running+healthy container."""
+        from utils.ha.ssh_client import FakeSSHClient
+        from netalertx.docker_installer import _detect_existing_container
+
+        inspect_cmd = (
+            "docker inspect --format "
+            "'{{.State.Running}} {{.State.Health.Status}}'"
+            " netalertx 2>/dev/null"
+        )
+        ssh = FakeSSHClient(command_results={inspect_cmd: (0, "true healthy\n", "")})
+        result = asyncio.run(_detect_existing_container(ssh, "cid"))
+        assert result == (True, True)
+
+    def test_detect_existing_container_running_not_healthy(self):
+        """_detect_existing_container returns (True, False) when health status is 'starting'."""
+        from utils.ha.ssh_client import FakeSSHClient
+        from netalertx.docker_installer import _detect_existing_container
+
+        inspect_cmd = (
+            "docker inspect --format "
+            "'{{.State.Running}} {{.State.Health.Status}}'"
+            " netalertx 2>/dev/null"
+        )
+        ssh = FakeSSHClient(command_results={inspect_cmd: (0, "true starting\n", "")})
+        result = asyncio.run(_detect_existing_container(ssh, "cid"))
+        assert result == (True, False)
+
+    def test_detect_existing_container_absent(self):
+        """_detect_existing_container returns None when docker inspect exits non-zero."""
+        from utils.ha.ssh_client import FakeSSHClient
+        from netalertx.docker_installer import _detect_existing_container
+
+        inspect_cmd = (
+            "docker inspect --format "
+            "'{{.State.Running}} {{.State.Health.Status}}'"
+            " netalertx 2>/dev/null"
+        )
+        ssh = FakeSSHClient(command_results={inspect_cmd: (1, "", "No such object")})
+        result = asyncio.run(_detect_existing_container(ssh, "cid"))
+        assert result is None
+
+    def test_adopts_running_healthy_container_skips_to_fully_operational(
+        self, tmp_path, monkeypatch
+    ):
+        """When NOT_INSTALLED and container is running+healthy, adopt and reach FULLY_OPERATIONAL."""
+        from utils.ha.ssh_client import FakeSSHClient
+        from netalertx.docker_installer import run_docker_installer, _read_install_state
+
+        monkeypatch.setattr(
+            "netalertx.docker_installer.NETALERTX_DOCKER_HOST", "192.168.1.50"
+        )
+        db = _make_docker_installer_db(tmp_path, monkeypatch)
+        inspect_cmd = (
+            "docker inspect --format "
+            "'{{.State.Running}} {{.State.Health.Status}}'"
+            " netalertx 2>/dev/null"
+        )
+        ssh = FakeSSHClient(command_results={inspect_cmd: (0, "true healthy\n", "")})
+        state = asyncio.run(
+            run_docker_installer(
+                docker_ssh=ssh,
+                ha_ssh=FakeSSHClient(),
+                gate=self._make_gate(approve=True),
+                notifier=self._notifier(approve=True),
+                db_path=db,
+                docker_host="192.168.1.50",
+            )
+        )
+        assert state == "FULLY_OPERATIONAL"
+        # Must not have run docker info (step1) or pulled an image (step4)
+        assert "docker info" not in ssh.commands_run
+        assert not any("docker pull" in c for c in ssh.commands_run)
+        # Details should mark the install as adopted
+        _, details = _read_install_state(db)
+        assert details.get("adopted") is True
+
+    def test_adopts_running_unhealthy_container_then_step7_completes(
+        self, tmp_path, monkeypatch
+    ):
+        """When container is running but not healthy, adopt at DOCKER_RUNNING; step7 polls healthy."""
+        from utils.ha.ssh_client import FakeSSHClient
+        from netalertx.docker_installer import run_docker_installer
+
+        monkeypatch.setattr(
+            "netalertx.docker_installer.NETALERTX_DOCKER_HOST", "192.168.1.50"
+        )
+        db = _make_docker_installer_db(tmp_path, monkeypatch)
+        inspect_adopt_cmd = (
+            "docker inspect --format "
+            "'{{.State.Running}} {{.State.Health.Status}}'"
+            " netalertx 2>/dev/null"
+        )
+        # elif DOCKER_RUNNING resumption check (uses a single-field format)
+        inspect_running_cmd = (
+            "docker inspect --format '{{.State.Running}}'" " netalertx 2>/dev/null"
+        )
+        # step7 health poll (uses a single-field format)
+        inspect_health_cmd = (
+            "docker inspect --format '{{.State.Health.Status}}'"
+            " netalertx 2>/dev/null"
+        )
+        ssh = FakeSSHClient(
+            command_results={
+                inspect_adopt_cmd: (0, "true starting\n", ""),
+                inspect_running_cmd: (0, "true\n", ""),
+                inspect_health_cmd: (0, "healthy\n", ""),
+            }
+        )
+        state = asyncio.run(
+            run_docker_installer(
+                docker_ssh=ssh,
+                ha_ssh=FakeSSHClient(),
+                gate=self._make_gate(approve=True),
+                notifier=self._notifier(approve=True),
+                db_path=db,
+                docker_host="192.168.1.50",
+            )
+        )
+        assert state == "FULLY_OPERATIONAL"
+        assert "docker info" not in ssh.commands_run
+
+    def test_no_adopt_when_container_not_found(self, tmp_path, monkeypatch):
+        """When inspect exits non-zero (container absent), proceed with normal install."""
+        from utils.ha.ssh_client import FakeSSHClient
+        from netalertx.docker_installer import run_docker_installer
+
+        monkeypatch.setattr(
+            "netalertx.docker_installer.NETALERTX_DOCKER_HOST", "192.168.1.50"
+        )
+        db = _make_docker_installer_db(tmp_path, monkeypatch)
+        inspect_cmd = (
+            "docker inspect --format "
+            "'{{.State.Running}} {{.State.Health.Status}}'"
+            " netalertx 2>/dev/null"
+        )
+        ssh = FakeSSHClient(
+            command_results={
+                inspect_cmd: (1, "", "No such object"),
+                "docker info": (1, "", "Permission denied"),
+            }
+        )
+        state = asyncio.run(
+            run_docker_installer(
+                docker_ssh=ssh,
+                ha_ssh=FakeSSHClient(),
+                gate=self._make_gate(approve=True),
+                notifier=self._notifier(approve=True),
+                db_path=db,
+                docker_host="192.168.1.50",
+            )
+        )
+        # Normal step1 ran and failed (docker info denied)
+        assert state == "NOT_INSTALLED"
+        assert "docker info" in ssh.commands_run
+
+    # ── step1 ─────────────────────────────────────────────────────────────────
+
     def test_step1_rejects_macos_host(self, tmp_path, monkeypatch):
         """Abort with CRITICAL card when Docker host reports macOS (darwin)."""
         from utils.ha.ssh_client import FakeSSHClient

@@ -156,6 +156,36 @@ def _merge_plugins(existing_val: str, required: list[str]) -> str:
     return repr(merged)
 
 
+# ── adopt helpers ─────────────────────────────────────────────────────────────
+
+
+async def _detect_existing_container(
+    docker_ssh: "SSHClientProtocol",
+    cid: str,
+) -> tuple[bool, bool] | None:
+    """Check if the NetAlertX Docker container already exists and is running.
+
+    Returns ``(is_running, is_healthy)`` or ``None`` on SSH error or if the
+    container is absent.  Never raises.
+    """
+    try:
+        inspect_cmd = (
+            f"docker inspect --format "
+            f"'{{{{.State.Running}}}} {{{{.State.Health.Status}}}}'"
+            f" {_CONTAINER_NAME} 2>/dev/null"
+        )
+        ec, out, _ = await docker_ssh.run(inspect_cmd)
+        if ec != 0 or not out.strip():
+            return None
+        parts = out.strip().split()
+        is_running = parts[0].lower() == "true"
+        is_healthy = len(parts) > 1 and parts[1].lower() == "healthy"
+        return is_running, is_healthy
+    except Exception:  # nosec B110 — fail open to normal install path
+        log.debug("docker_installer_container_detect_error", correlation_id=cid)
+        return None
+
+
 # ── install steps ─────────────────────────────────────────────────────────────
 
 
@@ -537,6 +567,23 @@ async def run_docker_installer(
             correlation_id=cid,
         )
         return state
+
+    if state == "NOT_INSTALLED":
+        _existing = await _detect_existing_container(docker_ssh, cid)
+        if _existing is not None:
+            _is_running, _is_healthy = _existing
+            if _is_running:
+                _adopted_state = "DOCKER_HEALTHY" if _is_healthy else "DOCKER_RUNNING"
+                details = {"platform": "docker", "adopted": True}
+                _write_install_state(db_path, _adopted_state, details, cid)
+                log.info(
+                    "docker_installer_adopted_existing_container",
+                    container=_CONTAINER_NAME,
+                    is_healthy=_is_healthy,
+                    new_install_state=_adopted_state,
+                    correlation_id=cid,
+                )
+                state = _adopted_state
 
     rank = _STATE_RANK.get(state, 0)
 
