@@ -7741,6 +7741,9 @@ class TestEpisodesTab:
         assert "repair:core:restart_required" in html
         assert ">stuck<" in html
         assert "m-v1" in html  # v1 file still listed
+        # Start times render through | localtime (viewer's zone), not "UTC" text.
+        assert 'datetime="2026-11-02T10:00:00Z" data-fmt="datetime"' in html
+        assert " UTC</a>" not in html
 
     def test_outcome_filter(self, db_path, tmp_path, monkeypatch):
         from starlette.testclient import TestClient

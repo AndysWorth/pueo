@@ -49,7 +49,7 @@
         {% set oc = r.outcome %}
         <tr style="border-bottom:1px solid #eee;">
           <td style="padding:0.4rem 0.75rem;white-space:nowrap;">
-            <a href="/episodes/{{ r.episode_id }}" style="color:#1a73e8;text-decoration:none;">{{ started[r.folder] }}</a>
+            <a href="/episodes/{{ r.episode_id }}" style="color:#1a73e8;text-decoration:none;">{% if r.sort_ts %}{{ r.sort_ts | localtime }}{% else %}{{ started[r.folder] }}{% endif %}</a>
           </td>
           <td style="padding:0.4rem 0.75rem;">
             <span class="badge" style="background:#e0e7ff;color:#3730a3;border:1px solid #6366f1;">{{ r.session_type }}</span>
