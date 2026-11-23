@@ -64,6 +64,21 @@ class TestParseLogLineTs:
         result = parse(line)
         assert result > 0
 
+    def test_z_suffix_parsed_as_utc(self):
+        parse, _ = _get_helpers()
+        assert parse("2026-09-03T14:22:01.123Z INFO x") == 1788445321
+
+    def test_offset_shifts_to_utc(self):
+        parse, _ = _get_helpers()
+        assert parse("2026-09-03 19:22:01+05:00 INFO x") == 1788445321
+
+    def test_naive_is_server_local(self):
+        import datetime
+
+        parse, _ = _get_helpers()
+        expected = int(datetime.datetime(2026, 9, 3, 14, 22, 1).timestamp())
+        assert parse("2026-09-03 14:22:01.999 INFO x") == expected
+
 
 class TestLogsSourceToCommand:
     def test_apps_source(self):

@@ -58,6 +58,21 @@ def _from_string(s: str) -> datetime | None:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
+def log_ts_epoch(stamp: str) -> float | None:
+    """Return the epoch of a log-line timestamp such as ``2026-09-03 14:22:01.123``.
+
+    Aware stamps (``Z`` or an offset, as current HA Core/Supervisor lines carry)
+    are exact. Naive stamps are host-local; they are read as the Pueo server's
+    local time (assumes both share a zone).
+    Returns ``None`` if *stamp* is not a valid timestamp.
+    """
+    try:
+        dt = datetime.fromisoformat(stamp.strip())
+    except ValueError:
+        return None
+    return dt.timestamp()
+
+
 _STYLES = {"datetime": "%Y-%m-%d %H:%M:%S", "date": "%Y-%m-%d", "time": "%H:%M:%S"}
 
 
