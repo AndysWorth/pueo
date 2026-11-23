@@ -408,4 +408,4 @@ This project is named after the endemic Hawaiian short-eared owl — a tradition
 
 ## 📄 License
 
-Distributed under the **GNU Lesser General Public License v3.0 (LGPL-3.0)**. Downstream modifications must remain entirely free and open-source. Commercial corporate branding or exclusive trademark enforcement of this code under the name "Pueo" is strictly prohibited under our cultural attribution guidelines.
+Distributed under the **MIT License**. See [LICENSE](LICENSE) for the full text. The cultural attribution guidelines for the name "Pueo" are in [NAMING.md](NAMING.md).
