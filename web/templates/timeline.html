@@ -75,7 +75,7 @@
     <tbody>
       {% for ev in events %}
       <tr>
-        <td style="white-space:nowrap;color:#888;font-size:0.78rem;">{{ ev.ts|epoch_to_iso }}</td>
+        <td style="white-space:nowrap;color:#888;font-size:0.78rem;">{{ ev.ts | localtime }}</td>
         <td><span class="level-badge level-{{ ev.level|lower }}">{{ ev.level }}</span></td>
         <td style="color:#666;font-size:0.82rem;">{{ ev.source }}</td>
         <td class="msg-cell"><a href="/timeline/{{ ev.id }}">{{ ev.message }}</a></td>

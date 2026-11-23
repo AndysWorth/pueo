@@ -14,7 +14,7 @@
     <div class="card-header">
       <span class="badge badge-{{ r.status | lower }}">{{ r.status }}</span>
       <span class="subject">{{ r.subject }}</span>
-      <span class="elapsed" title="{{ r.elapsed_seconds }} s">{{ r.sent_at | epoch_to_iso }} · {{ r.elapsed_seconds | humanize_age }} ago</span>
+      <span class="elapsed" title="{{ r.elapsed_seconds }} s">{{ r.sent_at | localtime }} · {{ r.elapsed_seconds | humanize_age }} ago</span>
       {% if r.payload.get("episode_id") and (debug_level_enabled or dev_mode) %}
       <a class="episode-link" href="/episodes/{{ r.payload.get('episode_id') }}" target="_blank"
          title="Open the full session transcript" style="font-size:0.78rem;color:#1a73e8;text-decoration:none;white-space:nowrap;">Episode ↗</a>
@@ -82,7 +82,7 @@
     {% if ct == "host_health" and r.payload.get("recurrence_count") %}
     <p class="meta" style="color:#888;">
       Seen {{ r.payload.recurrence_count + 1 }}× in 7 days
-      {% if r.payload.get("last_suppressed_at") %}&nbsp;·&nbsp; last recurrence {{ r.payload.last_suppressed_at | epoch_to_iso }}{% endif %}
+      {% if r.payload.get("last_suppressed_at") %}&nbsp;·&nbsp; last recurrence {{ r.payload.last_suppressed_at | localtime }}{% endif %}
     </p>
     {% endif %}
     {% if r.payload.get("bc_verdicts") or r.payload.get("breaking_changes") or r.payload.get("pueo_verdicts") %}
@@ -220,7 +220,7 @@
     {% endif %}
     {% if r.payload.get("llm_trace") %}
     <details>
-      <summary><span class="section-label label-llm">LLM Interaction</span>{{ r.payload.llm_trace.model }} &middot; {{ r.payload.llm_trace.timestamp | epoch_to_iso }}</summary>
+      <summary><span class="section-label label-llm">LLM Interaction</span>{{ r.payload.llm_trace.model }} &middot; {{ r.payload.llm_trace.timestamp | localtime }}</summary>
       <details>
         <summary>System prompt</summary>
         <pre>{{ r.payload.llm_trace.system_prompt }}</pre>
@@ -1026,12 +1026,6 @@ trigger: {{ r.payload.get("trigger", []) | tojson(indent=2) }}
     if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
   };
 
-  function fmtDate(ts) {
-    if (!ts) return '—';
-    var d = new Date(ts * 1000);
-    return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
-  }
-
   fetch('/known-issues').then(function(r){ return r.json(); }).then(function(issues) {
     var el = document.getElementById('known-issues-list');
     if (!issues || issues.length === 0) {
@@ -1043,7 +1037,7 @@ trigger: {{ r.payload.get("trigger", []) | tojson(indent=2) }}
       return '<tr>' +
         '<td style="padding:0.4rem 0.6rem;"><span style="background:#e9ecef;border-radius:3px;padding:0.1rem 0.4rem;font-size:0.78rem;">' + (iss.card_type || '—') + '</span></td>' +
         '<td style="padding:0.4rem 0.6rem;font-size:0.88rem;">' + (iss.description || '—') + '</td>' +
-        '<td style="padding:0.4rem 0.6rem;font-size:0.8rem;color:#666;white-space:nowrap;">' + fmtDate(iss.first_sent_at) + '</td>' +
+        '<td style="padding:0.4rem 0.6rem;font-size:0.8rem;color:#666;white-space:nowrap;">' + pueoFmt(iss.first_sent_at, 'minute') + '</td>' +
         '<td style="padding:0.4rem 0.6rem;font-size:0.8rem;text-align:center;">' + (iss.rejection_count || 0) + '×</td>' +
         '<td style="padding:0.4rem 0.6rem;">' +
           '<form method="POST" action="/known-issues/resolve/' + key + '" style="display:inline;">' +
