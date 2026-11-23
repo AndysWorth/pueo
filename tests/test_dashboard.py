@@ -1362,17 +1362,39 @@ class TestDashboardRichPayload:
         html = client.get("/queue").text
         assert "Full payload (raw JSON)" in html
 
-    def test_epoch_to_iso_filter_registered(self):
+    def test_localtime_filter_registered(self):
         import web.dashboard as dashboard
 
-        assert "epoch_to_iso" in dashboard.templates.env.filters
-        fn = dashboard.templates.env.filters["epoch_to_iso"]
-        result = fn(1753123200)
-        assert (
-            result.startswith("2025-")
-            or result.startswith("2026-")
-            or len(result) == 19
+        assert "epoch_to_iso" not in dashboard.templates.env.filters
+        fn = dashboard.templates.env.filters["localtime"]
+        assert str(fn(1753123200)) == (
+            '<time class="pueo-ts" datetime="2025-07-21T18:40:00Z" '
+            'data-fmt="datetime">2025-07-21 18:40:00 UTC</time>'
         )
+        assert str(fn(1753123200, "date")).endswith(
+            'data-fmt="date">2025-07-21 UTC</time>'
+        )
+        assert str(fn(None)) == ""
+
+    def test_utc_iso_filter_registered(self):
+        import web.dashboard as dashboard
+
+        fn = dashboard.templates.env.filters["utc_iso"]
+        assert fn(1753123200) == "2025-07-21T18:40:00Z"
+        assert fn("garbage") == ""
+
+    def test_base_loads_time_helper_in_head(self):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/queue").text
+        head = html.split("</head>", 1)[0]
+        assert '<script src="/static/pueo_time.js"></script>' in head
+        js = client.get("/static/pueo_time.js")
+        assert js.status_code == 200
+        for name in ("pueoFmt", "pueoTitle", "pueoLocalizeTimes", "MutationObserver"):
+            assert name in js.text
 
     @pytest.mark.parametrize(
         "seconds,expected",
@@ -1421,8 +1443,8 @@ class TestDashboardRichPayload:
         )
         client = TestClient(dashboard.app, raise_server_exceptions=True)
         html = client.get("/queue").text
-        iso = dashboard.templates.env.filters["epoch_to_iso"](sent_at)
-        assert f"{iso} · 2 h" in html
+        stamp = str(dashboard.templates.env.filters["localtime"](sent_at))
+        assert f"{stamp} · 2 h" in html
         assert "s ago</span>" not in html
 
 

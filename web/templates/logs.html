@@ -150,11 +150,6 @@
   var _tailActive = false;
 
   /* ── helpers ───────────────────────────────────────────────────────────── */
-  function _fmtTs(epoch) {
-    if (!epoch) return '—';
-    var d = new Date(epoch * 1000);
-    return d.toLocaleDateString() + ' ' + d.toLocaleTimeString();
-  }
   function _fmtAgo(epoch) {
     if (!epoch) return '—';
     var secs = Math.floor(Date.now() / 1000 - epoch);
@@ -165,10 +160,7 @@
     return Math.floor(mins / 60) + 'h ' + (mins % 60) + 'm ago';
   }
   function _fmtBucketTime(ts, bucketSize) {
-    var d = new Date(ts * 1000);
-    if (bucketSize === '1d') return d.toLocaleDateString(undefined, {month:'short', day:'numeric'});
-    return d.toLocaleDateString(undefined, {month:'short', day:'numeric'}) + ' ' +
-      d.toLocaleTimeString(undefined, {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+    return pueoFmt(ts, bucketSize === '1d' ? 'date' : 'datetime');
   }
 
   function _sourceId(source) {
@@ -646,8 +638,8 @@
     right.classList.add('open');
     var titleEl = document.getElementById('viewer-title');
     if (tsFrom && tsTo) {
-      titleEl.textContent = source + ' · ' + new Date(tsFrom*1000).toLocaleTimeString() +
-        '–' + new Date(tsTo*1000).toLocaleTimeString();
+      titleEl.textContent = source + ' · ' + pueoFmt(tsFrom, 'time') +
+        '–' + pueoFmt(tsTo, 'time');
     } else {
       titleEl.textContent = source;
     }
@@ -677,7 +669,7 @@
       frag.dataset.idx = i;
       frag.dataset.ts = line.ts;
       frag.innerHTML =
-        '<span class="log-ts">' + _fmtTs(line.ts) + '</span>' +
+        '<span class="log-ts">' + pueoFmt(line.ts) + '</span>' +
         '<span class="log-text">' + _escHtml(line.text) + '</span>' +
         (line.is_match
           ? '<a class="log-match-badge" title="Analyze in Chat" onclick="window._logsInvestigateLine(' + JSON.stringify(line.text) + ')">🔴⚡</a>'
@@ -780,7 +772,7 @@
       var idx = base + i;
       frag.dataset.idx = idx;
       frag.innerHTML =
-        '<span class="log-ts">' + _fmtTs(line.ts) + '</span>' +
+        '<span class="log-ts">' + pueoFmt(line.ts) + '</span>' +
         '<span class="log-text">' + _escHtml(line.text) + '</span>' +
         (line.is_match ? '<a class="log-match-badge" onclick="window._logsInvestigateLine(' + JSON.stringify(line.text) + ')">🔴⚡</a>' : '');
       if (filterRe && !filterRe.test(line.text)) frag.classList.add('hidden');
@@ -815,7 +807,7 @@
     var sorted = Array.from(_selectedLines).sort(function(a,b){return a-b;});
     for (var i = 0; i < sorted.length; i++) {
       var line = data.lines[sorted[i]];
-      if (line) parts.push('[' + _fmtTs(line.ts) + '] ' + line.text);
+      if (line) parts.push('[' + pueoFmt(line.ts) + '] ' + line.text);
     }
     var q = 'Analyze these log lines from ' + _viewerSource + ' and tell me what is wrong:\n' + parts.join('\n');
     window.location.href = '/chat?q=' + encodeURIComponent(q);

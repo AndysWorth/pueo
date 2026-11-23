@@ -369,7 +369,7 @@
       <tbody id="recent-events-body">
         {% for ev in recent_events %}
         <tr>
-          <td style="white-space:nowrap;color:#888;font-size:0.78rem;">{{ ev.ts|epoch_to_iso }}</td>
+          <td style="white-space:nowrap;color:#888;font-size:0.78rem;">{{ ev.ts | localtime }}</td>
           <td><span class="level-badge level-{{ ev.level|lower }}">{{ ev.level }}</span></td>
           <td style="color:#666;font-size:0.82rem;">{{ ev.source }}</td>
           <td><a href="/timeline/{{ ev.id }}" style="color:#222;text-decoration:none;font-size:0.85rem;">{{ ev.message }}</a></td>
@@ -421,10 +421,10 @@
               <span class="loop-status">{{ ls.status }}</span>
             </td>
             <td class="loop-outcome" style="color:#666;">{{ ls.last_outcome or "—" }}</td>
-            <td class="loop-last-run">{{ ls.last_run|epoch_to_iso if ls.last_run else "—" }}</td>
+            <td class="loop-last-run">{{ ls.last_run | localtime if ls.last_run else "—" }}</td>
             <td class="loop-next-run">
               {% if ls.status == "error" and ls.next_run %}
-                <span class="loop-next-run-countdown" data-next="{{ ls.next_run }}">{{ ls.next_run|epoch_to_iso }}</span>
+                <span class="loop-next-run-countdown" data-next="{{ ls.next_run }}">{{ ls.next_run | localtime }}</span>
               {% elif ls.interval_seconds %}
                 {% set mins = (ls.interval_seconds // 60) | int %}
                 <span class="loop-next-run-cadence">every {% if mins < 60 %}{{ mins }} min{% else %}{{ (mins // 60) | int }}h{% if mins % 60 %} {{ mins % 60 }}m{% endif %}{% endif %}</span>
@@ -465,10 +465,10 @@
               <span class="loop-status">{{ ls.status }}</span>
             </td>
             <td class="loop-outcome" style="color:#666;">{{ ls.last_outcome or "—" }}</td>
-            <td class="loop-last-run">{{ ls.last_run|epoch_to_iso if ls.last_run else "—" }}</td>
+            <td class="loop-last-run">{{ ls.last_run | localtime if ls.last_run else "—" }}</td>
             <td class="loop-next-run">
               {% if ls.status == "error" and ls.next_run %}
-                <span class="loop-next-run-countdown" data-next="{{ ls.next_run }}">{{ ls.next_run|epoch_to_iso }}</span>
+                <span class="loop-next-run-countdown" data-next="{{ ls.next_run }}">{{ ls.next_run | localtime }}</span>
               {% elif ls.interval_seconds == 0 %}
                 <span class="loop-next-run-disabled">disabled</span>
               {% elif ls.interval_seconds and ls.next_run %}
@@ -509,10 +509,10 @@
               <span class="loop-status">{{ ls.status }}</span>
             </td>
             <td class="loop-outcome" style="color:#666;">{{ ls.last_outcome or "—" }}</td>
-            <td class="loop-last-run">{{ ls.last_run|epoch_to_iso if ls.last_run else "—" }}</td>
+            <td class="loop-last-run">{{ ls.last_run | localtime if ls.last_run else "—" }}</td>
             <td class="loop-next-run">
               {% if ls.status == "error" and ls.next_run %}
-                <span class="loop-next-run-countdown" data-next="{{ ls.next_run }}">{{ ls.next_run|epoch_to_iso }}</span>
+                <span class="loop-next-run-countdown" data-next="{{ ls.next_run }}">{{ ls.next_run | localtime }}</span>
               {% else %}
                 <span class="loop-next-run-cadence">—</span>
               {% endif %}
@@ -564,12 +564,6 @@
     starting:   'dot-starting',
   };
 
-  function fmtTime(epoch) {
-    if (!epoch) return '—';
-    var d = new Date(epoch * 1000);
-    return d.toLocaleDateString() + ' ' + d.toLocaleTimeString();
-  }
-
   function fmtAgo(epoch) {
     if (!epoch) return '—';
     var secs = Math.floor(Date.now() / 1000 - epoch);
@@ -596,14 +590,8 @@
   var _sparklineTip = null;
 
   function _fmtBucketTime(ts, bucketSize) {
-    var d = new Date(ts * 1000);
-    if (bucketSize === '1d') {
-      return d.toLocaleDateString(undefined, {month:'short', day:'numeric'});
-    } else {
-      // 1m and 1h both show date+time; range can span multiple days
-      return d.toLocaleDateString(undefined, {month:'short', day:'numeric'}) + ' ' +
-             d.toLocaleTimeString(undefined, {hour:'2-digit', minute:'2-digit', second:'2-digit'});
-    }
+    // 1m and 1h both show date+time; range can span multiple days
+    return pueoFmt(ts, bucketSize === '1d' ? 'date' : 'datetime');
   }
 
   function renderSparkline(svgId, buckets, bucketSize) {
@@ -859,7 +847,7 @@
     var outcomeEl = row.querySelector('.loop-outcome');
     if (outcomeEl) outcomeEl.textContent = evt.last_outcome || '—';
     var lastRunEl = row.querySelector('.loop-last-run');
-    if (lastRunEl) lastRunEl.textContent = fmtTime(evt.last_run);
+    if (lastRunEl) { lastRunEl.textContent = pueoFmt(evt.last_run); lastRunEl.title = pueoTitle(evt.last_run); }
     // Smart next-run: update countdown spans; static cadence spans are left alone
     var nextRunEl = row.querySelector('.loop-next-run');
     if (nextRunEl) {
@@ -962,12 +950,6 @@
     return '<span class="level-badge level-' + level.toLowerCase() + '">' + level + '</span>';
   }
 
-  function fmtEpoch(ts) {
-    if (!ts) return '—';
-    var d = new Date(ts * 1000);
-    return d.toLocaleDateString() + ' ' + d.toLocaleTimeString();
-  }
-
   function prependTimelineRow(evt) {
     var body = document.getElementById('recent-events-body');
     var empty = document.getElementById('recent-events-empty');
@@ -987,7 +969,7 @@
     }
     if (!body) return;
     var tr = document.createElement('tr');
-    tr.innerHTML = '<td style="white-space:nowrap;color:#888;font-size:0.78rem;">' + fmtEpoch(evt.ts) + '</td>'
+    tr.innerHTML = '<td style="white-space:nowrap;color:#888;font-size:0.78rem;">' + pueoFmt(evt.ts) + '</td>'
       + '<td>' + levelBadgeHtml(evt.level) + '</td>'
       + '<td style="color:#666;font-size:0.82rem;">' + (evt.source || '') + '</td>'
       + '<td><a href="' + (evt.detail_url || '#') + '" style="color:#222;text-decoration:none;font-size:0.85rem;">'

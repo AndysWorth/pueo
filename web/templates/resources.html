@@ -272,7 +272,7 @@
   <div class="hh-row">
     <span class="hh-label">Uptime</span>
     <span class="hh-value"
-      {% if boot_ts_str %}title="Booted {{ boot_ts_str }}"{% endif %}>
+      {% if host_health.boot_ts %}title="Booted {{ host_health.boot_ts | utc_iso }}" data-boot-ts="{{ host_health.boot_ts | utc_iso }}"{% endif %}>
       {% if up_days > 0 %}{{ up_days }}d {% endif %}{{ up_hours }}h {{ up_mins }}m
     </span>
   </div>
@@ -597,6 +597,11 @@
 {% endif %}
 
 <script>
+  /* Boot-time hover in the viewer's local zone (the server sends UTC ISO). */
+  document.querySelectorAll('[data-boot-ts]').forEach(function (el) {
+    var iso = el.getAttribute('data-boot-ts');
+    el.title = 'Booted ' + pueoFmt(iso) + ' · ' + pueoTitle(iso).split(' · ').pop();
+  });
 async function requestOrphanCleanup() {
   var btn = document.getElementById('orphan-cleanup-btn');
   var result = document.getElementById('orphan-cleanup-result');

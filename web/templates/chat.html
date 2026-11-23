@@ -533,7 +533,8 @@
     if (ts) {
       const meta = document.createElement('div');
       meta.className = 'msg-meta';
-      meta.textContent = new Date(ts * 1000).toLocaleTimeString();
+      meta.textContent = pueoFmt(ts, 'time');
+      meta.title = pueoTitle(ts);
       row.appendChild(meta);
     }
 

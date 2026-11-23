@@ -5,7 +5,7 @@ import json
 import re
 import sqlite3
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +21,7 @@ from fastapi.responses import (
 )
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from markupsafe import Markup
 from pydantic import BaseModel, field_validator
 
 from config import (
@@ -33,6 +34,7 @@ from config import (
     PUEO_KB_REPO,
 )
 from utils.core.logging import get_logger, set_log_level
+from utils.core.timefmt import time_markup, to_utc_iso
 from utils.hitl.card_types import (
     CARD_TYPE_CLOUD_ESCALATION,
     CARD_TYPE_CODE_PROPOSAL,
@@ -97,9 +99,15 @@ app.mount(
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 templates.env.globals["dev_mode"] = DEVELOPMENT_MODE
 templates.env.globals["debug_level_enabled"] = DEBUG_LEVEL >= 1
-templates.env.filters["epoch_to_iso"] = lambda ts: (
-    datetime.fromtimestamp(int(ts)).strftime("%Y-%m-%d %H:%M:%S") if ts else ""
-)
+
+
+def localtime_filter(value: object, style: str = "datetime") -> Markup:
+    """Jinja ``| localtime``: a ``<time>`` the browser renders in the viewer's zone."""
+    return Markup(time_markup(value, style))  # nosec B704 - time_markup escapes
+
+
+templates.env.filters["localtime"] = localtime_filter
+templates.env.filters["utc_iso"] = lambda v: to_utc_iso(v) or ""
 
 
 def humanize_age(seconds: int) -> str:
@@ -3763,7 +3771,6 @@ async def sync_backup_inventory() -> JSONResponse:
 async def resources_tab(request: Request) -> HTMLResponse:
     import time as _time
 
-    import datetime as _dt
     import utils.disk.disk_usage as _du
     import utils.disk.memory_usage as _mu
     import utils.disk.host_health as _hh
@@ -3781,15 +3788,6 @@ async def resources_tab(request: Request) -> HTMLResponse:
         disk_warn = breakdown.disk_free_gb < HA_DISK_WARN_GB
         disk_critical = breakdown.disk_free_gb < HA_DISK_CRITICAL_GB
 
-    boot_ts_str = ""
-    if host_health is not None and host_health.boot_ts is not None:
-        try:
-            boot_ts_str = _dt.datetime.fromtimestamp(host_health.boot_ts).strftime(
-                "%Y-%m-%d %H:%M:%S"
-            )
-        except Exception:
-            boot_ts_str = ""
-
     try:
         pueo_footprint = await asyncio.to_thread(measure_pueo_footprint)
     except Exception:
@@ -3802,7 +3800,6 @@ async def resources_tab(request: Request) -> HTMLResponse:
             "breakdown": breakdown,
             "mem_breakdown": mem_breakdown,
             "host_health": host_health,
-            "boot_ts_str": boot_ts_str,
             "age_seconds": age_seconds,
             "disk_warn": disk_warn,
             "disk_critical": disk_critical,
@@ -5233,7 +5230,7 @@ def _chat_episode_meta(
     meta: dict[str, Any] = dict(loop_meta or {})
     meta.setdefault("model", model)
     meta.setdefault("provider", "local")
-    meta.setdefault("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    meta.setdefault("timestamp", datetime.now(timezone.utc).isoformat())
     meta.update(
         {
             "session_id": session_id,
