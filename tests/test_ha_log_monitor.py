@@ -693,6 +693,17 @@ class TestParseHaLogTs:
         expected = datetime.datetime(2026, 10, 22, 7, 22, 46).timestamp()
         assert _parse_ha_log_ts("2026-10-22 07:22:46 INFO x") == expected
 
+    def test_z_suffix_parsed_as_utc(self, pueo_dirs):
+        import datetime
+
+        from agents.ha_log_monitor import _parse_ha_log_ts
+
+        expected = datetime.datetime(
+            2026, 10, 22, 7, 22, 46, 863000, tzinfo=datetime.timezone.utc
+        ).timestamp()
+        assert _parse_ha_log_ts("2026-10-22 07:22:46.863Z ERROR x") == expected
+        assert _parse_ha_log_ts("2026-10-22 09:22:46.863+02:00 ERROR x") == expected
+
     def test_ansi_wrapped(self, pueo_dirs):
         from agents.ha_log_monitor import _parse_ha_log_ts
 

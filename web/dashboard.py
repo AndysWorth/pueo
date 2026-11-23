@@ -5660,19 +5660,17 @@ _HA_TS_RE = re.compile(
 
 
 def _parse_log_line_ts(text: str) -> int:
-    """Return Unix epoch for the log line's timestamp, or 0 on failure."""
-    import datetime as _dt
+    """Return Unix epoch for the log line's timestamp, or 0 on failure.
+
+    ``Z``/offset stamps are honoured; naive ones are read as server-local.
+    """
+    from utils.core.timefmt import log_ts_epoch
 
     m = _HA_TS_RE.search(text)
     if not m:
         return 0
-    raw = m.group(1).replace("T", " ")
-    # Strip fractional seconds and timezone for uniform parse
-    raw_clean = raw[:19]
-    try:
-        return int(_dt.datetime.strptime(raw_clean, "%Y-%m-%d %H:%M:%S").timestamp())
-    except Exception:  # nosec B110
-        return 0
+    epoch = log_ts_epoch(m.group(1))
+    return int(epoch) if epoch is not None else 0
 
 
 def _logs_source_to_command(source: str, limit: int) -> str:

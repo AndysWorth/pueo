@@ -582,7 +582,9 @@ _TRACEBACK_HEADER = re.compile(r"^Traceback \(most recent call last\)", re.IGNOR
 
 
 _ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
-_HA_LOG_TS = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?)\s")
+_HA_LOG_TS = re.compile(
+    r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)\s"
+)
 
 
 def _strip_ansi(line: str) -> str:
@@ -593,19 +595,17 @@ def _strip_ansi(line: str) -> str:
 def _parse_ha_log_ts(line: str) -> Optional[float]:
     """Return the epoch of a `YYYY-MM-DD HH:MM:SS.fff` HA log prefix, else None.
 
-    HA logs in local time without an offset, so the value is only comparable
-    with other values from the same host.  Continuation lines (traceback
-    frames) have no prefix and return None.
+    Current HA appends an offset (``…46.863-05:00``), which is honoured; an
+    older naive stamp is read as local time, so it is only comparable with
+    other values from the same host.  Continuation lines (traceback frames)
+    have no prefix and return None.
     """
+    from utils.core.timefmt import log_ts_epoch
+
     m = _HA_LOG_TS.match(_strip_ansi(line))
     if not m:
         return None
-    text = m.group(1)
-    fmt = "%Y-%m-%d %H:%M:%S.%f" if "." in text else "%Y-%m-%d %H:%M:%S"
-    try:
-        return datetime.datetime.strptime(text, fmt).timestamp()
-    except ValueError:
-        return None
+    return log_ts_epoch(m.group(1))
 
 
 def _replay_gate(state: _LogStreamState, line_fp: str) -> bool:

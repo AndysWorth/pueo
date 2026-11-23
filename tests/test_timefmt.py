@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from utils.core.timefmt import time_markup, to_utc_iso
+from utils.core.timefmt import log_ts_epoch, time_markup, to_utc_iso
 
 _TEMPLATES = Path(__file__).resolve().parent.parent / "web" / "templates"
 
@@ -40,6 +40,32 @@ class TestToUtcIso:
     )
     def test_not_a_time(self, value):
         assert to_utc_iso(value) is None
+
+
+class TestLogTsEpoch:
+    _UTC = datetime(2026, 9, 3, 14, 22, 1, tzinfo=timezone.utc).timestamp()
+
+    def test_z_suffix_is_utc(self):
+        assert log_ts_epoch("2026-09-03 14:22:01Z") == self._UTC
+
+    def test_offset_is_applied(self):
+        assert log_ts_epoch("2026-09-03T19:22:01+05:00") == self._UTC
+        assert log_ts_epoch("2026-09-03 09:22:01-0500") == self._UTC
+
+    def test_nanosecond_fraction(self):
+        assert log_ts_epoch("2026-09-03 14:22:01.123456789Z") == pytest.approx(
+            self._UTC + 0.123456
+        )
+
+    def test_naive_is_server_local(self):
+        assert (
+            log_ts_epoch("2026-09-03 14:22:01.5")
+            == datetime(2026, 9, 3, 14, 22, 1, 500000).timestamp()
+        )
+
+    def test_invalid_returns_none(self):
+        assert log_ts_epoch("2026-13-45 99:99:99") is None
+        assert log_ts_epoch("") is None
 
 
 class TestTimeMarkup:
