@@ -627,6 +627,252 @@ class TestNetAlertXInstallerSteps1to4:
             "no deployment target" in c["subject"] for c in gate.require_approval_calls
         )
 
+    # ── adopt existing add-on ─────────────────────────────────────────────────
+
+    def test_parse_installed_fa_slug_started(self):
+        from netalertx.installer import _parse_installed_fa_slug
+
+        apps_out = (
+            "slug: some_other_addon\nstate: started\n"
+            "slug: db21ed7f_netalertx_fa\nstate: started\n"
+            "slug: unrelated\nstate: stopped\n"
+        )
+        result = _parse_installed_fa_slug(apps_out)
+        assert result == ("db21ed7f_netalertx_fa", "started")
+
+    def test_parse_installed_fa_slug_stopped(self):
+        from netalertx.installer import _parse_installed_fa_slug
+
+        apps_out = "slug: db21ed7f_netalertx_fa\nstate: stopped\n"
+        result = _parse_installed_fa_slug(apps_out)
+        assert result == ("db21ed7f_netalertx_fa", "stopped")
+
+    def test_parse_installed_fa_slug_absent(self):
+        from netalertx.installer import _parse_installed_fa_slug
+
+        apps_out = "slug: some_other_addon\nstate: started\n"
+        assert _parse_installed_fa_slug(apps_out) is None
+
+    def test_parse_installed_fa_slug_non_fa_absent(self):
+        from netalertx.installer import _parse_installed_fa_slug
+
+        apps_out = "slug: 1234abcd_netalertx\nstate: started\n"
+        assert _parse_installed_fa_slug(apps_out) is None
+
+    def test_existing_addon_plus_low_disk_adopts_without_blocked_card(
+        self, tmp_path, monkeypatch
+    ):
+        """An existing FA add-on is adopted; blocked card is NOT sent on low disk."""
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+        from utils.ha.ssh_client import FakeSSHClient
+        from netalertx.installer import run_steps_1_to_4, _read_install_state
+
+        db = _make_installer_db(tmp_path, monkeypatch)
+
+        apps_out = "slug: db21ed7f_netalertx_fa\nstate: started\n"
+        df_output = (
+            "Filesystem  1K-blocks  Used     Available  Use%  Mounted on\n"
+            "/dev/sda1   104857600  102760448  2097152  98%  /\n"
+        )
+        ssh = FakeSSHClient(
+            command_results={
+                "ha apps": (0, apps_out, ""),
+                "df -k / 2>/dev/null || df -k /": (0, df_output, ""),
+            }
+        )
+
+        notifier = MagicMock()
+        notifier.send = AsyncMock()
+        gate = MagicMock()
+        gate.require_approval = AsyncMock(return_value=True)
+
+        monkeypatch.setattr(
+            "netalertx.installer.NETALERTX_DOCKER_MIN_DISK_GB", 5.0, raising=False
+        )
+        monkeypatch.setattr(
+            "netalertx.installer.NETALERTX_ADDON_SLUG", "", raising=False
+        )
+
+        state = asyncio.run(run_steps_1_to_4(ssh, gate, notifier, db_path=db))
+
+        assert state == "ADDON_RUNNING"
+        _, details = _read_install_state(db)
+        assert details.get("adopted") is True
+        assert details.get("addon_slug") == "db21ed7f_netalertx_fa"
+        notifier.send.assert_not_called()
+
+    def test_no_addon_plus_low_disk_still_sends_blocked_card(
+        self, tmp_path, monkeypatch
+    ):
+        """Regression: when there is no existing add-on the blocked card is still sent."""
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+        from utils.ha.ssh_client import FakeSSHClient
+        from netalertx.installer import run_steps_1_to_4
+
+        db = _make_installer_db(tmp_path, monkeypatch)
+
+        df_output = (
+            "Filesystem  1K-blocks  Used     Available  Use%  Mounted on\n"
+            "/dev/sda1   104857600  102760448  2097152  98%  /\n"
+        )
+        ssh = FakeSSHClient(
+            command_results={
+                "ha apps": (0, "slug: some_other_addon\nstate: started\n", ""),
+                "df -k / 2>/dev/null || df -k /": (0, df_output, ""),
+            }
+        )
+
+        notifier = MagicMock()
+        notifier.send = AsyncMock()
+        gate = MagicMock()
+        gate.require_approval = AsyncMock(return_value=True)
+
+        monkeypatch.setattr(
+            "netalertx.installer.NETALERTX_DOCKER_MIN_DISK_GB", 5.0, raising=False
+        )
+        monkeypatch.setattr(
+            "netalertx.installer.NETALERTX_ADDON_SLUG", "", raising=False
+        )
+
+        state = asyncio.run(run_steps_1_to_4(ssh, gate, notifier, db_path=db))
+
+        assert state == "NOT_INSTALLED"
+        notifier.send.assert_called_once()
+
+    def test_ha_apps_ssh_error_falls_through_to_disk_preflight(
+        self, tmp_path, monkeypatch
+    ):
+        """When `ha apps` fails, adoption is skipped and disk preflight runs normally."""
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+        from utils.ha.ssh_client import FakeSSHClient
+        from netalertx.installer import run_steps_1_to_4
+
+        db = _make_installer_db(tmp_path, monkeypatch)
+
+        # ha apps raises an SSH-level error (non-zero exit code returns no slug)
+        ssh = FakeSSHClient(
+            command_results={
+                "ha apps": (1, "", "connection refused"),
+                "ha supervisor info": (0, "supervisor_info: ok", ""),
+                "ip route show default": (0, "default via 192.168.1.1 dev eth0", ""),
+                "ha store repositories list": (
+                    0,
+                    "https://github.com/alexbelgium/hassio-addons",
+                    "",
+                ),
+                "ha store addons": (
+                    0,
+                    "slug: netalertx_fa\nrepository: alexbelgium",
+                    "",
+                ),
+            }
+        )
+
+        notifier = MagicMock()
+        notifier.send = AsyncMock()
+        gate = MagicMock()
+        gate.require_approval = AsyncMock(return_value=True)
+
+        monkeypatch.setattr(
+            "netalertx.installer.NETALERTX_ADDON_SLUG", "", raising=False
+        )
+        monkeypatch.setattr("netalertx.installer.NETALERTX_SCAN_INTERFACE", "eth0")
+
+        state = asyncio.run(run_steps_1_to_4(ssh, gate, notifier, db_path=db))
+
+        # Falls through to normal step 1 execution
+        assert state == "ADDON_REPO_ADDED"
+
+    def test_adopted_step6_skips_app_conf_write(self, tmp_path, monkeypatch):
+        """Step 6 on an adopted install writes NETALERTX_CONFIGURED without touching app.conf."""
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+        from netalertx.installer import _step6_configure_app_conf, _read_install_state
+
+        db = _make_installer_db_at_state(
+            tmp_path,
+            monkeypatch,
+            "ADDON_RUNNING",
+            {"mode": "addon", "addon_slug": "db21ed7f_netalertx_fa", "adopted": True},
+        )
+
+        write_app_conf_calls = []
+
+        async def _fake_write(*a, **kw):
+            write_app_conf_calls.append(a)
+            return "diff"
+
+        monkeypatch.setattr(
+            "netalertx.app_conf.write_app_conf", _fake_write, raising=False
+        )
+        monkeypatch.setattr(
+            "netalertx.installer.NETALERTX_SIDEBAR", False, raising=False
+        )
+
+        ssh = MagicMock()
+        ssh.run = AsyncMock(return_value=(0, "", ""))
+        gate = MagicMock()
+        gate.require_approval = AsyncMock(return_value=True)
+        notifier = MagicMock()
+        notifier.send = AsyncMock()
+        http_client = MagicMock()
+        http_client.get = AsyncMock(return_value=MagicMock(status_code=200))
+
+        _, details = _read_install_state(db)
+
+        result = asyncio.run(
+            _step6_configure_app_conf(
+                ssh, gate, notifier, details, "cid", db, http_client
+            )
+        )
+
+        assert result is True
+        assert write_app_conf_calls == []
+        state, _ = _read_install_state(db)
+        assert state == "NETALERTX_CONFIGURED"
+
+    def test_adopted_stale_blocked_card_resolved(self, tmp_path, monkeypatch):
+        """The netalertx:install_blocked card row is resolved when adoption succeeds."""
+        import asyncio
+        import sqlite3
+        from unittest.mock import AsyncMock, MagicMock
+        from utils.ha.ssh_client import FakeSSHClient
+        from netalertx.installer import run_steps_1_to_4
+
+        db = _make_installer_db(tmp_path, monkeypatch)
+
+        # Insert a pending blocked card row
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO hitl_suppression (card_key, card_type, first_sent_at, last_sent_at)"
+                " VALUES ('netalertx:install_blocked', 'netalertx_install_blocked', 1700000000, 1700000000)"
+            )
+
+        apps_out = "slug: db21ed7f_netalertx_fa\nstate: started\n"
+        ssh = FakeSSHClient(command_results={"ha apps": (0, apps_out, "")})
+
+        notifier = MagicMock()
+        notifier.send = AsyncMock()
+        gate = MagicMock()
+        gate.require_approval = AsyncMock(return_value=True)
+
+        monkeypatch.setattr(
+            "netalertx.installer.NETALERTX_ADDON_SLUG", "", raising=False
+        )
+
+        asyncio.run(run_steps_1_to_4(ssh, gate, notifier, db_path=db))
+
+        with sqlite3.connect(db) as conn:
+            row = conn.execute(
+                "SELECT resolved_at FROM hitl_suppression"
+                " WHERE card_key = 'netalertx:install_blocked'"
+            ).fetchone()
+        assert row is not None
+        assert row[0] is not None, "resolved_at should be set after adoption"
+
     # ── step 2 (legacy — mosquitto step removed) ──────────────────────────────
 
     def test_normalize_addon_state_maps_started_to_running(self):
