@@ -577,6 +577,10 @@ OPENAI_COMPAT_MODEL_VAL="${OPENAI_COMPAT_MODEL_VAL:-qwen2.5-coder:7b}"
 NAX_DOCKER_CONFIG_PATH=""
 NAX_API_TOKEN=""
 NAX_SIDEBAR=true
+NAX_ADDON_SLUG=""
+_NAX_ALREADY_INSTALLED=false
+_SPOOK_STATE="absent"
+_ADVISOR_STATE="absent"
 HA_KNOWN_VERSION=""
 MCP_ENABLED=false
 MCP_PORT=8765
@@ -714,6 +718,36 @@ if $WRITE_CONFIG; then
             warn "Could not determine HA version — known_version will be empty in config.yaml"
         fi
 
+        # Detect existing NetAlertX FA add-on
+        _NAX_ALREADY_INSTALLED=false
+        _nax_slug_line=$($_SSH "ha apps 2>/dev/null | grep -o 'slug: [^ ]*netalertx_fa[^ ]*'" 2>/dev/null || echo "")
+        if [[ -n "$_nax_slug_line" ]]; then
+            NAX_ADDON_SLUG="${_nax_slug_line#slug: }"
+            _NAX_ALREADY_INSTALLED=true
+            ok "NetAlertX Full Access already installed (${NAX_ADDON_SLUG}) — Pueo will adopt it"
+        fi
+
+        # Detect existing companion integrations (Spook, ha-upgrade-advisor)
+        # State: "configured" | "downloaded" | "absent"
+        _detect_companion() {
+            local domain="$1"
+            if $_SSH "test -d /config/custom_components/${domain}" 2>/dev/null; then
+                if $_SSH "grep -q '\"domain\": \"${domain}\"' /config/.storage/core.config_entries" 2>/dev/null; then
+                    echo "configured"
+                else
+                    echo "downloaded"
+                fi
+            else
+                echo "absent"
+            fi
+        }
+        _SPOOK_STATE=$(_detect_companion "spook" 2>/dev/null || echo "absent")
+        _ADVISOR_STATE=$(_detect_companion "upgrade_advisor" 2>/dev/null || echo "absent")
+        [[ "$_SPOOK_STATE"  == "configured" ]] && ok "Spook already installed and configured"
+        [[ "$_SPOOK_STATE"  == "downloaded" ]] && info "Spook downloaded but not yet configured"
+        [[ "$_ADVISOR_STATE" == "configured" ]] && ok "ha-upgrade-advisor already installed and configured"
+        [[ "$_ADVISOR_STATE" == "downloaded" ]] && info "ha-upgrade-advisor downloaded but not yet configured"
+
     else
         warn "SSH connection failed — check that ${HA_HOST} is reachable and the key is authorized."
         warn "Test manually: ssh -i ${HA_SSH_KEY} ${HA_USER}@${HA_HOST}"
@@ -721,14 +755,21 @@ if $WRITE_CONFIG; then
 
     echo
     echo "  ── NetAlertX ──────────────────────────────────────────────────"
-    echo "  NetAlertX is a network-presence monitor that Pueo can install"
-    echo "  and manage automatically once the Pueo supervisor is running."
-    echo "  If you say yes, Pueo will install and configure it on first start."
-    echo "  You can change this later by editing netalertx.setup_desired in config.yaml."
-    echo
-    read -rp "  Set up NetAlertX automatically when Pueo runs? [Y/n]: " nax_setup_ans
     NAX_SETUP_DESIRED=false
-    [[ "${nax_setup_ans:-Y}" =~ ^[Yy] ]] && NAX_SETUP_DESIRED=true
+    if $_NAX_ALREADY_INSTALLED; then
+        echo "  NetAlertX Full Access (${NAX_ADDON_SLUG}) is already installed."
+        echo "  Pueo will adopt it automatically on first start."
+        echo "  You can change this later by editing netalertx.setup_desired in config.yaml."
+        NAX_SETUP_DESIRED=true
+    else
+        echo "  NetAlertX is a network-presence monitor that Pueo can install"
+        echo "  and manage automatically once the Pueo supervisor is running."
+        echo "  If you say yes, Pueo will install and configure it on first start."
+        echo "  You can change this later by editing netalertx.setup_desired in config.yaml."
+        echo
+        read -rp "  Set up NetAlertX automatically when Pueo runs? [Y/n]: " nax_setup_ans
+        [[ "${nax_setup_ans:-Y}" =~ ^[Yy] ]] && NAX_SETUP_DESIRED=true
+    fi
 
     # Deploy target: HA add-on (default) or separate Docker machine
     NAX_DEPLOY_TARGET="ha"
@@ -736,54 +777,60 @@ if $WRITE_CONFIG; then
     NAX_DOCKER_SSH_USER=""
     NAX_DOCKER_SSH_KEY_PATH=""
     if $NAX_SETUP_DESIRED; then
-        echo
-        echo "  ── NetAlertX deploy target ─────────────────────────────────────"
-        echo "  NetAlertX can be installed as a Home Assistant add-on (default)"
-        echo "  or on a separate machine running Docker (recommended if HA disk"
-        echo "  space is limited — the add-on database grows with your network)."
-        echo
-        read -rp "  Install on separate Docker machine instead of HA? [y/N]: " nax_docker_ans
-        if [[ "${nax_docker_ans:-N}" =~ ^[Yy] ]]; then
-            NAX_DEPLOY_TARGET="docker"
+        if ! $_NAX_ALREADY_INSTALLED; then
             echo
-            ask "Docker host IP or hostname" "" NAX_DOCKER_HOST
-            ask "SSH user on Docker host" "$(whoami)" NAX_DOCKER_SSH_USER
-            ask "SSH key path for Docker host (blank = same as HA key)" "" NAX_DOCKER_SSH_KEY_PATH
+            echo "  ── NetAlertX deploy target ─────────────────────────────────────"
+            echo "  NetAlertX can be installed as a Home Assistant add-on (default)"
+            echo "  or on a separate machine running Docker (recommended if HA disk"
+            echo "  space is limited — the add-on database grows with your network)."
             echo
-            echo "  NetAlertX config files will be written to this directory on the Docker host."
-            echo "  The directory MUST be writable by the SSH user."
-            ask "NetAlertX config path on Docker host" "/opt/netalertx/config" NAX_DOCKER_CONFIG_PATH
-            if [[ -n "$NAX_DOCKER_HOST" ]]; then
-                _DOCKER_SSH="ssh -i ${NAX_DOCKER_SSH_KEY_PATH:-$HA_SSH_KEY} \
-                    -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
-                    ${NAX_DOCKER_SSH_USER:-$(whoami)}@${NAX_DOCKER_HOST}"
-                if $_DOCKER_SSH "echo ok" &>/dev/null 2>&1; then
-                    ok "SSH to Docker host (${NAX_DOCKER_HOST}) succeeded"
-                    docker_avail_gb=$({ $_DOCKER_SSH "df -k /opt 2>/dev/null || df -k /" 2>/dev/null || true; } \
-                        | awk 'NR==2{printf "%d", $4/1048576}')
-                    if [[ -n "$docker_avail_gb" && "$docker_avail_gb" -ge 5 ]]; then
-                        ok "Docker host disk: ${docker_avail_gb} GB free (≥ 5 GB required)"
-                    elif [[ -n "$docker_avail_gb" ]]; then
-                        warn "Docker host disk: only ${docker_avail_gb} GB free (5 GB recommended)"
-                        warn "NetAlertX install may fail. Free space before running."
+            read -rp "  Install on separate Docker machine instead of HA? [y/N]: " nax_docker_ans
+            if [[ "${nax_docker_ans:-N}" =~ ^[Yy] ]]; then
+                NAX_DEPLOY_TARGET="docker"
+                echo
+                ask "Docker host IP or hostname" "" NAX_DOCKER_HOST
+                ask "SSH user on Docker host" "$(whoami)" NAX_DOCKER_SSH_USER
+                ask "SSH key path for Docker host (blank = same as HA key)" "" NAX_DOCKER_SSH_KEY_PATH
+                echo
+                echo "  NetAlertX config files will be written to this directory on the Docker host."
+                echo "  The directory MUST be writable by the SSH user."
+                ask "NetAlertX config path on Docker host" "/opt/netalertx/config" NAX_DOCKER_CONFIG_PATH
+                if [[ -n "$NAX_DOCKER_HOST" ]]; then
+                    _DOCKER_SSH="ssh -i ${NAX_DOCKER_SSH_KEY_PATH:-$HA_SSH_KEY} \
+                        -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
+                        ${NAX_DOCKER_SSH_USER:-$(whoami)}@${NAX_DOCKER_HOST}"
+                    if $_DOCKER_SSH "echo ok" &>/dev/null 2>&1; then
+                        ok "SSH to Docker host (${NAX_DOCKER_HOST}) succeeded"
+                        docker_avail_gb=$({ $_DOCKER_SSH "df -k /opt 2>/dev/null || df -k /" 2>/dev/null || true; } \
+                            | awk 'NR==2{printf "%d", $4/1048576}')
+                        if [[ -n "$docker_avail_gb" && "$docker_avail_gb" -ge 5 ]]; then
+                            ok "Docker host disk: ${docker_avail_gb} GB free (≥ 5 GB required)"
+                        elif [[ -n "$docker_avail_gb" ]]; then
+                            warn "Docker host disk: only ${docker_avail_gb} GB free (5 GB recommended)"
+                            warn "NetAlertX install may fail. Free space before running."
+                        fi
+                    else
+                        warn "SSH to Docker host (${NAX_DOCKER_HOST}) failed — check credentials."
+                        warn "You can edit config.yaml later and run: pueo --mode netalertx-docker-setup"
                     fi
-                else
-                    warn "SSH to Docker host (${NAX_DOCKER_HOST}) failed — check credentials."
-                    warn "You can edit config.yaml later and run: pueo --mode netalertx-docker-setup"
                 fi
             fi
         fi
 
         echo
-        echo "  NOTE: The NetAlertX API token can only be generated AFTER NetAlertX is"
-        echo "  installed. If this is your first run, press Enter to skip."
-        echo "  Once NetAlertX is running, find it at:"
-        echo "    NetAlertX web UI → Settings → Main Settings → API Key"
-        echo "  Then re-run setup.sh or edit config.yaml directly."
-        echo
-        ask_secret "NetAlertX API token, blank = set after first install (hidden)" NAX_API_TOKEN
+        if $_NAX_ALREADY_INSTALLED; then
+            info "Pueo reads the NetAlertX API token automatically on first start."
+        else
+            echo "  NOTE: The NetAlertX API token can only be generated AFTER NetAlertX is"
+            echo "  installed. If this is your first run, press Enter to skip."
+            echo "  Once NetAlertX is running, find it at:"
+            echo "    NetAlertX web UI → Settings → Main Settings → API Key"
+            echo "  Then re-run setup.sh or edit config.yaml directly."
+            echo
+            ask_secret "NetAlertX API token, blank = set after first install (hidden)" NAX_API_TOKEN
+            echo
+        fi
 
-        echo
         read -rp "  Add NetAlertX to the HA sidebar? [Y/n]: " nax_sidebar_ans
         NAX_SIDEBAR=true
         [[ "${nax_sidebar_ans:-Y}" =~ ^[Nn] ]] && NAX_SIDEBAR=false
@@ -821,19 +868,29 @@ if $WRITE_CONFIG; then
     echo "  Pueo uses it automatically when detected; it is not required."
     echo "  Docs: https://spook.boo"
     echo
-    read -rp "  Install and set up Spook now? Pueo downloads it via HACS, takes a backup, and restarts HA [y/N]: " _spook_setup_ans
-    if [[ "${_spook_setup_ans:-N}" =~ ^[Yy] ]]; then
-        if [[ "$DEPLOY_MODE" == "docker" ]]; then
-            info "Docker mode — run the following after 'docker compose up -d' to install Spook:"
-            echo "    docker exec pueo-agent python main.py --config /config/config.yaml --mode companion-setup --companion spook"
-        else
-            ok "Installing Spook (this takes a backup and restarts HA Core)…"
-            .venv/bin/python main.py --config "$PRIMARY_CONFIG" --mode companion-setup --companion spook \
-                || _companion_browser_fallback "Spook" "https://my.home-assistant.io/redirect/hacs_repository/?owner=frenck&repository=spook&category=integration"
-        fi
+    if [[ "$_SPOOK_STATE" == "configured" ]]; then
+        ok "Spook is already installed and configured — skipping."
     else
-        info "Skipping — Pueo will use Spook automatically if you install it later."
-        info "  Run later: python main.py --mode companion-setup --companion spook"
+        if [[ "$_SPOOK_STATE" == "downloaded" ]]; then
+            read -rp "  Spook is downloaded but not yet configured. Finish setup now? [Y/n]: " _spook_setup_ans
+            _spook_run="${_spook_setup_ans:-Y}"
+        else
+            read -rp "  Install and set up Spook now? Pueo downloads it via HACS, takes a backup, and restarts HA [y/N]: " _spook_setup_ans
+            _spook_run="${_spook_setup_ans:-N}"
+        fi
+        if [[ "$_spook_run" =~ ^[Yy] ]]; then
+            if [[ "$DEPLOY_MODE" == "docker" ]]; then
+                info "Docker mode — run the following after 'docker compose up -d' to install Spook:"
+                echo "    docker exec pueo-agent python main.py --config /config/config.yaml --mode companion-setup --companion spook"
+            else
+                ok "Installing Spook (this takes a backup and restarts HA Core)…"
+                .venv/bin/python main.py --config "$PRIMARY_CONFIG" --mode companion-setup --companion spook \
+                    || _companion_browser_fallback "Spook" "https://my.home-assistant.io/redirect/hacs_repository/?owner=frenck&repository=spook&category=integration"
+            fi
+        else
+            info "Skipping — Pueo will use Spook automatically if you install it later."
+            info "  Run later: python main.py --mode companion-setup --companion spook"
+        fi
     fi
 
     echo
@@ -842,41 +899,51 @@ if $WRITE_CONFIG; then
     echo "  for breaking changes before you apply them.  Pueo reads its report"
     echo "  as a second opinion during update analysis; it is not required."
     echo
-    read -rp "  Install and set up ha-upgrade-advisor now? Pueo downloads it via HACS, takes a backup, and restarts HA [y/N]: " _advisor_setup_ans
-    if [[ "${_advisor_setup_ans:-N}" =~ ^[Yy] ]]; then
-        _ADVISOR_AGENT_ID=""
-        if [[ "$DEPLOY_MODE" != "docker" ]]; then
-            ok "Listing available HA conversation agents…"
-            _AGENT_LIST=$(.venv/bin/python main.py --config "$PRIMARY_CONFIG" --mode companion-setup --list-agents 2>&1) || true
-            echo "$_AGENT_LIST"
-            echo
-            if echo "$_AGENT_LIST" | grep -q "^  "; then
-                read -rp "  Enter the agent id to use with ha-upgrade-advisor (or press Enter to skip): " _ADVISOR_AGENT_ID
-            else
-                warn "  No conversation agents found. Install an LLM conversation integration first"
-                warn "  (e.g. the HA Ollama integration pointed at Pueo's Ollama endpoint)."
-                warn "  Then re-run: python main.py --mode companion-setup --companion upgrade_advisor --agent-id <id>"
-                _advisor_setup_ans="N"
-            fi
-        fi
-
-        if [[ "${_advisor_setup_ans:-N}" =~ ^[Yy] ]]; then
-            if [[ "$DEPLOY_MODE" == "docker" ]]; then
-                info "Docker mode — run the following after 'docker compose up -d' to install ha-upgrade-advisor:"
-                echo "    docker exec pueo-agent python main.py --config /config/config.yaml --mode companion-setup --companion upgrade_advisor [--agent-id <agent-id>]"
-                info "  List available agents first:"
-                echo "    docker exec pueo-agent python main.py --config /config/config.yaml --mode companion-setup --list-agents"
-            else
-                _advisor_cmd=".venv/bin/python main.py --config \"$PRIMARY_CONFIG\" --mode companion-setup --companion upgrade_advisor"
-                [[ -n "$_ADVISOR_AGENT_ID" ]] && _advisor_cmd="$_advisor_cmd --agent-id \"$_ADVISOR_AGENT_ID\""
-                ok "Installing ha-upgrade-advisor (this takes a backup and restarts HA Core)…"
-                eval "$_advisor_cmd" \
-                    || _companion_browser_fallback "ha-upgrade-advisor" "https://my.home-assistant.io/redirect/hacs_repository/?owner=brianegge&repository=ha-upgrade-advisor&category=integration"
-            fi
-        fi
+    if [[ "$_ADVISOR_STATE" == "configured" ]]; then
+        ok "ha-upgrade-advisor is already installed and configured — skipping."
     else
-        info "Skipping — Pueo will use ha-upgrade-advisor automatically if you install it later."
-        info "  Run later: python main.py --mode companion-setup --companion upgrade_advisor"
+        if [[ "$_ADVISOR_STATE" == "downloaded" ]]; then
+            read -rp "  ha-upgrade-advisor is downloaded but not yet configured. Finish setup now? [Y/n]: " _advisor_setup_ans
+            _advisor_run="${_advisor_setup_ans:-Y}"
+        else
+            read -rp "  Install and set up ha-upgrade-advisor now? Pueo downloads it via HACS, takes a backup, and restarts HA [y/N]: " _advisor_setup_ans
+            _advisor_run="${_advisor_setup_ans:-N}"
+        fi
+        if [[ "$_advisor_run" =~ ^[Yy] ]]; then
+            _ADVISOR_AGENT_ID=""
+            if [[ "$DEPLOY_MODE" != "docker" ]]; then
+                ok "Listing available HA conversation agents…"
+                _AGENT_LIST=$(.venv/bin/python main.py --config "$PRIMARY_CONFIG" --mode companion-setup --list-agents 2>&1) || true
+                echo "$_AGENT_LIST"
+                echo
+                if echo "$_AGENT_LIST" | grep -q "^  "; then
+                    read -rp "  Enter the agent id to use with ha-upgrade-advisor (or press Enter to skip): " _ADVISOR_AGENT_ID
+                else
+                    warn "  No conversation agents found. Install an LLM conversation integration first"
+                    warn "  (e.g. the HA Ollama integration pointed at Pueo's Ollama endpoint)."
+                    warn "  Then re-run: python main.py --mode companion-setup --companion upgrade_advisor --agent-id <id>"
+                    _advisor_run="N"
+                fi
+            fi
+
+            if [[ "$_advisor_run" =~ ^[Yy] ]]; then
+                if [[ "$DEPLOY_MODE" == "docker" ]]; then
+                    info "Docker mode — run the following after 'docker compose up -d' to install ha-upgrade-advisor:"
+                    echo "    docker exec pueo-agent python main.py --config /config/config.yaml --mode companion-setup --companion upgrade_advisor [--agent-id <agent-id>]"
+                    info "  List available agents first:"
+                    echo "    docker exec pueo-agent python main.py --config /config/config.yaml --mode companion-setup --list-agents"
+                else
+                    _advisor_cmd=".venv/bin/python main.py --config \"$PRIMARY_CONFIG\" --mode companion-setup --companion upgrade_advisor"
+                    [[ -n "$_ADVISOR_AGENT_ID" ]] && _advisor_cmd="$_advisor_cmd --agent-id \"$_ADVISOR_AGENT_ID\""
+                    ok "Installing ha-upgrade-advisor (this takes a backup and restarts HA Core)…"
+                    eval "$_advisor_cmd" \
+                        || _companion_browser_fallback "ha-upgrade-advisor" "https://my.home-assistant.io/redirect/hacs_repository/?owner=brianegge&repository=ha-upgrade-advisor&category=integration"
+                fi
+            fi
+        else
+            info "Skipping — Pueo will use ha-upgrade-advisor automatically if you install it later."
+            info "  Run later: python main.py --mode companion-setup --companion upgrade_advisor"
+        fi
     fi
 
     # ── Write config ─────────────────────────────────────────────────────────────
@@ -928,6 +995,7 @@ netalertx:
   docker_config_path: "${NAX_DOCKER_CONFIG_PATH}"
   docker_image: "ghcr.io/netalertx/netalertx:latest"
   docker_min_disk_gb: 5.0
+  addon_slug: "${NAX_ADDON_SLUG}"
   # Advanced tuning — edit config.yaml directly to override these defaults:
   # host: <same as home_assistant.host>
   # api_port: 20212
@@ -935,7 +1003,6 @@ netalertx:
   # ssh_user: <same as home_assistant.user>
   # ssh_key_path: <same as home_assistant.ssh_key_path>
   # addon_repository_url: https://github.com/alexbelgium/hassio-addons
-  # addon_slug: ""            # blank = auto-resolved from Supervisor store
   # scan_interface: ""        # blank = auto-detected from default route
   # auto_generated_name_patterns: ["^unknown-", "^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$"]
   # max_scan_age_minutes: 20
