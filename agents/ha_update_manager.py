@@ -1675,6 +1675,48 @@ async def _run_update_analysis(
                 except Exception as _ev_exc:
                     log.warning("core_bc_evidence_failed", error=str(_ev_exc))
 
+                # Step 3b: related instance events — 30-day lookback per patch domain (#1308)
+                try:
+                    from utils.ha.update_bc_evidence import (
+                        recent_instance_events_for_domains as _recent_ev,
+                    )
+                    import sqlite3 as _sqlite3
+
+                    _patch_domains = list(_rpt.patch_changes_by_domain.keys())
+                    if _patch_domains:
+
+                        def _query_related(
+                            domains: list = _patch_domains,
+                        ) -> dict:
+                            with _sqlite3.connect(DB_PATH) as _conn:
+                                return _recent_ev(_conn, domains)
+
+                        _related = await asyncio.to_thread(_query_related)
+                        if _related:
+                            _rpt.related_instance_events = _related
+                            _ev_path2 = (
+                                _get_dirs().state_dir
+                                / "update_reports"
+                                / f"core_{update.latest_version}.json"
+                            )
+                            if _ev_path2.exists():
+                                try:
+                                    _ev_path2.write_text(
+                                        _rpt.model_dump_json(indent=2),
+                                        encoding="utf-8",
+                                    )
+                                except Exception:  # nosec B110
+                                    pass
+                            log.info(
+                                "core_related_instance_events_built",
+                                version=update.latest_version,
+                                domains_with_events=len(_related),
+                            )
+                except Exception as _rel_exc:
+                    log.warning(
+                        "core_related_instance_events_failed", error=str(_rel_exc)
+                    )
+
             # Step 4 (new): per-BC assessment pass
             if _rpt is not None and (list(_rpt.bc_installed) + list(_rpt.bc_general)):
                 from utils.agent.tool_registry import build_bc_assessment_registry

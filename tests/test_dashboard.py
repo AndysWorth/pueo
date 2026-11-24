@@ -12466,6 +12466,53 @@ class TestUpdateReportRoute:
         html = client.get("/queue").text
         assert "Fixes for your integrations" not in html
 
+    def test_update_card_shows_may_relate_line(self, tmp_path, monkeypatch):
+        """Index card shows 'May relate' line inside domain group when related events present."""
+        import json as _json
+        import time as _time
+
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        nid = "upd_mayrelate_test"
+        (tmp_path / f"{nid}.json").write_text(
+            _json.dumps(
+                {
+                    "notification_id": nid,
+                    "subject": "Update available: core 2026.11.3",
+                    "body": "Core 2026.11.2 → 2026.11.3",
+                    "payload": {
+                        "card_type": "update",
+                        "component": "homeassistant",
+                        "installed_version": "2026.11.2",
+                        "latest_version": "2026.11.3",
+                        "patch_changes": [
+                            {
+                                "domain": "sonos",
+                                "text": "Fix polling interval",
+                                "prs": ["99902"],
+                            }
+                        ],
+                        "related_instance_events": {
+                            "sonos": [
+                                {
+                                    "ts": _time.time() - 86400,
+                                    "summary": "Device offline 261 min: Shadow Black",
+                                    "source": "timeline_events",
+                                }
+                            ]
+                        },
+                    },
+                    "sent_at": int(_time.time()) - 30,
+                }
+            )
+        )
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/queue").text
+        assert "May relate" in html
+        assert "Shadow Black" in html
+
     def test_update_report_shows_patch_changes(self, pueo_dirs, monkeypatch):
         """update_report.html renders patch fixes by domain with PR links."""
         import web.dashboard as dashboard

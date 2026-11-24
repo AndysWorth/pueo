@@ -482,3 +482,18 @@ already showing `cpe …:yellow` and `kernel 6.18.39-haos-raspi`.
 `web/templates/update_report.html`: "🔧 Patch Fixes for Your Integrations" section renders `patch_changes_by_domain` from the `CoreReleaseReport` directly (not from the card payload), with `core` first and PR links.
 
 No LLM involvement; the list is deterministic from the parsed patch notes.
+
+## Amendment — S4: "May relate" cross-reference (#1308, 2026-11-24)
+
+`CoreReleaseReport.related_instance_events` (new field, backward-compatible default `{}`): a dict keyed by integration domain, each value a list of `{ts, summary, source}` dicts (newest-first, capped at 3).  Populated after `build_bc_evidence` by `recent_instance_events_for_domains(conn, domains)` in `utils/ha/update_bc_evidence.py`.
+
+Sources — all use **exact domain match** (never substring):
+- `session_outcomes`: signatures matching `device:offline:<domain>`, `repair:<domain>:…`, `log:homeassistant_components_<domain>:…`, `lovelace:<domain>:…`, `setup:integration:<domain>` within the last 30 days.
+- `ha_repair_history`: unresolved `issue_key` values starting with `<domain>/` within 30 days.
+- `timeline_events`: WARN/ERROR rows with `detail_json.domain == domain` within 30 days.
+
+`_finish_update_analysis` adds `payload["related_instance_events"]` (empty dict when no events).  No LLM, no effect on verdicts or `instance_impact`.
+
+`index.html`: inside each domain's fix list, one italic "May relate: `<summary>` (`<date>`)" line per event.  Uses `localtime('date')` per the local-time rule.
+
+Amends: ADR 046 (card payload extended), ADR 049 (procedure only: no distillation path).

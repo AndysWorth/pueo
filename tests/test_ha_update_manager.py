@@ -8357,6 +8357,253 @@ class TestFinishUpdateAnalysisReportPayload:
         payload = notifier.send.call_args.kwargs["payload"]
         assert len(payload["patch_changes"]) == 40
 
+    def test_related_instance_events_in_payload(self, pueo_dirs):
+        """related_instance_events from report appears in payload."""
+        from utils.knowledge.ha_release_report import ChangeEntry, CoreReleaseReport
+
+        executor, notifier = self._make_executor()
+        executor.set_update_status(self._make_update())
+        import time
+
+        rpt = CoreReleaseReport(
+            version="2026.11.1",
+            patch_changes_by_domain={
+                "sonos": [ChangeEntry(text="Fix Sonos polling", prs=["999"])],
+            },
+            related_instance_events={
+                "sonos": [
+                    {
+                        "ts": time.time() - 86400,
+                        "summary": "Device offline 261 min: Shadow Black",
+                        "source": "timeline_events",
+                    }
+                ]
+            },
+            completeness="complete",
+        )
+        executor.adopt_core_release_report(rpt)
+        self._run(executor)
+        payload = notifier.send.call_args.kwargs["payload"]
+        assert "related_instance_events" in payload
+        assert "sonos" in payload["related_instance_events"]
+        ev = payload["related_instance_events"]["sonos"][0]
+        assert "Shadow Black" in ev["summary"]
+        assert ev["source"] == "timeline_events"
+
+    def test_related_instance_events_empty_when_no_report(self, pueo_dirs):
+        """related_instance_events is empty dict when no CoreReleaseReport set."""
+        executor, notifier = self._make_executor()
+        executor.set_update_status(self._make_update())
+        self._run(executor)
+        payload = notifier.send.call_args.kwargs["payload"]
+        assert payload["related_instance_events"] == {}
+
+
+class TestRecentInstanceEventsForDomains:
+    """Tests for recent_instance_events_for_domains helper."""
+
+    def _make_db(self, tmp_path):
+        import sqlite3
+
+        db = tmp_path / "test.db"
+        conn = sqlite3.connect(str(db))
+        conn.execute(
+            "CREATE TABLE session_outcomes (episode_id TEXT PRIMARY KEY, signature TEXT,"
+            " created_at TEXT)"
+        )
+        conn.execute(
+            "CREATE TABLE ha_repair_history (issue_key TEXT PRIMARY KEY,"
+            " first_seen_at REAL, resolved_at REAL)"
+        )
+        conn.execute(
+            "CREATE TABLE timeline_events (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " ts REAL, level TEXT, source TEXT, message TEXT, detail_json TEXT)"
+        )
+        conn.commit()
+        return conn
+
+    def _now_iso(self, offset_days=0):
+        import datetime
+
+        dt = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(
+            days=offset_days
+        )
+        return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def test_session_outcomes_device_offline(self, tmp_path):
+        """device:offline:<domain> signature maps to domain."""
+        from utils.ha.update_bc_evidence import recent_instance_events_for_domains
+
+        conn = self._make_db(tmp_path)
+        conn.execute(
+            "INSERT INTO session_outcomes VALUES (?,?,?)",
+            ("ep1", "device:offline:sonos", self._now_iso(5)),
+        )
+        conn.commit()
+        result = recent_instance_events_for_domains(conn, ["sonos"])
+        assert "sonos" in result
+        assert any("sonos" in e["summary"] for e in result["sonos"])
+
+    def test_session_outcomes_repair(self, tmp_path):
+        """repair:<domain>:... signature maps to domain."""
+        from utils.ha.update_bc_evidence import recent_instance_events_for_domains
+
+        conn = self._make_db(tmp_path)
+        conn.execute(
+            "INSERT INTO session_outcomes VALUES (?,?,?)",
+            ("ep2", "repair:mqtt:config_entry_not_loaded", self._now_iso(2)),
+        )
+        conn.commit()
+        result = recent_instance_events_for_domains(conn, ["mqtt"])
+        assert "mqtt" in result
+
+    def test_session_outcomes_log_component(self, tmp_path):
+        """log:homeassistant_components_<domain>:... maps to domain."""
+        from utils.ha.update_bc_evidence import recent_instance_events_for_domains
+
+        conn = self._make_db(tmp_path)
+        conn.execute(
+            "INSERT INTO session_outcomes VALUES (?,?,?)",
+            (
+                "ep3",
+                "log:homeassistant_components_sonos:connectionerror",
+                self._now_iso(3),
+            ),
+        )
+        conn.commit()
+        result = recent_instance_events_for_domains(conn, ["sonos"])
+        assert "sonos" in result
+
+    def test_ha_repair_history_unresolved(self, tmp_path):
+        """Unresolved repair issue_key starting with '<domain>/' matches."""
+        import time
+
+        from utils.ha.update_bc_evidence import recent_instance_events_for_domains
+
+        conn = self._make_db(tmp_path)
+        conn.execute(
+            "INSERT INTO ha_repair_history VALUES (?,?,?)",
+            ("sonos/speaker_unavailable", time.time() - 86400, None),
+        )
+        conn.commit()
+        result = recent_instance_events_for_domains(conn, ["sonos"])
+        assert "sonos" in result
+        assert any("sonos/speaker_unavailable" in e["summary"] for e in result["sonos"])
+
+    def test_timeline_events_domain_match(self, tmp_path):
+        """WARN timeline_events with detail_json.domain matches exact domain."""
+        import json
+        import time
+
+        from utils.ha.update_bc_evidence import recent_instance_events_for_domains
+
+        conn = self._make_db(tmp_path)
+        conn.execute(
+            "INSERT INTO timeline_events (ts, level, source, message, detail_json)"
+            " VALUES (?,?,?,?,?)",
+            (
+                time.time() - 7200,
+                "WARNING",
+                "device_availability_poll",
+                "Device offline 261 min: Shadow Black",
+                json.dumps({"domain": "sonos", "devices": []}),
+            ),
+        )
+        conn.commit()
+        result = recent_instance_events_for_domains(conn, ["sonos"])
+        assert "sonos" in result
+        assert any("Shadow Black" in e["summary"] for e in result["sonos"])
+
+    def test_exact_domain_no_substring_match(self, tmp_path):
+        """'sonos' query does not match 'sonos_extra' detail_json domain."""
+        import json
+        import time
+
+        from utils.ha.update_bc_evidence import recent_instance_events_for_domains
+
+        conn = self._make_db(tmp_path)
+        conn.execute(
+            "INSERT INTO timeline_events (ts, level, source, message, detail_json)"
+            " VALUES (?,?,?,?,?)",
+            (
+                time.time() - 3600,
+                "WARNING",
+                "device_availability_poll",
+                "Device offline: other device",
+                json.dumps({"domain": "sonos_extra", "devices": []}),
+            ),
+        )
+        conn.commit()
+        result = recent_instance_events_for_domains(conn, ["sonos"])
+        assert "sonos" not in result
+
+    def test_30_day_window_excludes_old_events(self, tmp_path):
+        """Events older than 30 days are excluded."""
+        import time
+
+        from utils.ha.update_bc_evidence import recent_instance_events_for_domains
+
+        conn = self._make_db(tmp_path)
+        # 31 days ago — outside window
+        conn.execute(
+            "INSERT INTO ha_repair_history VALUES (?,?,?)",
+            ("sonos/old_issue", time.time() - 31 * 86400, None),
+        )
+        conn.commit()
+        result = recent_instance_events_for_domains(conn, ["sonos"])
+        assert "sonos" not in result
+
+    def test_cap_at_3_per_domain(self, tmp_path):
+        """At most 3 events are returned per domain."""
+        import time
+
+        from utils.ha.update_bc_evidence import recent_instance_events_for_domains
+
+        conn = self._make_db(tmp_path)
+        for i in range(5):
+            conn.execute(
+                "INSERT INTO ha_repair_history VALUES (?,?,?)",
+                (f"sonos/issue_{i}", time.time() - i * 3600, None),
+            )
+        conn.commit()
+        result = recent_instance_events_for_domains(conn, ["sonos"])
+        assert len(result["sonos"]) <= 3
+
+    def test_multiple_domains_independent(self, tmp_path):
+        """Events for two domains are returned independently."""
+        import time
+
+        from utils.ha.update_bc_evidence import recent_instance_events_for_domains
+
+        conn = self._make_db(tmp_path)
+        conn.execute(
+            "INSERT INTO ha_repair_history VALUES (?,?,?)",
+            ("sonos/issue1", time.time() - 3600, None),
+        )
+        conn.execute(
+            "INSERT INTO ha_repair_history VALUES (?,?,?)",
+            ("mqtt/issue1", time.time() - 7200, None),
+        )
+        conn.commit()
+        result = recent_instance_events_for_domains(conn, ["sonos", "mqtt"])
+        assert "sonos" in result
+        assert "mqtt" in result
+
+    def test_domain_not_in_query_ignored(self, tmp_path):
+        """Events for a domain not in the query list are not returned."""
+        import time
+
+        from utils.ha.update_bc_evidence import recent_instance_events_for_domains
+
+        conn = self._make_db(tmp_path)
+        conn.execute(
+            "INSERT INTO ha_repair_history VALUES (?,?,?)",
+            ("zha/issue1", time.time() - 3600, None),
+        )
+        conn.commit()
+        result = recent_instance_events_for_domains(conn, ["sonos"])
+        assert "zha" not in result
+
 
 class TestCoreReleaseDigest:
     """Tests for format_core_release_digest ordering and truncation."""

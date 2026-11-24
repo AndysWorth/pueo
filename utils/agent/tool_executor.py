@@ -8010,6 +8010,11 @@ class ToolExecutor:
             payload["patch_changes"] = patch_changes
         else:
             payload["patch_changes"] = []
+        # Related instance events for the "may relate" hints on the card (#1308).
+        if _rpt and _rpt.related_instance_events:
+            payload["related_instance_events"] = dict(_rpt.related_instance_events)
+        else:
+            payload["related_instance_events"] = {}
         # Verification for update cards is handled by the executor on install
         # (web/dashboard.py), not by a user Yes/No before install (#1304).
         payload["signature"] = self._session_signature
