@@ -2318,6 +2318,46 @@ class TestChunkReleaseNotes:
         assert all(m["ha_version_min"] == "2026.9.0" for m in metas)
         assert all(m["ha_version_max"] == "2026.9.0" for m in metas)
 
+    def test_boilerplate_chunk_filtered_out(self):
+        """'All changes / Full changelog' footer is dropped at ingest time."""
+        from utils.knowledge.ha_release_notes_scraper import chunk_release_notes
+
+        notes = (
+            "## Highlights\nGreat new features.\n\n"
+            "## All changes\n"
+            "Of course, there is a lot more. "
+            "Full changelog for Home Assistant Core 2026.11 .\n"
+        )
+        _, docs, _ = chunk_release_notes(notes, "2026.11.0")
+        assert all("Full changelog for Home Assistant Core" not in d for d in docs)
+        assert any("Highlights" in d or "Great new features" in d for d in docs)
+
+    def test_non_boilerplate_chunk_kept(self):
+        """Sections without the boilerplate phrase are always kept."""
+        from utils.knowledge.ha_release_notes_scraper import chunk_release_notes
+
+        notes = "## Breaking Changes\nzwave changed.\n"
+        _, docs, _ = chunk_release_notes(notes, "2026.11.0")
+        assert len(docs) == 1
+        assert "zwave changed" in docs[0]
+
+    def test_boilerplate_detector_true(self):
+        """_is_boilerplate_chunk detects the footer phrase."""
+        from utils.knowledge.ha_release_notes_scraper import _is_boilerplate_chunk
+
+        text = (
+            "All changes\n\n"
+            "Of course there is a lot more. "
+            "Full changelog for Home Assistant Core 2026.11 ."
+        )
+        assert _is_boilerplate_chunk(text) is True
+
+    def test_boilerplate_detector_false(self):
+        """_is_boilerplate_chunk leaves normal sections alone."""
+        from utils.knowledge.ha_release_notes_scraper import _is_boilerplate_chunk
+
+        assert _is_boilerplate_chunk("## Breaking Changes\nzwave changed.") is False
+
 
 class TestKnowledgeStoreWhereClause:
     def test_where_in_filters_by_metadata(self):

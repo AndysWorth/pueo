@@ -22,6 +22,16 @@ _BREAKING_CATEGORY_RE = re.compile(
 _NEW_INTEGRATION_RE = re.compile(r"new.integration", re.IGNORECASE)
 _DEPRECATION_RE = re.compile(r"deprecat", re.IGNORECASE)
 _CODE_SPAN_RE = re.compile(r"`([a-z][a-z0-9_]+)`")
+_BOILERPLATE_RE = re.compile(r"Full changelog for Home Assistant Core", re.IGNORECASE)
+
+
+def _is_boilerplate_chunk(text: str) -> bool:
+    """Return True for the 'All changes / Full changelog' footer chunk.
+
+    These sections contain no actionable content — just a pointer to GitHub
+    — and add noise when injected into the LLM context.
+    """
+    return bool(_BOILERPLATE_RE.search(text))
 
 
 def _release_type(version: str) -> str:
@@ -146,7 +156,8 @@ def chunk_release_notes(
     """
     if release_notes.startswith("STUB:"):
         return [], [], []
-    chunks = parse_release_sections(release_notes)
+    raw_chunks = parse_release_sections(release_notes)
+    chunks = [c for c in raw_chunks if not _is_boilerplate_chunk(c)]
     ids = [f"ha-{version}-{i}" for i in range(len(chunks))]
     rt = _release_type(version)
     metadatas = []

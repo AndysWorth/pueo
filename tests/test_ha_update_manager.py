@@ -8291,14 +8291,35 @@ class TestFinishUpdateAnalysisReportPayload:
             == "https://www.home-assistant.io/blog/2026/11/06/release-202611/"
         )
 
-    def test_blog_url_falls_back_to_release_url(self, pueo_dirs):
+    def test_blog_url_uses_github_tag_for_core_patch(self, pueo_dirs):
         executor, notifier = self._make_executor()
-        executor.set_update_status(self._make_update())
-        # _core_report_blog_url not set → falls back to release_url
+        executor.set_update_status(self._make_update(version="2026.11.3"))
+        # No blog_url on report (patch update) → GitHub release tag
         self._run(executor)
         payload = notifier.send.call_args.kwargs["payload"]
         assert (
-            payload["blog_url"] == "https://www.home-assistant.io/latest-release-notes/"
+            payload["blog_url"]
+            == "https://github.com/home-assistant/core/releases/tag/2026.11.3"
+        )
+
+    def test_blog_url_non_core_still_uses_release_url(self, pueo_dirs):
+        from types import SimpleNamespace
+
+        executor, notifier = self._make_executor()
+        update = SimpleNamespace(
+            entity_id="update.hacs",
+            component="hacs",
+            installed_version="2.0.0",
+            latest_version="2.1.0",
+            release_url="https://github.com/hacs/integration/releases/tag/2.1.0",
+            release_summary=None,
+        )
+        executor.set_update_status(update)
+        self._run(executor)
+        payload = notifier.send.call_args.kwargs["payload"]
+        assert (
+            payload["blog_url"]
+            == "https://github.com/hacs/integration/releases/tag/2.1.0"
         )
 
     def test_patch_changes_in_payload_from_report(self, pueo_dirs):

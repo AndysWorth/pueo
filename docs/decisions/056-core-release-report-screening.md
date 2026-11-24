@@ -497,3 +497,13 @@ Sources — all use **exact domain match** (never substring):
 `index.html`: inside each domain's fix list, one italic "May relate: `<summary>` (`<date>`)" line per event.  Uses `localtime('date')` per the local-time rule.
 
 Amends: ADR 046 (card payload extended), ADR 049 (procedure only: no distillation path).
+
+## Amendment — S5: Stable patch link + boilerplate RAG filter (#1310, 2026-11-24)
+
+**Stable release link (F4):** `_finish_update_analysis` now derives `payload["blog_url"]` as:
+- If `_core_report_blog_url` is set (minor/major Core update): use that blog URL as before.
+- If not set and component is `core`/`homeassistant` (patch update — no blog post exists): use `https://github.com/home-assistant/core/releases/tag/<latest_version>`.
+- For non-Core components: fall back to `update.release_url` as before.
+This prevents the card from ever storing the drifting `/latest-release-notes/` pointer.
+
+**Boilerplate RAG filter (F6):** `chunk_release_notes` in `utils/knowledge/ha_release_notes_scraper.py` now drops any section whose text matches `_BOILERPLATE_RE` (`"Full changelog for Home Assistant Core"`).  The `## All changes` footer that appears at the bottom of every monthly blog post ("Of course, there is a lot more … Full changelog for Home Assistant Core 2026.NN .") carries zero information and was previously injected as `[OFFICIAL]` knowledge before the main update loop.  Filtering at ingest time removes existing stale chunks on the next RAG refresh (the ingest key is index-based so re-chunking a file that now has fewer sections is handled transparently by the pruning pass).
