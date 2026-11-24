@@ -204,6 +204,7 @@ class TestRateLimiter:
         rl = RateLimiter(max_calls=5, period_seconds=60)
         for _ in range(5):
             rl.check()
+        assert len(rl._timestamps) == 5
 
     def test_raises_at_limit(self):
         from utils.core.rate_limiter import RateLimiter, RateLimitExceeded
@@ -226,6 +227,7 @@ class TestRateLimiter:
 
         clock[0] += 61
         rl.check()
+        assert len(rl._timestamps) == 1
 
     def test_sliding_window_does_not_count_expired_calls(self, monkeypatch):
         from utils.core.rate_limiter import RateLimiter
@@ -241,6 +243,7 @@ class TestRateLimiter:
         rl.check()
         rl.check()
         rl.check()
+        assert len(rl._timestamps) == 3
 
     def test_rate_limit_exceeded_is_exception(self):
         from utils.core.rate_limiter import RateLimitExceeded

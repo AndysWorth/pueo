@@ -3791,7 +3791,7 @@ class TestExecuteAddonUpdateTimeline:
             ),
             patch("agents.ha_update_manager._send_post_update_card", AsyncMock()),
             patch("agents.ha_update_manager.set_restart_pending_after_update"),
-            patch("agents.ha_update_manager._post_update_repair_scan", AsyncMock()),
+            patch("agents.ha_update_manager._post_update_repair_scan", MagicMock()),
             patch("asyncio.create_task"),
             patch(
                 "utils.core.timeline.write_timeline_event",
@@ -4433,7 +4433,7 @@ class TestHacsInstallSshFallback:
                 side_effect=_fake_poll_timeout,
             ),
             patch("agents.ha_update_manager._send_post_update_card", AsyncMock()),
-            patch("agents.ha_update_manager._post_update_repair_scan", AsyncMock()),
+            patch("agents.ha_update_manager._post_update_repair_scan", MagicMock()),
             patch("asyncio.create_task"),
             patch(
                 "agents.ha_update_manager.set_restart_pending_after_update",
@@ -8067,7 +8067,7 @@ class TestAddonUpdateRestartNote:
             patch(
                 "agents.ha_update_manager.set_restart_pending_after_update"
             ) as mock_restart,
-            patch("agents.ha_update_manager._post_update_repair_scan", AsyncMock()),
+            patch("agents.ha_update_manager._post_update_repair_scan", MagicMock()),
             patch("asyncio.create_task"),
         ):
             from agents.ha_update_manager import execute_addon_update
@@ -12869,7 +12869,7 @@ class TestOsUpdateCommandPin:
             patch("agents.ha_update_manager._resume_loops_after_reboot"),
             patch("agents.ha_update_manager.set_reboot_pending_after_update"),
             patch("agents.ha_update_manager.set_post_update_pending"),
-            patch("agents.ha_update_manager._post_update_repair_scan", AsyncMock()),
+            patch("agents.ha_update_manager._post_update_repair_scan", MagicMock()),
             patch("asyncio.create_task"),
         ):
             asyncio.run(
@@ -13588,7 +13588,7 @@ class TestExecuteAddonUpdateServiceError:
             ),
             patch("agents.ha_update_manager._send_post_update_card", AsyncMock()),
             patch("agents.ha_update_manager.set_restart_pending_after_update"),
-            patch("agents.ha_update_manager._post_update_repair_scan", AsyncMock()),
+            patch("agents.ha_update_manager._post_update_repair_scan", MagicMock()),
             patch("asyncio.create_task"),
         ):
             result = asyncio.run(

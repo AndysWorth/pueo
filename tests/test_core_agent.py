@@ -2288,6 +2288,58 @@ class TestBackupRateLimit:
         with pytest.raises(ha_agent_advanced.BackupRateLimitError):
             asyncio.run(ha_agent_advanced.execute_remote_backup(ssh_client=ssh))
 
+    def test_at_exact_limit_raises(self, monkeypatch):
+        """BACKUP_MAX_PER_HOUR rows in the window → raises (N boundary)."""
+        import asyncio
+
+        import config as _config
+        from agents import ha_agent_advanced
+        from utils.ha.ssh_client import FakeSSHClient
+
+        self._insert_registry_rows(_config.BACKUP_MAX_PER_HOUR)
+        ssh = FakeSSHClient()
+        with pytest.raises(ha_agent_advanced.BackupRateLimitError):
+            asyncio.run(ha_agent_advanced.execute_remote_backup(ssh_client=ssh))
+
+    def test_cutoff_exact_boundary_not_counted(self, monkeypatch):
+        """Row at ha_created_at == cutoff (now−3600 s) is excluded (strict >)."""
+        import asyncio
+
+        import config as _config
+        from agents import ha_agent_advanced
+        from utils.ha.ssh_client import FakeSSHClient
+
+        # Insert MAX-1 recent rows so we are one below the limit
+        # then add a row at exactly the cutoff (3600 s old) — it must NOT be counted.
+        self._insert_registry_rows(_config.BACKUP_MAX_PER_HOUR - 1, age_seconds=60)
+        with sqlite3.connect(self._db_path) as conn:
+            conn.execute(
+                "INSERT INTO backup_registry (name, ha_created_at, backup_slug, status)"
+                " VALUES (?, ?, ?, ?)",
+                ("Pueo_cutoff", self._now - 3600.0, "slug_cutoff", "ok"),
+            )
+        ssh = FakeSSHClient(
+            command_results={"ha backup new": (0, 'slug: "boundary01"\n', "")}
+        )
+        monkeypatch.setattr(ha_agent_advanced, "BACKUP_OFFLOAD_ENABLED", False)
+        # Only MAX-1 rows are inside the window → succeeds
+        slug = asyncio.run(ha_agent_advanced.execute_remote_backup(ssh_client=ssh))
+        assert slug == "boundary01"
+
+    def test_cutoff_one_second_inside_window_counted(self, monkeypatch):
+        """Row 1 s inside the window (3599 s old) IS counted toward the limit."""
+        import asyncio
+
+        import config as _config
+        from agents import ha_agent_advanced
+        from utils.ha.ssh_client import FakeSSHClient
+
+        # Fill window to exactly the limit using rows that are 1 s inside the cutoff.
+        self._insert_registry_rows(_config.BACKUP_MAX_PER_HOUR, age_seconds=3599)
+        ssh = FakeSSHClient()
+        with pytest.raises(ha_agent_advanced.BackupRateLimitError):
+            asyncio.run(ha_agent_advanced.execute_remote_backup(ssh_client=ssh))
+
 
 class TestRecordBackupSlugGuard:
     @pytest.fixture
@@ -3852,6 +3904,58 @@ class TestSandboxPipeline:
             slug = conn.execute("SELECT backup_slug FROM backup_registry").fetchone()
         assert slug is not None
         assert slug[0] == "sbx-slug-1"
+
+    def test_backup_chain_ordering(
+        self, ssh_ok, llm_with_fix, db_path, gate_auto, knowledge_store, monkeypatch
+    ):
+        """Safety invariant: execute_remote_backup → record_backup_slug → write (ADR 002)."""
+        from unittest.mock import patch
+
+        from agents import ha_agent_advanced, ha_agent_sandbox_engine
+
+        call_order: list = []
+
+        async def _backup_spy(ssh_client=None):
+            call_order.append("backup")
+            return "ord-slug-01"
+
+        def _record_spy(slug, **kw):
+            assert slug == "ord-slug-01", "record_backup_slug called with wrong slug"
+            call_order.append("record")
+
+        real_write = ssh_ok.write_file
+
+        async def _write_spy(path, content):
+            if path == "/config/configuration.yaml":
+                call_order.append("write")
+            await real_write(path, content)
+
+        ssh_ok.write_file = _write_spy
+
+        monkeypatch.setattr(ha_agent_advanced, "BACKUP_OFFLOAD_ENABLED", False)
+        with (
+            patch.object(ha_agent_advanced, "execute_remote_backup", _backup_spy),
+            patch.object(ha_agent_advanced, "record_backup_slug", _record_spy),
+        ):
+            ha_agent_sandbox_engine.init_local_database()
+            asyncio.run(
+                ha_agent_sandbox_engine.main(
+                    ssh_client=ssh_ok,
+                    llm_client=llm_with_fix,
+                    gate=gate_auto,
+                    knowledge_store=knowledge_store,
+                )
+            )
+
+        assert "backup" in call_order, "execute_remote_backup was never called"
+        assert "record" in call_order, "record_backup_slug was never called"
+        assert "write" in call_order, "write_file to production config was never called"
+
+        backup_i = call_order.index("backup")
+        record_i = call_order.index("record")
+        write_i = call_order.index("write")
+        assert backup_i < record_i, "backup must precede record_backup_slug"
+        assert record_i < write_i, "record_backup_slug must precede production write"
 
     def test_sandbox_fail_aborts_atomic_swap(
         self, ssh_sandbox_fail, llm_with_fix, db_path, gate_auto, knowledge_store
