@@ -129,10 +129,11 @@ _BC_SEARCH_EXCLUDE_WORDS: tuple[str, ...] = (
 )
 
 # Validates HA app slugs (e.g. "mosquitto", "z-wave-js", "code_server").
-_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_\-]*$")
+# Use \Z (not $) so a trailing newline cannot bypass injection validation.
+_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_\-]*\Z")
 # Validates Supervisor UUIDs: compact 32-char hex or standard dashed UUID4.
 _UUID_RE = re.compile(
-    r"^(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$"
+    r"^(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\Z"
 )
 # Validates HA integration domains (e.g. "tuya", "dlna_dmr") for read_logs filtering.
 _DOMAIN_RE = re.compile(r"^[a-z0-9_]+$")
