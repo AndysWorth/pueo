@@ -1650,7 +1650,7 @@ class TestPollCoverage:
                     lambda: da_mod.poll_device_availability(
                         ws_client=self._make_two_device_ws(), db_path=db
                     ),
-                    timeout=5.0,
+                    timeout=0.5,
                 )
             )
 
@@ -1723,7 +1723,7 @@ class TestPollCoverage:
                 lambda: da_mod.poll_device_availability(
                     ws_client=online_ws, db_path=db
                 ),
-                timeout=5.0,
+                timeout=0.5,
             )
         )
 
@@ -1766,7 +1766,7 @@ class TestPollCoverage:
                     lambda: da_mod.poll_device_availability(
                         ws_client=_make_offline_ws(), db_path=db
                     ),
-                    timeout=5.0,
+                    timeout=0.5,
                 )
             )
 
@@ -1800,7 +1800,7 @@ class TestPollCoverage:
                 lambda: da_mod.poll_device_availability(
                     ws_client=ErrorWS(), db_path=db
                 ),
-                timeout=5.0,
+                timeout=0.5,
             )
         )
 
@@ -1829,7 +1829,7 @@ class TestPollCoverage:
                 lambda: da_mod.poll_device_availability(
                     ws_client=_make_online_ws(), db_path=db
                 ),
-                timeout=5.0,
+                timeout=0.5,
             )
         )
 
@@ -1986,7 +1986,7 @@ class TestAdditionalCoverage:
                 lambda: da_mod.poll_device_availability(
                     ws_client=_make_online_ws(), db_path=db
                 ),
-                timeout=10.0,
+                timeout=0.5,
             )
         )
 
@@ -2015,7 +2015,7 @@ class TestAdditionalCoverage:
                 lambda: da_mod.poll_device_availability(
                     ws_client=_make_online_ws(), db_path=db
                 ),
-                timeout=5.0,
+                timeout=0.5,
             )
         )
 
@@ -4642,7 +4642,7 @@ class TestPollPredictionChecks:
             asyncio.run(
                 _run_one_iteration(
                     lambda: da_mod.poll_device_availability(ws_client=ws, db_path=db),
-                    timeout=5.0,
+                    timeout=0.5,
                 )
             )
 

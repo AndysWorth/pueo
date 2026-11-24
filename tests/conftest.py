@@ -147,6 +147,37 @@ socket.getaddrinfo = _guarded_getaddrinfo
 socket.socket.connect = _guarded_socket_connect  # type: ignore[method-assign]
 socket.socket.connect_ex = _guarded_socket_connect_ex  # type: ignore[method-assign]
 
+# Slow-test guard: any unit test taking more than 5 s wall-clock fails.  New
+# tests that sleep for real rather than patching the sleep will trip this guard
+# immediately.  tests/integration/ is exempt (they talk to real services).
+# Disabled under xdist workers (PYTEST_XDIST_WORKER is set): multiple workers
+# compete for CPU on a shared runner so wall-clock timing is unreliable there.
+_SLOW_TEST_THRESHOLD_S = 5.0
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_call(item):
+    import time
+
+    # Under xdist, workers share a CPU; wall-clock timing is unreliable.
+    if os.environ.get("PYTEST_XDIST_WORKER"):
+        yield
+        return
+
+    current = os.environ.get("PYTEST_CURRENT_TEST", "")
+    is_unit = bool(current) and "tests/integration/" not in current
+    # Use time.perf_counter() — tests that monkeypatch time.monotonic cannot
+    # skew this measurement.
+    start = time.perf_counter()
+    yield
+    elapsed = time.perf_counter() - start
+    if is_unit and elapsed > _SLOW_TEST_THRESHOLD_S:
+        pytest.fail(
+            f"Unit test took {elapsed:.1f} s (limit {_SLOW_TEST_THRESHOLD_S} s). "
+            "Patch any real asyncio.sleep / time.sleep calls."
+        )
+
+
 _DEFAULT_CONFIG_YAML = "homeassistant:\n  name: Home\n\nhttp:\n  server_port: 8123\n"
 
 _PRODUCTION_LOG_PREFIXES = (

@@ -11890,6 +11890,7 @@ class TestToolExecutor:
         assert "ha core check failed" in result.error
 
     def test_verify_fix_ssh_exception(self):
+        from unittest.mock import AsyncMock, patch
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.tool_registry import ToolCall
 
@@ -11898,7 +11899,8 @@ class TestToolExecutor:
                 raise TimeoutError("SSH timed out")
 
         executor = self._make_executor(ssh=_RaisingSSH())
-        result = asyncio.run(executor.execute(ToolCall(name="verify_fix")))
+        with patch("utils.core.retry.asyncio.sleep", new_callable=AsyncMock):
+            result = asyncio.run(executor.execute(ToolCall(name="verify_fix")))
         assert not result.success
         assert "timed out" in result.error
 
@@ -16338,6 +16340,15 @@ class TestRepairCardClassification:
         monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
         ha_agent_advanced.init_local_database()
         return path
+
+    @pytest.fixture(autouse=True)
+    def _reset_update_flags(self, monkeypatch):
+        import agents.ha_update_manager as _um
+
+        # Reset module-level singletons so random xdist ordering cannot leak
+        # a stale True flag from a previous test into action=="reboot/restart" paths.
+        monkeypatch.setattr(_um, "_reboot_pending_after_update", None)
+        monkeypatch.setattr(_um, "_restart_pending_after_update", None)
 
     def _run_one_poll(self, raw_issues, monkeypatch, db_path, action: str = "dismiss"):
         """Run exactly one poll iteration and return the FakeNotifier."""

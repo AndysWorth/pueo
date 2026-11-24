@@ -460,6 +460,11 @@ def _make_report_ready() -> dict:
 
 
 class TestRequestAdvisorAnalysis:
+    @pytest.fixture(autouse=True)
+    def _patch_sleep(self):
+        with patch("utils.ha.upgrade_advisor.asyncio.sleep", new_callable=AsyncMock):
+            yield
+
     def test_core_uses_analyze_version_service(self):
         rest = _FakeRest(
             status_sequence=[_make_analyzing(), _make_report_ready()],
@@ -526,12 +531,11 @@ class TestRequestAdvisorAnalysis:
                 _make_report_ready(),
             ]
         )
-        with patch("utils.ha.upgrade_advisor.asyncio.sleep", new_callable=AsyncMock):
-            asyncio.run(
-                request_advisor_analysis(
-                    rest, "2026.10.0", "homeassistant", timeout_seconds=60
-                )
+        asyncio.run(
+            request_advisor_analysis(
+                rest, "2026.10.0", "homeassistant", timeout_seconds=60
             )
+        )
         # Service call + 3 polls
         assert rest._status_call_count == 3
 
@@ -540,15 +544,14 @@ class TestRequestAdvisorAnalysis:
         rest = _FakeRest(
             status_sequence=[_make_analyzing()],  # never leaves analyzing
         )
-        with patch("utils.ha.upgrade_advisor.asyncio.sleep", new_callable=AsyncMock):
-            with patch("utils.ha.upgrade_advisor.asyncio.get_event_loop") as mock_loop:
-                # Simulate instant timeout: deadline is already in the past
-                mock_loop.return_value.time.side_effect = [0.0, 999.0]
-                asyncio.run(
-                    request_advisor_analysis(
-                        rest, "2026.10.0", "homeassistant", timeout_seconds=1
-                    )
+        with patch("utils.ha.upgrade_advisor.asyncio.get_event_loop") as mock_loop:
+            # Simulate instant timeout: deadline is already in the past
+            mock_loop.return_value.time.side_effect = [0.0, 999.0]
+            asyncio.run(
+                request_advisor_analysis(
+                    rest, "2026.10.0", "homeassistant", timeout_seconds=1
                 )
+            )
         # Should have called the service and not raised
         assert len(rest.service_calls) == 1
 

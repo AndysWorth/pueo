@@ -5,6 +5,12 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def _patch_disk_recovery_sleep(monkeypatch):
+    monkeypatch.setattr("utils.disk.disk_recovery.asyncio.sleep", AsyncMock())
+
+
 from utils.disk.disk_recovery import (
     DISK_AUTO_ACTION_KEYS,
     RecoveryAction,
