@@ -7959,7 +7959,12 @@ class ToolExecutor:
             "installed_bc_found": self._installed_bc_found,
             "component_class_label": _component_class_label or "",
             "highlights": list(highlights or self._report_highlights)[:5],
-            "blog_url": self._core_report_blog_url or (update.release_url or ""),
+            "blog_url": self._core_report_blog_url
+            or (
+                f"https://github.com/home-assistant/core/releases/tag/{update.latest_version}"
+                if update.component.lower() in ("core", "homeassistant")
+                else (update.release_url or "")
+            ),
             "report_id": (
                 f"core_{update.latest_version}"
                 if update.component.lower() in ("core", "homeassistant")
