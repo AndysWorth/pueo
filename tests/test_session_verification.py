@@ -434,13 +434,10 @@ class TestDefaultVerificationQuestion:
         q = default_verification_question("host_health", {"outcome": "monitoring"})
         assert q == "Was Pueo's assessment right?"
 
-    def test_update_with_component(self):
-        q = default_verification_question("update", {"component": "core"})
-        assert q == "Was the core update assessment right?"
-
-    def test_update_no_component(self):
-        q = default_verification_question("update", {})
-        assert "update" in q.lower()
+    def test_update_returns_falsy(self):
+        # Update cards are verified by the executor on install, not by Yes/No.
+        assert not default_verification_question("update", {"component": "core"})
+        assert not default_verification_question("update", {})
 
     def test_device_offline_with_name(self):
         q = default_verification_question(

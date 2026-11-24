@@ -7499,7 +7499,6 @@ class ToolExecutor:
         new_features: Optional[list] = None,
         risk_score: Optional[str] = None,
         confidence: Optional[float] = None,
-        verification_question: Optional[str] = None,
         highlights: Optional[list] = None,
         bc_verdicts: Optional[list] = None,
         **_extra: Any,
@@ -7987,13 +7986,8 @@ class ToolExecutor:
                 )
             ],
         }
-        # Verification comes from the post-update result card (run_pueo_self_check /
-        # add-on version poll), not from a pre-analysis digest question.  Accept an
-        # explicitly LLM-provided question, but suppress it when the BC assessment
-        # pass ran — each user_check BC has its own user_question, so a top-level
-        # question would be redundant filler (#1259).
-        if verification_question and not _normalized_verdicts:
-            payload["verification_question"] = verification_question
+        # Verification for update cards is handled by the executor on install
+        # (web/dashboard.py), not by a user Yes/No before install (#1304).
         payload["signature"] = self._session_signature
         await asyncio.to_thread(
             _update_mark_card_sent,

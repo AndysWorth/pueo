@@ -891,7 +891,7 @@ trigger: {{ r.payload.get("trigger", []) | tojson(indent=2) }}
       {% endif %}{# end device_recurring else block #}
       {% if r.payload.get("episode_id") and r.payload.get("user_verdict") == "right" %}
       <p style="font-size:0.78rem;color:#2e7d32;margin:0.35rem 0 0;">✓ You marked Pueo's analysis as right</p>
-      {% elif r.payload.get("episode_id") and r.payload.get("verification_question") %}
+      {% elif ct != "update" and r.payload.get("episode_id") and r.payload.get("verification_question") %}
       <div style="margin-top:0.6rem;padding:0.5rem 0.65rem;background:#f0f7f0;border:1px solid #c3dfc3;border-radius:4px;">
         <p style="font-size:0.82rem;margin:0 0 0.4rem;color:#1a3a1a;"><strong>{{ r.payload.get("verification_question") }}</strong></p>
         <form method="POST" action="/right/{{ r.notification_id }}" style="display:inline;">
@@ -937,7 +937,7 @@ trigger: {{ r.payload.get("trigger", []) | tojson(indent=2) }}
         {% else %}
         <strong style="color:#222;">Acknowledge</strong> — Mark as seen and remove from queue; full details remain in the Timeline
         {% endif %}
-        {% if r.payload.get("episode_id") and r.payload.get("verification_question") %}
+        {% if ct != "update" and r.payload.get("episode_id") and r.payload.get("verification_question") %}
         <br><strong style="color:#222;">Yes / No</strong> — Confirm or correct Pueo's conclusion; confirmed sessions teach Pueo
         {% elif r.payload.get("episode_id") %}
         <br><strong style="color:#222;">Pueo was right</strong> — Acknowledge and confirm the analysis; only confirmed sessions teach Pueo
@@ -959,7 +959,7 @@ trigger: {{ r.payload.get("trigger", []) | tojson(indent=2) }}
         <button class="btn btn-approve" type="submit">Acknowledge</button>
       </form>
       {% endif %}
-      {% if r.payload.get("episode_id") and r.payload.get("verification_question") %}
+      {% if ct != "update" and r.payload.get("episode_id") and r.payload.get("verification_question") %}
       <div style="margin-top:0.5rem;padding:0.5rem 0.65rem;background:#f0f7f0;border:1px solid #c3dfc3;border-radius:4px;">
         <p style="font-size:0.82rem;margin:0 0 0.4rem;color:#1a3a1a;"><strong>{{ r.payload.get("verification_question") }}</strong></p>
         <form method="POST" action="/right/{{ r.notification_id }}" style="display:inline;">

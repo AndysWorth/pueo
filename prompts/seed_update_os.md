@@ -35,9 +35,9 @@ sections in the release notes apply to this instance:
   `instance_impact` reflects that section's severity.
 - No board-specific sections → applies to all boards.
 
-**Never ask the user what hardware they have** when `Board:` is already in the context. Setting
-`verification_question` to ask about board type, hardware model, or anything that is stated in
-the initial context is an error.
+**Never ask the user what hardware they have** when `Board:` is already in the context. Any
+board type, hardware model, or other detail already stated in the initial context must not be
+the basis of a question to the user.
 
 ## Investigation steps
 
