@@ -472,3 +472,13 @@ already showing `cpe …:yellow` and `kernel 6.18.39-haos-raspi`.
 `_finish_update_analysis`: `heads_up_items` from the report is included in the card payload.  `verification_question` is suppressed when BC assessment verdicts exist — each `user_check` BC has its own `user_question`, making a top-level digest question redundant filler.
 
 `index.html`: collapsed "👁 What you'll notice" group renders `heads_up` BC verdicts and `heads_up_items` together.
+
+## Amendment — S3: Patch-fixes list on card (#1306, 2026-11-24)
+
+`_finish_update_analysis` now flattens `CoreReleaseReport.patch_changes_by_domain` into `payload["patch_changes"]` — a list of `{domain, text, prs}` dicts, `core` domain first, remaining domains alphabetical, capped at 40 entries. The card payload always includes this key (empty list when no report or no patch changes).
+
+`index.html`: collapsed "🔧 Fixes for your integrations (N)" `<details>` group, rendered outside the BC verdicts block so it appears on patch updates with no breaking changes. Each domain is a subheading; PR numbers link to `github.com/home-assistant/core/pull/<n>`.
+
+`web/templates/update_report.html`: "🔧 Patch Fixes for Your Integrations" section renders `patch_changes_by_domain` from the `CoreReleaseReport` directly (not from the card payload), with `core` first and PR links.
+
+No LLM involvement; the list is deterministic from the parsed patch notes.

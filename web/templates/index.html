@@ -193,6 +193,25 @@
       {% endif %}
     </details>
     {% endif %}
+    {# Collapsed deterministic patch-fixes list — rendered outside the BC block so it
+       appears even on patch updates with no breaking changes (#1306). #}
+    {% if r.payload.get("patch_changes") %}
+    {% set _pc_domains = r.payload.patch_changes | map(attribute="domain") | unique | list %}
+    <details style="margin-top:0.5rem;">
+      <summary style="font-size:0.82rem;color:#888;cursor:pointer;">🔧 Fixes for your integrations ({{ r.payload.patch_changes | length }})</summary>
+      {% for domain in _pc_domains %}
+      {% set _domain_fixes = r.payload.patch_changes | selectattr("domain", "equalto", domain) | list %}
+      <div style="margin:0.3rem 0 0 0.5rem;">
+        <span style="font-size:0.82rem;font-weight:600;color:#555;">{{ domain }}</span>
+        <ul style="margin:0.1rem 0 0.3rem 1.25rem;">
+          {% for fix in _domain_fixes %}
+          <li style="font-size:0.8rem;color:#444;margin-bottom:0.1rem;">{{ fix.text }}{% if fix.prs %} {% for pr in fix.prs %}<a href="https://github.com/home-assistant/core/pull/{{ pr }}" target="_blank" rel="noopener" style="color:#888;font-size:0.75rem;">#{{ pr }}</a> {% endfor %}{% endif %}</li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% endfor %}
+    </details>
+    {% endif %}
     {% if r.payload.get("evidence_raw") %}
     <details>
       <summary><span class="section-label label-evidence">Evidence</span>Raw gathered data</summary>
