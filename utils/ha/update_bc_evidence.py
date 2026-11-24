@@ -11,6 +11,8 @@ import ipaddress
 import json
 import re
 import shlex
+import sqlite3
+import time
 from typing import Any, Optional
 
 from utils.core.logging import get_logger
@@ -712,6 +714,151 @@ async def _build_one_evidence(
         sensor_device_class_counts=sensor_device_class_counts,
         bc_part_tokens=bc_part_tokens,
     )
+
+
+_MAX_RELATED_PER_DOMAIN = 3
+_RELATED_WINDOW_DAYS = 30
+
+
+def recent_instance_events_for_domains(
+    conn: sqlite3.Connection,
+    domains: list[str],
+    days: int = _RELATED_WINDOW_DAYS,
+) -> dict[str, list[dict]]:
+    """Return recent instance events keyed by domain, capped at _MAX_RELATED_PER_DOMAIN each.
+
+    Sources (all exact-domain match, never substring):
+    - session_outcomes: signatures whose domain segment equals the domain
+      (device:offline:<d>, repair:<d>:..., log:homeassistant_components_<d>:...,
+       lovelace:<d>:..., setup:integration:<d>)
+    - ha_repair_history: issue_key starting with '<d>/'
+    - timeline_events: WARN/ERROR rows with detail_json.domain == domain
+
+    Returns {domain: [{ts: float, summary: str, source: str}, ...]} sorted
+    newest-first, deduped by (source, summary), capped at _MAX_RELATED_PER_DOMAIN.
+    """
+    cutoff = time.time() - days * 86400
+    domain_set = set(domains)
+    result: dict[str, list[dict]] = {}
+
+    def _add(domain: str, ts: float, summary: str, source: str) -> None:
+        if domain not in domain_set:
+            return
+        lst = result.setdefault(domain, [])
+        if len(lst) >= _MAX_RELATED_PER_DOMAIN:
+            return
+        key = (source, summary[:80])
+        if any((e["_key"] == key) for e in lst):
+            return
+        lst.append({"ts": ts, "summary": summary[:120], "source": source, "_key": key})
+
+    # --- session_outcomes ---
+    try:
+        rows = conn.execute(
+            "SELECT signature, created_at FROM session_outcomes"
+            " WHERE created_at >= ?"
+            " ORDER BY created_at DESC",
+            (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(cutoff)),),
+        ).fetchall()
+        for sig, created_at in rows:
+            if not sig:
+                continue
+            parts = sig.split(":", 2)
+            sig_type = parts[0] if parts else ""
+            domain = None
+            if sig_type == "device" and len(parts) >= 3 and parts[1] == "offline":
+                domain = parts[2] if parts[2] != "post_restart" else None
+            elif sig_type == "repair" and len(parts) >= 2:
+                domain = parts[1]
+            elif sig_type == "lovelace" and len(parts) >= 2:
+                domain = parts[1]
+            elif sig_type == "setup" and len(parts) >= 3 and parts[1] == "integration":
+                domain = parts[2]
+            elif sig_type == "log" and len(parts) >= 2:
+                # log:homeassistant_components_<domain>:<exc>
+                logger_part = parts[1]
+                prefix = "homeassistant_components_"
+                if logger_part.startswith(prefix):
+                    candidate = logger_part[len(prefix) :]
+                    # strip any trailing sub-component (e.g. homeassistant_components_sonos_media_player)
+                    domain = candidate.split("_")[0]
+            if domain and domain in domain_set:
+                try:
+                    ts = _iso_to_ts(created_at)
+                except Exception:  # nosec B112
+                    continue
+                if ts < cutoff:
+                    continue
+                label = sig_type.replace("_", " ")
+                _add(domain, ts, f"{label} session: {sig}", "session_outcomes")
+    except Exception:  # nosec B110
+        pass
+
+    # --- ha_repair_history ---
+    try:
+        rows = conn.execute(
+            "SELECT issue_key, first_seen_at FROM ha_repair_history"
+            " WHERE first_seen_at >= ? AND resolved_at IS NULL"
+            " ORDER BY first_seen_at DESC",
+            (cutoff,),
+        ).fetchall()
+        for issue_key, first_seen_at in rows:
+            if "/" not in str(issue_key):
+                continue
+            domain = issue_key.split("/")[0]
+            if domain in domain_set:
+                _add(
+                    domain,
+                    float(first_seen_at),
+                    f"HA repair: {issue_key}",
+                    "ha_repair_history",
+                )
+    except Exception:  # nosec B110
+        pass
+
+    # --- timeline_events (WARN/ERROR with detail_json.domain) ---
+    try:
+        rows = conn.execute(
+            "SELECT ts, message, detail_json FROM timeline_events"
+            " WHERE level IN ('WARNING', 'ERROR', 'WARN')"
+            "   AND ts >= ?"
+            "   AND detail_json IS NOT NULL"
+            " ORDER BY ts DESC"
+            " LIMIT 500",
+            (cutoff,),
+        ).fetchall()
+        for ts, message, detail_json in rows:
+            try:
+                detail = json.loads(detail_json)
+            except Exception:  # nosec B112
+                continue
+            domain = detail.get("domain")
+            if domain and domain in domain_set:
+                _add(domain, float(ts), message[:120], "timeline_events")
+    except Exception:  # nosec B110
+        pass
+
+    # Strip internal dedup key and sort newest-first
+    for domain in result:
+        result[domain] = sorted(
+            [
+                {"ts": e["ts"], "summary": e["summary"], "source": e["source"]}
+                for e in result[domain]
+            ],
+            key=lambda e: -e["ts"],
+        )
+
+    return result
+
+
+def _iso_to_ts(s: str) -> float:
+    """Parse an ISO8601 UTC datetime string (YYYY-MM-DDTHH:MM:SSZ) to a Unix timestamp."""
+    import datetime
+
+    dt = datetime.datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ").replace(
+        tzinfo=datetime.timezone.utc
+    )
+    return dt.timestamp()
 
 
 async def scan_custom_components(

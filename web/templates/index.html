@@ -201,11 +201,15 @@
       <summary style="font-size:0.82rem;color:#888;cursor:pointer;">🔧 Fixes for your integrations ({{ r.payload.patch_changes | length }})</summary>
       {% for domain in _pc_domains %}
       {% set _domain_fixes = r.payload.patch_changes | selectattr("domain", "equalto", domain) | list %}
+      {% set _related_ev = r.payload.get("related_instance_events", {}).get(domain, []) %}
       <div style="margin:0.3rem 0 0 0.5rem;">
         <span style="font-size:0.82rem;font-weight:600;color:#555;">{{ domain }}</span>
         <ul style="margin:0.1rem 0 0.3rem 1.25rem;">
           {% for fix in _domain_fixes %}
           <li style="font-size:0.8rem;color:#444;margin-bottom:0.1rem;">{{ fix.text }}{% if fix.prs %} {% for pr in fix.prs %}<a href="https://github.com/home-assistant/core/pull/{{ pr }}" target="_blank" rel="noopener" style="color:#888;font-size:0.75rem;">#{{ pr }}</a> {% endfor %}{% endif %}</li>
+          {% endfor %}
+          {% for ev in _related_ev %}
+          <li style="font-size:0.78rem;color:#999;margin-bottom:0.1rem;font-style:italic;">May relate: {{ ev.summary }} ({{ ev.ts | localtime('date') }})</li>
           {% endfor %}
         </ul>
       </div>

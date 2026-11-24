@@ -174,6 +174,10 @@ class CoreReleaseReport(BaseModel):
     # Visible-but-harmless changes the user will notice. Each entry:
     # {heading, note, source, matched_domain}
     heads_up_items: list[dict] = []
+    # Recent instance events by domain, for deterministic "may relate" hints on
+    # the update card (#1308).  Keyed by domain; each value is a list of
+    # {ts: float, summary: str, source: str}, newest-first, capped at 3.
+    related_instance_events: dict[str, list[dict]] = {}
     # Deterministic report status (blog + changelog parsed).  Screening status is
     # tracked separately in screening_complete / screening_batches_* (#1148).
     completeness: str = "incomplete"

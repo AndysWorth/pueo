@@ -3196,10 +3196,16 @@ class TestSummarizeResourceTrend:
 
 class TestMigrationV45ResourceSamples:
     @pytest.fixture()
-    def db_path(self, tmp_path, pueo_dirs):
+    def db_path(self, tmp_path, monkeypatch, pueo_dirs):
         import config as _cfg
+        import agents.ha_agent_advanced as _adv
 
-        return _cfg.DB_PATH
+        # Derive explicitly from pueo_dirs so isolated_config teardown reload
+        # on a previous worker test cannot leave a stale config.DB_PATH here.
+        db = str(pueo_dirs.state_dir / "ha_agent_state.db")
+        monkeypatch.setattr(_cfg, "DB_PATH", db)
+        monkeypatch.setattr(_adv, "DB_PATH", db)
+        return db
 
     def test_v45_creates_resource_samples_table(self, db_path):
         import sqlite3
