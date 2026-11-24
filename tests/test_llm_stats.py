@@ -159,3 +159,71 @@ def test_expected_timeout_ignores_different_model(db):
         db, model="qwen2.5:7b", provider="local", min_samples=5, default_ms=555_000.0
     )
     assert result == 555_000.0
+
+
+def test_expected_timeout_one_sample_returns_default(db):
+    """1 sample < min_samples (5) → returns default_ms, not a computed value."""
+    record_llm_call(db, model="m", provider="local", call_type="c", latency_ms=1_000.0)
+    result = expected_timeout_ms(
+        db, model="m", provider="local", min_samples=5, default_ms=42_000.0
+    )
+    assert result == 42_000.0
+
+
+def test_expected_timeout_at_exactly_min_samples_computes(db):
+    """Exactly min_samples (5) rows → computes from them, not default_ms."""
+    for _ in range(5):
+        record_llm_call(
+            db, model="m", provider="local", call_type="c", latency_ms=20_000.0
+        )
+    result = expected_timeout_ms(
+        db,
+        model="m",
+        provider="local",
+        factor=1.0,
+        min_ms=0.0,
+        max_ms=1_000_000.0,
+        min_samples=5,
+        default_ms=600_000.0,
+    )
+    # P95 of 5 identical 20_000 ms samples × factor 1.0 = 20_000 ms, not the default
+    assert result == pytest.approx(20_000.0)
+
+
+def test_expected_timeout_clamp_min_exact_boundary(db):
+    """Result that equals min_ms exactly is not changed by the clamp."""
+    for _ in range(5):
+        record_llm_call(
+            db, model="m", provider="local", call_type="c", latency_ms=60_000.0
+        )
+    # factor=1.0 → p_val=60_000 → result=60_000 → equals min_ms=60_000
+    result = expected_timeout_ms(
+        db,
+        model="m",
+        provider="local",
+        factor=1.0,
+        min_ms=60_000.0,
+        max_ms=1_800_000.0,
+        min_samples=5,
+        default_ms=600_000.0,
+    )
+    assert result == pytest.approx(60_000.0)
+
+
+def test_expected_timeout_clamp_max_exact_boundary(db):
+    """Result that equals max_ms exactly is not changed by the clamp."""
+    for _ in range(5):
+        record_llm_call(
+            db, model="m", provider="local", call_type="c", latency_ms=1_800_000.0
+        )
+    result = expected_timeout_ms(
+        db,
+        model="m",
+        provider="local",
+        factor=1.0,
+        min_ms=300_000.0,
+        max_ms=1_800_000.0,
+        min_samples=5,
+        default_ms=600_000.0,
+    )
+    assert result == pytest.approx(1_800_000.0)
