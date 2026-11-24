@@ -150,14 +150,19 @@ socket.socket.connect_ex = _guarded_socket_connect_ex  # type: ignore[method-ass
 # Slow-test guard: any unit test taking more than 5 s wall-clock fails.  New
 # tests that sleep for real rather than patching the sleep will trip this guard
 # immediately.  tests/integration/ is exempt (they talk to real services).
-# 5 s gives headroom for heavy importlib.reload() tests on slow CI runners
-# while still catching any real asyncio.sleep calls (the removed ones were ≥10 s).
+# Disabled under xdist workers (PYTEST_XDIST_WORKER is set): multiple workers
+# compete for CPU on a shared runner so wall-clock timing is unreliable there.
 _SLOW_TEST_THRESHOLD_S = 5.0
 
 
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_call(item):
     import time
+
+    # Under xdist, workers share a CPU; wall-clock timing is unreliable.
+    if os.environ.get("PYTEST_XDIST_WORKER"):
+        yield
+        return
 
     current = os.environ.get("PYTEST_CURRENT_TEST", "")
     is_unit = bool(current) and "tests/integration/" not in current
