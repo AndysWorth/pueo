@@ -205,8 +205,38 @@
 </div>
 {% endif %}
 
+{# Patch fixes by installed domain — collapsed #}
+{% if report.patch_changes_by_domain %}
+<div class="rpt-section">
+  <h3>🔧 Patch Fixes for Your Integrations</h3>
+  {% set _core_entries = report.patch_changes_by_domain.get("core", []) %}
+  {% if _core_entries %}
+  <details class="domain-changes">
+    <summary><strong>core</strong> — {{ _core_entries | length }} fix(es)</summary>
+    <ul>
+      {% for entry in _core_entries %}
+      <li>{{ entry.text }}{% if entry.prs %} {% for pr in entry.prs %}<a href="https://github.com/home-assistant/core/pull/{{ pr }}" target="_blank" rel="noopener" style="color:#888;font-size:0.8rem;">#{{ pr }}</a> {% endfor %}{% endif %}</li>
+      {% endfor %}
+    </ul>
+  </details>
+  {% endif %}
+  {% for domain, entries in report.patch_changes_by_domain.items() | sort %}
+  {% if domain != "core" %}
+  <details class="domain-changes">
+    <summary><strong>{{ domain }}</strong> — {{ entries | length }} fix(es)</summary>
+    <ul>
+      {% for entry in entries %}
+      <li>{{ entry.text }}{% if entry.prs %} {% for pr in entry.prs %}<a href="https://github.com/home-assistant/core/pull/{{ pr }}" target="_blank" rel="noopener" style="color:#888;font-size:0.8rem;">#{{ pr }}</a> {% endfor %}{% endif %}</li>
+      {% endfor %}
+    </ul>
+  </details>
+  {% endif %}
+  {% endfor %}
+</div>
+{% endif %}
+
 {# No content fallback #}
-{% if not report.bc_installed and not report.bc_general and not report.screening_flags and not report.screening_highlights and not report.changes_by_domain %}
+{% if not report.bc_installed and not report.bc_general and not report.screening_flags and not report.screening_highlights and not report.changes_by_domain and not report.patch_changes_by_domain %}
 <div class="rpt-section">
   <p class="rpt-empty">No relevant changes found for installed integrations.</p>
 </div>

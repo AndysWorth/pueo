@@ -7986,6 +7986,30 @@ class ToolExecutor:
                 )
             ],
         }
+        # Deterministic patch-fix list from the CoreReleaseReport — core first,
+        # rest alphabetical, capped at 40 entries (#1306).
+        if _rpt and _rpt.patch_changes_by_domain:
+            ordered = sorted(
+                _rpt.patch_changes_by_domain.items(),
+                key=lambda kv: ("" if kv[0] == "core" else kv[0]),
+            )
+            patch_changes: list[dict] = []
+            for domain, entries in ordered:
+                for entry in entries:
+                    patch_changes.append(
+                        {
+                            "domain": domain,
+                            "text": entry.text,
+                            "prs": list(entry.prs),
+                        }
+                    )
+                    if len(patch_changes) >= 40:
+                        break
+                if len(patch_changes) >= 40:
+                    break
+            payload["patch_changes"] = patch_changes
+        else:
+            payload["patch_changes"] = []
         # Verification for update cards is handled by the executor on install
         # (web/dashboard.py), not by a user Yes/No before install (#1304).
         payload["signature"] = self._session_signature

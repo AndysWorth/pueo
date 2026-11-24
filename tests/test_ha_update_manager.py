@@ -8301,6 +8301,62 @@ class TestFinishUpdateAnalysisReportPayload:
             payload["blog_url"] == "https://www.home-assistant.io/latest-release-notes/"
         )
 
+    def test_patch_changes_in_payload_from_report(self, pueo_dirs):
+        """patch_changes built from CoreReleaseReport, core first then alpha."""
+        from utils.knowledge.ha_release_report import ChangeEntry, CoreReleaseReport
+
+        executor, notifier = self._make_executor()
+        executor.set_update_status(self._make_update())
+        rpt = CoreReleaseReport(
+            version="2026.11.1",
+            patch_changes_by_domain={
+                "mqtt": [ChangeEntry(text="Fix MQTT discovery", prs=["100"])],
+                "core": [ChangeEntry(text="Time zone fix", prs=["200"])],
+                "zha": [ChangeEntry(text="Fix ZHA pairing", prs=["300"])],
+            },
+            completeness="complete",
+        )
+        executor.adopt_core_release_report(rpt)
+        self._run(executor)
+        payload = notifier.send.call_args.kwargs["payload"]
+        assert "patch_changes" in payload
+        pc = payload["patch_changes"]
+        assert len(pc) == 3
+        # core must come first
+        assert pc[0]["domain"] == "core"
+        assert pc[0]["text"] == "Time zone fix"
+        assert pc[0]["prs"] == ["200"]
+        # rest alphabetical
+        assert pc[1]["domain"] == "mqtt"
+        assert pc[2]["domain"] == "zha"
+
+    def test_patch_changes_empty_when_no_report(self, pueo_dirs):
+        """patch_changes is an empty list when no CoreReleaseReport is set."""
+        executor, notifier = self._make_executor()
+        executor.set_update_status(self._make_update())
+        self._run(executor)
+        payload = notifier.send.call_args.kwargs["payload"]
+        assert payload["patch_changes"] == []
+
+    def test_patch_changes_capped_at_40(self, pueo_dirs):
+        """patch_changes is capped at 40 entries."""
+        from utils.knowledge.ha_release_report import ChangeEntry, CoreReleaseReport
+
+        executor, notifier = self._make_executor()
+        executor.set_update_status(self._make_update())
+        rpt = CoreReleaseReport(
+            version="2026.11.1",
+            patch_changes_by_domain={
+                f"domain_{i}": [ChangeEntry(text=f"Fix {i}") for _ in range(3)]
+                for i in range(20)
+            },
+            completeness="complete",
+        )
+        executor.adopt_core_release_report(rpt)
+        self._run(executor)
+        payload = notifier.send.call_args.kwargs["payload"]
+        assert len(payload["patch_changes"]) == 40
+
 
 class TestCoreReleaseDigest:
     """Tests for format_core_release_digest ordering and truncation."""

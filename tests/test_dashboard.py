@@ -12385,6 +12385,127 @@ class TestUpdateReportRoute:
         assert "Check Yourself" in html
         assert "Entity names" in html
 
+    def test_update_card_shows_patch_changes_group(self, tmp_path, monkeypatch):
+        """Index card renders collapsed patch-fixes group when patch_changes in payload."""
+        import json as _json
+        import time as _time
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        nid = "upd_patch_test"
+        (tmp_path / f"{nid}.json").write_text(
+            _json.dumps(
+                {
+                    "notification_id": nid,
+                    "subject": "Update available: core 2026.11.3",
+                    "body": "Core 2026.11.2 → 2026.11.3",
+                    "payload": {
+                        "card_type": "update",
+                        "component": "homeassistant",
+                        "installed_version": "2026.11.2",
+                        "latest_version": "2026.11.3",
+                        "patch_changes": [
+                            {
+                                "domain": "core",
+                                "text": "Time zone fix",
+                                "prs": ["193306"],
+                            },
+                            {
+                                "domain": "mqtt",
+                                "text": "Fix MQTT discovery",
+                                "prs": ["99901"],
+                            },
+                            {
+                                "domain": "sonos",
+                                "text": "Fix polling interval",
+                                "prs": ["99902"],
+                            },
+                        ],
+                    },
+                    "sent_at": int(_time.time()) - 30,
+                }
+            )
+        )
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/queue").text
+        assert "Fixes for your integrations" in html
+        assert "(3)" in html
+        assert "Time zone fix" in html
+        assert "#193306" in html
+        assert "mqtt" in html
+        assert "sonos" in html
+
+    def test_update_card_no_patch_group_when_empty(self, tmp_path, monkeypatch):
+        """Index card does not render patch-fixes group when patch_changes is empty."""
+        import json as _json
+        import time as _time
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        nid = "upd_nopatch_test"
+        (tmp_path / f"{nid}.json").write_text(
+            _json.dumps(
+                {
+                    "notification_id": nid,
+                    "subject": "Update available: addon 1.2.3",
+                    "body": "Addon 1.2.2 → 1.2.3",
+                    "payload": {
+                        "card_type": "update",
+                        "component": "my_addon",
+                        "installed_version": "1.2.2",
+                        "latest_version": "1.2.3",
+                        "patch_changes": [],
+                    },
+                    "sent_at": int(_time.time()) - 30,
+                }
+            )
+        )
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/queue").text
+        assert "Fixes for your integrations" not in html
+
+    def test_update_report_shows_patch_changes(self, pueo_dirs, monkeypatch):
+        """update_report.html renders patch fixes by domain with PR links."""
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+        from utils.knowledge.ha_release_report import ChangeEntry
+
+        monkeypatch.setattr(dashboard, "_get_dirs", lambda: pueo_dirs)
+
+        version = "2026.11.3"
+        report = self._write_report(pueo_dirs.state_dir, version=version)
+        # Rewrite the report to include patch_changes_by_domain
+        from utils.knowledge.ha_release_report import CoreReleaseReport
+
+        rpt = CoreReleaseReport.model_validate_json(report.read_text())
+        rpt.patch_changes_by_domain = {
+            "core": [ChangeEntry(text="Time zone fix", prs=["193306"])],
+            "mqtt": [ChangeEntry(text="Fix MQTT discovery crash", prs=["99901"])],
+        }
+        report.write_text(rpt.model_dump_json())
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get(f"/updates/report/core_{version}").text
+        assert "Patch Fixes" in html
+        assert "Time zone fix" in html
+        assert "#193306" in html
+        assert "home-assistant/core/pull/193306" in html
+        assert "mqtt" in html
+        assert "Fix MQTT discovery crash" in html
+
+    def test_update_report_no_patch_section_when_empty(self, pueo_dirs, monkeypatch):
+        """update_report.html omits patch fixes section when no patch_changes_by_domain."""
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setattr(dashboard, "_get_dirs", lambda: pueo_dirs)
+        self._write_report(pueo_dirs.state_dir)
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/updates/report/core_2026.11.0").text
+        assert "Patch Fixes" not in html
+
 
 # ── /sensor-stats/{nid}/ignore-all route ─────────────────────────────────────
 
