@@ -505,23 +505,23 @@ class TestDashboardConfig:
 
 
 class TestAutonomyGate:
-    # ── should_auto_execute: 4 levels × 4 risks ──────────────────────────────────
+    # ── should_auto_execute: 5 levels × 4 risks ──────────────────────────────────
 
-    def test_level1_never_auto_executes(self):
+    def test_level0_never_auto_executes(self):
         from utils.agent.autonomy import AutonomyGate, RiskLevel
 
         gate = AutonomyGate(level=0)
         for risk in RiskLevel:
             assert gate.should_auto_execute(risk) is False
 
-    def test_level2_never_auto_executes(self):
+    def test_level1_never_auto_executes(self):
         from utils.agent.autonomy import AutonomyGate, RiskLevel
 
         gate = AutonomyGate(level=1)
         for risk in RiskLevel:
             assert gate.should_auto_execute(risk) is False
 
-    def test_level3_auto_executes_low_only(self):
+    def test_level2_auto_executes_low_only(self):
         from utils.agent.autonomy import AutonomyGate, RiskLevel
 
         gate = AutonomyGate(level=2)
@@ -530,7 +530,7 @@ class TestAutonomyGate:
         assert gate.should_auto_execute(RiskLevel.HIGH) is False
         assert gate.should_auto_execute(RiskLevel.CRITICAL) is False
 
-    def test_level4_auto_executes_except_critical(self):
+    def test_level3_auto_executes_except_critical(self):
         from utils.agent.autonomy import AutonomyGate, RiskLevel
 
         gate = AutonomyGate(level=3)
@@ -538,6 +538,20 @@ class TestAutonomyGate:
         assert gate.should_auto_execute(RiskLevel.MEDIUM) is True
         assert gate.should_auto_execute(RiskLevel.HIGH) is True
         assert gate.should_auto_execute(RiskLevel.CRITICAL) is False
+
+    def test_level4_auto_executes_all_risks(self):
+        from utils.agent.autonomy import AutonomyGate, RiskLevel
+
+        gate = AutonomyGate(level=4)
+        for risk in RiskLevel:
+            assert gate.should_auto_execute(risk) is True
+
+    def test_invalid_level_raises(self):
+        from utils.agent.autonomy import AutonomyGate
+
+        for bad in (-1, 5, "3"):
+            with pytest.raises(ValueError):
+                AutonomyGate(level=bad)
 
     # ── should_ask_preference ────────────────────────────────────────────────────
 
@@ -559,7 +573,7 @@ class TestAutonomyGate:
 
     # ── require_approval short-circuits ─────────────────────────────────────────
 
-    def test_level1_rejects_without_notifying_for_all_risks(self):
+    def test_level0_rejects_without_notifying_for_all_risks(self):
         from utils.agent.autonomy import AutonomyGate, RiskLevel
         from utils.hitl.notify import FakeNotifier
 
@@ -574,7 +588,7 @@ class TestAutonomyGate:
             assert result is False
             assert len(notifier.sent) == 0
 
-    def test_level4_approves_low_without_notifying(self):
+    def test_level3_approves_low_without_notifying(self):
         from utils.agent.autonomy import AutonomyGate, RiskLevel
         from utils.hitl.notify import FakeNotifier
 
@@ -588,7 +602,7 @@ class TestAutonomyGate:
         assert result is True
         assert len(notifier.sent) == 0
 
-    def test_level4_approves_medium_without_notifying(self):
+    def test_level3_approves_medium_without_notifying(self):
         from utils.agent.autonomy import AutonomyGate, RiskLevel
         from utils.hitl.notify import FakeNotifier
 
@@ -602,7 +616,7 @@ class TestAutonomyGate:
         assert result is True
         assert len(notifier.sent) == 0
 
-    def test_level4_approves_high_without_notifying(self):
+    def test_level3_approves_high_without_notifying(self):
         from utils.agent.autonomy import AutonomyGate, RiskLevel
         from utils.hitl.notify import FakeNotifier
 
@@ -616,7 +630,7 @@ class TestAutonomyGate:
         assert result is True
         assert len(notifier.sent) == 0
 
-    def test_level4_notifies_for_critical_and_approves(self):
+    def test_level3_notifies_for_critical_and_approves(self):
         from utils.agent.autonomy import AutonomyGate, RiskLevel
         from utils.hitl.notify import FakeNotifier
 
@@ -630,7 +644,7 @@ class TestAutonomyGate:
         assert result is True
         assert len(notifier.sent) == 1
 
-    def test_level4_notifies_for_critical_and_rejects(self):
+    def test_level3_notifies_for_critical_and_rejects(self):
         from utils.agent.autonomy import AutonomyGate, RiskLevel
         from utils.hitl.notify import FakeNotifier
 
@@ -644,7 +658,7 @@ class TestAutonomyGate:
         assert result is False
         assert len(notifier.sent) == 1
 
-    def test_level3_approves_low_without_notifying(self):
+    def test_level2_approves_low_without_notifying(self):
         from utils.agent.autonomy import AutonomyGate, RiskLevel
         from utils.hitl.notify import FakeNotifier
 
@@ -658,7 +672,7 @@ class TestAutonomyGate:
         assert result is True
         assert len(notifier.sent) == 0
 
-    def test_level3_notifies_for_medium(self):
+    def test_level2_notifies_for_medium(self):
         from utils.agent.autonomy import AutonomyGate, RiskLevel
         from utils.hitl.notify import FakeNotifier
 
@@ -671,7 +685,7 @@ class TestAutonomyGate:
         )
         assert len(notifier.sent) == 1
 
-    def test_level3_notifies_for_high(self):
+    def test_level2_notifies_for_high(self):
         from utils.agent.autonomy import AutonomyGate, RiskLevel
         from utils.hitl.notify import FakeNotifier
 
@@ -684,7 +698,7 @@ class TestAutonomyGate:
         )
         assert len(notifier.sent) == 1
 
-    def test_level3_notifies_for_critical(self):
+    def test_level2_notifies_for_critical(self):
         from utils.agent.autonomy import AutonomyGate, RiskLevel
         from utils.hitl.notify import FakeNotifier
 
@@ -697,7 +711,7 @@ class TestAutonomyGate:
         )
         assert len(notifier.sent) == 1
 
-    def test_level2_notifies_for_all_risks(self):
+    def test_level1_notifies_for_all_risks(self):
         from utils.agent.autonomy import AutonomyGate, RiskLevel
         from utils.hitl.notify import FakeNotifier
 
@@ -709,7 +723,7 @@ class TestAutonomyGate:
                     "s", "b", {"notification_id": "x"}, notifier, risk
                 )
             )
-            assert len(notifier.sent) == 1, f"level 2 should notify for {risk.name}"
+            assert len(notifier.sent) == 1, f"level 1 should notify for {risk.name}"
 
     def test_require_approval_waits_until_approved(self):
         from utils.agent.autonomy import AutonomyGate, RiskLevel

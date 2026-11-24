@@ -6402,20 +6402,19 @@ class TestNetalertxDiagnoseRoute:
         assert resp.json().get("already_running") is not True
 
     def test_netalertx_diagnose_already_running(self, tmp_path, monkeypatch):
-        import asyncio
         from fastapi.testclient import TestClient
+        from unittest.mock import MagicMock
 
         import web.dashboard as dashboard
         import utils.agent.supervisor as sup_mod
 
         monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
 
-        # Inject a running task
-        async def _noop():
-            pass
-
-        loop = asyncio.new_event_loop()
-        task = loop.create_task(_noop())
+        # Inject a running task using a MagicMock that reports done()=False, avoiding
+        # an un-awaited coroutine warning that would arise from create_task on a real
+        # async def with an event loop that never runs.
+        task = MagicMock()
+        task.done.return_value = False
         monkeypatch.setattr(dashboard, "_netalertx_diagnose_task", task)
 
         class _FakeSV:
@@ -6426,7 +6425,6 @@ class TestNetalertxDiagnoseRoute:
         resp = client.post("/netalertx/diagnose")
         assert resp.status_code == 200
         assert resp.json()["already_running"] is True
-        loop.close()
 
 
 class TestOverviewNetalertxCard:
