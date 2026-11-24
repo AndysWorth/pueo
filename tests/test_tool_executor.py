@@ -258,6 +258,11 @@ class TestFetchHaDocs:
 class TestFetchUrl:
     """Tests for ToolExecutor._fetch_url."""
 
+    # Public IP returned by default DNS mock so hostname URLs pass the SSRF check.
+    _PUBLIC_DNS = [
+        (2, None, None, None, ("93.184.216.34", 0))
+    ]  # 93.184.216.34 = example.com
+
     def _run(self, url: str, *, allow_wan: bool = True):
         with (
             patch(
@@ -267,6 +272,7 @@ class TestFetchUrl:
                 "utils.agent.tool_executor._config_mod.DIAGNOSTIC_WAN_TIMEOUT_SECONDS",
                 10,
             ),
+            patch("socket.getaddrinfo", return_value=self._PUBLIC_DNS),
         ):
             executor = _make_executor()
             return asyncio.run(executor._fetch_url(url))
@@ -293,21 +299,26 @@ class TestFetchUrl:
 
     def test_successful_get(self):
         fake_body = b"OK response body"
-        with patch("urllib.request.urlopen", return_value=_FakeSyncResp(fake_body)):
+        with patch(
+            "utils.agent.tool_executor._ssrf_open",
+            return_value=_FakeSyncResp(fake_body),
+        ):
             result = self._run("https://example.com/api")
         assert result.success is True
         assert "OK response body" in result.output
 
     def test_truncation(self):
         big_body = ("x" * 10_000).encode()
-        with patch("urllib.request.urlopen", return_value=_FakeSyncResp(big_body)):
+        with patch(
+            "utils.agent.tool_executor._ssrf_open", return_value=_FakeSyncResp(big_body)
+        ):
             result = self._run("https://example.com/api")
         assert result.success is True
         from utils.agent.tool_executor import _MAX_FETCH_URL_CHARS
 
         assert len(result.output) <= _MAX_FETCH_URL_CHARS
 
-    def _run_many(self, urls: list[str], urlopen, *, reset_after: int = -1):
+    def _run_many(self, urls: list[str], ssrf_open, *, reset_after: int = -1):
         results = []
         with (
             patch("utils.agent.tool_executor._config_mod.ALLOW_DIAGNOSTIC_WAN", True),
@@ -315,7 +326,8 @@ class TestFetchUrl:
                 "utils.agent.tool_executor._config_mod.DIAGNOSTIC_WAN_TIMEOUT_SECONDS",
                 10,
             ),
-            patch("urllib.request.urlopen", urlopen),
+            patch("utils.agent.tool_executor._ssrf_open", ssrf_open),
+            patch("socket.getaddrinfo", return_value=self._PUBLIC_DNS),
         ):
             executor = _make_executor()
             for i, url in enumerate(urls):
@@ -328,10 +340,10 @@ class TestFetchUrl:
         """A second fetch of the same URL makes no request and says so (#945)."""
         from unittest.mock import MagicMock
 
-        urlopen = MagicMock(return_value=_FakeSyncResp(b"CHANGELOG body"))
+        ssrf_open = MagicMock(return_value=_FakeSyncResp(b"CHANGELOG body"))
         url = "https://raw.githubusercontent.com/o/r/main/CHANGELOG.md"
-        first, second = self._run_many([url, url], urlopen)
-        assert urlopen.call_count == 1
+        first, second = self._run_many([url, url], ssrf_open)
+        assert ssrf_open.call_count == 1
         assert first.output == "CHANGELOG body"
         assert second.success is True
         assert "Already fetched this URL" in second.output
@@ -340,30 +352,30 @@ class TestFetchUrl:
     def test_different_urls_both_fetched(self):
         from unittest.mock import MagicMock
 
-        urlopen = MagicMock(return_value=_FakeSyncResp(b"body"))
+        ssrf_open = MagicMock(return_value=_FakeSyncResp(b"body"))
         a, b = self._run_many(
-            ["https://example.com/a", "https://example.com/b"], urlopen
+            ["https://example.com/a", "https://example.com/b"], ssrf_open
         )
-        assert urlopen.call_count == 2
+        assert ssrf_open.call_count == 2
         assert "Already fetched" not in b.output
 
     def test_failed_fetch_not_cached(self):
         from unittest.mock import MagicMock
 
-        urlopen = MagicMock(side_effect=[OSError("boom"), _FakeSyncResp(b"ok")])
+        ssrf_open = MagicMock(side_effect=[OSError("boom"), _FakeSyncResp(b"ok")])
         url = "https://example.com/flaky"
-        first, second = self._run_many([url, url], urlopen)
+        first, second = self._run_many([url, url], ssrf_open)
         assert first.success is False
         assert second.output == "ok"
-        assert urlopen.call_count == 2
+        assert ssrf_open.call_count == 2
 
     def test_reset_clears_session_cache(self):
         from unittest.mock import MagicMock
 
-        urlopen = MagicMock(return_value=_FakeSyncResp(b"body"))
+        ssrf_open = MagicMock(return_value=_FakeSyncResp(b"body"))
         url = "https://example.com/a"
-        _, second = self._run_many([url, url], urlopen, reset_after=0)
-        assert urlopen.call_count == 2
+        _, second = self._run_many([url, url], ssrf_open, reset_after=0)
+        assert ssrf_open.call_count == 2
         assert second.output == "body"
 
     def test_html_response_extracts_body_text(self):
@@ -376,7 +388,7 @@ class TestFetchUrl:
             + "</body></html>"
         ).encode()
         with patch(
-            "urllib.request.urlopen",
+            "utils.agent.tool_executor._ssrf_open",
             return_value=_FakeSyncResp(html, "text/html; charset=utf-8"),
         ):
             result = self._run("https://example.com/page")
@@ -393,7 +405,7 @@ class TestFetchUrl:
             "</article></body></html>"
         ).encode()
         with patch(
-            "urllib.request.urlopen",
+            "utils.agent.tool_executor._ssrf_open",
             return_value=_FakeSyncResp(html, "text/html"),
         ):
             result = self._run("https://example.com/notes#breaking-changes")
@@ -405,7 +417,7 @@ class TestFetchUrl:
         """Plain-text response is returned as-is (no HTML extraction)."""
         body = b"plain text body"
         with patch(
-            "urllib.request.urlopen",
+            "utils.agent.tool_executor._ssrf_open",
             return_value=_FakeSyncResp(body, "text/plain"),
         ):
             result = self._run("https://example.com/file.txt")
@@ -416,12 +428,91 @@ class TestFetchUrl:
         """If the extractor yields nothing, raw HTML is used as fallback."""
         html = b"<html><head><title>Empty</title></head></html>"
         with patch(
-            "urllib.request.urlopen",
+            "utils.agent.tool_executor._ssrf_open",
             return_value=_FakeSyncResp(html, "text/html"),
         ):
             result = self._run("https://example.com/empty")
         assert result.success is True
         assert "Empty" in result.output
+
+    # --- SSRF bypass and false-positive hardening tests (#1290) ---
+
+    @pytest.mark.parametrize(
+        "url,desc",
+        [
+            ("http://0.0.0.0/admin", "unspecified address"),
+            ("http://169.254.1.1/secret", "link-local IPv4"),
+            ("http://[::ffff:127.0.0.1]/secret", "IPv4-mapped loopback"),
+            ("http://[::ffff:7f00:1]/secret", "IPv4-mapped loopback hex"),
+            ("http://[::1]/secret", "IPv6 loopback"),
+            ("http://[fd12:3456::1]/secret", "IPv6 ULA"),
+            ("http://[fc00::1]/secret", "IPv6 ULA fc00"),
+            ("http://[fe80::1]/secret", "IPv6 link-local"),
+        ],
+    )
+    def test_non_standard_private_ips_blocked(self, url, desc):
+        """Bypass forms that the old string-prefix check missed are blocked."""
+        result = self._run(url)
+        assert result.success is False, f"{desc} should be blocked"
+        assert "Blocked" in result.error
+
+    def test_false_positive_fc_hostname_not_blocked(self):
+        """A hostname starting with 'fc' or 'fd' is NOT falsely blocked."""
+        import socket
+
+        # DNS resolves fcdmv.example.com to a real public IP — must NOT be blocked
+        fake_infos = [(socket.AF_INET, None, None, None, ("93.184.216.34", 0))]
+        with (
+            patch("utils.agent.tool_executor._config_mod.ALLOW_DIAGNOSTIC_WAN", True),
+            patch(
+                "utils.agent.tool_executor._config_mod.DIAGNOSTIC_WAN_TIMEOUT_SECONDS",
+                10,
+            ),
+            patch("socket.getaddrinfo", return_value=fake_infos),
+            patch(
+                "utils.agent.tool_executor._ssrf_open",
+                return_value=_FakeSyncResp(b"ok"),
+            ),
+        ):
+            executor = _make_executor()
+            result = asyncio.run(executor._fetch_url("https://fcdmv.example.com/api"))
+        assert result.success is True
+
+    def test_dns_resolves_to_private_blocked(self):
+        """A hostname that resolves to a private IP via DNS is blocked."""
+        import socket
+
+        # DNS resolves to a private address — must be blocked regardless of hostname
+        fake_infos = [(socket.AF_INET, None, None, None, ("192.168.1.100", 0))]
+        with (
+            patch("utils.agent.tool_executor._config_mod.ALLOW_DIAGNOSTIC_WAN", True),
+            patch(
+                "utils.agent.tool_executor._config_mod.DIAGNOSTIC_WAN_TIMEOUT_SECONDS",
+                10,
+            ),
+            patch("socket.getaddrinfo", return_value=fake_infos),
+        ):
+            executor = _make_executor()
+            result = asyncio.run(executor._fetch_url("https://evil.attacker.com/steal"))
+        assert result.success is False
+        assert "Blocked" in result.error
+
+    def test_redirect_to_private_blocked(self):
+        """A redirect to a private address is blocked before following."""
+        import urllib.error
+
+        def _ssrf_open_redirecting(req, timeout):
+            raise urllib.error.URLError(
+                "Blocked redirect to private/reserved address '192.168.1.1'"
+            )
+
+        with patch(
+            "utils.agent.tool_executor._ssrf_open",
+            side_effect=_ssrf_open_redirecting,
+        ):
+            result = self._run("https://external.example.com/redirect")
+        assert result.success is False
+        assert "Blocked redirect" in result.error
 
 
 class TestSearchHaDocs:

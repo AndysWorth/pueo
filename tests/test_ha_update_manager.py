@@ -4705,8 +4705,17 @@ class TestFetchUrlGitHubApiFilter:
 
         executor = self._make_executor()
 
-        with patch("urllib.request.urlopen") as mock_open:
-            mock_open.return_value.read.return_value = big_payload
+        import socket
+        from unittest.mock import MagicMock
+
+        _PUBLIC_DNS = [(socket.AF_INET, None, None, None, ("140.82.112.4", 0))]
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = big_payload
+        mock_resp.headers.get.return_value = "application/json"
+        with (
+            patch("socket.getaddrinfo", return_value=_PUBLIC_DNS),
+            patch("utils.agent.tool_executor._ssrf_open", return_value=mock_resp),
+        ):
             result = asyncio.run(
                 executor._fetch_url(
                     "https://api.github.com/repos/basnijholt/spook/releases/tags/v5.11.1"
@@ -4723,13 +4732,20 @@ class TestFetchUrlGitHubApiFilter:
     def test_non_github_api_url_not_filtered(self, pueo_dirs):
         """Non-api.github.com URLs are returned as-is (no JSON filtering)."""
         import asyncio
-        from unittest.mock import patch
+        import socket
+        from unittest.mock import MagicMock, patch
 
         raw_text = "plain text response"
 
+        _PUBLIC_DNS = [(socket.AF_INET, None, None, None, ("93.184.216.34", 0))]
         executor = self._make_executor()
-        with patch("urllib.request.urlopen") as mock_open:
-            mock_open.return_value.read.return_value = raw_text.encode()
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = raw_text.encode()
+        mock_resp.headers.get.return_value = ""
+        with (
+            patch("socket.getaddrinfo", return_value=_PUBLIC_DNS),
+            patch("utils.agent.tool_executor._ssrf_open", return_value=mock_resp),
+        ):
             result = asyncio.run(
                 executor._fetch_url("https://example.com/changelog.txt")
             )
@@ -6555,13 +6571,22 @@ class TestFetchUrlGitHubReleaseRewrite:
     def _fetch(self, executor, url, body):
         import asyncio
         import json
-        from unittest.mock import patch
+        import socket
+        from unittest.mock import MagicMock, patch
 
+        _PUBLIC_DNS = [(socket.AF_INET, None, None, None, ("140.82.112.4", 0))]
         payload = json.dumps({"tag_name": "18.4", "body": body}).encode()
-        with patch("urllib.request.urlopen") as mock_open:
-            mock_open.return_value.read.return_value = payload
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = payload
+        mock_resp.headers.get.return_value = "application/json"
+        with (
+            patch("socket.getaddrinfo", return_value=_PUBLIC_DNS),
+            patch(
+                "utils.agent.tool_executor._ssrf_open", return_value=mock_resp
+            ) as mock_ssrf,
+        ):
             result = asyncio.run(executor._fetch_url(url))
-        return result, mock_open.call_args[0][0].full_url
+        return result, mock_ssrf.call_args[0][0].full_url
 
     def test_release_page_rewritten_and_marks_notes(self, pueo_dirs):
         import json
