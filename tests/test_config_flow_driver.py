@@ -400,6 +400,8 @@ class TestDriveConfigFlowAbortPaths:
 
 class TestDriveConfigFlowInvalidHandler:
     def test_invalid_handler_retries_once(self):
+        from unittest.mock import AsyncMock, patch
+
         call_count = [0]
 
         async def patched_start(handler):
@@ -422,7 +424,8 @@ class TestDriveConfigFlowInvalidHandler:
             }
         )
         rest.start_config_flow = patched_start  # type: ignore[method-assign]
-        result = _run(drive_config_flow(rest, "mydom", plan={"user": {}}))
+        with patch("utils.ha.config_flow_driver.asyncio.sleep", new_callable=AsyncMock):
+            result = _run(drive_config_flow(rest, "mydom", plan={"user": {}}))
         assert result.success is True
         assert call_count[0] == 2
 

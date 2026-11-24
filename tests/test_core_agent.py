@@ -11890,6 +11890,7 @@ class TestToolExecutor:
         assert "ha core check failed" in result.error
 
     def test_verify_fix_ssh_exception(self):
+        from unittest.mock import AsyncMock, patch
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.tool_registry import ToolCall
 
@@ -11898,7 +11899,8 @@ class TestToolExecutor:
                 raise TimeoutError("SSH timed out")
 
         executor = self._make_executor(ssh=_RaisingSSH())
-        result = asyncio.run(executor.execute(ToolCall(name="verify_fix")))
+        with patch("utils.core.retry.asyncio.sleep", new_callable=AsyncMock):
+            result = asyncio.run(executor.execute(ToolCall(name="verify_fix")))
         assert not result.success
         assert "timed out" in result.error
 

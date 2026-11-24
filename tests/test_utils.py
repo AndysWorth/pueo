@@ -10058,10 +10058,10 @@ class TestSupervisorActivityHelpers:
 
     def test_make_activity_timeline_callback_returns_coroutine(self):
         from utils.agent.supervisor import make_activity_timeline_callback
-        import asyncio
+        import inspect
 
         cb = make_activity_timeline_callback("test_activity")
-        assert asyncio.iscoroutinefunction(cb)
+        assert inspect.iscoroutinefunction(cb)
 
     def test_callback_publishes_agent_step_event(self, monkeypatch):
         import asyncio

@@ -9362,6 +9362,24 @@ class TestOneShotDiagnoseTokenPreRead:
                 )
 
         monkeypatch.setattr(_diag_mod2, "NetAlertXHealthMonitor", _FakeMonitor)
+        # Prevent analyze_log_line_with_ai and diagnose_health_report from
+        # hitting the real Ollama server.
+        from netalertx.log_monitor import LogEvaluation
+        from utils.hitl.llm_trace import LLMTrace
+
+        async def _fake_analyze(lines, llm_client=None):
+            return (
+                LogEvaluation(is_actionable=False, confidence_score=0.0, reason=""),
+                LLMTrace(),
+            )
+
+        async def _fake_diagnose(report, config_issues=None, *a, **kw):
+            return None, None
+
+        monkeypatch.setattr(_diag_mod2, "analyze_log_line_with_ai", _fake_analyze)
+        import netalertx.one_shot_diagnose as _diag_mod3
+
+        monkeypatch.setattr(_diag_mod3, "diagnose_health_report", _fake_diagnose)
 
         asyncio.run(
             run_diagnose(
