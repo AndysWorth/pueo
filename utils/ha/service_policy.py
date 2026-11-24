@@ -81,6 +81,8 @@ _MEDIUM_PATTERNS: tuple[str, ...] = (
 
 def classify_service_risk(domain: str, service: str) -> RiskLevel | None:
     """Return the risk level for a service call, or None if it is blocked."""
+    domain = domain.strip().lower()
+    service = service.strip().lower()
     call = f"{domain}.{service}"
 
     for pattern in _BLOCKED:

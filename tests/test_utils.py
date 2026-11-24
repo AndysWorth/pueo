@@ -3892,7 +3892,14 @@ class TestLoopSupervisor:
             status = sup.get_statuses()[0]
             assert status.last_error == ""
 
-        asyncio.run(_run())
+        # Patch write_timeline_event: the supervisor calls it synchronously inside
+        # the crash handler, which blocks the event loop on a cold import + SQLite
+        # write.  Without the patch the 0.15 s budget can expire before the second
+        # iteration runs and clears last_error (flaky on slow CI Linux runners).
+        from unittest.mock import patch
+
+        with patch("utils.core.timeline.write_timeline_event"):
+            asyncio.run(_run())
 
     def test_paused_loop_does_not_run_coro(self):
         """A paused loop skips the coro body and sleeps instead."""
