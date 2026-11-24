@@ -6275,7 +6275,7 @@ class TestCloseInstalledUpdateCard:
 
 
 class TestFinishUpdateAnalysisVerificationQuestion:
-    """_finish_update_analysis payload: no default verification_question; LLM question kept."""
+    """_finish_update_analysis payload: no verification_question ever (system verifier only)."""
 
     def _make_executor(self, gate=None):
         from unittest.mock import AsyncMock, MagicMock
@@ -6336,8 +6336,8 @@ class TestFinishUpdateAnalysisVerificationQuestion:
         # Signature is always set so the card executor can trigger distillation.
         assert "signature" in payload
 
-    def test_llm_question_kept_when_provided(self, pueo_dirs):
-        """When the LLM explicitly provides a verification_question it is used as-is."""
+    def test_no_verification_question_even_when_model_provides_one(self, pueo_dirs):
+        """verification_question is never placed on the update card payload (#1304)."""
         import asyncio
 
         executor, notifier = self._make_executor()
@@ -6357,13 +6357,12 @@ class TestFinishUpdateAnalysisVerificationQuestion:
                     instance_impact="none",
                     proposed_config_fixes=[],
                     create_hitl_card=True,
-                    verification_question="Was the NOAA update safe?",
                 )
             )
 
         assert notifier.send.called
         payload = notifier.send.call_args.kwargs["payload"]
-        assert payload["verification_question"] == "Was the NOAA update safe?"
+        assert "verification_question" not in payload
 
 
 # ---------------------------------------------------------------------------
@@ -13403,19 +13402,12 @@ class TestHeadsUpVerdict:
         assert len(reloaded.heads_up_items) == 1
         assert reloaded.heads_up_items[0]["matched_domain"] == "hacs"
 
-    def test_verification_question_suppressed_when_verdicts_exist(self):
-        """verification_question must be suppressed when BC assessment ran."""
-        # The suppression logic is a one-line guard in _finish_update_analysis.
-        # Validate the invariant by checking that the payload builder would
-        # exclude it via the _normalized_verdicts gate (white-box logic check).
-        from utils.agent.tool_executor import _normalize_bc_verdicts
+    def test_default_verification_question_update_returns_falsy(self):
+        """default_verification_question returns empty for update cards (#1304)."""
+        from utils.knowledge.session_verification import default_verification_question
 
-        normalized = _normalize_bc_verdicts(
-            [{"bc": "Entity names", "verdict": "heads_up", "reason": "labels"}],
-            ["Entity names"],
-        )
-        # Non-empty _normalized_verdicts → verification_question suppressed.
-        assert len(normalized) > 0, "must be non-empty to trigger suppression"
+        assert not default_verification_question("update", {"component": "core"})
+        assert not default_verification_question("update", {})
 
 
 class TestMatchBlogSectionsToInstalled:

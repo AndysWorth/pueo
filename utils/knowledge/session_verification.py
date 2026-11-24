@@ -329,8 +329,7 @@ def default_verification_question(card_type: str, payload: dict) -> str:
             return "Was Pueo's diagnosis and recommended action right?"
         return "Was Pueo's assessment right?"
     if card_type == "update":
-        component = str(payload.get("component") or "this update")
-        return f"Was the {component} update assessment right?"
+        return ""  # update cards are verified by the executor on install, not by Yes/No
     if card_type == "device_offline":
         devices = payload.get("devices") or []
         if devices and isinstance(devices[0], dict):
