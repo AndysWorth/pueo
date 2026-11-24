@@ -444,6 +444,9 @@ def parse_patch_notes(
             slug = def_m.group(2).rstrip("/")
             ref_to_domain[label] = slug
 
+    # core is a pseudo-domain that is always "installed"
+    effective_installed = installed_set | {"core"}
+
     result: dict[str, list[ChangeEntry]] = {}
     for raw_line in body.splitlines():
         # Skip reference definition lines
@@ -452,26 +455,35 @@ def parse_patch_notes(
         line = raw_line.strip().lstrip("*-• ").strip()
         if not line:
             continue
-        # Try inline URL first (e.g. ([Domain docs](https://…/mqtt)))
-        domain_m = _PATCH_HA_DOMAIN_RE.search(line)
-        if domain_m is not None:
-            domain = domain_m.group(1).rstrip("/")
-        else:
-            # Try reference label (e.g. ([mqtt docs]))
-            ref_m = _PATCH_REF_USE_RE.search(line)
-            if ref_m is None:
-                continue
-            label = ref_m.group(1).lower()
-            if label not in ref_to_domain:
-                continue
-            domain = ref_to_domain[label]
 
-        if domain not in installed_set:
-            norm = domain.replace("-", "_")
-            if norm in installed_set:
-                domain = norm
-            else:
+        # Collect every domain this line references (inline URL and/or ref label)
+        raw_domains: set[str] = set()
+        for m in _PATCH_HA_DOMAIN_RE.finditer(line):
+            raw_domains.add(m.group(1).rstrip("/"))
+        for m in _PATCH_REF_USE_RE.finditer(line):
+            label = m.group(1).lower()
+            if label in ref_to_domain:
+                raw_domains.add(ref_to_domain[label])
+
+        if not raw_domains:
+            # No docs link: treat as core only when a PR ref is present
+            if not _PR_NUM_RE.search(line):
                 continue
+            raw_domains = {"core"}
+
+        # Resolve each domain against the installed set (core always passes)
+        domains: list[str] = []
+        for d in sorted(raw_domains):
+            if d in effective_installed:
+                domains.append(d)
+            else:
+                norm = d.replace("-", "_")
+                if norm in effective_installed:
+                    domains.append(norm)
+
+        if not domains:
+            continue
+
         prs = _PR_NUM_RE.findall(line)
         # Strip trailing attribution/docs/label parentheticals to get display text
         text = _PATCH_TRAIL_RE.sub("", line).strip()
@@ -479,7 +491,9 @@ def parse_patch_notes(
             continue
         if _is_mechanical_change(text):
             continue
-        result.setdefault(domain, []).append(ChangeEntry(text=text, prs=prs))
+        entry = ChangeEntry(text=text, prs=prs)
+        for domain in domains:
+            result.setdefault(domain, []).append(entry)
     return result
 
 

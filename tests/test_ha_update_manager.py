@@ -11632,6 +11632,116 @@ class TestParsePatchNotes:
         assert "homekit" in result
         assert len(result["homekit"]) == 1  # not doubled
 
+    # -- domain-less (core) lines --
+
+    def test_domainless_pr_line_assigned_to_core(self):
+        """A line with a PR ref but no docs link goes to core."""
+        body = "- Check the time zone before other core config changes ([@u] - [#193306])\n"
+        result = self._parse(body, [])
+        assert "core" in result
+        assert (
+            result["core"][0].text
+            == "Check the time zone before other core config changes"
+        )
+        assert "193306" in result["core"][0].prs
+
+    def test_domainless_line_without_pr_still_dropped(self):
+        """A line with no docs link AND no PR ref is dropped even after the fix."""
+        body = "- Internal refactor without any PR or domain tag\n"
+        result = self._parse(body, [])
+        assert result == {}
+
+    def test_domainless_core_line_not_filtered_by_installed(self):
+        """Core lines are kept regardless of installed_set."""
+        body = "- Core config change fix ([@u] - [#99001])\n"
+        result = self._parse(body, ["hue"])  # hue has nothing to do with it
+        assert "core" in result
+
+    # -- multi-ref (two domains on one line) --
+
+    def test_multi_ref_only_second_domain_installed(self):
+        """A line with two refs emits under the installed domain only."""
+        body = (
+            "- Fix call ([@u] - [#1]) ([twilio_call docs]) ([clicksend_tts docs])\n"
+            "\n"
+            "[twilio_call docs]: https://www.home-assistant.io/integrations/twilio_call\n"
+            "[clicksend_tts docs]: https://www.home-assistant.io/integrations/clicksend_tts\n"
+        )
+        result = self._parse(body, ["clicksend_tts"])
+        assert "clicksend_tts" in result
+        assert "twilio_call" not in result
+        assert len(result["clicksend_tts"]) == 1
+
+    def test_multi_ref_both_domains_installed(self):
+        """A line with two refs emits under both when both are installed."""
+        body = (
+            "- Fix call ([@u] - [#2]) ([twilio_call docs]) ([clicksend_tts docs])\n"
+            "\n"
+            "[twilio_call docs]: https://www.home-assistant.io/integrations/twilio_call\n"
+            "[clicksend_tts docs]: https://www.home-assistant.io/integrations/clicksend_tts\n"
+        )
+        result = self._parse(body, ["twilio_call", "clicksend_tts"])
+        assert "twilio_call" in result
+        assert "clicksend_tts" in result
+        assert result["twilio_call"][0].text == result["clicksend_tts"][0].text
+
+    def test_multi_ref_neither_domain_installed_dropped(self):
+        """A multi-ref line with no installed domain is dropped."""
+        body = (
+            "- Fix call ([@u] - [#3]) ([twilio_call docs]) ([clicksend_tts docs])\n"
+            "\n"
+            "[twilio_call docs]: https://www.home-assistant.io/integrations/twilio_call\n"
+            "[clicksend_tts docs]: https://www.home-assistant.io/integrations/clicksend_tts\n"
+        )
+        result = self._parse(body, ["hue"])
+        assert result == {}
+
+    def test_regression_2026_11_3_excerpt_keeps_ten_entries(self):
+        """Regression fixture from the 2026.11.3 body: 10 entries expected.
+
+        9 integration fixes (all installed) + 1 core line (no docs link).
+        The reference-definition lines must not be emitted.
+        """
+        installed = [
+            "mqtt",
+            "sonos",
+            "tuya",
+            "go2rtc",
+            "stream",
+            "auth",
+            "marketplace",
+            "frontend",
+        ]
+        body = (
+            "- Fix MQTT climate target temp ([@u] - [#111]) ([mqtt docs])\n"
+            "- Fix Sonos polling ([@u] - [#112]) ([sonos docs])\n"
+            "- Fix Tuya color ([@u] - [#113]) ([tuya docs])\n"
+            "- Fix go2rtc stream init ([@u] - [#114]) ([go2rtc docs])\n"
+            "- Fix stream HLS ([@u] - [#115]) ([stream docs])\n"
+            "- Fix auth token refresh ([@u] - [#116]) ([auth docs])\n"
+            "- Fix marketplace integration download ([@u] - [#117]) ([marketplace docs])\n"
+            "- Fix marketplace info panel ([@u] - [#118]) ([marketplace docs])\n"
+            "- Fix frontend sidebar icon ([@u] - [#119]) "
+            "([Frontend docs](https://www.home-assistant.io/integrations/frontend))\n"
+            "- Check the time zone before other core config changes ([@u] - [#193306])\n"
+            "\n"
+            "[mqtt docs]: https://www.home-assistant.io/integrations/mqtt\n"
+            "[sonos docs]: https://www.home-assistant.io/integrations/sonos\n"
+            "[tuya docs]: https://www.home-assistant.io/integrations/tuya\n"
+            "[go2rtc docs]: https://www.home-assistant.io/integrations/go2rtc\n"
+            "[stream docs]: https://www.home-assistant.io/integrations/stream\n"
+            "[auth docs]: https://www.home-assistant.io/integrations/auth\n"
+            "[marketplace docs]: https://www.home-assistant.io/integrations/marketplace\n"
+        )
+        result = self._parse(body, installed)
+        # marketplace has 2 fixes; count total entries across all domains
+        total = sum(len(v) for v in result.values())
+        assert total == 10, f"Expected 10 entries, got {total}: {result}"
+        assert "core" in result
+        assert result["core"][0].prs == ["193306"]
+        # marketplace contributed 2 of those entries
+        assert len(result["marketplace"]) == 2
+
 
 # ---------------------------------------------------------------------------
 # CoreReleaseReport schema — new fields
