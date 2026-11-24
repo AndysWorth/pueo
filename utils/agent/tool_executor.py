@@ -330,11 +330,21 @@ def _ssrf_open(req, timeout: int):
 
 
 # Files the agent may never patch autonomously — manual edit + security review required.
+# All entries must be lowercase so that rel.casefold() comparison catches case variants
+# on macOS's case-insensitive filesystem (e.g. "Config.py" → bypasses a plain-string
+# frozenset check but is caught by casefold).
 _SAFETY_CRITICAL_PATHS: frozenset[str] = frozenset(
     {
         "utils/agent/autonomy.py",
         "interfaces.py",
         "config.py",
+        # Files that define the other security guards — patching them would let an
+        # agent rewrite the allowlists, SSRF blocklist, service-risk table, or the
+        # backup chain at runtime.
+        "utils/agent/tool_executor.py",
+        "utils/ha/read_only_ssh.py",
+        "utils/ha/service_policy.py",
+        "agents/ha_agent_sandbox_engine.py",
     }
 )
 
@@ -3730,11 +3740,13 @@ class ToolExecutor:
             )
         # Safety-critical file block list (item 85): derive canonical relative path
         # so that path aliases ("./config.py", "config.py") all hit the same check.
+        # casefold() catches case variants on macOS case-insensitive FS
+        # ("Config.py" → "config.py"); all frozenset entries are lowercase.
         try:
             rel = str(result.relative_to(_REPO_ROOT.resolve()))
         except ValueError:
             rel = path
-        if rel in _SAFETY_CRITICAL_PATHS:
+        if rel.casefold() in _SAFETY_CRITICAL_PATHS:
             return ToolResult(
                 tool_name="propose_patch",
                 success=False,

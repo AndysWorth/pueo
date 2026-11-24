@@ -1542,6 +1542,48 @@ class TestProposePatchSafety:
         assert not result.success
         assert result.error is not None
 
+    # --- newly blocked guard files (#1294) ---
+
+    def test_blocks_tool_executor_py(self):
+        result = self._patch("utils/agent/tool_executor.py", "y = 2\n")
+        assert not result.success
+        assert "safety-critical" in (result.error or "").lower()
+
+    def test_blocks_read_only_ssh_py(self):
+        result = self._patch("utils/ha/read_only_ssh.py", "y = 2\n")
+        assert not result.success
+        assert "safety-critical" in (result.error or "").lower()
+
+    def test_blocks_service_policy_py(self):
+        result = self._patch("utils/ha/service_policy.py", "y = 2\n")
+        assert not result.success
+        assert "safety-critical" in (result.error or "").lower()
+
+    def test_blocks_sandbox_engine_py(self):
+        result = self._patch("agents/ha_agent_sandbox_engine.py", "y = 2\n")
+        assert not result.success
+        assert "safety-critical" in (result.error or "").lower()
+
+    # --- case-fold and path-alias variants (#1294) ---
+
+    def test_blocks_config_py_case_variant(self):
+        # On macOS (case-insensitive FS), "Config.py" resolves to the same inode as
+        # "config.py" but str(path.relative_to(...)) preserves the input case.
+        # casefold() comparison must catch this.
+        result = self._patch("Config.py", "y = 2\n")
+        assert not result.success
+        assert "safety-critical" in (result.error or "").lower()
+
+    def test_blocks_config_py_dotslash(self):
+        result = self._patch("./config.py", "y = 2\n")
+        assert not result.success
+        assert "safety-critical" in (result.error or "").lower()
+
+    def test_blocks_autonomy_py_internal_dotdot(self):
+        result = self._patch("utils/agent/../agent/autonomy.py", "y = 2\n")
+        assert not result.success
+        assert "safety-critical" in (result.error or "").lower()
+
 
 # ---------------------------------------------------------------------------
 # TestResolveRepoPathSecurity — item 85
