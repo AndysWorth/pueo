@@ -83,3 +83,57 @@ class TestClassifyServiceRisk:
     )
     def test_blocked_returns_none(self, domain, service):
         assert classify_service_risk(domain, service) is None
+
+    @pytest.mark.parametrize(
+        "domain,service",
+        [
+            # Mixed-case domain/service on blocked entries
+            ("Homeassistant", "Restart"),
+            ("HOMEASSISTANT", "RESTART"),
+            ("Homeassistant", "Stop"),
+            ("Hassio", "addon_restart"),
+            ("HASSIO", "HOST_REBOOT"),
+            ("Backup", "Create"),
+            ("Recorder", "Purge"),
+            ("Recorder", "Purge_Entities"),
+            ("Shell_Command", "run"),
+            ("Python_Script", "exec"),
+            ("Pyscript", "reload"),
+            ("Update", "install"),
+            # Whitespace around domain/service
+            ("homeassistant", " restart"),
+            ("homeassistant ", "restart"),
+            (" homeassistant ", " restart "),
+            # Mixed case + whitespace
+            ("Homeassistant", " Restart "),
+        ],
+    )
+    def test_blocked_case_insensitive(self, domain, service):
+        """Case and whitespace variants of blocked services must still return None."""
+        assert classify_service_risk(domain, service) is None
+
+    @pytest.mark.parametrize(
+        "domain,service,expected",
+        [
+            # Mixed-case LOW domain
+            ("Light", "turn_on", RiskLevel.LOW),
+            ("SWITCH", "turn_on", RiskLevel.LOW),
+            # Mixed-case input_ prefix → LOW (not misclassified as HIGH)
+            ("Input_Boolean", "turn_on", RiskLevel.LOW),
+            ("INPUT_NUMBER", "set_value", RiskLevel.LOW),
+            # input_ prefix is LOW regardless of what follows
+            ("input_anything_at_all", "press", RiskLevel.LOW),
+            # Mixed-case MEDIUM
+            ("Automation", "trigger", RiskLevel.MEDIUM),
+            ("SCRIPT", "turn_on", RiskLevel.MEDIUM),
+            ("Homeassistant", "reload_config_entry", RiskLevel.MEDIUM),
+            # Whitespace around LOW
+            (" light ", "turn_on", RiskLevel.LOW),
+            ("light", " turn_on ", RiskLevel.LOW),
+            # Empty service → HIGH (not a blocked service, not LOW/MEDIUM match)
+            ("climate", "", RiskLevel.HIGH),
+        ],
+    )
+    def test_risk_level_case_insensitive(self, domain, service, expected):
+        """Risk tiers are case-insensitive and whitespace-tolerant."""
+        assert classify_service_risk(domain, service) == expected
