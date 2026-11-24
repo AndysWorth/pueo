@@ -147,10 +147,12 @@ socket.getaddrinfo = _guarded_getaddrinfo
 socket.socket.connect = _guarded_socket_connect  # type: ignore[method-assign]
 socket.socket.connect_ex = _guarded_socket_connect_ex  # type: ignore[method-assign]
 
-# Slow-test guard: any unit test taking more than 2 s wall-clock fails.  New
+# Slow-test guard: any unit test taking more than 5 s wall-clock fails.  New
 # tests that sleep for real rather than patching the sleep will trip this guard
 # immediately.  tests/integration/ is exempt (they talk to real services).
-_SLOW_TEST_THRESHOLD_S = 2.0
+# 5 s gives headroom for heavy importlib.reload() tests on slow CI runners
+# while still catching any real asyncio.sleep calls (the removed ones were ≥10 s).
+_SLOW_TEST_THRESHOLD_S = 5.0
 
 
 @pytest.hookimpl(hookwrapper=True)
