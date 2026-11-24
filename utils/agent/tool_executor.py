@@ -259,31 +259,74 @@ _READ_FILE_ALLOWED_PREFIXES: tuple[str, ...] = ("/config/", "/backup/")
 
 _MAX_HA_DOC_FETCH_CHARS: int = 16_000
 _MAX_FETCH_URL_CHARS: int = 8_000
-_PRIVATE_IP_BLOCKS: tuple[str, ...] = (
-    "10.",
-    "172.16.",
-    "172.17.",
-    "172.18.",
-    "172.19.",
-    "172.20.",
-    "172.21.",
-    "172.22.",
-    "172.23.",
-    "172.24.",
-    "172.25.",
-    "172.26.",
-    "172.27.",
-    "172.28.",
-    "172.29.",
-    "172.30.",
-    "172.31.",
-    "192.168.",
-    "127.",
-    "169.254.",
-    "::1",
-    "fc",
-    "fd",
-)
+_BLOCKED_HOSTNAMES: frozenset[str] = frozenset({"localhost", "homeassistant.local"})
+
+
+def _ip_is_blocked(ip) -> bool:
+    """Return True if ip (IPv4Address or IPv6Address) is in a blocked range."""
+    import ipaddress
+
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped  # treat ::ffff:127.0.0.1 as 127.0.0.1
+    return bool(
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_unspecified
+        or ip.is_multicast
+    )
+
+
+def _host_is_blocked(hostname: str) -> bool:
+    """Return True if hostname is a blocked IP literal or resolves to a blocked address."""
+    import ipaddress
+    import socket as _socket
+
+    if not hostname:
+        return True
+    if hostname.lower() in _BLOCKED_HOSTNAMES:
+        return True
+    # Literal IP (IPv4, IPv6, IPv4-mapped IPv6): parse directly without DNS
+    try:
+        return _ip_is_blocked(ipaddress.ip_address(hostname))
+    except ValueError:
+        pass
+    # Hostname or non-standard notation (decimal, octal) — resolve and check every result
+    try:
+        infos = _socket.getaddrinfo(hostname, None, proto=_socket.IPPROTO_TCP)
+    except OSError:
+        return True  # Cannot resolve → block
+    for _fam, _typ, _pro, _can, sockaddr in infos:
+        addr = sockaddr[0]
+        try:
+            if _ip_is_blocked(ipaddress.ip_address(addr)):
+                return True
+        except ValueError:
+            return True  # Unexpected address format → block
+    return False
+
+
+def _ssrf_open(req, timeout: int):
+    """Open an HTTP request with SSRF redirect protection (testable entry point)."""
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    class _SSRFRedirectHandler(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            redir_host = urllib.parse.urlparse(newurl).hostname or ""
+            if _host_is_blocked(redir_host):
+                raise urllib.error.URLError(
+                    f"Blocked redirect to private/reserved address {redir_host!r}"
+                )
+            return super().redirect_request(  # type: ignore[misc]
+                req, fp, code, msg, headers, newurl
+            )
+
+    opener = urllib.request.build_opener(_SSRFRedirectHandler())
+    return opener.open(req, timeout=timeout)  # nosec B310
+
 
 # Files the agent may never patch autonomously — manual edit + security review required.
 _SAFETY_CRITICAL_PATHS: frozenset[str] = frozenset(
@@ -3516,17 +3559,12 @@ class ToolExecutor:
             url = _rewrite_github_release_url(url)
         parsed = urllib.parse.urlparse(url)
         hostname = parsed.hostname or ""
-        if any(
-            hostname.startswith(block) for block in _PRIVATE_IP_BLOCKS
-        ) or hostname in (
-            "localhost",
-            "homeassistant.local",
-        ):
+        if _host_is_blocked(hostname):
             return ToolResult(
                 tool_name="fetch_url",
                 success=False,
                 output="",
-                error=f"Blocked: {hostname!r} resolves to a private/loopback address.",
+                error=f"Blocked: {hostname!r} is a private/reserved address.",
             )
 
         if url in self._fetched_urls:
@@ -3545,7 +3583,7 @@ class ToolExecutor:
         try:
 
             def _do_fetch() -> tuple[str, bytes]:
-                resp = urllib.request.urlopen(req, timeout=timeout)  # nosec B310
+                resp = _ssrf_open(req, timeout)
                 ct = resp.headers.get("Content-Type", "")
                 return ct, resp.read()
 
