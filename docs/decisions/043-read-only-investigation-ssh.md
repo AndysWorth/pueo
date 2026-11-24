@@ -45,3 +45,15 @@ Also: `run_ha_command` now reports a non-zero exit as `success=False, error="exi
 ## Amendment (#993): previous-boot host journal
 
 `_READ_ONLY_COMMAND_PATTERNS` also allows `ha host logs --boot -1 --lines N`, which reads the end of the previous boot's journal. `read_logs(log_source="ha_host_prev_boot")` uses it. After an unexpected reboot, the current boot's log starts after the restart, so without the previous boot a host-health session can only guess why the host went down. The pattern is anchored to offset `-1` and a numeric line count, so `--follow`, other offsets and chained commands are still rejected. Verified against the live HAOS CLI on 2026-10-26: `ha host logs --help` lists `-b, --boot`, and `ha host logs boots` lists offsets `-1` and `0`.
+
+## Amendment (#1292): widen deny list; \Z anchors; control-character rejection
+
+Three adversarial-QA findings fixed:
+
+**Deny list expansion.** `_DENIED_READ_PREFIXES` now also blocks `/config/.storage/core.config_entries` (integration passwords and API tokens), `/config/.storage/http` (HTTP auth), `/config/.storage/cloud` (cloud tokens) and `/config/.storage/onboarding`. Backup archives (`.tar` files under `/backup/`) are blocked because a full HA backup contains `secrets.yaml` and all credentials; non-archive files under `/backup/` (e.g. JSON metadata) remain readable. The original `auth*` prefix still blocks `/config/.storage/auth` and `/config/.storage/auth_provider.homeassistant`.
+
+**`\Z` instead of `$` in anchored regexes.** All five patterns in `_READ_ONLY_COMMAND_PATTERNS` now end with `\Z` (absolute end-of-string) instead of `$`. `$` matches just before a trailing `\n`, so `"ha core logs --lines 10\n"` passed the old check. `_SLUG_RE` and `_UUID_RE` in `tool_executor.py` are updated for the same reason. Because `_run_ha_command` already normalises its input with `" ".join(command.split())` before calling `_is_ha_command_allowed`, the practical risk was low for the split-based callers, but `\Z` is the correct anchor for any regex asserting "end of string".
+
+**Control-character rejection in `is_readable_path`.** A NUL byte, newline, carriage return or tab in the path argument now returns `False` immediately, before `posixpath.normpath`. These characters are never legitimate path components and can confuse downstream handling.
+
+Symlinks (`/config/x -> /etc/shadow`) cannot be detected client-side; this remains accepted risk per ADR 004, documented here for reviewers.

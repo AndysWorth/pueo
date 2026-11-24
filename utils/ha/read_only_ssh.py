@@ -22,18 +22,28 @@ log = get_logger("read_only_ssh")
 
 # Fixed log-reading commands issued internally by read_logs, search_log and
 # list_log_sources. Each pattern is anchored and admits no shell metacharacters.
+# Use \Z (not $) so a trailing newline cannot slip through.
 _READ_ONLY_COMMAND_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"^ha (?:core|supervisor|host) logs --lines \d{1,4}$"),
-    re.compile(r"^ha host logs --boot -1 --lines \d{1,4}$"),
-    re.compile(r"^ha apps logs [a-z0-9][a-z0-9_\-]* -n \d{1,4}$"),
-    re.compile(r"^ha apps list --raw-json$"),
+    re.compile(r"^ha (?:core|supervisor|host) logs --lines \d{1,4}\Z"),
+    re.compile(r"^ha host logs --boot -1 --lines \d{1,4}\Z"),
+    re.compile(r"^ha apps logs [a-z0-9][a-z0-9_\-]* -n \d{1,4}\Z"),
+    re.compile(r"^ha apps list --raw-json\Z"),
     # Custom-component symbol scan; symbol is restricted to Python identifiers (no shell metacharacters).
-    re.compile(r"^grep -rnF [A-Za-z_][A-Za-z0-9_]* /config/custom_components$"),
+    re.compile(r"^grep -rnF [A-Za-z_][A-Za-z0-9_]* /config/custom_components\Z"),
 )
 
 _ALLOWED_READ_PREFIXES: tuple[str, ...] = ("/config/", "/backup/")
 _DENIED_READ_BASENAMES: frozenset[str] = frozenset({"secrets.yaml"})
-_DENIED_READ_PREFIXES: tuple[str, ...] = ("/config/.storage/auth",)
+_DENIED_READ_PREFIXES: tuple[str, ...] = (
+    # Credentials and session tokens stored by HA
+    "/config/.storage/auth",
+    # Integration credentials, API keys and tokens
+    "/config/.storage/core.config_entries",
+    # HTTP auth and onboarding/cloud tokens
+    "/config/.storage/http",
+    "/config/.storage/cloud",
+    "/config/.storage/onboarding",
+)
 
 
 class ReadOnlySSHError(PermissionError):
@@ -51,10 +61,17 @@ def is_read_only_command(command: str) -> bool:
 
 def is_readable_path(path: str) -> bool:
     """Return True if ``path`` may be read by an investigation session."""
+    # Reject control characters — a NUL or newline in a path is never legitimate
+    # and can be used to confuse downstream path handling.
+    if any(c in path for c in ("\x00", "\n", "\r", "\t")):
+        return False
     if ".." in path.split("/"):
         return False
     norm = posixpath.normpath(path)
     if not any(norm.startswith(p) for p in _ALLOWED_READ_PREFIXES):
+        return False
+    # Block backup archives: a full HA .tar contains secrets.yaml and all credentials.
+    if norm.startswith("/backup/") and norm.endswith(".tar"):
         return False
     if posixpath.basename(norm) in _DENIED_READ_BASENAMES:
         return False

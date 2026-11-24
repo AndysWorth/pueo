@@ -70,6 +70,14 @@ class TestIsReadOnlyCommand:
             "ha host logs --boot -2 --lines 200",
             "ha host logs --boot -1 --follow",
             "ha core logs --boot -1 --lines 200",
+            # Trailing newline must NOT bypass the $ → \Z guard
+            "ha core logs --lines 200\n",
+            "ha host logs --boot -1 --lines 200\n",
+            "ha apps logs core_mosquitto -n 500\n",
+            "ha apps list --raw-json\n",
+            # Trailing \r, \t
+            "ha core logs --lines 200\r",
+            "ha core logs --lines 200\t",
         ],
     )
     def test_write_or_unknown_commands_blocked(self, cmd):
@@ -79,7 +87,13 @@ class TestIsReadOnlyCommand:
 class TestIsReadablePath:
     @pytest.mark.parametrize(
         "path",
-        ["/config/configuration.yaml", "/config/packages/x.yaml", "/backup/a.tar"],
+        [
+            "/config/configuration.yaml",
+            "/config/packages/x.yaml",
+            # Non-.tar files under /backup/ are still readable
+            "/backup/metadata.json",
+            "/backup/list.txt",
+        ],
     )
     def test_allowed(self, path):
         assert is_readable_path(path)
@@ -87,6 +101,7 @@ class TestIsReadablePath:
     @pytest.mark.parametrize(
         "path",
         [
+            # Original deny list
             "/config/secrets.yaml",
             "/config/packages/secrets.yaml",
             "/config/.storage/auth",
@@ -95,9 +110,35 @@ class TestIsReadablePath:
             "/etc/passwd",
             "/config",
             "/root/.ssh/id_ed25519",
+            # Backup archives contain credentials — block all .tar
+            "/backup/a.tar",
+            "/backup/2026-01-01_full.tar",
+            # Sensitive .storage sub-paths (integration creds, cloud tokens, etc.)
+            "/config/.storage/core.config_entries",
+            "/config/.storage/http",
+            "/config/.storage/cloud",
+            "/config/.storage/onboarding",
+            # Path edge cases
+            "",  # empty string → normpath(".") → not under /config/ or /backup/
+            "/config/\x00secrets.yaml",  # NUL byte
+            "/config/secrets.yaml\n",  # trailing newline
+            "/config/secrets.yaml\r",  # trailing CR
+            "/config/secrets.yaml\t",  # trailing tab
         ],
     )
     def test_denied(self, path):
+        assert not is_readable_path(path)
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            # Double slash normalises cleanly but must still be blocked if sensitive
+            "//config/.storage/auth",
+            # Encoded dot-dot that normpath resolves
+            "/config/.././etc/shadow",
+        ],
+    )
+    def test_traversal_variants_denied(self, path):
         assert not is_readable_path(path)
 
 
