@@ -16341,6 +16341,15 @@ class TestRepairCardClassification:
         ha_agent_advanced.init_local_database()
         return path
 
+    @pytest.fixture(autouse=True)
+    def _reset_update_flags(self, monkeypatch):
+        import agents.ha_update_manager as _um
+
+        # Reset module-level singletons so random xdist ordering cannot leak
+        # a stale True flag from a previous test into action=="reboot/restart" paths.
+        monkeypatch.setattr(_um, "_reboot_pending_after_update", None)
+        monkeypatch.setattr(_um, "_restart_pending_after_update", None)
+
     def _run_one_poll(self, raw_issues, monkeypatch, db_path, action: str = "dismiss"):
         """Run exactly one poll iteration and return the FakeNotifier."""
         import asyncio as asyncio_mod
