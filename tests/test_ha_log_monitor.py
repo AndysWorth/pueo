@@ -951,6 +951,161 @@ class TestRecurrenceFingerprint:
 
 
 # ---------------------------------------------------------------------------
+# log_ts_epoch Z vs offset boundary tests (regression area #1278)
+# ---------------------------------------------------------------------------
+
+
+class TestLogTsEpoch:
+    """Boundary tests for timefmt.log_ts_epoch timestamp parsing."""
+
+    def test_z_suffix_aware(self):
+        """A 'Z'-suffix stamp is parsed as UTC and returns its epoch."""
+        from utils.core.timefmt import log_ts_epoch
+
+        epoch = log_ts_epoch("2026-01-01T12:00:00Z")
+        assert epoch is not None
+        # 2026-01-01 12:00:00 UTC
+        from datetime import datetime, timezone
+
+        expected = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc).timestamp()
+        assert abs(epoch - expected) < 1.0
+
+    def test_plus_zero_offset_matches_z(self):
+        """'+00:00' and 'Z' on the same instant produce identical epochs."""
+        from utils.core.timefmt import log_ts_epoch
+
+        epoch_z = log_ts_epoch("2026-06-15T08:30:00Z")
+        epoch_offset = log_ts_epoch("2026-06-15T08:30:00+00:00")
+        assert epoch_z is not None
+        assert epoch_offset is not None
+        assert epoch_z == pytest.approx(epoch_offset)
+
+    def test_nonzero_offset_adjusts_correctly(self):
+        """A '+05:00' offset produces an epoch 5 h earlier than the same naive time."""
+        from utils.core.timefmt import log_ts_epoch
+
+        epoch_utc = log_ts_epoch("2026-03-10T12:00:00+00:00")
+        epoch_plus5 = log_ts_epoch("2026-03-10T17:00:00+05:00")  # same instant
+        assert epoch_utc is not None and epoch_plus5 is not None
+        assert epoch_utc == pytest.approx(epoch_plus5)
+
+    def test_space_separator_accepted(self):
+        """HA log lines use a space separator ('2026-01-01 12:00:00'), not 'T'."""
+        from utils.core.timefmt import log_ts_epoch
+
+        epoch = log_ts_epoch("2026-01-01 12:00:00")
+        assert epoch is not None
+
+    def test_invalid_stamp_returns_none(self):
+        from utils.core.timefmt import log_ts_epoch
+
+        assert log_ts_epoch("not a timestamp") is None
+        assert log_ts_epoch("") is None
+
+
+# ---------------------------------------------------------------------------
+# _check_and_record_recurrence threshold boundary tests
+# ---------------------------------------------------------------------------
+
+
+class TestCheckAndRecordRecurrence:
+    """Boundary tests for _check_and_record_recurrence (the sliding window counter)."""
+
+    def _make_db(self, tmp_path) -> str:
+        db_path = str(tmp_path / "prefs.db")
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "CREATE TABLE user_prefs (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+            )
+        return db_path
+
+    def test_below_threshold_does_not_reach_threshold(self, tmp_path, monkeypatch):
+        """threshold−1 occurrences within the window returns threshold−1."""
+        import config
+
+        from agents.ha_log_monitor import (
+            LOG_RECURRENCE_THRESHOLD,
+            _check_and_record_recurrence,
+        )
+
+        db_path = self._make_db(tmp_path)
+        monkeypatch.setattr(config, "DB_PATH", db_path)
+
+        now = 1_700_000_000.0
+        count = None
+        for i in range(LOG_RECURRENCE_THRESHOLD - 1):
+            count = _check_and_record_recurrence(
+                "homeassistant.foo", "FooError: bad thing", now + i
+            )
+        assert count == LOG_RECURRENCE_THRESHOLD - 1
+
+    def test_exactly_at_threshold(self, tmp_path, monkeypatch):
+        """The threshold-th occurrence returns exactly LOG_RECURRENCE_THRESHOLD."""
+        import config
+
+        from agents.ha_log_monitor import (
+            LOG_RECURRENCE_THRESHOLD,
+            _check_and_record_recurrence,
+        )
+
+        db_path = self._make_db(tmp_path)
+        monkeypatch.setattr(config, "DB_PATH", db_path)
+
+        now = 1_700_000_000.0
+        count = None
+        for i in range(LOG_RECURRENCE_THRESHOLD):
+            count = _check_and_record_recurrence(
+                "homeassistant.foo", "FooError: bad thing", now + i
+            )
+        assert count == LOG_RECURRENCE_THRESHOLD
+
+    def test_entries_outside_7_day_window_excluded(self, tmp_path, monkeypatch):
+        """An entry exactly at or before the cutoff falls out of the window."""
+        import config
+
+        from agents.ha_log_monitor import (
+            LOG_RECURRENCE_THRESHOLD,
+            _LOG_RECURRENCE_WINDOW,
+            _check_and_record_recurrence,
+        )
+
+        db_path = self._make_db(tmp_path)
+        monkeypatch.setattr(config, "DB_PATH", db_path)
+
+        # Seed threshold entries that are just barely outside the window
+        base = 1_700_000_000.0
+        old_ts = base - _LOG_RECURRENCE_WINDOW - 1  # 1 second past the cutoff
+        for _ in range(LOG_RECURRENCE_THRESHOLD):
+            _check_and_record_recurrence("homeassistant.bar", "BarError: oops", old_ts)
+
+        # A new occurrence at `base` — the old entries must be pruned
+        count = _check_and_record_recurrence(
+            "homeassistant.bar", "BarError: oops", base
+        )
+        assert count == 1  # only the fresh occurrence counts
+
+    def test_entry_just_inside_window_included(self, tmp_path, monkeypatch):
+        """An entry 1 second inside the window is counted."""
+        import config
+
+        from agents.ha_log_monitor import (
+            _LOG_RECURRENCE_WINDOW,
+            _check_and_record_recurrence,
+        )
+
+        db_path = self._make_db(tmp_path)
+        monkeypatch.setattr(config, "DB_PATH", db_path)
+
+        base = 1_700_000_000.0
+        # One entry just inside the window (cutoff = base - window; entry > cutoff)
+        inside_ts = base - _LOG_RECURRENCE_WINDOW + 1
+        _check_and_record_recurrence("homeassistant.baz", "BazError", inside_ts)
+
+        count = _check_and_record_recurrence("homeassistant.baz", "BazError", base)
+        assert count == 2  # inside_ts entry + base entry
+
+
+# ---------------------------------------------------------------------------
 # Spook digest dedup fix — issue #1089
 # ---------------------------------------------------------------------------
 

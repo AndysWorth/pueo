@@ -574,6 +574,52 @@ class TestTruncateToBudget:
         assert "START" not in result
         assert len(result) == 40  # 10 tokens * 4 chars
 
+    def test_one_char_below_budget_unchanged(self):
+        from utils.core.context import truncate_to_budget
+
+        # max_tokens=10 → max_chars=40; 39 chars must pass through unchanged
+        text = "x" * 39
+        assert truncate_to_budget(text, 10) == text
+
+    def test_one_char_over_budget_truncated(self):
+        from utils.core.context import truncate_to_budget
+
+        # max_tokens=10 → max_chars=40; 41 chars must be truncated to 40
+        text = "x" * 41
+        result = truncate_to_budget(text, 10)
+        assert len(result) == 40
+
+    def test_multibyte_unicode_handled_by_codepoint_count(self):
+        # estimate_tokens and truncate_to_budget count Python code points, not bytes.
+        # A 4-codepoint string equals 1 token regardless of byte width.
+        from utils.core.context import estimate_tokens, truncate_to_budget
+
+        four_cjk = "中文大字"  # 4 CJK chars = 4 code points = 1 token
+        assert estimate_tokens(four_cjk) == 1
+        assert truncate_to_budget(four_cjk, 1) == four_cjk  # fits exactly
+
+        emoji4 = "😀😀😀😀"  # 4 emoji = 4 code points
+        assert estimate_tokens(emoji4) == 1
+        assert truncate_to_budget(emoji4, 1) == emoji4
+
+    def test_at_max_prompt_tokens_unchanged(self):
+        import config
+        from utils.core.context import truncate_to_budget
+
+        # Exactly MAX_PROMPT_TOKENS tokens (the production budget ceiling).
+        budget = config.MAX_PROMPT_TOKENS
+        text = "a" * (budget * 4)
+        assert truncate_to_budget(text, budget) == text
+
+    def test_one_over_max_prompt_tokens_truncated(self):
+        import config
+        from utils.core.context import truncate_to_budget
+
+        budget = config.MAX_PROMPT_TOKENS
+        text = "a" * (budget * 4 + 1)
+        result = truncate_to_budget(text, budget)
+        assert len(result) == budget * 4
+
 
 class TestSlidingWindowLines:
     def test_empty_list_returns_empty(self):
