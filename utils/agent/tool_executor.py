@@ -823,6 +823,12 @@ class ToolExecutor:
         # Board context fetched deterministically for OS updates (#1257).
         # Keys: board (str), kernel (str), raw_cpe (str).
         self._os_board_ctx: Optional[dict] = None
+        # Per-session cache for domain-filtered read_logs calls: maps
+        # (domain, log_source) → (call_number, filtered_output).  When a later call
+        # produces identical filtered output, we return a short "same as call N" notice
+        # instead of repeating the full text and spending a budget step on it.
+        self._read_logs_domain_cache: dict[tuple[str, str], tuple[int, str]] = {}
+        self._read_logs_call_num: int = 0
 
     def reset(self) -> None:
         """Reset per-loop state. Called by AgentLoop before each run()."""
@@ -841,6 +847,8 @@ class ToolExecutor:
         self._hitl_card_id = None
         self._fetched_urls = {}
         self._session_outputs = []
+        self._read_logs_domain_cache = {}
+        self._read_logs_call_num = 0
         self._release_notes_completeness = "none"
         self._installed_bc_found = False
         self._screening_gap = None
@@ -1493,8 +1501,9 @@ class ToolExecutor:
                 output="",
                 error=f"Invalid domain: {domain!r} (use an integration domain like 'tuya')",
             )
-        # With a domain filter, scan the full tail and keep only that domain's records.
-        fetch = 500 if domain else lines
+        # With a domain filter, scan a wider tail so older domain-specific records
+        # are not missed, then filter down to the domain's own entries.
+        fetch = 3000 if domain else lines
         if log_source == "ha_app":
             if not addon_slug:
                 return ToolResult(
@@ -1524,10 +1533,24 @@ class ToolExecutor:
                     error=f"exit {exit_code}: {(stderr or stdout or '(no output)')[:500]}",
                 )
             if domain:
+                filtered = _filter_log_by_domain(stdout or "", domain, lines)
+                self._read_logs_call_num += 1
+                call_key = (domain, log_source)
+                prior = self._read_logs_domain_cache.get(call_key)
+                if prior is not None and prior[1] == filtered:
+                    return ToolResult(
+                        tool_name="read_logs",
+                        success=True,
+                        output=(f"[Same as call {prior[0]}; no new {domain} lines]"),
+                    )
+                self._read_logs_domain_cache[call_key] = (
+                    self._read_logs_call_num,
+                    filtered,
+                )
                 return ToolResult(
                     tool_name="read_logs",
                     success=True,
-                    output=_filter_log_by_domain(stdout or "", domain, lines),
+                    output=filtered,
                 )
             return ToolResult(
                 tool_name="read_logs", success=True, output=stdout or "(no output)"

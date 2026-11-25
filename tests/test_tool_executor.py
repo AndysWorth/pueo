@@ -7206,7 +7206,7 @@ class TestReadLogsDomain:
             ha_ssh_client=ssh, gate=FakeAutonomyGate(), notifier=FakeNotifier()
         )
 
-    def test_domain_filter_scans_500_lines(self):
+    def test_domain_filter_scans_3000_lines(self):
         from utils.agent.tool_registry import ToolCall
         from utils.ha.ssh_client import FakeSSHClient
 
@@ -7220,7 +7220,67 @@ class TestReadLogsDomain:
         assert r.success
         assert "mqtt disconnected" in r.output
         assert "noaa" not in r.output
-        assert any("--lines 500" in c for c in ssh.commands_run)
+        assert any("--lines 3000" in c for c in ssh.commands_run)
+
+    def test_domain_filter_dedup_same_output(self):
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(command_results={"ha core logs": (0, _LOG, "")})
+        ex = self._executor(ssh)
+        tc = ToolCall(name="read_logs", arguments={"lines": 40, "domain": "tuya"})
+        r1 = asyncio.run(ex.execute(tc))
+        assert r1.success
+        assert "mqtt disconnected" in r1.output
+        # Second call with same log output returns dedup notice
+        r2 = asyncio.run(ex.execute(tc))
+        assert r2.success
+        assert "[Same as call 1; no new tuya lines]" == r2.output
+
+    def test_domain_filter_dedup_new_output_not_suppressed(self):
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ssh_client import FakeSSHClient
+
+        log_v1 = _LOG
+        log_v2 = _LOG + "\n2026-01-02 00:00:03 ERROR (MainThread) [tuya] new error"
+        ssh = FakeSSHClient(command_results={"ha core logs": (0, log_v1, "")})
+        ex = self._executor(ssh)
+        r1 = asyncio.run(
+            ex.execute(
+                ToolCall(name="read_logs", arguments={"lines": 40, "domain": "tuya"})
+            )
+        )
+        assert r1.success
+        ssh._command_results = {"ha core logs": (0, log_v2, "")}
+        r2 = asyncio.run(
+            ex.execute(
+                ToolCall(name="read_logs", arguments={"lines": 40, "domain": "tuya"})
+            )
+        )
+        assert r2.success
+        assert "new error" in r2.output
+
+    def test_domain_filter_dedup_reset_between_sessions(self):
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(command_results={"ha core logs": (0, _LOG, "")})
+        ex = self._executor(ssh)
+        r1 = asyncio.run(
+            ex.execute(
+                ToolCall(name="read_logs", arguments={"lines": 40, "domain": "tuya"})
+            )
+        )
+        assert r1.success
+        ex.reset()
+        # After reset the cache is cleared; same log → new result, not a dedup notice
+        r2 = asyncio.run(
+            ex.execute(
+                ToolCall(name="read_logs", arguments={"lines": 40, "domain": "tuya"})
+            )
+        )
+        assert r2.success
+        assert "mqtt disconnected" in r2.output
 
     def test_invalid_domain_rejected(self):
         from utils.agent.tool_registry import ToolCall
