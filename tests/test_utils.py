@@ -8517,6 +8517,7 @@ class TestSeedRegistry:
             sig_host_health("memory_pressure", ""),
             sig_lovelace("sensor", "unregistered"),
             sig_device_availability("econet"),
+            sig_device_availability("lifx"),
             sig_device_post_restart(),
             sig_netalertx("availability"),
             sig_setup("noaa_it_all"),

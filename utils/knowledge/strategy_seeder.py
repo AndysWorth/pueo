@@ -220,6 +220,11 @@ _SEED_PROMPTS: list[tuple[str, str, str]] = [
         "device offline, device unavailable, econet unavailable, ecobee offline, MQTT disconnect, cloud push thread death, integration unavailable, TV offline, LIFX offline, Cast unavailable, media player unavailable",
     ),
     (
+        "seed_device_offline_lifx.md",
+        "LIFX bulb offline — LAN UDP investigation",
+        "LIFX offline, LIFX unavailable, No response from ip after 11 attempts, LIFX LAN, LIFX UDP, LIFX Candle, LIFX Clip, LIFX bulb unavailable, LIFX setup_error",
+    ),
+    (
         "seed_device_post_restart.md",
         "Devices offline after a Home Assistant restart",
         "devices unavailable after restart, devices offline after update, many integrations offline at once, post-restart sweep, host reboot exposed devices, turned off devices",
