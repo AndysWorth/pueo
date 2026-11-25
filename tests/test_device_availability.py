@@ -4354,6 +4354,7 @@ class TestPollPostRestartSweep:
 
         async def _fake_investigation(finding, **kw):
             calls.append(finding)
+            return True  # simulate a card being queued so _mark_investigated sets investigated=True
 
         monkeypatch.setattr(wq_mod, "get_work_queue_or_none", lambda: None)
         monkeypatch.setattr(
@@ -4882,5 +4883,220 @@ class TestConfirmHARestart:
 
         result = asyncio.run(
             confirm_ha_restart(_FakeRest(), str(tmp_path / "x.db"), 1000.0)
+        )
+        assert result is False
+
+
+# ---------------------------------------------------------------------------
+# _mark_investigated — snapshot update after investigation completes
+# ---------------------------------------------------------------------------
+
+
+class TestMarkInvestigated:
+    """Tests for _mark_investigated (ADR 047 amendment #1324)."""
+
+    def _make_db(self, tmp_path):
+        return _make_poll_db(tmp_path)
+
+    def _finding(self, device_ids=("dev-A",)):
+        return OfflineFinding(
+            config_entry_id="entry-lifx",
+            domain="lifx",
+            devices=[
+                {
+                    "name": f"Device {i}",
+                    "device_id": did,
+                    "offline_since": 1_700_000_000.0,
+                }
+                for i, did in enumerate(device_ids)
+            ],
+        )
+
+    def _write_snapshot(self, db, snap):
+        with sqlite3.connect(db) as conn:
+            from utils.ha.device_availability import save_snapshot
+
+            save_snapshot(conn, snap)
+
+    def _read_snapshot(self, db):
+        with sqlite3.connect(db) as conn:
+            from utils.ha.device_availability import load_snapshot
+
+            return load_snapshot(conn)
+
+    def test_card_queued_marks_investigated_and_card_key(self, tmp_path):
+        """When card_queued=True, snapshot sets investigated=True and card_key."""
+        from utils.ha.device_availability import _mark_investigated
+
+        db = self._make_db(tmp_path)
+        self._write_snapshot(db, {"dev-A": {"alerted": True, "investigated": False}})
+        finding = self._finding()
+
+        _mark_investigated(db, finding, "device_offline:entry-lifx", card_queued=True)
+
+        snap = self._read_snapshot(db)
+        assert snap["dev-A"]["investigated"] is True
+        assert snap["dev-A"]["card_key"] == "device_offline:entry-lifx"
+        assert snap["dev-A"]["alerted"] is True  # alerted unchanged
+
+    def test_no_card_resets_alerted_for_re_arm(self, tmp_path):
+        """When card_queued=False, snapshot resets alerted=False so device re-arms."""
+        from utils.ha.device_availability import _mark_investigated
+
+        db = self._make_db(tmp_path)
+        self._write_snapshot(
+            db,
+            {"dev-A": {"alerted": True, "investigated": False, "card_key": None}},
+        )
+        finding = self._finding()
+
+        _mark_investigated(db, finding, "device_offline:entry-lifx", card_queued=False)
+
+        snap = self._read_snapshot(db)
+        assert snap["dev-A"]["alerted"] is False  # re-armed
+        assert snap["dev-A"].get("card_key") is None
+        assert snap["dev-A"].get("investigated") is not True
+
+    def test_missing_device_id_in_snapshot_is_a_noop(self, tmp_path):
+        """Devices not yet in the snapshot are silently skipped."""
+        from utils.ha.device_availability import _mark_investigated
+
+        db = self._make_db(tmp_path)
+        self._write_snapshot(db, {"dev-B": {"alerted": True}})
+        finding = self._finding(device_ids=("dev-A",))
+
+        _mark_investigated(db, finding, "device_offline:entry-lifx", card_queued=True)
+
+        snap = self._read_snapshot(db)
+        assert "dev-A" not in snap
+        assert snap["dev-B"]["alerted"] is True  # unrelated entry untouched
+
+    def test_multi_device_finding_all_updated(self, tmp_path):
+        """All devices in the finding are updated together."""
+        from utils.ha.device_availability import _mark_investigated
+
+        db = self._make_db(tmp_path)
+        self._write_snapshot(
+            db,
+            {
+                "dev-A": {"alerted": True, "investigated": False},
+                "dev-B": {"alerted": True, "investigated": False},
+            },
+        )
+        finding = self._finding(device_ids=("dev-A", "dev-B"))
+
+        _mark_investigated(db, finding, "device_offline:entry-lifx", card_queued=True)
+
+        snap = self._read_snapshot(db)
+        assert snap["dev-A"]["investigated"] is True
+        assert snap["dev-B"]["investigated"] is True
+
+    def test_run_investigation_returns_true_when_card_queued(
+        self, tmp_path, monkeypatch
+    ):
+        """run_device_availability_investigation returns True when a card was sent."""
+        import utils.agent.supervisor as _sup_mod
+        import utils.ha.ha_environment as _env_mod
+        from utils.ha.device_availability_investigation import (
+            run_device_availability_investigation,
+        )
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        monkeypatch.setattr(_sup_mod, "increment_active_agent", lambda: None)
+        monkeypatch.setattr(_sup_mod, "decrement_active_agent", lambda: None)
+        monkeypatch.setattr(_sup_mod, "publish_activity_done", lambda *a, **kw: None)
+        monkeypatch.setattr(
+            _sup_mod, "make_activity_timeline_callback", lambda *a, **kw: None
+        )
+        monkeypatch.setattr(_env_mod, "load_environment_profile", lambda db: None)
+
+        db = _make_poll_db(tmp_path)
+        finding = OfflineFinding(
+            config_entry_id="entry-econet",
+            domain="econet",
+            devices=[
+                {"name": "HP", "device_id": "dev-A", "offline_since": 1_700_000_000.0}
+            ],
+        )
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_device_availability",
+                                "arguments": {
+                                    "summary": "Reloaded.",
+                                    "root_cause": "Thread died.",
+                                    "outcome": "resolved",
+                                    "recommended_actions": [],
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
+
+        result = asyncio.run(
+            run_device_availability_investigation(
+                finding=finding,
+                notifier=FakeNotifier(),
+                db_path=db,
+                llm_client=llm,
+                ssh_client=FakeSSHClient(),
+            )
+        )
+        # finish_device_availability always queues a card
+        assert result is True
+
+    def test_run_investigation_returns_false_when_no_card(self, tmp_path, monkeypatch):
+        """run_device_availability_investigation returns False when session ends without a card."""
+        import utils.agent.agent_loop as _al_mod
+        import utils.agent.supervisor as _sup_mod
+        import utils.ha.ha_environment as _env_mod
+        from utils.agent.tool_registry import AgentLoopResult
+        from utils.ha.device_availability_investigation import (
+            run_device_availability_investigation,
+        )
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        monkeypatch.setattr(_sup_mod, "increment_active_agent", lambda: None)
+        monkeypatch.setattr(_sup_mod, "decrement_active_agent", lambda: None)
+        monkeypatch.setattr(_sup_mod, "publish_activity_done", lambda *a, **kw: None)
+        monkeypatch.setattr(
+            _sup_mod, "make_activity_timeline_callback", lambda *a, **kw: None
+        )
+        monkeypatch.setattr(_env_mod, "load_environment_profile", lambda db: None)
+
+        _original_loop = _al_mod.AgentLoop
+
+        class _ExhaustedLoop(_original_loop):
+            async def run(self, *args, **kwargs):
+                return AgentLoopResult(outcome="exhausted")
+
+        monkeypatch.setattr(_al_mod, "AgentLoop", _ExhaustedLoop)
+
+        db = _make_poll_db(tmp_path)
+        finding = OfflineFinding(
+            config_entry_id="entry-econet",
+            domain="econet",
+            devices=[
+                {"name": "HP", "device_id": "dev-A", "offline_since": 1_700_000_000.0}
+            ],
+        )
+
+        result = asyncio.run(
+            run_device_availability_investigation(
+                finding=finding,
+                notifier=FakeNotifier(),
+                db_path=db,
+                llm_client=FakeToolCallingLLMClient([]),
+                ssh_client=FakeSSHClient(),
+            )
         )
         assert result is False

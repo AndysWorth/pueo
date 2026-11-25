@@ -172,6 +172,29 @@ Grouping is restart-only. Several integrations dropping at the same moment witho
 
 ---
 
+## Amendment (2026-11-25, #1324): re-arm when no card was queued
+
+Previously, the snapshot was marked `investigated=True` and `alerted=True` immediately
+after submitting the investigation `WorkItem` — before the session had run. If the
+session ended without queueing a card (e.g. the finish tool validation failed), the
+device was permanently silenced for the current offline episode.
+
+**Fix:** The snapshot update moves inside `_investigate_coro` and runs after the session
+completes. `run_device_availability_investigation` now returns `bool` (whether
+`executor._hitl_card_queued` is True).
+
+- **Card queued:** mark `investigated=True`, `card_key=card_key` as before.
+- **No card queued:** reset `alerted=False` in the snapshot. The device becomes a new
+  finding on the next poll and can be investigated again after the 30-min backoff expires.
+  The backoff row (written by the non-success path in the investigation module) prevents
+  an immediate re-trigger.
+
+`_mark_investigated(db_path, finding, card_key, card_queued)` loads a fresh snapshot
+from the DB (not the stale in-memory poll result) so it is correct when called
+asynchronously from the work queue.
+
+---
+
 ## Files
 
 - `utils/ha/device_availability.py` — pure evaluator + snapshot + episode tracking + poll loop
