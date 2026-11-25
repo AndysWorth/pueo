@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from typing import Optional, TYPE_CHECKING
 
 from utils.core.logging import get_logger
@@ -25,6 +26,137 @@ _PORT_RE = re.compile(r":\d+$")
 
 def _strip_port(value: str) -> str:
     return _PORT_RE.sub("", value)
+
+
+@dataclass
+class DeviceTwin:
+    """Another HA device that shares the same physical hardware."""
+
+    device_id: str
+    device_name: str
+    integration: str  # domain of its config entry
+    config_entry_id: str
+    entity_states: list[dict]  # [{entity_id, state, last_changed}]
+
+
+def _normalise_serial(value: str) -> str:
+    """Lowercase and remove colons so MACs and serials compare uniformly."""
+    return value.lower().replace(":", "")
+
+
+def find_device_twins(
+    device: dict,
+    device_registry: list[dict],
+    entity_states: Optional[list[dict]] = None,
+    config_entries: Optional[list[dict]] = None,
+) -> list[DeviceTwin]:
+    """Return other devices that share the same physical hardware as *device*.
+
+    Matching criteria (either is sufficient):
+    - Normalised ``serial_number`` equality (strips colons, lowercases).
+    - A MAC connection on one device equals the ``serial_number`` of the other
+      (or vice-versa) after normalisation — the LIFX + Matter twin pattern.
+
+    Name alone is never sufficient to count as a twin.  A device that shares the
+    same config entry is excluded (it is a sibling, not a twin).
+    """
+    source_id: str = device.get("id", "")
+    source_entries: set[str] = set(device.get("config_entries", []))
+    source_serial: str = _normalise_serial(device.get("serial_number") or "")
+    source_macs: set[str] = {
+        _normalise_serial(v)
+        for t, v in device.get("connections", [])
+        if t == "mac" and v
+    }
+
+    # Build lookup for config entry domain
+    entry_domain: dict[str, str] = {}
+    if config_entries:
+        for entry in config_entries:
+            eid = entry.get("entry_id") or entry.get("id", "")
+            dom = entry.get("domain", "")
+            if eid:
+                entry_domain[eid] = dom
+
+    # Build lookup for entity states
+    state_by_entity: dict[str, dict] = {}
+    if entity_states:
+        for s in entity_states:
+            eid = s.get("entity_id", "")
+            if eid:
+                state_by_entity[eid] = s
+
+    twins: list[DeviceTwin] = []
+    for other in device_registry:
+        other_id: str = other.get("id", "")
+        if not other_id or other_id == source_id:
+            continue
+        other_entries: set[str] = set(other.get("config_entries", []))
+        # Same config entry → sibling, not twin
+        if source_entries & other_entries:
+            continue
+
+        other_serial: str = _normalise_serial(other.get("serial_number") or "")
+        other_macs: set[str] = {
+            _normalise_serial(v)
+            for t, v in other.get("connections", [])
+            if t == "mac" and v
+        }
+
+        matched = False
+        # Serial ↔ serial
+        if source_serial and other_serial and source_serial == other_serial:
+            matched = True
+        # MAC ↔ serial cross-match (d0:73:d5:84:e4:05 ↔ D073D584E405)
+        if not matched and source_serial and source_serial in other_macs:
+            matched = True
+        if not matched and other_serial and other_serial in source_macs:
+            matched = True
+
+        if not matched:
+            continue
+
+        # Determine integration via first config entry
+        integration = ""
+        config_entry_id = ""
+        for oe in sorted(other_entries):
+            dom = entry_domain.get(oe, "")
+            if dom:
+                integration = dom
+                config_entry_id = oe
+                break
+        if not integration and other_entries:
+            config_entry_id = next(iter(sorted(other_entries)))
+
+        # Gather representative entity states for this twin (from entity_states)
+        twin_entity_states: list[dict] = []
+        if entity_states:
+            for s in entity_states:
+                eid = s.get("entity_id", "")
+                if not eid:
+                    continue
+                # We have no entity-registry here, so filter by state dict fields only;
+                # callers that have entity registry pass it pre-filtered via entity_states.
+                twin_entity_states.append(
+                    {
+                        "entity_id": eid,
+                        "state": s.get("state", ""),
+                        "last_changed": s.get("last_changed", ""),
+                    }
+                )
+
+        other_name: str = other.get("name_by_user") or other.get("name") or other_id
+        twins.append(
+            DeviceTwin(
+                device_id=other_id,
+                device_name=other_name,
+                integration=integration,
+                config_entry_id=config_entry_id,
+                entity_states=twin_entity_states,
+            )
+        )
+
+    return twins
 
 
 def candidates_for_device(
