@@ -49,13 +49,19 @@ the bulb has power and network — the fault is in the LIFX LAN path only.
 - `outcome="needs_action"`. Tell the user to check power and the Wi-Fi band (LIFX uses
   2.4 GHz only).
 
-**No NetAlertX and no twin evidence**:
-- Read the LIFX log section with `read_logs(lines=100, log_source="ha_core", domain="lifx")`.
-- Look for "No response after 11 attempts", a disconnect, or a Traceback near the
-  offline-since time.
-- If log shows "No response": reload the entry id, as above.
-- If log is clean: check the entry state with `get_integration_diagnostics`; if it shows
-  `setup_error`, reload the entry id.
+**No NetAlertX and no twin evidence in initial context**:
+- Call `check_entity_status(entity_id="<lifx entity id>")` to look for a Matter twin
+  that did not appear in the initial context.
+- If the result shows `device_twins` with a twin whose integration is `matter` and whose
+  entity state is **not** `unavailable`: the bulb has power and network — treat as
+  "present on LAN" and apply the LAN decision rule above (reload the entry id).
+- Otherwise (no twin found, or the twin is also `unavailable`):
+  - Read the LIFX log section with `read_logs(lines=100, log_source="ha_core", domain="lifx")`.
+  - Look for "No response after 11 attempts", a disconnect, or a Traceback near the
+    offline-since time.
+  - If log shows "No response": reload the entry id, as above.
+  - If log is clean: check the entry state with `get_integration_diagnostics`; if it shows
+    `setup_error`, reload the entry id.
 
 ## Prediction
 

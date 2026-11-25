@@ -7854,3 +7854,99 @@ class TestCheckEntityStatus:
         entries = data["integrations_with_light_platform"]
         assert any(e["entry_id"] == "entry_lifx" for e in entries)
         assert any(e["entry_id"] == "entry_lifx2" for e in entries)
+
+    def test_device_twins_include_entity_states(self):
+        """device_twins lists entity states for the twin device only (not all HA states)."""
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+        import json
+
+        ws = FakeHAWebSocketClient(
+            entity_registry=[
+                {
+                    "entity_id": "light.candle_lifx",
+                    "platform": "lifx",
+                    "config_entry_id": "entry_lifx",
+                    "device_id": "dev_lifx",
+                },
+                {
+                    "entity_id": "light.candle_matter",
+                    "platform": "matter",
+                    "config_entry_id": "entry_matter",
+                    "device_id": "dev_matter",
+                },
+                {
+                    "entity_id": "light.unrelated",
+                    "platform": "hue",
+                    "config_entry_id": "entry_hue",
+                    "device_id": "dev_hue",
+                },
+            ],
+            config_entries=[
+                {
+                    "entry_id": "entry_lifx",
+                    "domain": "lifx",
+                    "title": "Candle 1",
+                    "state": "loaded",
+                },
+                {
+                    "entry_id": "entry_matter",
+                    "domain": "matter",
+                    "title": "Candle 1 Matter",
+                    "state": "loaded",
+                },
+                {
+                    "entry_id": "entry_hue",
+                    "domain": "hue",
+                    "title": "Hue",
+                    "state": "loaded",
+                },
+            ],
+            devices=[
+                {
+                    "id": "dev_lifx",
+                    "name": "Candle 1",
+                    "name_by_user": None,
+                    "serial_number": "D073D584E405",
+                    "connections": [["mac", "d0:73:d5:84:e4:05"]],
+                    "config_entries": ["entry_lifx"],
+                },
+                {
+                    "id": "dev_matter",
+                    "name": "Candle 1",
+                    "name_by_user": None,
+                    "serial_number": "",
+                    "connections": [["mac", "d0:73:d5:84:e4:05"]],
+                    "config_entries": ["entry_matter"],
+                },
+                {
+                    "id": "dev_hue",
+                    "name": "Office Lamp",
+                    "name_by_user": None,
+                    "serial_number": "",
+                    "connections": [],
+                    "config_entries": ["entry_hue"],
+                },
+            ],
+            states=[
+                {"entity_id": "light.candle_lifx", "state": "unavailable"},
+                {"entity_id": "light.candle_matter", "state": "on"},
+                {"entity_id": "light.unrelated", "state": "on"},
+            ],
+        )
+        ex = self._executor_with_ws(ws)
+        r = asyncio.run(ex._check_entity_status("light.candle_lifx"))
+        assert r.success, r.error
+        data = json.loads(r.output)
+        twins = data.get("device_twins", [])
+        assert len(twins) == 1
+        twin = twins[0]
+        assert twin["integration"] == "matter"
+        # entity_states contains only the twin device's entities, not all HA states
+        entity_states = twin["entity_states"]
+        entity_ids = [e["entity_id"] for e in entity_states]
+        assert "light.candle_matter" in entity_ids
+        assert "light.unrelated" not in entity_ids
+        matter_state = next(
+            e["state"] for e in entity_states if e["entity_id"] == "light.candle_matter"
+        )
+        assert matter_state == "on"
