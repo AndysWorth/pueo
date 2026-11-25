@@ -14827,6 +14827,236 @@ class TestAgentLoop:
         result = asyncio.run(loop.run("Check config"))
         assert result.outcome == "success"
 
+    # -- can_finish_now tests --
+
+    def test_limit_review_decision_can_finish_now_field(self):
+        """LimitReviewDecision accepts can_finish_now=True without error."""
+        from utils.agent.agent_loop import LimitReviewDecision
+
+        d = LimitReviewDecision(
+            reason_limit_hit="budget hit",
+            can_resolve_with_more=False,
+            can_finish_now=True,
+        )
+        assert d.can_finish_now is True
+        assert d.can_resolve_with_more is False
+
+    def test_limit_review_decision_can_finish_now_default_false(self):
+        """can_finish_now defaults to False for backwards compatibility."""
+        from utils.agent.agent_loop import LimitReviewDecision
+
+        d = LimitReviewDecision(
+            reason_limit_hit="x",
+            can_resolve_with_more=False,
+        )
+        assert d.can_finish_now is False
+
+    def test_limit_review_decision_can_finish_now_json_round_trip(self):
+        """can_finish_now survives JSON serialization round-trip."""
+        from utils.agent.agent_loop import LimitReviewDecision
+
+        orig = LimitReviewDecision(
+            reason_limit_hit="done",
+            can_resolve_with_more=False,
+            can_finish_now=True,
+        )
+        restored = LimitReviewDecision.model_validate_json(orig.model_dump_json())
+        assert restored.can_finish_now is True
+
+    def test_limit_review_prompt_mentions_can_finish_now(self):
+        """The limit_review prompt describes can_finish_now so the model knows about it."""
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import ToolDefinition, ToolRegistry
+
+        captured = {}
+
+        class _CapturingLLM:
+            async def chat(self, model, messages, options, format, think=None):
+                captured["review_messages"] = list(messages)
+                raise RuntimeError("stop")
+
+            async def chat_with_tools(
+                self, model, messages, tools, options=None, think=None, keep_alive=None
+            ):
+                return {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {"function": {"name": "read_config", "arguments": {}}}
+                    ],
+                }
+
+        reg = ToolRegistry()
+        for name in ("read_config", "finish_repair"):
+            reg.register(
+                ToolDefinition(
+                    name=name,
+                    description=name,
+                    parameters={"type": "object", "properties": {}, "required": []},
+                )
+            )
+        executor = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(auto_execute_result=True, approval_result=True),
+            notifier=FakeNotifier(approve=True),
+        )
+        loop = AgentLoop(
+            llm_client=_CapturingLLM(),
+            tool_executor=executor,
+            tool_registry=reg,
+            max_tool_calls=1,
+            max_wall_seconds=30.0,
+        )
+        asyncio.run(loop.run("Check config"))
+        assert "review_messages" in captured, "review chat should have been called"
+        review_content = " ".join(
+            m.get("content", "") for m in captured["review_messages"]
+        )
+        assert "can_finish_now" in review_content
+
+    def test_maybe_extend_budget_can_finish_now_grants_one_slot(self):
+        """_maybe_extend_budget with can_finish_now=True grants exactly 1 slot."""
+        from utils.agent.agent_loop import LimitReviewDecision
+
+        finish_now = LimitReviewDecision(
+            reason_limit_hit="done",
+            can_resolve_with_more=False,
+            can_finish_now=True,
+        )
+        finish_response = {
+            "tool_calls": [
+                {
+                    "function": {
+                        "name": "finish_repair",
+                        "arguments": {
+                            "summary": "done",
+                            "action_taken": "no_fix_needed",
+                        },
+                    }
+                }
+            ]
+        }
+        read_call = {
+            "tool_calls": [{"function": {"name": "read_config", "arguments": {}}}]
+        }
+        # budget=1: read_config hits cap; review says can_finish_now → 1 extra slot
+        loop, client = self._make_review_loop(
+            call_sequence=[read_call, finish_response],
+            review_response_json=finish_now.model_dump_json(),
+            budget=1,
+        )
+        result = asyncio.run(loop.run("Check config"))
+        assert result.outcome == "success"
+        assert client.review_calls >= 1
+
+    def test_maybe_extend_budget_can_finish_now_injects_nudge(
+        self, monkeypatch, caplog
+    ):
+        """When can_finish_now=True, the loop injects a [BUDGET] nudge message."""
+        import logging
+        from utils.agent.agent_loop import LimitReviewDecision
+
+        finish_now = LimitReviewDecision(
+            reason_limit_hit="done",
+            can_resolve_with_more=False,
+            can_finish_now=True,
+        )
+        finish_response = {
+            "tool_calls": [
+                {
+                    "function": {
+                        "name": "finish_repair",
+                        "arguments": {"summary": "ok", "action_taken": "no_fix_needed"},
+                    }
+                }
+            ]
+        }
+        read_call = {
+            "tool_calls": [{"function": {"name": "read_config", "arguments": {}}}]
+        }
+
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import ToolDefinition, ToolRegistry
+
+        messages_seen: list[list[dict]] = []
+
+        class _TrackingLLM:
+            def __init__(self, seq, review_json):
+                self._seq = iter(seq)
+                self._review_json = review_json
+
+            async def chat(self, model, messages, options, format, think=None):
+                return {"message": {"content": self._review_json}}
+
+            async def chat_with_tools(
+                self, model, messages, tools, options=None, think=None, keep_alive=None
+            ):
+                messages_seen.append(list(messages))
+                try:
+                    resp = next(self._seq)
+                except StopIteration:
+                    return {"role": "assistant", "content": ""}
+                return {"role": "assistant", **resp}
+
+        reg = ToolRegistry()
+        for name in ("read_config", "finish_repair"):
+            reg.register(
+                ToolDefinition(
+                    name=name,
+                    description=name,
+                    parameters={"type": "object", "properties": {}, "required": []},
+                )
+            )
+        executor = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(auto_execute_result=True, approval_result=True),
+            notifier=FakeNotifier(approve=True),
+        )
+        loop = AgentLoop(
+            llm_client=_TrackingLLM(
+                [read_call, finish_response], finish_now.model_dump_json()
+            ),
+            tool_executor=executor,
+            tool_registry=reg,
+            max_tool_calls=1,
+            max_wall_seconds=30.0,
+        )
+        result = asyncio.run(loop.run("Check config"))
+        assert result.outcome == "success"
+        # The nudge message should appear in the messages passed to the second call
+        all_contents = [m.get("content", "") for msgs in messages_seen for m in msgs]
+        assert any("[BUDGET]" in c for c in all_contents if c)
+
+    def test_maybe_extend_budget_can_finish_now_false_behavior_unchanged(self):
+        """When can_finish_now=False, _maybe_extend_budget behaves as before."""
+        from utils.agent.agent_loop import LimitReviewDecision
+
+        give_up = LimitReviewDecision(
+            reason_limit_hit="cannot proceed",
+            can_resolve_with_more=False,
+            can_finish_now=False,
+            summary_if_giving_up="nothing found",
+        )
+        read_call = {
+            "tool_calls": [{"function": {"name": "read_config", "arguments": {}}}]
+        }
+        loop, client = self._make_review_loop(
+            call_sequence=[read_call, read_call],
+            review_response_json=give_up.model_dump_json(),
+            budget=1,
+        )
+        result = asyncio.run(loop.run("Check config"))
+        assert result.outcome == "exhausted"
+        assert result.episode_stub is not None
+        assert result.episode_stub.get("summary") == "nothing found"
+
 
 class TestRunRagRefresh:
     """Tests for run_rag_refresh() — all network-dependent functions are mocked."""

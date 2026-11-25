@@ -74,6 +74,15 @@ class LimitReviewDecision(BaseModel):
     summary_if_giving_up: str = Field(
         default="", description="What was learned, if cannot resolve"
     )
+    can_finish_now: bool = Field(
+        default=False,
+        description=(
+            "True if you already have everything needed to call the terminal tool "
+            "(finish_chat, finish_device_availability, etc.) right now — no more "
+            "evidence gathering needed. When true, you get exactly 1 more call to "
+            "invoke the terminal tool."
+        ),
+    )
 
 
 def _format_step_trace(steps: list["AgentStep"]) -> str:
@@ -1147,7 +1156,11 @@ class AgentLoop:
             f"Step trace:\n{step_trace}\n\n"
             "Assess: (1) Why did you hit this limit? "
             "(2) Would additional calls lead to a solution — if so, how many? "
-            "(3) If you cannot make progress, summarize what you learned."
+            "(3) If you cannot make progress, summarize what you learned. "
+            "Or, if you already have everything needed to give a complete answer "
+            "right now, set can_finish_now=true — you will get exactly one more "
+            "call to invoke the terminal tool (finish_chat, finish_repair, "
+            "finish_device_availability, etc.)."
         )
         timeout = self._review_timeout(steps, elapsed)
         review_messages = messages + [{"role": "user", "content": review_prompt}]
@@ -1183,6 +1196,7 @@ class AgentLoop:
                 "limit_review_decision",
                 can_resolve=decision.can_resolve_with_more,
                 additional_calls=decision.additional_calls_requested,
+                can_finish_now=decision.can_finish_now,
                 reason_limit_hit=decision.reason_limit_hit[:120],
                 summary=decision.summary_if_giving_up[:120],
             )
@@ -1197,7 +1211,13 @@ class AgentLoop:
                         decision.summary_if_giving_up[:500]
                         or decision.reason_limit_hit[:500],
                         (time.monotonic() - _review_t0) * 1000,
-                        "extend" if decision.can_resolve_with_more else "give_up",
+                        (
+                            "extend"
+                            if decision.can_resolve_with_more
+                            else (
+                                "finish_now" if decision.can_finish_now else "give_up"
+                            )
+                        ),
                         self._db_path,
                     )
                 except Exception:  # nosec B110
@@ -1805,6 +1825,16 @@ class AgentLoop:
         )
         if decision.summary_if_giving_up and episode_stub is None:
             episode_stub = {"summary": decision.summary_if_giving_up}
+        if decision.can_finish_now and not decision.can_resolve_with_more:
+            # Grant exactly 1 slot for the terminal call.
+            self._max_tool_calls = tool_call_count + 1
+            log.info(
+                "agent_loop_finish_now_granted",
+                tool_call_count=tool_call_count,
+            )
+            episode_stub = episode_stub or {}
+            episode_stub["_finish_now_nudge"] = True
+            return True, episode_stub
         if decision.can_resolve_with_more and decision.additional_calls_requested > 0:
             headroom = self._absolute_max - tool_call_count
             grant = min(
@@ -1884,6 +1914,18 @@ class AgentLoop:
                         episode_stub,
                     )
                     if extended:
+                        if episode_stub and episode_stub.pop(
+                            "_finish_now_nudge", False
+                        ):
+                            messages.append(
+                                {
+                                    "role": "user",
+                                    "content": (
+                                        "[BUDGET] You indicated you can answer now. "
+                                        "Call the terminal tool on this call."
+                                    ),
+                                }
+                            )
                         continue
                     return "exhausted", episode_stub
 
@@ -2108,6 +2150,18 @@ class AgentLoop:
                             if extended:
                                 no_tool_extension_count += 1
                                 no_tool_streak = 0
+                                if episode_stub and episode_stub.pop(
+                                    "_finish_now_nudge", False
+                                ):
+                                    messages.append(
+                                        {
+                                            "role": "user",
+                                            "content": (
+                                                "[BUDGET] You indicated you can answer now. "
+                                                "Call the terminal tool on this call."
+                                            ),
+                                        }
+                                    )
                                 continue
                         return "exhausted", episode_stub
                     # Single plain-text response — inject a recovery nudge and
