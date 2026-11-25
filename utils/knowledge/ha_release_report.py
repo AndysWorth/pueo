@@ -31,6 +31,9 @@ _PATCH_HA_DOMAIN_RE = re.compile(
 _PATCH_REF_DEF_RE = re.compile(
     r"^\[([^\]]+)\]:\s+https?://www\.home-assistant\.io/integrations/([^/\s)#\"'>]+)"
 )
+# GitHub PR reference-definition lines at the bottom of release bodies:
+#   [#185485]: https://github.com/home-assistant/core/pull/185485
+_PATCH_PR_REF_DEF_RE = re.compile(r"^\[#\d+\]:\s+https?://")
 # Reference-link usage in a fix line: ([mqtt docs]) — no inline URL
 _PATCH_REF_USE_RE = re.compile(
     r"\(\[([^\]]+)\]\)(?!\()"
@@ -453,8 +456,10 @@ def parse_patch_notes(
 
     result: dict[str, list[ChangeEntry]] = {}
     for raw_line in body.splitlines():
-        # Skip reference definition lines
-        if _PATCH_REF_DEF_RE.match(raw_line.strip()):
+        # Skip reference definition lines (HA-docs and GitHub PR refs)
+        if _PATCH_REF_DEF_RE.match(raw_line.strip()) or _PATCH_PR_REF_DEF_RE.match(
+            raw_line.strip()
+        ):
             continue
         line = raw_line.strip().lstrip("*-• ").strip()
         if not line:
