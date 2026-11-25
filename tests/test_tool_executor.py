@@ -7375,3 +7375,228 @@ class TestReadLogsPrevBoot:
 
         enum = READ_LOGS.parameters["properties"]["log_source"]["enum"]
         assert "ha_host_prev_boot" in enum
+
+
+class TestCheckEntityStatus:
+    """Tests for _check_entity_status — real ownership, not domain-wide listing."""
+
+    def _executor_with_ws(self, ws_client):
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(
+            file_contents={"/config/configuration.yaml": _VALID_YAML},
+            command_results={},
+        )
+        ex = ToolExecutor(
+            ha_ssh_client=ssh,
+            gate=FakeAutonomyGate(auto_execute_result=False),
+            notifier=FakeNotifier(),
+        )
+        ex.set_ws_client(ws_client)
+        return ex
+
+    def test_in_registry_returns_ownership_fields(self):
+        """Entity in registry: platform, entry id/title/state, device fields returned."""
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+        import json
+
+        ws = FakeHAWebSocketClient(
+            entity_registry=[
+                {
+                    "entity_id": "light.candle",
+                    "platform": "lifx",
+                    "config_entry_id": "entry_abc",
+                    "device_id": "dev_xyz",
+                    "area_id": "living_room",
+                }
+            ],
+            config_entries=[
+                {
+                    "entry_id": "entry_abc",
+                    "domain": "lifx",
+                    "title": "Candle 1",
+                    "state": "loaded",
+                }
+            ],
+            devices=[
+                {
+                    "id": "dev_xyz",
+                    "name": "Candle 1 LIFX",
+                    "name_by_user": None,
+                    "model": "LIFX Candle",
+                    "manufacturer": "LIFX",
+                    "serial_number": "D073D584E405",
+                    "connections": [["mac", "d0:73:d5:84:e4:05"]],
+                }
+            ],
+            states=[{"entity_id": "light.candle", "state": "on"}],
+        )
+        ex = self._executor_with_ws(ws)
+        r = asyncio.run(ex._check_entity_status("light.candle"))
+        assert r.success, r.error
+        data = json.loads(r.output)
+        assert data["in_registry"] is True
+        assert data["platform"] == "lifx"
+        assert data["config_entry_id"] == "entry_abc"
+        assert data["config_entry_title"] == "Candle 1"
+        assert data["config_entry_state"] == "loaded"
+        assert data["device_id"] == "dev_xyz"
+        assert data["device_name"] == "Candle 1 LIFX"
+        assert data["device_model"] == "LIFX Candle"
+        assert data["device_serial"] == "D073D584E405"
+        assert data["device_connections"] == [["mac", "d0:73:d5:84:e4:05"]]
+        assert data["area"] == "living_room"
+        assert data["state_value"] == "on"
+        # Old field must be gone
+        assert "config_entries_with_domain" not in data
+
+    def test_in_registry_no_device(self):
+        """Entity with no device_id: device fields absent, no KeyError."""
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+        import json
+
+        ws = FakeHAWebSocketClient(
+            entity_registry=[
+                {
+                    "entity_id": "sensor.foo",
+                    "platform": "template",
+                    "config_entry_id": None,
+                    "device_id": None,
+                }
+            ],
+            config_entries=[],
+            devices=[],
+            states=[],
+        )
+        ex = self._executor_with_ws(ws)
+        r = asyncio.run(ex._check_entity_status("sensor.foo"))
+        assert r.success
+        data = json.loads(r.output)
+        assert data["in_registry"] is True
+        assert data["platform"] == "template"
+        assert "device_id" not in data
+        assert "config_entry_id" not in data
+
+    def test_not_in_registry_returns_name_matches(self):
+        """Guessed entity_id not in registry: name_matches finds entities by slug."""
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+        import json
+
+        ws = FakeHAWebSocketClient(
+            entity_registry=[
+                {
+                    "entity_id": "light.lifx_d073d584e405",
+                    "platform": "lifx",
+                    "config_entry_id": "entry_lifx",
+                    "device_id": "dev_candle",
+                    "original_name": "Candle 1",
+                },
+                {
+                    "entity_id": "light.candle",
+                    "platform": "matter",
+                    "config_entry_id": "entry_matter",
+                    "device_id": "dev_candle",
+                    "original_name": "Candle 1",
+                },
+                {
+                    "entity_id": "light.unrelated",
+                    "platform": "hue",
+                    "config_entry_id": "entry_hue",
+                    "device_id": "dev_hue",
+                    "original_name": "Office Lamp",
+                },
+            ],
+            devices=[
+                {
+                    "id": "dev_candle",
+                    "name": "Candle 1",
+                    "name_by_user": None,
+                }
+            ],
+            states=[
+                {"entity_id": "light.lifx_d073d584e405", "state": "unavailable"},
+                {"entity_id": "light.candle", "state": "on"},
+            ],
+        )
+        ex = self._executor_with_ws(ws)
+        r = asyncio.run(ex._check_entity_status("light.candle_1"))
+        assert r.success
+        data = json.loads(r.output)
+        assert data["in_registry"] is False
+        assert "name_matches" in data
+        matched_ids = [m["entity_id"] for m in data["name_matches"]]
+        assert "light.lifx_d073d584e405" in matched_ids
+        assert "light.candle" in matched_ids
+        assert "light.unrelated" not in matched_ids
+        # State is included in matches
+        candle_match = next(
+            m for m in data["name_matches"] if m["entity_id"] == "light.candle"
+        )
+        assert candle_match["state"] == "on"
+
+    def test_not_in_registry_no_matches(self):
+        """Guessed entity_id with no matching names: name_matches absent."""
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+        import json
+
+        ws = FakeHAWebSocketClient(
+            entity_registry=[
+                {
+                    "entity_id": "light.unrelated",
+                    "platform": "hue",
+                    "original_name": "Office Lamp",
+                }
+            ],
+            devices=[],
+            states=[],
+        )
+        ex = self._executor_with_ws(ws)
+        r = asyncio.run(ex._check_entity_status("light.candle_1"))
+        assert r.success
+        data = json.loads(r.output)
+        assert data["in_registry"] is False
+        assert "name_matches" not in data
+
+    def test_related_integrations_key_renamed(self):
+        """integrations_with_light_platform replaces config_entries_with_domain."""
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+        import json
+
+        ws = FakeHAWebSocketClient(
+            entity_registry=[
+                {
+                    "entity_id": "light.candle",
+                    "platform": "lifx",
+                    "config_entry_id": "entry_lifx",
+                    "device_id": None,
+                }
+            ],
+            config_entries=[
+                {
+                    "entry_id": "entry_lifx",
+                    "domain": "lifx",
+                    "title": "Candle 1",
+                    "state": "loaded",
+                },
+                {
+                    "entry_id": "entry_lifx2",
+                    "domain": "lifx",
+                    "title": "Candle 2",
+                    "state": "loaded",
+                },
+            ],
+            devices=[],
+            states=[],
+            ha_components=["lifx.light"],
+        )
+        ex = self._executor_with_ws(ws)
+        r = asyncio.run(ex._check_entity_status("light.candle"))
+        data = json.loads(r.output)
+        assert "config_entries_with_domain" not in data
+        assert "integrations_with_light_platform" in data
+        entries = data["integrations_with_light_platform"]
+        assert any(e["entry_id"] == "entry_lifx" for e in entries)
+        assert any(e["entry_id"] == "entry_lifx2" for e in entries)

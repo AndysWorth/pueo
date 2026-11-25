@@ -5851,9 +5851,9 @@ class ToolExecutor:
                 error="WS client not available",
             )
         entity_domain = entity_id.split(".")[0] if "." in entity_id else entity_id
+        entity_slug = entity_id.split(".", 1)[1] if "." in entity_id else entity_id
         try:
             registry = await self._ws_client.get_entity_registry()
-            in_registry = any(e.get("entity_id") == entity_id for e in registry)
         except Exception as exc:
             return ToolResult(
                 tool_name="check_entity_status",
@@ -5861,6 +5861,7 @@ class ToolExecutor:
                 output="",
                 error=f"entity registry fetch failed: {exc}",
             )
+        states: list[dict] = []
         try:
             states = await self._ws_client.get_states()
             state_entry = next(
@@ -5873,7 +5874,61 @@ class ToolExecutor:
             state_value = None
         try:
             all_entries = await self._ws_client.get_all_config_entries()
+        except Exception:
+            all_entries = []
+        try:
+            devices = await self._ws_client.get_device_registry()
+        except Exception:
+            devices = []
+        try:
             components = await self._ws_client.get_ha_components()
+        except Exception:
+            components = []
+
+        reg_row = next((e for e in registry if e.get("entity_id") == entity_id), None)
+        in_registry = reg_row is not None
+
+        result: dict = {
+            "entity_id": entity_id,
+            "in_registry": in_registry,
+            "has_state": has_state,
+            "state_value": state_value,
+        }
+
+        if in_registry and reg_row is not None:
+            platform = reg_row.get("platform")
+            config_entry_id = reg_row.get("config_entry_id")
+            device_id = reg_row.get("device_id")
+            area_id = reg_row.get("area_id")
+
+            result["platform"] = platform
+
+            if config_entry_id:
+                result["config_entry_id"] = config_entry_id
+                owner = next(
+                    (e for e in all_entries if e.get("entry_id") == config_entry_id),
+                    None,
+                )
+                if owner:
+                    result["config_entry_title"] = owner.get("title", "")
+                    result["config_entry_state"] = owner.get("state", "")
+
+            if device_id:
+                result["device_id"] = device_id
+                device = next((d for d in devices if d.get("id") == device_id), None)
+                if device:
+                    result["device_name"] = device.get("name_by_user") or device.get(
+                        "name", ""
+                    )
+                    result["device_model"] = device.get("model", "")
+                    result["device_manufacturer"] = device.get("manufacturer", "")
+                    result["device_serial"] = device.get("serial_number", "")
+                    result["device_connections"] = device.get("connections", [])
+
+            if area_id:
+                result["area"] = area_id
+
+            # Secondary context: other entries that expose this entity's platform.
             related_entries = []
             for entry in all_entries:
                 ce_domain = entry.get("domain", "")
@@ -5885,15 +5940,39 @@ class ToolExecutor:
                     enriched = dict(entry)
                     enriched["_sub_platform"] = sub_platform
                     related_entries.append(enriched)
-        except Exception:
-            related_entries = []
-        result = {
-            "entity_id": entity_id,
-            "in_registry": in_registry,
-            "has_state": has_state,
-            "state_value": state_value,
-            "config_entries_with_domain": related_entries,
-        }
+            if related_entries:
+                result[f"integrations_with_{entity_domain}_platform"] = related_entries
+        else:
+            # Entity not found — search for entities whose name matches the slug.
+            slug_words = entity_slug.replace("_", " ").lower()
+            device_names: dict[str, str] = {
+                d.get("id", ""): (d.get("name_by_user") or d.get("name") or "").lower()
+                for d in devices
+            }
+            matches = []
+            for entry in registry:
+                eid = entry.get("entity_id", "")
+                friendly = (
+                    entry.get("name") or entry.get("original_name") or ""
+                ).lower()
+                dev_name = device_names.get(entry.get("device_id") or "", "")
+                if slug_words in friendly or slug_words in dev_name:
+                    match: dict = {
+                        "entity_id": eid,
+                        "platform": entry.get("platform"),
+                        "friendly_name": entry.get("name")
+                        or entry.get("original_name"),
+                    }
+                    state_val = next(
+                        (s.get("state") for s in states if s.get("entity_id") == eid),
+                        None,
+                    )
+                    if state_val is not None:
+                        match["state"] = state_val
+                    matches.append(match)
+            if matches:
+                result["name_matches"] = matches
+
         return ToolResult(
             tool_name="check_entity_status",
             success=True,
