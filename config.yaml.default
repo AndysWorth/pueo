@@ -132,6 +132,7 @@ agent:
   archive_journal_enabled: false       # Dump systemd journal to Pueo before vacuuming (off by default: noisy)
   pueo_archive_max_gb: 2.0             # Max local storage for archived HA logs and journal dumps (GB)
   pueo_local_max_gb: 20.0              # Soft-warn threshold for Pueo's total local storage footprint (GB)
+  # ha_reload_stuck_seconds: 600       # Wait ceiling for a config-entry reload; HA blocks until setup finishes; 10 min is the default
   update_check_interval_hours: 6      # How often to poll for HA updates (0 = off; requires api_token)
   # update_notify_on_available: true  # Send an approval notification when any update entity flips to on
   # update_release_notes_cache_dir: ""  # Release-notes cache; default: ~/Library/Caches/Pueo/ha_release_notes (macOS)

@@ -212,9 +212,11 @@ class HARestClient:  # pragma: no cover
             resp.raise_for_status()
             return resp.json()  # type: ignore[no-any-return]
 
-    async def reload_config_entry(self, entry_id: str) -> None:
+    async def reload_config_entry(
+        self, entry_id: str, stuck_seconds: float = 10.0
+    ) -> None:
         base = self._base_url.removesuffix("/api")
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
+        async with httpx.AsyncClient(timeout=stuck_seconds) as client:
             resp = await client.post(
                 f"{base}/api/config/config_entries/entry/{entry_id}/reload",
                 headers=self._headers,
@@ -488,7 +490,9 @@ class FakeHARestClient:
     async def get_config_entry_diagnostics(self, entry_id: str) -> dict:
         return dict(self._diagnostics.get(entry_id, {}))
 
-    async def reload_config_entry(self, entry_id: str) -> None:
+    async def reload_config_entry(
+        self, entry_id: str, stuck_seconds: float = 10.0
+    ) -> None:
         self.reloaded.append(entry_id)
 
     async def create_automation(self, unique_id: str, config: dict) -> None:

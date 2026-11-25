@@ -1063,6 +1063,7 @@ agent:
   # disk_recovery_auto_enabled: true
   # disk_recovery_recorder_keep_days: 30
   # disk_recovery_journal_max_mb: 200
+  # ha_reload_stuck_seconds: 600
   update_check_interval_hours: ${HA_UPDATE_CHECK_INTERVAL_HOURS}
   notification_poll_interval_minutes: 5
   ha_repair_poll_interval_minutes: 5

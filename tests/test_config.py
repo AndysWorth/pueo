@@ -1883,3 +1883,18 @@ class TestFederatedCasesRepoConfig:
         import config
 
         assert config.PUEO_ACTION_REBOOT_WINDOW_MINUTES == 30
+
+    def test_ha_reload_stuck_seconds_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.HA_RELOAD_STUCK_SECONDS == 600
+
+    def test_ha_reload_stuck_seconds_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump({"agent": {"ha_reload_stuck_seconds": 300}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.HA_RELOAD_STUCK_SECONDS == 300

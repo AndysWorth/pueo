@@ -122,6 +122,9 @@ ARCHIVE_JOURNAL_ENABLED: bool = bool(_agent.get("archive_journal_enabled", False
 PUEO_ARCHIVE_MAX_GB: float = float(_agent.get("pueo_archive_max_gb", 2.0))
 PUEO_LOCAL_MAX_GB: float = float(_agent.get("pueo_local_max_gb", 20.0))
 
+# HA reload — wait up to this many seconds for a config-entry reload before treating it as stuck
+HA_RELOAD_STUCK_SECONDS: int = int(_agent.get("ha_reload_stuck_seconds", 600))
+
 # HA Update Manager
 HA_UPDATE_CHECK_INTERVAL_HOURS: float = float(
     _agent.get("update_check_interval_hours", 0.0)

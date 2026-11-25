@@ -26,13 +26,17 @@ the restart.
 **The integration's connection dropped** (cloud-push or local push):
 - The log for this domain shows a disconnect, `MQTT disconnect`, `WebSocket error`,
   `TimeoutError` or `Uncaught thread exception` near the offline-since time.
-- `reload_integration(domain=<domain>)` restarts the connection. Afterwards, check an
-  entity's state with `get_entity_history` to confirm the devices came back.
+- Use `reload_integration` with **the config entry id from the initial context**, not
+  the domain name. Many integrations (such as LIFX) have one entry per device — using
+  the domain reloads the wrong entry. The initial context always lists the entry id.
+- Example: `reload_integration(domain_or_entry_id="01KDBC5X1MDAGT24H631767WZF", reason="...")`.
+- The tool reads the entry state back and polls entities. Report what it returns.
 
 **The config entry failed**:
 - `get_integration_diagnostics` shows the entry in `setup_error`, `setup_retry` or
   `failed_setup`, or the log shows the integration's setup failing.
-- Recommend `reload_integration` (gated) or re-authentication in the HA UI.
+- Recommend `reload_integration` with the entry id from context (gated) or
+  re-authentication in the HA UI.
 
 **The device itself is off or unreachable**:
 - Siblings on the same config entry are still online, or NetAlertX shows the device
@@ -69,7 +73,7 @@ that no tool output shows.
 4. `get_entity_history(entity_id=<listed entity_id>, hours=168)` on one representative
    entity to see when it went offline and how often in the last week.
 5. If the log shows a dropped connection and the device is still offline:
-   `reload_integration(domain=<domain>)`.
+   `reload_integration(domain_or_entry_id=<entry_id from context>)`.
 6. If several vendors are offline at once: `fetch_url` against a known vendor status page.
 
 ## Sibling device heuristic
