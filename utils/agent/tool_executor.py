@@ -5925,6 +5925,25 @@ class ToolExecutor:
                     result["device_serial"] = device.get("serial_number", "")
                     result["device_connections"] = device.get("connections", [])
 
+                    from utils.ha.network_identity import find_device_twins
+
+                    twins = find_device_twins(
+                        device,
+                        devices,
+                        entity_states=states,
+                        config_entries=all_entries,
+                    )
+                    if twins:
+                        result["device_twins"] = [
+                            {
+                                "device_id": t.device_id,
+                                "device_name": t.device_name,
+                                "integration": t.integration,
+                                "config_entry_id": t.config_entry_id,
+                            }
+                            for t in twins
+                        ]
+
             if area_id:
                 result["area"] = area_id
 

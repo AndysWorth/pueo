@@ -486,3 +486,215 @@ class TestBuildPresenceContextNewPaths:
         assert "unknown" in result
         assert "absent" not in result
         assert "dev-atv" in unmapped
+
+
+# ---------------------------------------------------------------------------
+# find_device_twins
+# ---------------------------------------------------------------------------
+
+
+class TestFindDeviceTwins:
+    """find_device_twins matches on serial_number and MAC↔serial cross-match."""
+
+    def _reg_entry(
+        self,
+        device_id: str,
+        name: str,
+        serial: str = "",
+        connections: list | None = None,
+        entries: list | None = None,
+    ) -> dict:
+        return {
+            "id": device_id,
+            "name": name,
+            "serial_number": serial,
+            "connections": connections or [],
+            "config_entries": entries or [],
+        }
+
+    def _entries(self, entry_id: str, domain: str) -> list[dict]:
+        return [{"entry_id": entry_id, "domain": domain}]
+
+    def test_serial_match(self):
+        from utils.ha.network_identity import find_device_twins
+
+        source = self._reg_entry(
+            "dev-lifx", "Candle 1", serial="D073D584E405", entries=["entry-lifx"]
+        )
+        other = self._reg_entry(
+            "dev-matter", "Candle 1", serial="d073d584e405", entries=["entry-matter"]
+        )
+        twins = find_device_twins(source, [source, other])
+        assert len(twins) == 1
+        assert twins[0].device_id == "dev-matter"
+
+    def test_mac_to_serial_cross_match(self):
+        """LIFX MAC d0:73:d5:84:e4:05 matches Matter serial D073D584E405."""
+        from utils.ha.network_identity import find_device_twins
+
+        source = self._reg_entry(
+            "dev-lifx",
+            "Candle 1",
+            connections=[["mac", "d0:73:d5:84:e4:05"]],
+            entries=["entry-lifx"],
+        )
+        other = self._reg_entry(
+            "dev-matter", "Candle 1", serial="D073D584E405", entries=["entry-matter"]
+        )
+        twins = find_device_twins(source, [source, other])
+        assert len(twins) == 1
+        assert twins[0].device_id == "dev-matter"
+
+    def test_serial_to_mac_cross_match(self):
+        """Reversed: source has serial, other has MAC."""
+        from utils.ha.network_identity import find_device_twins
+
+        source = self._reg_entry(
+            "dev-matter", "Candle 1", serial="D073D584E405", entries=["entry-matter"]
+        )
+        other = self._reg_entry(
+            "dev-lifx",
+            "Candle 1",
+            connections=[["mac", "d0:73:d5:84:e4:05"]],
+            entries=["entry-lifx"],
+        )
+        twins = find_device_twins(source, [source, other])
+        assert len(twins) == 1
+        assert twins[0].device_id == "dev-lifx"
+
+    def test_no_match_on_name_alone(self):
+        from utils.ha.network_identity import find_device_twins
+
+        source = self._reg_entry("dev-a", "Candle 1", entries=["entry-a"])
+        other = self._reg_entry("dev-b", "Candle 1", entries=["entry-b"])
+        twins = find_device_twins(source, [source, other])
+        assert twins == []
+
+    def test_sibling_same_entry_excluded(self):
+        """Devices sharing a config entry are siblings, not twins."""
+        from utils.ha.network_identity import find_device_twins
+
+        source = self._reg_entry(
+            "dev-a", "Bulb A", serial="SERIAL01", entries=["shared-entry"]
+        )
+        other = self._reg_entry(
+            "dev-b", "Bulb B", serial="SERIAL01", entries=["shared-entry"]
+        )
+        twins = find_device_twins(source, [source, other])
+        assert twins == []
+
+    def test_integration_populated_from_config_entries(self):
+        from utils.ha.network_identity import find_device_twins
+
+        source = self._reg_entry(
+            "dev-lifx", "Candle", serial="AAA", entries=["entry-lifx"]
+        )
+        other = self._reg_entry(
+            "dev-matter", "Candle", serial="AAA", entries=["entry-matter"]
+        )
+        config_entries = [
+            {"entry_id": "entry-lifx", "domain": "lifx"},
+            {"entry_id": "entry-matter", "domain": "matter"},
+        ]
+        twins = find_device_twins(
+            source, [source, other], config_entries=config_entries
+        )
+        assert len(twins) == 1
+        assert twins[0].integration == "matter"
+        assert twins[0].config_entry_id == "entry-matter"
+
+
+# ---------------------------------------------------------------------------
+# build_twin_context
+# ---------------------------------------------------------------------------
+
+
+class TestBuildTwinContext:
+    """build_twin_context builds the initial-context block for twin devices."""
+
+    def _make_ws(
+        self,
+        dev_reg: list[dict],
+        all_entries: list[dict],
+        states: list[dict],
+        entity_reg: list[dict] | None = None,
+    ):
+        class _FakeWS:
+            async def get_device_registry(self_):  # noqa: N805
+                return list(dev_reg)
+
+            async def get_all_config_entries(self_):  # noqa: N805
+                return list(all_entries)
+
+            async def get_states(self_):  # noqa: N805
+                return list(states)
+
+            async def get_entity_registry(self_):  # noqa: N805
+                return list(entity_reg or [])
+
+        return _FakeWS()
+
+    def test_twin_block_rendered(self):
+        import asyncio
+        from utils.ha.device_availability_investigation import build_twin_context
+
+        dev_reg = [
+            {
+                "id": "dev-lifx",
+                "name": "Candle 1",
+                "serial_number": "D073D584E405",
+                "connections": [],
+                "config_entries": ["entry-lifx"],
+            },
+            {
+                "id": "dev-matter",
+                "name": "Candle 1",
+                "serial_number": "d073d584e405",
+                "connections": [],
+                "config_entries": ["entry-matter"],
+            },
+        ]
+        all_entries = [
+            {"entry_id": "entry-lifx", "domain": "lifx"},
+            {"entry_id": "entry-matter", "domain": "matter"},
+        ]
+        states = [
+            {
+                "entity_id": "light.candle",
+                "state": "on",
+                "last_changed": "2026-11-25T10:00:00+00:00",
+            }
+        ]
+        entity_reg = [{"entity_id": "light.candle", "device_id": "dev-matter"}]
+        ws = self._make_ws(dev_reg, all_entries, states, entity_reg)
+        devices = [{"device_id": "dev-lifx", "name": "Candle 1", "entity_ids": []}]
+        result = asyncio.run(build_twin_context(devices, ws))
+        assert "Same device via other integrations" in result
+        assert "matter" in result
+        assert "light.candle" in result
+        assert "on" in result
+
+    def test_no_twins_returns_empty(self):
+        import asyncio
+        from utils.ha.device_availability_investigation import build_twin_context
+
+        dev_reg = [
+            {
+                "id": "dev-lifx",
+                "name": "Clip-on",
+                "serial_number": "",
+                "connections": [["mac", "aa:bb:cc:dd:ee:ff"]],
+                "config_entries": ["entry-lifx"],
+            }
+        ]
+        ws = self._make_ws(dev_reg, [], [])
+        devices = [{"device_id": "dev-lifx", "name": "Clip-on", "entity_ids": []}]
+        result = asyncio.run(build_twin_context(devices, ws))
+        assert result == ""
+
+    def test_none_ws_returns_empty(self):
+        import asyncio
+        from utils.ha.device_availability_investigation import build_twin_context
+
+        result = asyncio.run(build_twin_context([], None))
+        assert result == ""

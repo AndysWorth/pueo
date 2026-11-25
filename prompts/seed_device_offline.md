@@ -81,6 +81,19 @@ If some devices under the same config entry are online and others are offline, t
 local to those devices (power, range, firmware). If all of them are offline, look at the
 integration or the vendor cloud.
 
+## Twin devices (same physical device via several integrations)
+When the initial context includes a `Same device via other integrations:` block, it means
+the same physical hardware is registered twice — for example once via LIFX LAN and once via
+Matter.
+
+- **A twin that is online** means the device has power and network. The fault is in this
+  integration's local path (the one in the initial context). Reload **this config entry**
+  (the entry id from the initial context) once. If the device is still unavailable after the
+  reload, set `outcome="needs_action"` and tell the user what is still wrong; mention that
+  the device continues to work via the twin integration.
+- **Never recommend disabling either copy.** The user chose to run both integrations.
+- Never reload the twin's entry; only reload the entry in the initial context.
+
 ## Network presence (NetAlertX)
 When the initial context includes a `NetAlertX network presence:` block, check it before
 reading logs:

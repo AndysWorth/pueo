@@ -228,6 +228,104 @@ async def build_presence_context(
         return "", []
 
 
+async def build_twin_context(
+    devices: list,  # list[dict] from OfflineFinding.devices
+    ws_client: Optional[Any],  # Optional[HAWebSocketClientProtocol]
+) -> str:
+    """Return a 'Same device via other integrations:' block, or '' if none found.
+
+    Fetches device registry, all config entries and entity states from ws_client.
+    Never raises.
+    """
+    if ws_client is None:
+        return ""
+    try:
+        from utils.ha.network_identity import find_device_twins
+
+        dev_reg = await ws_client.get_device_registry()
+        all_entries = await ws_client.get_all_config_entries()
+        states = await ws_client.get_states()
+
+        reg_by_id = {d["id"]: d for d in dev_reg}
+        state_by_entity: dict[str, dict] = {
+            s.get("entity_id", ""): s for s in states if s.get("entity_id")
+        }
+
+        # Build entity_id → device_id from entity_registry if available,
+        # fall back to per-device entity_ids from the finding devices list.
+        # We use finding.devices[*].entity_ids to map entities to device_ids.
+        entity_to_device: dict[str, str] = {}
+        for d in devices:
+            dev_id = d.get("device_id", "")
+            for eid in d.get("entity_ids", []):
+                entity_to_device[eid] = dev_id
+
+        # For twins we need entity_id → device_id across the whole registry.
+        # Fetch entity registry if available; otherwise we can only map finding devices.
+        try:
+            entity_reg = await ws_client.get_entity_registry()
+            for row in entity_reg:
+                eid = row.get("entity_id", "")
+                did = row.get("device_id", "")
+                if eid and did:
+                    entity_to_device[eid] = did
+        except Exception:  # nosec B110
+            pass
+
+        lines: list[str] = []
+        for d in devices:
+            dev_id = d.get("device_id", "")
+            dev_name = d.get("name", dev_id)
+            if not dev_id:
+                continue
+            source_device = reg_by_id.get(dev_id)
+            if source_device is None:
+                continue
+
+            # Pre-filter states to twin devices (device_id ≠ source)
+            twins = find_device_twins(
+                source_device,
+                dev_reg,
+                entity_states=None,
+                config_entries=all_entries,
+            )
+            if not twins:
+                continue
+
+            for twin in twins:
+                # Find entity states belonging to this twin device
+                twin_states = [
+                    {
+                        "entity_id": eid,
+                        "state": s.get("state", ""),
+                        "last_changed": s.get("last_changed", ""),
+                    }
+                    for eid, s in state_by_entity.items()
+                    if entity_to_device.get(eid) == twin.device_id
+                ]
+                if twin_states:
+                    state_parts = ", ".join(
+                        f"{s['entity_id']} {s['state']}"
+                        + (
+                            f" (since {s['last_changed'][:19]})"
+                            if s.get("last_changed")
+                            else ""
+                        )
+                        for s in twin_states[:3]
+                    )
+                else:
+                    state_parts = "no entity states available"
+                integration = twin.integration or twin.config_entry_id or "unknown"
+                lines.append(f"  - {dev_name} via {integration}: {state_parts}")
+
+        if not lines:
+            return ""
+        return "\n\nSame device via other integrations:\n" + "\n".join(lines)
+    except Exception as exc:  # nosec B110
+        log.debug("twin_context_failed", error=str(exc))
+        return ""
+
+
 async def run_device_availability_investigation(
     finding: OfflineFinding,
     notifier: Any,  # NotifierProtocol
@@ -336,6 +434,10 @@ async def run_device_availability_investigation(
         initial_context += presence_block
     if _unmapped_ids:
         executor.set_unmapped_device_ids(_unmapped_ids)
+
+    twin_block = await build_twin_context(finding.devices, ws_client)
+    if twin_block:
+        initial_context += twin_block
 
     from utils.agent.supervisor import (
         decrement_active_agent,
