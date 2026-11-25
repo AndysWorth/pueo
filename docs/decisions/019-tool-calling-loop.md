@@ -28,6 +28,8 @@ This is the same architecture as Claude Code and Devin: a language model driving
 
 **Budget management required.** The loop enforces a maximum tool call count (`AGENT_MAX_TOOL_CALLS`, default 20) and a wall-clock timeout (`AGENT_MAX_WALL_SECONDS`, default 120). Exhausting the budget is a valid outcome — it triggers an escalation offer to the user (Milestone 7) rather than failing silently.
 
+**Terminal-tool contract (amended S1 2026-11-25).** The terminal tool (`finish_*`) must succeed for the loop to exit with `outcome="success"`. A rejected terminal call (tool returned `success=False`) does not count against the budget and gives the model a retry turn. Once the budget is otherwise spent, the terminal tool is still allowed through. If the model calls the terminal with the same failing arguments twice, the loop exits with `outcome="finish_invalid"`. Callers treat `"finish_invalid"` the same as any non-success outcome: the 30-min stuck-loop backoff fires, and no gap is distilled.
+
 **Eval baseline required before migration.** The M5 eval baseline must be committed before the pipeline is refactored. The post-migration score must not drop. This is a hard prerequisite: without a measurement baseline, regression is invisible.
 
 **Model capability is the bottleneck.** 7B models reliably handle 5–8 tool calls with straightforward reasoning; 10+ steps with complex branching needs larger models. The loop architecture is correct today; model capability will catch up. Milestone 7 (cloud escalation) covers the gap for incidents the local model cannot close.

@@ -53,6 +53,7 @@ AgentLoopOutcome = Literal[
     "stuck",
     "failed",
     "error",
+    "finish_invalid",
 ]
 
 

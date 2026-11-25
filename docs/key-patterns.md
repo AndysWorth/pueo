@@ -64,7 +64,9 @@ Every `_run_*_investigation` caller writes a 30-minute suppression row (`mark_in
 `StructuredLogger._log` auto-renames any kwarg whose name collides with a `LogRecord` reserved attribute (`args`, `name`, `msg`, etc. — the full set is `_STANDARD_ATTRS` in `logging.py`) to `<key>_` before passing to `extra=`. This prevents `KeyError: Attempt to overwrite '...' in LogRecord`. Callers should still avoid reserved names (rename `args=` to `tool_args=` at the call site), but the safety net means a slip will never crash the caller.
 
 ## AgentLoop crash outcome
-An unhandled Python exception inside `AgentLoop.run()` sets `outcome = "error"`. This outcome triggers the normal 30-min stuck-loop backoff (callers check `!= "success"`), but gap distillation is **skipped** — a code bug is not a knowledge gap. All other non-success outcomes (`failed`, `exhausted`, `stuck`, `timeout`, `fix_failed`) still write gaps as before.
+An unhandled Python exception inside `AgentLoop.run()` sets `outcome = "error"`. This triggers the 30-min stuck-loop backoff (callers check `!= "success"`), but gap distillation is **skipped** — a code bug is not a knowledge gap. `outcome = "finish_invalid"` (terminal tool failed twice, same args) follows the same rule. Other non-success outcomes still write gaps.
+
+A failed terminal call never counts against the budget and always gets a retry; the terminal passes through even when the budget is spent. See ADR 019.
 
 ## LLM-guided all actions — 6-phase methodology
 Every significant Pueo action flows through LLM tool-calling reasoning via `AgentLoop`. Infrastructure operations that bypass the LLM (scheduled scraper runs, disk-space enforcement, backup retention sweeps) are housekeeping, not decisions. The boundary rule: if a function changes HA state or makes a judgment call about what to do next, it belongs in an agent loop, not a direct call.

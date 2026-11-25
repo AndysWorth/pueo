@@ -26,7 +26,7 @@ ADR 046 made verification explicit: only "Pueo was right"/"Pueo got this wrong" 
 {"kind": "recovers_without_action" | "recovers_after_reload" | "stays_offline", "within_minutes": N}
 ```
 
-`normalize_prediction` validates it (capped at 7 days). If `prediction` is supplied but invalid, `_finish_host_health` / `_finish_device_availability` return a tool error with the required shape so the LLM can correct its call — the card is not sent. A valid prediction is stored in the episode stub and lands in `session_outcomes.conclusion_json`. The card shows "Pueo predicts this will … and will check that itself."
+`normalize_prediction` validates it (capped at 7 days) and is tolerant of LLM formatting variations: a bare kind string uses a per-kind default `within_minutes`; a JSON-encoded string is decoded first; `type` is accepted as an alias for `kind`; `minutes` / `within` are accepted as aliases for `within_minutes`. **Amended S1 2026-11-25:** if `prediction` is supplied but cannot be normalised, `_finish_host_health` / `_finish_device_availability` now **drop the prediction and send the card anyway** (logging a warning). A bad prediction must not block the card — the prediction is optional. A valid prediction is stored in the episode stub and lands in `session_outcomes.conclusion_json`. The card shows "Pueo predicts this will … and will check that itself."
 
 The poll that watches the condition judges it with `judge_prediction()` (`utils/knowledge/session_verification.py`):
 

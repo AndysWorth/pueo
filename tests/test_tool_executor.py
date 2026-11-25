@@ -6146,8 +6146,10 @@ class TestHitlCardQueuedFlag:
         )
         assert ex._hitl_card_queued is True
 
-    def test_finish_host_health_malformed_prediction_returns_error(self, tmp_path):
-        """Malformed prediction must return a tool error, not be silently dropped."""
+    def test_finish_host_health_malformed_prediction_drops_and_sends_card(
+        self, tmp_path
+    ):
+        """Malformed prediction is dropped (logged); card is still sent."""
         import asyncio
 
         from utils.disk.host_health import HostHealthFinding
@@ -6168,15 +6170,14 @@ class TestHitlCardQueuedFlag:
                 prediction={"recovers_without_action": False, "stays_offline": False},
             )
         )
-        assert result.success is False
-        assert "Invalid prediction shape" in result.error
-        # Card must NOT have been queued when prediction is rejected.
-        assert ex._hitl_card_queued is False
+        # Card is sent even though prediction was unparseable.
+        assert result.success is True
+        assert ex._hitl_card_queued is True
 
-    def test_finish_device_availability_malformed_prediction_returns_error(
+    def test_finish_device_availability_malformed_prediction_drops_and_sends_card(
         self, tmp_path
     ):
-        """Malformed device-availability prediction must return a tool error."""
+        """Malformed device-availability prediction is dropped; card is still sent."""
         import asyncio
 
         from utils.ha.device_availability import OfflineFinding
@@ -6197,9 +6198,9 @@ class TestHitlCardQueuedFlag:
                 prediction={"recovers_without_action": False, "stays_offline": False},
             )
         )
-        assert result.success is False
-        assert "Invalid prediction shape" in result.error
-        assert ex._hitl_card_queued is False
+        # Card is sent even though prediction was unparseable.
+        assert result.success is True
+        assert ex._hitl_card_queued is True
 
     def test_finish_notification_requires_hitl_sets_flag(self, tmp_path, monkeypatch):
         """finish_notification_investigation with requires_hitl=True sets _hitl_card_queued."""

@@ -373,6 +373,274 @@ class TestAgentLoopPreInject:
         assert result == ""
 
 
+class TestAgentLoopFailedFinish:
+    """A failed terminal-tool call must not produce outcome='success'."""
+
+    def _make_loop(self, call_sequence):
+        """Return an AgentLoop with FakeToolCallingLLMClient using call_sequence."""
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.tool_registry import build_ha_tool_registry
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+
+        executor = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+        )
+        return AgentLoop(
+            llm_client=FakeToolCallingLLMClient(call_sequence),
+            tool_executor=executor,
+            tool_registry=build_ha_tool_registry(),
+        )
+
+    def _make_loop_with_failing_terminal(self, fail_times: int):
+        """Return (loop, executor) where the terminal tool fails `fail_times` then succeeds."""
+        from unittest.mock import patch, AsyncMock
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.tool_registry import build_ha_tool_registry
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_executor import ToolExecutor, ToolResult
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+
+        # sequence: terminal tool call every time (until client runs out)
+        tc = {"function": {"name": "finish_repair", "arguments": {"summary": "done"}}}
+        call_seq = [{"tool_calls": [tc]}] * (fail_times + 2)
+
+        executor = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),  # type: ignore[arg-type]
+            notifier=FakeNotifier(),
+        )
+
+        call_count = [0]
+        original_execute = executor.execute
+
+        async def _patched_execute(tool_call):
+            if tool_call.name == "finish_repair":
+                call_count[0] += 1
+                if call_count[0] <= fail_times:
+                    return ToolResult(
+                        tool_name="finish_repair",
+                        success=False,
+                        output="",
+                        error="Simulated finish failure",
+                    )
+            return await original_execute(tool_call)
+
+        executor.execute = _patched_execute  # type: ignore[method-assign]
+        loop = AgentLoop(
+            llm_client=FakeToolCallingLLMClient(call_seq),
+            tool_executor=executor,
+            tool_registry=build_ha_tool_registry(),
+        )
+        return loop, call_count
+
+    def test_failed_finish_leads_to_retry_then_success(self):
+        """A failed terminal call should be retried and succeed on second attempt."""
+        loop, call_count = self._make_loop_with_failing_terminal(fail_times=1)
+        result = asyncio.run(loop.run("test task"))
+        assert result.outcome == "success"
+        assert call_count[0] >= 2  # first failed, second succeeded
+
+    def test_terminal_allowed_through_mid_batch_budget_exhaustion(self):
+        """Terminal tool call in a batch executes even when budget is exhausted mid-batch."""
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.tool_registry import build_ha_tool_registry
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+
+        # Two tool calls in a single batch: non-terminal (hits the budget), then terminal.
+        # max_tool_calls=1: the non-terminal uses the last slot; the terminal is still
+        # allowed through by the grace-pass logic.
+        tc_other = {
+            "function": {"name": "query_knowledge", "arguments": {"query": "x"}}
+        }
+        tc_finish = {
+            "function": {"name": "finish_repair", "arguments": {"summary": "done"}}
+        }
+        call_seq = [{"tool_calls": [tc_other, tc_finish]}]
+
+        executor = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+        )
+        loop = AgentLoop(
+            llm_client=FakeToolCallingLLMClient(call_seq),
+            tool_executor=executor,
+            tool_registry=build_ha_tool_registry(),
+            max_tool_calls=1,
+        )
+        result = asyncio.run(loop.run("test budget grace"))
+        assert result.outcome == "success"
+
+    def test_failed_finish_grace_allows_retry_at_budget_limit(self):
+        """When budget is exhausted after a failed terminal, the loop still allows retry."""
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.tool_registry import build_ha_tool_registry
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_executor import ToolExecutor, ToolResult
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+
+        # Sequence: [finish_fail, any_call, finish_success]
+        # max_tool_calls=1:
+        #   finish_fail → decrement to 0, _failed_finish_sig set
+        #   any_call → tool_call_count=1 (exhausted)
+        #   Top-of-loop: 1>=1 but _failed_finish_sig is set → allow
+        #   finish_success → succeeds
+        tc_other = {
+            "function": {"name": "query_knowledge", "arguments": {"query": "x"}}
+        }
+        tc_finish = {
+            "function": {"name": "finish_repair", "arguments": {"summary": "done"}}
+        }
+        call_seq = [
+            {"tool_calls": [tc_finish]},  # will fail
+            {"tool_calls": [tc_other]},  # consumes budget
+            {"tool_calls": [tc_finish]},  # succeeds (grace step)
+        ]
+
+        executor = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+        )
+        finish_calls = [0]
+        original_execute = executor.execute
+
+        async def _patched_execute(tool_call):
+            if tool_call.name == "finish_repair":
+                finish_calls[0] += 1
+                if finish_calls[0] == 1:
+                    return ToolResult(
+                        tool_name="finish_repair",
+                        success=False,
+                        output="",
+                        error="first fail",
+                    )
+            return await original_execute(tool_call)
+
+        executor.execute = _patched_execute
+        loop = AgentLoop(
+            llm_client=FakeToolCallingLLMClient(call_seq),
+            tool_executor=executor,
+            tool_registry=build_ha_tool_registry(),
+            max_tool_calls=1,
+        )
+        result = asyncio.run(loop.run("test budget grace"))
+        assert result.outcome == "success"
+
+    def test_two_identical_failures_give_finish_invalid(self):
+        """Two identical failed terminal calls produce outcome='finish_invalid'."""
+        loop, call_count = self._make_loop_with_failing_terminal(fail_times=2)
+        result = asyncio.run(loop.run("test task"))
+        assert result.outcome == "finish_invalid"
+        assert call_count[0] >= 2
+
+    def test_finish_invalid_no_auto_verify(self):
+        """finish_invalid outcome must not trigger auto-verification."""
+        from unittest.mock import patch, MagicMock, AsyncMock
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.tool_registry import build_ha_tool_registry
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_executor import ToolExecutor, ToolResult
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+
+        tc = {"function": {"name": "finish_repair", "arguments": {"summary": "fail"}}}
+        call_seq = [{"tool_calls": [tc]}] * 5
+
+        executor = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+        )
+        original_execute = executor.execute
+
+        async def _always_fail(tool_call):
+            if tool_call.name == "finish_repair":
+                return ToolResult(
+                    tool_name="finish_repair",
+                    success=False,
+                    output="",
+                    error="always fails",
+                )
+            return await original_execute(tool_call)
+
+        executor.execute = _always_fail
+        loop = AgentLoop(
+            llm_client=FakeToolCallingLLMClient(call_seq),
+            tool_executor=executor,
+            tool_registry=build_ha_tool_registry(),
+        )
+        verify_called = []
+        with patch(
+            "agents.ha_agent_advanced.resolve_session_outcome_by_episode_id",
+            new=MagicMock(side_effect=verify_called.append),
+        ):
+            result = asyncio.run(loop.run("no auto-verify test"))
+        assert result.outcome == "finish_invalid"
+        assert len(verify_called) == 0
+
+    def test_finish_call_returns_only_successful(self):
+        """_finish_call ignores failed terminal calls and finds the successful one."""
+        from utils.agent.agent_loop import _finish_call, AgentStep
+        from utils.agent.tool_executor import ToolCall, ToolResult
+
+        def _step(name, success):
+            return AgentStep(
+                step_number=1,
+                tool_call=ToolCall(name=name, arguments={"summary": "x"}),
+                tool_result=ToolResult(
+                    tool_name=name,
+                    success=success,
+                    output="ok" if success else "",
+                    error=None,
+                ),
+                timestamp=0.0,
+            )
+
+        steps = [
+            _step("query_knowledge", True),
+            _step("finish_repair", False),  # failed — should be skipped
+            _step("finish_repair", True),  # succeeded — should be found
+        ]
+        name, args = _finish_call(steps, "finish_repair")
+        assert name == "finish_repair"
+        assert args == {"summary": "x"}
+
+    def test_finish_call_returns_empty_when_all_failed(self):
+        """_finish_call returns ('', {}) when every terminal call failed."""
+        from utils.agent.agent_loop import _finish_call, AgentStep
+        from utils.agent.tool_executor import ToolCall, ToolResult
+
+        steps = [
+            AgentStep(
+                step_number=1,
+                tool_call=ToolCall(name="finish_repair", arguments={"summary": "fail"}),
+                tool_result=ToolResult(
+                    tool_name="finish_repair", success=False, output="", error="oops"
+                ),
+                timestamp=0.0,
+            )
+        ]
+        name, args = _finish_call(steps, "finish_repair")
+        assert name == ""
+        assert args == {}
+
+
 class TestFormatKnowledgeBlock:
     """_format_knowledge_block renders chunks in rank order with per-chunk budgets."""
 

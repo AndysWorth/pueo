@@ -33,6 +33,13 @@ PREDICTION_KINDS: frozenset[str] = frozenset(
 # A prediction must be checkable within a week.
 _MAX_WITHIN_MINUTES = 7 * 24 * 60
 
+# Default within_minutes when only a bare kind is supplied.
+_KIND_DEFAULT_MINUTES: dict[str, int] = {
+    "recovers_without_action": 15,
+    "recovers_after_reload": 60,
+    "stays_offline": 120,
+}
+
 _KIND_TEXT = {
     "recovers_without_action": "recover on its own",
     "recovers_after_reload": "recover after an integration reload",
@@ -47,18 +54,47 @@ _ACTION_TOOLS = frozenset({"reload_integration", "call_service"})
 
 
 def normalize_prediction(raw: object) -> Optional[dict]:
-    """Return ``{"kind", "within_minutes"}`` for a valid prediction, else None."""
+    """Return ``{"kind", "within_minutes"}`` for a valid prediction, else None.
+
+    Tolerates several LLM-output variants:
+    - bare kind string → default within_minutes for that kind
+    - JSON-encoded string → decoded then processed normally
+    - ``type`` alias for ``kind``
+    - ``minutes`` / ``within`` alias for ``within_minutes``
+    """
+    if isinstance(raw, str):
+        raw = raw.strip()
+        if raw in PREDICTION_KINDS:
+            # Bare kind string: use per-kind default.
+            return {
+                "kind": raw,
+                "within_minutes": _KIND_DEFAULT_MINUTES.get(raw, 60),
+            }
+        try:
+            raw = json.loads(raw)
+        except (ValueError, TypeError):
+            return None
+
     if not isinstance(raw, dict):
         return None
-    kind = str(raw.get("kind", "")).strip()
+
+    # Accept ``type`` as an alias for ``kind``.
+    kind = str(raw.get("kind") or raw.get("type", "")).strip()
     if kind not in PREDICTION_KINDS:
         return None
+
+    # Accept ``minutes`` / ``within`` as aliases for ``within_minutes``.
+    raw_within = (
+        raw.get("within_minutes")
+        if raw.get("within_minutes") is not None
+        else raw.get("minutes") if raw.get("minutes") is not None else raw.get("within")
+    )
     try:
-        within = int(raw.get("within_minutes", 0))
+        within = int(float(raw_within)) if raw_within is not None else 0
     except (TypeError, ValueError):
-        return None
+        within = 0
     if within < 1:
-        return None
+        within = _KIND_DEFAULT_MINUTES.get(kind, 60)
     return {"kind": kind, "within_minutes": min(within, _MAX_WITHIN_MINUTES)}
 
 

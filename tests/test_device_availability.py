@@ -1336,6 +1336,95 @@ class TestFinishDeviceAvailabilityFields:
         assert payload["prediction"]["kind"] == "recovers_without_action"
         assert payload["prediction_text"] == "recover on its own within 30 min"
 
+    def test_bad_prediction_drops_and_still_sends_card(self, tmp_path):
+        """An unparseable prediction must be dropped; the card is still sent."""
+        import asyncio
+
+        from utils.agent.tool_registry import ToolCall
+        from utils.hitl.notify import FakeNotifier
+
+        notifier = FakeNotifier()
+        db = self._make_db(tmp_path)
+        executor = self._make_executor(db, notifier=notifier)
+        executor.set_device_availability_finding(
+            OfflineFinding(
+                config_entry_id="entry-lifx",
+                domain="lifx",
+                devices=[{"name": "Lamp", "device_id": "dev-L", "offline_since": 0}],
+            )
+        )
+
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="finish_device_availability",
+                    arguments={
+                        "summary": "Offline.",
+                        "root_cause": "Wi-Fi drop.",
+                        "outcome": "monitoring",
+                        "recommended_actions": [],
+                        # Clip-on real payload: 'type' instead of 'kind', 'minutes' instead of
+                        # 'within_minutes' — now accepted via normalize_prediction aliases.
+                        # Use a genuinely invalid shape to verify the drop behaviour.
+                        "prediction": {"kind": "unknown_kind", "within_minutes": 30},
+                    },
+                )
+            )
+        )
+
+        # Card was sent despite bad prediction.
+        assert result.success is True
+        assert len(notifier.sent) == 1
+        payload = notifier.sent[0]["payload"]
+        # Prediction was dropped.
+        assert "prediction" not in payload
+
+    def test_host_health_bad_prediction_drops_and_still_sends_card(self, tmp_path):
+        """An unparseable prediction on finish_host_health is dropped; card still sent."""
+        import asyncio
+
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+        from utils.agent.tool_registry import ToolCall
+        from utils.disk.host_health import HostHealthFinding
+
+        db = self._make_db(tmp_path)
+        notifier = FakeNotifier()
+        executor = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=notifier,
+            db_path=db,
+        )
+        executor._host_health_finding = HostHealthFinding(
+            key="memory_low:test",
+            kind="memory_low",
+            severity="WARN",
+            evidence={"detail": "some"},
+        )
+
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="finish_host_health",
+                    arguments={
+                        "summary": "Host memory low.",
+                        "root_cause": "Memory pressure.",
+                        "outcome": "monitoring",
+                        "recommended_actions": [],
+                        "prediction": {"kind": "bad_kind", "within_minutes": 60},
+                    },
+                )
+            )
+        )
+
+        assert result.success is True
+        assert len(notifier.sent) == 1
+        payload = notifier.sent[0]["payload"]
+        assert "prediction" not in payload
+
 
 # ---------------------------------------------------------------------------
 # build_device_availability_tool_registry
