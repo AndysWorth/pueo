@@ -143,16 +143,72 @@ class TestNormalizePrediction:
         "raw",
         [
             None,
-            "stays_offline",
+            42,
             {"kind": "maybe", "within_minutes": 5},
-            {"kind": "stays_offline"},
-            {"kind": "stays_offline", "within_minutes": 0},
-            {"kind": "stays_offline", "within_minutes": "soon"},
-            {"kind": "stays_offline", "within_minutes": None},
+            '{"kind": "maybe", "within_minutes": 5}',
+            "not_a_valid_kind",
         ],
     )
     def test_invalid(self, raw):
         assert normalize_prediction(raw) is None
+
+    def test_unparseable_within_falls_back_to_default(self):
+        # "soon" cannot be parsed as int; falls back to per-kind default
+        p = normalize_prediction({"kind": "stays_offline", "within_minutes": "soon"})
+        assert p == {"kind": "stays_offline", "within_minutes": 120}
+
+    # --- tolerant aliases and formats ---
+
+    def test_bare_kind_uses_default_minutes(self):
+        p = normalize_prediction("recovers_without_action")
+        assert p == {"kind": "recovers_without_action", "within_minutes": 15}
+
+    def test_bare_kind_stays_offline(self):
+        p = normalize_prediction("stays_offline")
+        assert p == {"kind": "stays_offline", "within_minutes": 120}
+
+    def test_json_encoded_string(self):
+        p = normalize_prediction('{"kind": "stays_offline", "within_minutes": 45}')
+        assert p == {"kind": "stays_offline", "within_minutes": 45}
+
+    def test_type_alias_for_kind(self):
+        p = normalize_prediction(
+            {"type": "recovers_after_reload", "within_minutes": 60}
+        )
+        assert p == {"kind": "recovers_after_reload", "within_minutes": 60}
+
+    def test_minutes_alias_for_within_minutes(self):
+        p = normalize_prediction({"kind": "recovers_without_action", "minutes": 20})
+        assert p == {"kind": "recovers_without_action", "within_minutes": 20}
+
+    def test_within_alias_for_within_minutes(self):
+        p = normalize_prediction({"kind": "stays_offline", "within": 90})
+        assert p == {"kind": "stays_offline", "within_minutes": 90}
+
+    def test_zero_within_minutes_uses_default(self):
+        p = normalize_prediction({"kind": "stays_offline", "within_minutes": 0})
+        assert p == {"kind": "stays_offline", "within_minutes": 120}
+
+    def test_none_within_minutes_uses_default(self):
+        p = normalize_prediction(
+            {"kind": "recovers_after_reload", "within_minutes": None}
+        )
+        assert p == {"kind": "recovers_after_reload", "within_minutes": 60}
+
+    def test_missing_within_uses_default(self):
+        p = normalize_prediction({"kind": "recovers_without_action"})
+        assert p == {"kind": "recovers_without_action", "within_minutes": 15}
+
+    # Real payload from LIFX episode a992144c: used `type` and `minutes`
+    def test_lifx_clip_on_real_payload(self):
+        p = normalize_prediction({"type": "stays_offline", "minutes": 60})
+        assert p == {"kind": "stays_offline", "within_minutes": 60}
+
+    # Real payload from LIFX episode c2ea7ae4: passed bare string
+    def test_lifx_candle_real_payload(self):
+        p = normalize_prediction("stays_offline")
+        assert p is not None
+        assert p["kind"] == "stays_offline"
 
     def test_describe(self):
         assert (

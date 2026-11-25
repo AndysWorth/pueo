@@ -8123,17 +8123,16 @@ class ToolExecutor:
         )
         from utils.hitl.hitl_tracker import mark_card_sent, stable_nid
 
-        if prediction is not None and normalize_prediction(prediction) is None:
-            return ToolResult(
-                tool_name="finish_host_health",
-                success=False,
-                output="",
-                error=(
-                    "Invalid prediction shape. Expected "
-                    '{"kind": "recovers_without_action"|"recovers_after_reload"|"stays_offline",'
-                    ' "within_minutes": <int>}.'
-                ),
-            )
+        if prediction is not None:
+            _norm_pred = normalize_prediction(prediction)
+            if _norm_pred is None:
+                log.warning(
+                    "finish_host_health_bad_prediction",
+                    raw=str(prediction)[:200],
+                )
+                prediction = None  # Drop it; still send the card.
+            else:
+                prediction = _norm_pred
 
         finding = self._host_health_finding
         if finding is None:
@@ -8203,9 +8202,9 @@ class ToolExecutor:
         if fact_if_yes:
             _payload["fact_if_yes"] = fact_if_yes
         if prediction is not None:
-            # Already validated above; normalize_prediction cannot return None here.
-            _payload["prediction"] = normalize_prediction(prediction)
-            _payload["prediction_text"] = describe_prediction(_payload["prediction"])
+            # Already normalized above; prediction is a valid dict here.
+            _payload["prediction"] = prediction
+            _payload["prediction_text"] = describe_prediction(prediction)
         await self._notifier.send(
             subject=f"Pueo: Host health — {finding.kind}",
             body=summary,
@@ -8252,17 +8251,16 @@ class ToolExecutor:
         )
         from utils.hitl.hitl_tracker import mark_card_sent, stable_nid
 
-        if prediction is not None and normalize_prediction(prediction) is None:
-            return ToolResult(
-                tool_name="finish_device_availability",
-                success=False,
-                output="",
-                error=(
-                    "Invalid prediction shape. Expected "
-                    '{"kind": "recovers_without_action"|"recovers_after_reload"|"stays_offline",'
-                    ' "within_minutes": <int>}.'
-                ),
-            )
+        if prediction is not None:
+            _norm_pred = normalize_prediction(prediction)
+            if _norm_pred is None:
+                log.warning(
+                    "finish_device_availability_bad_prediction",
+                    raw=str(prediction)[:200],
+                )
+                prediction = None  # Drop it; still send the card.
+            else:
+                prediction = _norm_pred
 
         finding = self._device_availability_finding
         if finding is None:
@@ -8310,9 +8308,9 @@ class ToolExecutor:
         if fact_if_yes:
             _payload["fact_if_yes"] = fact_if_yes
         if prediction is not None:
-            # Already validated above; normalize_prediction cannot return None here.
-            _payload["prediction"] = normalize_prediction(prediction)
-            _payload["prediction_text"] = describe_prediction(_payload["prediction"])
+            # Already normalized above; prediction is a valid dict here.
+            _payload["prediction"] = prediction
+            _payload["prediction_text"] = describe_prediction(prediction)
         subject = f"Pueo: Device offline — {', '.join(device_names[:3])}"
         if len(device_names) > 3:
             subject += f" (+{len(device_names) - 3} more)"

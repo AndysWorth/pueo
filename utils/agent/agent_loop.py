@@ -94,10 +94,12 @@ def _model_saw(raw: str, sent: str) -> str | None:
 def _finish_call(
     steps: list["AgentStep"], terminal_tool_name: str
 ) -> tuple[str, dict[str, Any]]:
-    """Return (name, args) of the last terminal/finish_* call, or ("", {})."""
+    """Return (name, args) of the last *successful* terminal/finish_* call, or ("", {})."""
     for s in reversed(steps):
         name = s.tool_call.name
-        if name == terminal_tool_name or name.startswith("finish_"):
+        if (
+            name == terminal_tool_name or name.startswith("finish_")
+        ) and s.tool_result.success:
             return name, dict(s.tool_call.arguments)
     return "", {}
 
@@ -1222,10 +1224,14 @@ class AgentLoop:
         """Run the agent loop and return a result describing what happened.
 
         The loop drives the model with the tool registry until one of:
-        - finish_repair is called → outcome "success"
+        - terminal tool called successfully → outcome "success"
+        - terminal tool failed twice with identical args → outcome "finish_invalid"
         - tool call budget exhausted → outcome "exhausted"
         - wall clock exceeded → outcome "timeout"
         - apply_fix returned failure → outcome "fix_failed"
+
+        A failed terminal-tool call never counts against the budget and always gets
+        a retry. Once the budget is spent, the terminal tool is still allowed through.
 
         Parameters
         ----------
@@ -1623,10 +1629,11 @@ class AgentLoop:
             # Success sessions are deferred until S5 wires distillation to verification.
             # awaiting_approval is not a failure: its card's executor verifies it.
             # host_sleep-stuck sessions are infrastructure interruptions, not knowledge gaps.
-            # error outcome = code crash, not a knowledge gap — skip distillation.
+            # error/finish_invalid = not a knowledge gap — skip distillation.
             _is_sleep_stuck = outcome == "stuck" and self._stuck_reason == "host_sleep"
             if (
-                outcome not in ("success", "awaiting_approval", "error")
+                outcome
+                not in ("success", "awaiting_approval", "error", "finish_invalid")
                 and not _is_sleep_stuck
             ):
                 _steps_snap = list(steps)
@@ -1671,6 +1678,15 @@ class AgentLoop:
                 # during this session. Sessions that sent a card (or are awaiting an
                 # approval or auto-apply) defer — "Pueo was right"/"got this wrong" or
                 # the action's executor verifies them (ADR 046).
+                # Defense-in-depth: log a warning if no successful terminal call is in
+                # steps — that would indicate a logic error — but still auto-verify.
+                _finish_name, _ = _finish_call(steps, self._terminal_tool_name)
+                if not _finish_name and steps:
+                    log.warning(
+                        "distillation_auto_verify_no_finish_call",
+                        signature=sig,
+                        episode_id=_ep,
+                    )
                 _hitl_queued = getattr(self._executor, "_hitl_card_queued", False)
                 if not _hitl_queued and _ep and _db and _store:
                     # S3: skip repeat auto-verify for the same (signature, conclusion_key).
@@ -1741,12 +1757,13 @@ class AgentLoop:
             # Standalone / test mode: write gap for non-success sessions only.
             # Success distillation requires verification (no queue = skip).
             # host_sleep-stuck sessions are infrastructure interruptions, not gaps.
-            # error outcome = code crash, not a knowledge gap — skip distillation.
+            # error/finish_invalid = not a knowledge gap — skip distillation.
             _is_sleep_stuck_sa = (
                 outcome == "stuck" and self._stuck_reason == "host_sleep"
             )
             if (
-                outcome not in ("success", "awaiting_approval", "error")
+                outcome
+                not in ("success", "awaiting_approval", "error", "finish_invalid")
                 and not _is_sleep_stuck_sa
             ):
                 try:
@@ -1823,6 +1840,10 @@ class AgentLoop:
         _cache_only_streak = 0  # consecutive LLM iterations where every call was cached
         _sleep_retry_done = False  # allow at most one sleep-retry per session
         _malformed_retries = 0  # server rejected the model's own tool call
+        # Failed-terminal-call tracking: a failed finish doesn't consume budget and
+        # gets a retry; identical failure args twice → outcome "finish_invalid".
+        _failed_finish_sig: Optional[str] = None
+        _failed_finish_count: int = 0
 
         known_tool_names = {t["function"]["name"] for t in tools}
         guardrail = ToolResultGuardrail(
@@ -1848,13 +1869,23 @@ class AgentLoop:
         while True:
             # Budget check at top of loop so extensions can continue without restart.
             if tool_call_count >= self._max_tool_calls:
-                log.warning("agent_loop_budget_exhausted", count=tool_call_count)
-                extended, episode_stub = await self._maybe_extend_budget(
-                    messages, steps, tool_call_count, start_time, "budget", episode_stub
-                )
-                if extended:
-                    continue
-                return "exhausted", episode_stub
+                # A failed terminal call doesn't end the session: the model always gets
+                # one more turn to retry the terminal with corrected args.
+                if _failed_finish_sig is not None:
+                    pass  # fall through — allow the retry turn
+                else:
+                    log.warning("agent_loop_budget_exhausted", count=tool_call_count)
+                    extended, episode_stub = await self._maybe_extend_budget(
+                        messages,
+                        steps,
+                        tool_call_count,
+                        start_time,
+                        "budget",
+                        episode_stub,
+                    )
+                    if extended:
+                        continue
+                    return "exhausted", episode_stub
 
             _t0 = time.monotonic()
             _t0_wall = time.time()
@@ -2154,20 +2185,25 @@ class AgentLoop:
             _tc_count_before = tool_call_count
             for tc_raw in tool_calls_raw:
                 if tool_call_count >= self._max_tool_calls:
-                    log.warning(
-                        "agent_loop_budget_exhausted_mid_batch", count=tool_call_count
-                    )
-                    extended, episode_stub = await self._maybe_extend_budget(
-                        messages,
-                        steps,
-                        tool_call_count,
-                        start_time,
-                        "budget",
-                        episode_stub,
-                    )
-                    if not extended:
-                        return "exhausted", episode_stub
-                    # Extended — fall through and execute this tool call.
+                    # Always allow the terminal tool even when budget is spent — the
+                    # session must end with a valid terminal call, not a hard cutoff.
+                    _tc_name_peek = tc_raw.get("function", {}).get("name", "")
+                    if _tc_name_peek != self._terminal_tool_name:
+                        log.warning(
+                            "agent_loop_budget_exhausted_mid_batch",
+                            count=tool_call_count,
+                        )
+                        extended, episode_stub = await self._maybe_extend_budget(
+                            messages,
+                            steps,
+                            tool_call_count,
+                            start_time,
+                            "budget",
+                            episode_stub,
+                        )
+                        if not extended:
+                            return "exhausted", episode_stub
+                    # Extended or terminal tool — fall through and execute this tool call.
 
                 fn = tc_raw.get("function", {})
                 tool_call = ToolCall(
@@ -2414,9 +2450,34 @@ class AgentLoop:
                     )
                     if _prediction is not None:
                         episode_stub["prediction"] = _prediction
-                    if self._capture_llm and self._llm_captures:
-                        self._llm_captures[-1].outcome_path = self._terminal_tool_name
-                    return "success", episode_stub
+
+                    if tool_result.success:
+                        if self._capture_llm and self._llm_captures:
+                            self._llm_captures[-1].outcome_path = (
+                                self._terminal_tool_name
+                            )
+                        return "success", episode_stub
+
+                    # Terminal call failed: un-count this step so the budget isn't
+                    # consumed, and give the model a chance to retry with fixed args.
+                    tool_call_count -= 1
+                    _finish_sig_now = json.dumps(
+                        tool_call.arguments, sort_keys=True, default=str
+                    )
+                    if _failed_finish_sig == _finish_sig_now:
+                        _failed_finish_count += 1
+                        if _failed_finish_count >= 2:
+                            log.warning(
+                                "agent_loop_finish_invalid",
+                                tool=tool_call.name,
+                                attempts=_failed_finish_count + 1,
+                                error=(tool_result.error or "")[:200],
+                            )
+                            return "finish_invalid", episode_stub
+                    else:
+                        _failed_finish_sig = _finish_sig_now
+                        _failed_finish_count = 1
+                    # Error is already in messages; loop continues.
 
                 if tool_result.awaiting_approval:
                     return "awaiting_approval", episode_stub
