@@ -1789,9 +1789,10 @@ class TestExecuteLocalPython:
 
     def test_returns_stdout_on_success(self):
         executor = self._make_executor()
+        # Use a variable so it's not print-only
         result = asyncio.run(
             executor._execute_local_python(
-                code='print("hello world")', description="basic test"
+                code='msg = "hello world"\nprint(msg)', description="basic test"
             )
         )
         assert result.success is True
@@ -1809,13 +1810,14 @@ class TestExecuteLocalPython:
 
     def test_output_is_truncated_to_limit(self):
         executor = self._make_executor()
-        # Print 20000 chars worth of output
+        # 'x' * 20000 is a BinOp (not a constant), so it passes the print-only guard
         code = "print('x' * 20000)"
         result = asyncio.run(
             executor._execute_local_python(code=code, description="truncation test")
         )
         assert result.success is True
-        assert len(result.output) <= 8000
+        # The label (~46 chars) is prepended after truncation, so total can slightly exceed 8000
+        assert len(result.output) <= 8100
 
     def test_timeout_returns_error(self):
         import unittest.mock as mock
@@ -1834,6 +1836,198 @@ class TestExecuteLocalPython:
             )
         assert result.success is False
         assert "timed out" in result.error.lower()
+
+    # --- print-only guard ---
+
+    def test_print_only_literal_is_rejected(self):
+        executor = self._make_executor()
+        result = asyncio.run(
+            executor._execute_local_python(
+                code='print("Candle 1 is online")',
+                description="invented fact",
+            )
+        )
+        assert result.success is False
+        assert "prints text you wrote" in result.error
+
+    def test_print_only_fstring_of_string_constants_is_rejected(self):
+        executor = self._make_executor()
+        # f-string whose slots are all string literals (no variables) → print-only
+        result = asyncio.run(
+            executor._execute_local_python(
+                code='print(f"Device {"Candle 1"} status: online")',
+                description="f-string of string constants",
+            )
+        )
+        assert result.success is False
+        assert "prints text you wrote" in result.error
+
+    def test_print_with_variable_in_fstring_passes_guard(self):
+        executor = self._make_executor()
+        # f-string with a variable → not all-constant, guard does NOT reject it
+        code = 'name = "Candle 1"\nprint(f"Device {name} status: online")'
+        result = asyncio.run(
+            executor._execute_local_python(code=code, description="fstring with var")
+        )
+        assert "prints text you wrote" not in (result.error or "")
+
+    def test_print_only_multiline_literals_rejected(self):
+        """Real payload pattern from episode manual_90af5185."""
+        executor = self._make_executor()
+        code = (
+            'print("light.lifx_d0_73_d5_84_e4_05: unavailable")\n'
+            'print("light.candle: on")\n'
+            'print("Recommendation: reload the LIFX integration")\n'
+        )
+        result = asyncio.run(
+            executor._execute_local_python(code=code, description="invented summary")
+        )
+        assert result.success is False
+        assert "prints text you wrote" in result.error
+
+    def test_sqlite_read_passes_guard(self):
+        executor = self._make_executor()
+        # Code that opens a sqlite3 DB — not print-only
+        code = "import sqlite3\nprint('ok')"
+        result = asyncio.run(
+            executor._execute_local_python(code=code, description="db read")
+        )
+        # May fail at runtime (no real DB), but guard must not reject it
+        assert "prints text you wrote" not in (result.error or "")
+
+    def test_open_read_passes_guard(self):
+        executor = self._make_executor()
+        code = "data = open('/dev/null').read()\nprint(data)"
+        result = asyncio.run(
+            executor._execute_local_python(code=code, description="file read")
+        )
+        assert "prints text you wrote" not in (result.error or "")
+
+    def test_path_read_text_passes_guard(self):
+        executor = self._make_executor()
+        code = "from pathlib import Path\nprint(Path('/dev/null').read_text())"
+        result = asyncio.run(
+            executor._execute_local_python(code=code, description="path read")
+        )
+        assert "prints text you wrote" not in (result.error or "")
+
+    def test_output_has_label_on_success(self):
+        executor = self._make_executor()
+        # A legitimate computation (not print-only: uses a variable computed at runtime)
+        code = "x = 1 + 1\nprint(x)"
+        result = asyncio.run(
+            executor._execute_local_python(code=code, description="arithmetic")
+        )
+        assert result.success is True
+        assert result.output.startswith("[computed by your own code — not HA evidence]")
+
+    def test_code_without_print_not_rejected(self):
+        executor = self._make_executor()
+        code = "x = 42"
+        result = asyncio.run(
+            executor._execute_local_python(code=code, description="no print")
+        )
+        assert "prints text you wrote" not in (result.error or "")
+
+
+class TestIsAstConstant:
+    """Unit tests for the _is_ast_constant helper."""
+
+    def test_string_constant(self):
+        from utils.agent.tool_executor import _is_ast_constant
+        import ast
+
+        node = ast.parse('"hello"', mode="eval").body
+        assert _is_ast_constant(node) is True
+
+    def test_int_constant(self):
+        from utils.agent.tool_executor import _is_ast_constant
+        import ast
+
+        node = ast.parse("42", mode="eval").body
+        assert _is_ast_constant(node) is True
+
+    def test_name_is_not_constant(self):
+        from utils.agent.tool_executor import _is_ast_constant
+        import ast
+
+        node = ast.parse("x", mode="eval").body
+        assert _is_ast_constant(node) is False
+
+    def test_fstring_of_constants(self):
+        from utils.agent.tool_executor import _is_ast_constant
+        import ast
+
+        node = ast.parse('f"hello {"world"}"', mode="eval").body
+        assert _is_ast_constant(node) is True
+
+    def test_fstring_with_name(self):
+        from utils.agent.tool_executor import _is_ast_constant
+        import ast
+
+        node = ast.parse('f"hello {name}"', mode="eval").body
+        assert _is_ast_constant(node) is False
+
+
+class TestIsPrintOnlyCode:
+    """Unit tests for ToolExecutor._is_print_only_code."""
+
+    def test_bare_print_literal(self):
+        from utils.agent.tool_executor import ToolExecutor
+
+        assert ToolExecutor._is_print_only_code('print("hello")') is True
+
+    def test_print_with_variable(self):
+        from utils.agent.tool_executor import ToolExecutor
+
+        assert ToolExecutor._is_print_only_code("x = 1\nprint(x)") is False
+
+    def test_no_print_at_all(self):
+        from utils.agent.tool_executor import ToolExecutor
+
+        assert ToolExecutor._is_print_only_code("x = 42") is False
+
+    def test_import_sqlite3_not_print_only(self):
+        from utils.agent.tool_executor import ToolExecutor
+
+        assert ToolExecutor._is_print_only_code("import sqlite3\nprint('ok')") is False
+
+    def test_import_open_via_builtins_not_print_only(self):
+        from utils.agent.tool_executor import ToolExecutor
+
+        assert (
+            ToolExecutor._is_print_only_code("data = open('f').read()\nprint(data)")
+            is False
+        )
+
+    def test_attribute_read_text_not_print_only(self):
+        from utils.agent.tool_executor import ToolExecutor
+
+        code = "from pathlib import Path\nprint(Path('/x').read_text())"
+        assert ToolExecutor._is_print_only_code(code) is False
+
+    def test_syntax_error_returns_false(self):
+        from utils.agent.tool_executor import ToolExecutor
+
+        assert ToolExecutor._is_print_only_code("print(") is False
+
+    def test_multiple_literal_prints_rejected(self):
+        from utils.agent.tool_executor import ToolExecutor
+
+        code = 'print("line 1")\nprint("line 2")\nprint("line 3")'
+        assert ToolExecutor._is_print_only_code(code) is True
+
+    def test_subprocess_import_not_print_only(self):
+        from utils.agent.tool_executor import ToolExecutor
+
+        code = "import subprocess\nprint(subprocess.check_output(['ls']))"
+        assert ToolExecutor._is_print_only_code(code) is False
+
+    def test_urllib_import_not_print_only(self):
+        from utils.agent.tool_executor import ToolExecutor
+
+        code = "import urllib.request\nprint('x')"
+        assert ToolExecutor._is_print_only_code(code) is False
 
 
 def _make_bare_executor():

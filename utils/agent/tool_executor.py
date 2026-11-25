@@ -6,6 +6,7 @@ Each tool method returns a ToolResult; errors are captured rather than raised.
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import json
 import re
@@ -155,6 +156,17 @@ def _coerce_int(value: object, default: int) -> int:
         return int(float(value))  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return default
+
+
+def _is_ast_constant(node: ast.expr) -> bool:
+    """Return True when *node* is a literal constant or an f-string of constants."""
+    if isinstance(node, ast.Constant):
+        return True
+    if isinstance(node, ast.JoinedStr):
+        return all(_is_ast_constant(v) for v in node.values)
+    if isinstance(node, ast.FormattedValue):
+        return _is_ast_constant(node.value)
+    return False
 
 
 def _ts_to_local(ts: str) -> str:
@@ -4732,10 +4744,78 @@ class ToolExecutor:
                 error=str(exc),
             )
 
+    @staticmethod
+    def _is_print_only_code(code: str) -> bool:
+        """Return True when every print() arg is a constant and the code reads no input.
+
+        Detects code that only prints literal text the model wrote itself — no file I/O,
+        no DB reads, no subprocess — and would just launder invented text as evidence.
+        """
+        _INPUT_NAMES = {
+            "open",
+            "sqlite3",
+            "httpx",
+            "urllib",
+            "requests",
+            "subprocess",
+            "listdir",
+            "glob",
+        }
+        try:
+            tree = ast.parse(code)
+        except SyntaxError:
+            return False
+
+        has_print = False
+        for node in ast.walk(tree):
+            # Any name that implies real input → not print-only
+            if isinstance(node, ast.Name) and node.id in _INPUT_NAMES:
+                return False
+            if isinstance(node, ast.Attribute) and node.attr in {
+                "read_text",
+                "read_bytes",
+                "open",
+                "connect",
+                "listdir",
+            }:
+                return False
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.split(".")[0] in _INPUT_NAMES:
+                        return False
+            if isinstance(node, ast.ImportFrom):
+                if node.module and node.module.split(".")[0] in _INPUT_NAMES:
+                    return False
+            # Check whether it's a print() call with all-constant args
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "print"
+            ):
+                has_print = True
+                for arg in node.args:
+                    if not _is_ast_constant(arg):
+                        return False
+
+        return has_print
+
     async def _execute_local_python(self, code: str, description: str) -> ToolResult:
         """Run a Python snippet locally in the Pueo venv for diagnostic analysis."""
         _OUTPUT_CAP = 8000
         _STDERR_CAP = 2000
+
+        if self._is_print_only_code(code):
+            return ToolResult(
+                tool_name="execute_local_python",
+                success=False,
+                output="",
+                error=(
+                    "this code only prints text you wrote; "
+                    "call a tool that reads the data"
+                ),
+            )
+
+        _OUTPUT_LABEL = "[computed by your own code — not HA evidence]\n"
         temp_dir = tempfile.mkdtemp(prefix="pueo_diag_")
         try:
             script_path = Path(temp_dir) / "diagnostic.py"
@@ -4768,7 +4848,7 @@ class ToolExecutor:
             return ToolResult(
                 tool_name="execute_local_python",
                 success=True,
-                output=combined or "(no output)",
+                output=_OUTPUT_LABEL + (combined or "(no output)"),
             )
         except subprocess.TimeoutExpired:
             return ToolResult(
