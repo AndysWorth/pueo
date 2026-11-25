@@ -30,12 +30,14 @@ The restart itself is not evidence of a fault in any one integration.
   `setup_error`, `setup_retry` or `failed_setup`, or the log shows the integration's
   setup failing after the start time): this is a real post-restart fault, often
   caused by the update that was just applied. Report that integration, and
-  recommend `reload_integration` or checking the integration's release notes. Treat
-  the other integrations' devices as already off.
+  recommend `reload_integration` with the **config entry id from the initial context**
+  or checking the integration's release notes. Treat the other integrations' devices
+  as already off.
 - **Every device of one integration offline, while its siblings on other
   integrations are fine, and NetAlertX shows them present on LAN**: the integration
-  didn't reconnect after the restart. `reload_integration` for that domain is
-  reasonable.
+  didn't reconnect after the restart. `reload_integration` with the **config entry id
+  from the initial context** is reasonable. Many integrations have one entry per device
+  — never reload by domain name alone.
 
 Don't diagnose cloud-server rotations, MQTT drops or daily sleep cycles from a
 single post-restart sighting. One restart gives you one data point.

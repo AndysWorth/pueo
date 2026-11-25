@@ -2695,31 +2695,74 @@ class ToolExecutor:
 
     async def _resolve_entry_id(self, domain_or_entry_id: str) -> str | None:
         """Return a config entry_id. If domain_or_entry_id looks like a UUID, return it
-        directly. Otherwise treat it as a domain and pick the first active entry."""
+        directly. Otherwise treat it as a domain and pick the best entry."""
+        entry_id, _ = await self._resolve_entry_id_or_error(domain_or_entry_id)
+        return entry_id
+
+    async def _resolve_entry_id_or_error(
+        self, domain_or_entry_id: str
+    ) -> tuple[str | None, str | None]:
+        """Return (entry_id, None) on success or (None, error_message) on failure.
+
+        Resolution order for a domain lookup:
+        1. If the session has a subject config entry (from the device-availability finding)
+           whose domain matches, return it.
+        2. If the domain has exactly one entry, return it.
+        3. If the domain has multiple entries, return an error listing each one — the
+           caller must pass an explicit entry_id.
+        """
         import re
 
         if re.fullmatch(r"[0-9a-f]{32}", domain_or_entry_id.replace("-", "")):
-            return domain_or_entry_id
+            return domain_or_entry_id, None
         if not self._ws_client:
-            return None
+            return None, None
         try:
             entries = await self._ws_client.get_all_config_entries()
         except Exception:
-            return None
+            return None, None
         # Newer entries use ULID ids, which the hex check above does not catch.
         for entry in entries:
             if entry.get("entry_id") == domain_or_entry_id:
-                return domain_or_entry_id
-        for entry in entries:
-            if entry.get("domain") == domain_or_entry_id and entry.get(
-                "state", ""
-            ) not in ("not_loaded", "setup_error", "migration_error"):
-                return entry.get("entry_id")
-        # Fall back to any entry for the domain
-        for entry in entries:
-            if entry.get("domain") == domain_or_entry_id:
-                return entry.get("entry_id")
-        return None
+                return domain_or_entry_id, None
+
+        domain_entries = [e for e in entries if e.get("domain") == domain_or_entry_id]
+        if not domain_entries:
+            return None, None
+
+        # Prefer the session's subject config entry (device-availability finding).
+        subject_entry_id = (
+            getattr(self._device_availability_finding, "config_entry_id", None)
+            if self._device_availability_finding is not None
+            else None
+        )
+        if subject_entry_id:
+            for entry in domain_entries:
+                if entry.get("entry_id") == subject_entry_id:
+                    return subject_entry_id, None
+
+        if len(domain_entries) == 1:
+            return domain_entries[0].get("entry_id"), None
+
+        # Multiple entries with no subject — require an explicit entry_id.
+        lines = [
+            "  ".join(
+                filter(
+                    None,
+                    [
+                        e.get("entry_id", ""),
+                        e.get("title") or e.get("domain", ""),
+                        e.get("state", ""),
+                    ],
+                )
+            )
+            for e in domain_entries
+        ]
+        error = (
+            f"Domain {domain_or_entry_id!r} has {len(domain_entries)} config entries. "
+            f"Pass the entry_id directly:\n" + "\n".join(f"  {l}" for l in lines)
+        )
+        return None, error
 
     async def _entry_domain(self, domain_or_entry_id: str, entry_id: str) -> str | None:
         """Best-effort integration domain for an entry, for user-facing messages."""
@@ -2797,6 +2840,72 @@ class ToolExecutor:
             tool_name="get_integration_diagnostics", success=True, output=text
         )
 
+    async def _read_back_entry_state(self, entry_id: str) -> str:
+        """Return 'state (reason)' for an entry, or empty string if unavailable."""
+        if not self._ws_client:
+            return ""
+        try:
+            entries = await self._ws_client.get_all_config_entries()
+        except Exception:
+            return ""
+        for entry in entries:
+            if entry.get("entry_id") == entry_id:
+                state = entry.get("state", "unknown")
+                reason = entry.get("reason") or entry.get(
+                    "error_reason_translation_key"
+                )
+                return f"{state} ({reason})" if reason else state
+        return ""
+
+    async def _poll_entities_until_online(
+        self, entry_id: str, timeout_seconds: float
+    ) -> str:
+        """Poll entities belonging to entry_id until none are unavailable, or timeout.
+
+        Returns a one-line status string describing what was found.
+        """
+        if not self._ws_client or not self._rest_client:
+            return ""
+        import asyncio
+
+        deadline = asyncio.get_event_loop().time() + timeout_seconds
+        poll_interval = 5.0
+        entity_ids: list[str] = []
+        try:
+            registry = await self._ws_client.get_entity_registry()
+            entity_ids = [
+                e["entity_id"]
+                for e in registry
+                if e.get("config_entry_id") == entry_id and e.get("entity_id")
+            ]
+        except Exception:
+            pass
+        if not entity_ids:
+            return ""
+
+        last_states: dict[str, str] = {}
+        while asyncio.get_event_loop().time() < deadline:
+            try:
+                states = await self._rest_client.get_states()
+                state_map = {s["entity_id"]: s["state"] for s in states}
+                unavailable = [
+                    eid for eid in entity_ids if state_map.get(eid) == "unavailable"
+                ]
+                last_states = {eid: state_map.get(eid, "unknown") for eid in entity_ids}
+                if not unavailable:
+                    pairs = [f"{eid}: {last_states[eid]}" for eid in entity_ids[:3]]
+                    suffix = (
+                        f" (+{len(entity_ids) - 3} more)" if len(entity_ids) > 3 else ""
+                    )
+                    return "fixed: " + ", ".join(pairs) + suffix
+            except Exception:
+                pass
+            await asyncio.sleep(poll_interval)
+
+        pairs = [f"{eid}: {last_states.get(eid, 'unknown')}" for eid in entity_ids[:3]]
+        suffix = f" (+{len(entity_ids) - 3} more)" if len(entity_ids) > 3 else ""
+        return "still unavailable after reload: " + ", ".join(pairs) + suffix
+
     async def _reload_integration(
         self, domain_or_entry_id: str, reason: str
     ) -> ToolResult:
@@ -2814,13 +2923,16 @@ class ToolExecutor:
                 output="",
                 error="domain_or_entry_id is required",
             )
-        entry_id = await self._resolve_entry_id(domain_or_entry_id)
+        entry_id, ambig_error = await self._resolve_entry_id_or_error(
+            domain_or_entry_id
+        )
         if not entry_id:
             return ToolResult(
                 tool_name="reload_integration",
                 success=False,
                 output="",
-                error=f"No config entry found for {domain_or_entry_id!r}",
+                error=ambig_error
+                or f"No config entry found for {domain_or_entry_id!r}",
             )
 
         from utils.agent.autonomy import RiskLevel
@@ -2854,20 +2966,57 @@ class ToolExecutor:
                 awaiting_approval=True,
             )
 
+        import config as _cfg
+
+        stuck_seconds = float(getattr(_cfg, "HA_RELOAD_STUCK_SECONDS", 600))
         try:
-            await self._rest_client.reload_config_entry(entry_id)
+            await self._rest_client.reload_config_entry(
+                entry_id, stuck_seconds=stuck_seconds
+            )
         except Exception as exc:
+            exc_type = type(exc).__name__
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            body = ""
+            if hasattr(exc, "response") and exc.response is not None:
+                try:
+                    body = exc.response.text[:200]
+                except Exception:
+                    pass
+            status_part = f" HTTP {status}" if status else ""
+            body_part = f" — {body}" if body else ""
             return ToolResult(
                 tool_name="reload_integration",
                 success=False,
                 output="",
-                error=f"Reload failed: {exc}",
+                error=f"Reload failed ({exc_type}{status_part}): {exc}{body_part}",
             )
+
         log.info("reload_integration_executed", entry_id=entry_id)
+
+        # Read back the entry state so the model can see setup_error / setup_retry.
+        entry_state = await self._read_back_entry_state(entry_id)
+        state_note = f"\nEntry state after reload: {entry_state}" if entry_state else ""
+
+        # Poll entities to verify recovery (up to 60 s before reporting partial result).
+        entity_status = await self._poll_entities_until_online(
+            entry_id, timeout_seconds=60
+        )
+        entity_note = f"\n{entity_status}" if entity_status else ""
+
+        success = not (
+            entry_state.startswith("setup_error")
+            or entry_state.startswith("setup_retry")
+        )
+        output = (
+            f"Config entry {entry_id} ({domain_or_entry_id}) reloaded."
+            + state_note
+            + entity_note
+        )
         return ToolResult(
             tool_name="reload_integration",
-            success=True,
-            output=f"Config entry {entry_id} ({domain_or_entry_id}) reloaded successfully.",
+            success=success,
+            output=output,
+            error="" if success else f"Reload left entry in {entry_state}",
         )
 
     async def _call_service(

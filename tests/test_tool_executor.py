@@ -4210,6 +4210,147 @@ class TestReloadIntegration:
         assert result.success
         assert entry_id in fake_rest.reloaded
 
+    def test_multi_entry_domain_prefers_subject_entry(self):
+        """When a domain has several entries the subject entry (from finding) wins."""
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_rest_client import FakeHARestClient
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+        from utils.ha.device_availability import OfflineFinding
+
+        subject_id = "bulb1"
+        other_id = "bulb2"
+        fake_rest = FakeHARestClient()
+        fake_ws = FakeHAWebSocketClient(
+            config_entries=[
+                {
+                    "domain": "lifx",
+                    "entry_id": subject_id,
+                    "state": "loaded",
+                    "title": "Candle 1",
+                },
+                {
+                    "domain": "lifx",
+                    "entry_id": other_id,
+                    "state": "loaded",
+                    "title": "Candle 2",
+                },
+            ]
+        )
+        executor = self._make_executor(
+            rest_client=fake_rest, ws_client=fake_ws, auto_execute=True
+        )
+        # Inject a device-availability finding that names subject_id.
+        finding = OfflineFinding(
+            config_entry_id=subject_id,
+            domain="lifx",
+            devices=[],
+        )
+        executor.set_device_availability_finding(finding)
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="reload_integration",
+                    arguments={"domain_or_entry_id": "lifx", "reason": "dropped"},
+                )
+            )
+        )
+        assert result.success
+        assert subject_id in fake_rest.reloaded
+        assert other_id not in fake_rest.reloaded
+
+    def test_multi_entry_domain_no_subject_returns_error(self):
+        """When a domain has multiple entries and no subject, return an error listing them."""
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_rest_client import FakeHARestClient
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        fake_rest = FakeHARestClient()
+        fake_ws = FakeHAWebSocketClient(
+            config_entries=[
+                {
+                    "domain": "lifx",
+                    "entry_id": "bulb1",
+                    "state": "loaded",
+                    "title": "Candle 1",
+                },
+                {
+                    "domain": "lifx",
+                    "entry_id": "bulb2",
+                    "state": "loaded",
+                    "title": "Candle 2",
+                },
+            ]
+        )
+        executor = self._make_executor(
+            rest_client=fake_rest, ws_client=fake_ws, auto_execute=True
+        )
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="reload_integration",
+                    arguments={"domain_or_entry_id": "lifx", "reason": "dropped"},
+                )
+            )
+        )
+        assert not result.success
+        assert "2 config entries" in result.error
+        assert "bulb1" in result.error
+        assert "bulb2" in result.error
+
+    def test_read_back_state_included_in_output(self):
+        """Entry state is read back and included in the result output."""
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_rest_client import FakeHARestClient
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        entry_id = "abc123"
+        fake_rest = FakeHARestClient()
+        fake_ws = FakeHAWebSocketClient(
+            config_entries=[{"domain": "hue", "entry_id": entry_id, "state": "loaded"}]
+        )
+        executor = self._make_executor(
+            rest_client=fake_rest, ws_client=fake_ws, auto_execute=True
+        )
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="reload_integration",
+                    arguments={"domain_or_entry_id": "hue", "reason": "test"},
+                )
+            )
+        )
+        assert result.success
+        assert "loaded" in result.output
+
+    def test_setup_error_state_reported_as_failure(self):
+        """A reload that leaves the entry in setup_error reports success=False."""
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_rest_client import FakeHARestClient
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        entry_id = "abc123"
+        fake_rest = FakeHARestClient()
+        # WS client returns setup_error state after reload.
+        fake_ws = FakeHAWebSocketClient(
+            config_entries=[
+                {"domain": "lifx", "entry_id": entry_id, "state": "setup_error"}
+            ]
+        )
+        executor = self._make_executor(
+            rest_client=fake_rest, ws_client=fake_ws, auto_execute=True
+        )
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="reload_integration",
+                    arguments={"domain_or_entry_id": "lifx", "reason": "test"},
+                )
+            )
+        )
+        assert not result.success
+        assert "setup_error" in (result.error or result.output)
+        assert entry_id in fake_rest.reloaded
+
 
 # TestCallService
 # ---------------------------------------------------------------------------
