@@ -12055,6 +12055,16 @@ class TestParsePatchNotes:
             "[stream docs]: https://www.home-assistant.io/integrations/stream\n"
             "[auth docs]: https://www.home-assistant.io/integrations/auth\n"
             "[marketplace docs]: https://www.home-assistant.io/integrations/marketplace\n"
+            "[#111]: https://github.com/home-assistant/core/pull/111\n"
+            "[#112]: https://github.com/home-assistant/core/pull/112\n"
+            "[#113]: https://github.com/home-assistant/core/pull/113\n"
+            "[#114]: https://github.com/home-assistant/core/pull/114\n"
+            "[#115]: https://github.com/home-assistant/core/pull/115\n"
+            "[#116]: https://github.com/home-assistant/core/pull/116\n"
+            "[#117]: https://github.com/home-assistant/core/pull/117\n"
+            "[#118]: https://github.com/home-assistant/core/pull/118\n"
+            "[#119]: https://github.com/home-assistant/core/pull/119\n"
+            "[#193306]: https://github.com/home-assistant/core/pull/193306\n"
         )
         result = self._parse(body, installed)
         # marketplace has 2 fixes; count total entries across all domains
@@ -12064,6 +12074,19 @@ class TestParsePatchNotes:
         assert result["core"][0].prs == ["193306"]
         # marketplace contributed 2 of those entries
         assert len(result["marketplace"]) == 2
+
+    def test_github_pr_ref_def_line_not_emitted_as_change(self):
+        """GitHub PR ref-def lines (bottom of release body) must be skipped."""
+        body = (
+            "- Fix something in core ([@u] - [#193306])\n"
+            "\n"
+            "[#193306]: https://github.com/home-assistant/core/pull/193306\n"
+            "[#185485]: https://github.com/home-assistant/core/pull/185485\n"
+        )
+        result = self._parse(body, [])
+        assert list(result.keys()) == ["core"]
+        assert len(result["core"]) == 1
+        assert result["core"][0].prs == ["193306"]
 
 
 # ---------------------------------------------------------------------------
