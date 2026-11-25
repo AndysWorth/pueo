@@ -5416,6 +5416,14 @@ async def _run_chat_loop(
             capture_llm=_debug_level_enabled >= 1,
         )
         enriched_message = await _pre_inject_chat_context(message, executor)
+        if prior_messages:
+            enriched_message = (
+                "[PRIOR INVESTIGATION IN HISTORY]\n"
+                "This conversation's history already contains tool results and evidence "
+                "gathered in previous turns. Before calling any tools to gather data you "
+                "may already have, check the history above for existing reads, entity "
+                "states, log excerpts, and diagnostics.\n\n"
+            ) + enriched_message
         if enriched_message != message:
             await asyncio.to_thread(_store_pre_inject, enriched_message)
         from utils.knowledge.runbook_signature import sig_chat

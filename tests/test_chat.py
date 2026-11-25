@@ -2758,6 +2758,72 @@ class TestPreInjectStoredInDB:
         roles = [r[0] for r in rows]
         assert "pre_inject" not in roles
 
+    def test_prior_investigation_prefix_added_when_history_non_empty(
+        self, ctx, monkeypatch
+    ):
+        """[PRIOR INVESTIGATION IN HISTORY] is prepended when prior_messages is non-empty."""
+        import web.dashboard as dashboard
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.tool_registry import AgentLoopResult
+
+        path, _ = ctx
+        session_id = self._insert_session(path)
+
+        captured_message: list[str] = []
+
+        async def _fake_run(self_, message, **kw):  # noqa: ARG001
+            captured_message.append(message)
+            return AgentLoopResult(
+                outcome="success", steps=[], episode_stub={"summary": "ok"}
+            )
+
+        monkeypatch.setattr(AgentLoop, "run", _fake_run)
+
+        async def _fake_pre_inject(msg, _ex):
+            return msg  # unchanged — no recall memories
+
+        monkeypatch.setattr(dashboard, "_pre_inject_chat_context", _fake_pre_inject)
+
+        history = [{"role": "user", "content": "first question"}]
+        asyncio.run(dashboard._run_chat_loop(session_id, "follow-up question", history))
+
+        assert captured_message, "AgentLoop.run must have been called"
+        assert captured_message[0].startswith(
+            "[PRIOR INVESTIGATION IN HISTORY]"
+        ), f"Expected prefix, got: {captured_message[0][:100]!r}"
+        assert "follow-up question" in captured_message[0]
+
+    def test_prior_investigation_prefix_absent_when_no_history(self, ctx, monkeypatch):
+        """[PRIOR INVESTIGATION IN HISTORY] is NOT prepended when prior_messages is empty."""
+        import web.dashboard as dashboard
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.tool_registry import AgentLoopResult
+
+        path, _ = ctx
+        session_id = self._insert_session(path)
+
+        captured_message: list[str] = []
+
+        async def _fake_run(self_, message, **kw):  # noqa: ARG001
+            captured_message.append(message)
+            return AgentLoopResult(
+                outcome="success", steps=[], episode_stub={"summary": "ok"}
+            )
+
+        monkeypatch.setattr(AgentLoop, "run", _fake_run)
+
+        async def _fake_pre_inject(msg, _ex):
+            return msg  # unchanged — no recall memories
+
+        monkeypatch.setattr(dashboard, "_pre_inject_chat_context", _fake_pre_inject)
+
+        asyncio.run(dashboard._run_chat_loop(session_id, "first question", []))
+
+        assert captured_message, "AgentLoop.run must have been called"
+        assert not captured_message[0].startswith(
+            "[PRIOR INVESTIGATION IN HISTORY]"
+        ), "Prefix must not appear on first turn"
+
     def test_context_inject_callback_fires_on_knowledge_inject(self, db_path):
         """context_inject_callback is invoked when _pre_inject_knowledge enriches the context."""
         from utils.agent.agent_loop import AgentLoop
