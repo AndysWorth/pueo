@@ -6037,15 +6037,30 @@ class ToolExecutor:
                         config_entries=all_entries,
                     )
                     if twins:
-                        result["device_twins"] = [
-                            {
-                                "device_id": t.device_id,
-                                "device_name": t.device_name,
-                                "integration": t.integration,
-                                "config_entry_id": t.config_entry_id,
+                        result["device_twins"] = []
+                        for _t in twins:
+                            _twin_eids = {
+                                _e.get("entity_id")
+                                for _e in registry
+                                if _e.get("device_id") == _t.device_id
                             }
-                            for t in twins
-                        ]
+                            _twin_states = [
+                                {
+                                    "entity_id": _s.get("entity_id"),
+                                    "state": _s.get("state"),
+                                }
+                                for _s in states
+                                if _s.get("entity_id") in _twin_eids
+                            ]
+                            result["device_twins"].append(
+                                {
+                                    "device_id": _t.device_id,
+                                    "device_name": _t.device_name,
+                                    "integration": _t.integration,
+                                    "config_entry_id": _t.config_entry_id,
+                                    "entity_states": _twin_states,
+                                }
+                            )
 
             if area_id:
                 result["area"] = area_id
