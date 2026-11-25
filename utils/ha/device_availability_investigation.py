@@ -338,12 +338,16 @@ async def run_device_availability_investigation(
     netalertx_api_client: Optional[Any] = None,  # NetAlertXAPIClient
     recurrence_count: Optional[int] = None,
     recurrence_window_days: Optional[int] = None,
-) -> None:
+) -> bool:
     """Run an AgentLoop to investigate an offline device and create a HITL card.
 
     Uses the real AutonomyGate(AUTONOMY_LEVEL) so gated fixes (reload_integration)
     route through the real gate and produce cards at lower autonomy levels.
     SSH reads use ReadOnlySSHClient (ADR 043); every SSH write raises.
+
+    Returns True if a HITL card was queued during the session, False otherwise.
+    The caller uses this to decide whether to mark the device as investigated or
+    re-arm it for a future investigation (ADR 047).
     """
     import config as _cfg
     from utils.agent.agent_loop import AgentLoop
@@ -463,6 +467,7 @@ async def run_device_availability_investigation(
         capture_llm=True,
     )
     increment_active_agent()
+    card_queued = False
     try:
         result = await loop.run(
             initial_context=initial_context,
@@ -471,6 +476,7 @@ async def run_device_availability_investigation(
             subject_key=subject_key,
             prior_subject_keys=prior_keys,
         )
+        card_queued = executor._hitl_card_queued
         publish_activity_done("device_availability", result.outcome)
         if result.outcome != "success":
             import sqlite3 as _sqlite3
@@ -497,3 +503,4 @@ async def run_device_availability_investigation(
         )
     finally:
         decrement_active_agent()
+    return card_queued

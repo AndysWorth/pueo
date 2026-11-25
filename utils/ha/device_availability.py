@@ -838,13 +838,13 @@ async def _run_device_availability_investigation(
     ha_rest_client: object = None,
     recurrence_count: "int | None" = None,
     recurrence_window_days: "int | None" = None,
-) -> None:
-    """Delegate to the investigation module."""
+) -> bool:
+    """Delegate to the investigation module. Returns True if a HITL card was queued."""
     from utils.ha.device_availability_investigation import (
         run_device_availability_investigation,
     )
 
-    await run_device_availability_investigation(
+    return await run_device_availability_investigation(
         finding=finding,
         notifier=notifier,
         db_path=db_path,
@@ -856,6 +856,40 @@ async def _run_device_availability_investigation(
         recurrence_count=recurrence_count,
         recurrence_window_days=recurrence_window_days,
     )
+
+
+def _mark_investigated(
+    db_path: str,
+    finding: OfflineFinding,
+    card_key: str,
+    card_queued: bool,
+) -> None:
+    """Update the snapshot after an investigation completes.
+
+    If a card was queued, mark each device as investigated so the offline
+    episode is not counted as a self-recovery.  If no card was queued,
+    reset alerted=False so the device becomes a new finding after the
+    30-min backoff expires and can be investigated again (ADR 047).
+    """
+    try:
+        with sqlite3.connect(db_path) as conn:
+            snap = load_snapshot(conn)
+            changed = False
+            for dev in finding.devices:
+                entry = snap.get(dev["device_id"])
+                if entry is None:
+                    continue
+                if card_queued:
+                    entry["investigated"] = True
+                    entry["card_key"] = card_key
+                else:
+                    entry["alerted"] = False
+                    entry["card_key"] = None
+                changed = True
+            if changed:
+                save_snapshot(conn, snap)
+    except Exception as e:  # nosec B110
+        log.warning("device_availability_mark_investigated_failed", error=str(e))
 
 
 # ------------------------------------------------------------------
@@ -1298,6 +1332,8 @@ async def poll_device_availability(
                 _ws_ref = _ws
                 _rest_ref = ha_rest_client
 
+                _ck_ref = card_key
+
                 async def _investigate_coro(
                     _f: OfflineFinding = _finding,
                     _d: str = _db_ref,
@@ -1307,8 +1343,9 @@ async def poll_device_availability(
                     _nax: object = _nax_ref,
                     _wsc: object = _ws_ref,
                     _rest: object = _rest_ref,
+                    _card_key: str = _ck_ref,
                 ) -> None:
-                    await _run_device_availability_investigation(
+                    _card_queued = await _run_device_availability_investigation(
                         finding=_f,
                         db_path=_d,
                         notifier=_n,
@@ -1317,6 +1354,12 @@ async def poll_device_availability(
                         netalertx_api_client=_nax,
                         ws_client=_wsc,
                         ha_rest_client=_rest,
+                    )
+                    # Mark investigated only when a card was sent.  With no card,
+                    # reset alerted so the device is re-detected after the backoff
+                    # expires and can be investigated again (ADR 047).
+                    await asyncio.to_thread(
+                        _mark_investigated, _d, _f, _card_key, _card_queued
                     )
 
                 _wq = get_work_queue_or_none()
@@ -1333,15 +1376,6 @@ async def poll_device_availability(
                     )
                 else:
                     await _investigate_coro()
-
-                # An investigated episode is never a self-recovery.
-                for _dev in finding.devices:
-                    _snap_dev = result.snapshot.get(_dev["device_id"])
-                    if _snap_dev is not None:
-                        _snap_dev["investigated"] = True
-                        _snap_dev["card_key"] = card_key
-                with sqlite3.connect(_db) as conn:
-                    save_snapshot(conn, result.snapshot)
 
             # Process recoveries.
             _recovered_keys: dict[str, bool] = {}
