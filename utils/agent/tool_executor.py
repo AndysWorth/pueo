@@ -2878,7 +2878,7 @@ class ToolExecutor:
                 for e in registry
                 if e.get("config_entry_id") == entry_id and e.get("entity_id")
             ]
-        except Exception:
+        except Exception:  # nosec B110 — registry fetch is best-effort
             pass
         if not entity_ids:
             return ""
@@ -2898,7 +2898,7 @@ class ToolExecutor:
                         f" (+{len(entity_ids) - 3} more)" if len(entity_ids) > 3 else ""
                     )
                     return "fixed: " + ", ".join(pairs) + suffix
-            except Exception:
+            except Exception:  # nosec B110 — state poll is best-effort
                 pass
             await asyncio.sleep(poll_interval)
 
@@ -2980,7 +2980,7 @@ class ToolExecutor:
             if hasattr(exc, "response") and exc.response is not None:
                 try:
                     body = exc.response.text[:200]
-                except Exception:
+                except Exception:  # nosec B110 — response body read is best-effort
                     pass
             status_part = f" HTTP {status}" if status else ""
             body_part = f" — {body}" if body else ""
